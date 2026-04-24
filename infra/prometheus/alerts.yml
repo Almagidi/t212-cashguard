@@ -1,0 +1,132 @@
+groups:
+  # ── Trading Safety ───────────────────────────────────────────────────────────
+  - name: trading_safety
+    interval: 15s
+    rules:
+      - alert: KillSwitchActivated
+        expr: cashguard_kill_switch_activations_total > 0
+        for: 0m
+        labels:
+          severity: critical
+          team: trading
+        annotations:
+          summary: "Kill switch activated"
+          description: "A kill switch activation was recorded. All trading is halted. Actor: {{ $labels.actor }}. Investigate immediately."
+
+      - alert: CircuitBreakerOpen
+        expr: cashguard_circuit_breaker_open == 1
+        for: 30s
+        labels:
+          severity: critical
+          team: trading
+        annotations:
+          summary: "Broker circuit breaker is OPEN"
+          description: "The broker circuit breaker has opened after repeated failures. Orders cannot be placed. Broker: {{ $labels.broker }}."
+
+      - alert: AutoTradingDisabled
+        expr: cashguard_auto_trading_enabled == 0
+        for: 5m
+        labels:
+          severity: warning
+          team: trading
+        annotations:
+          summary: "Auto trading has been disabled for >5 minutes"
+          description: "Auto trading has been off for more than 5 minutes. This may be intentional or a configuration issue."
+
+      - alert: HighRiskViolationRate
+        expr: rate(cashguard_risk_violations_total[5m]) > 0.5
+        for: 2m
+        labels:
+          severity: warning
+          team: trading
+        annotations:
+          summary: "High risk violation rate"
+          description: "More than 0.5 risk violations/second over the last 5 minutes. Violation type: {{ $labels.violation_type }}. This may indicate strategy misconfiguration."
+
+      - alert: HighCashGuardBlockRate
+        expr: rate(cashguard_cash_guard_blocks_total[5m]) > 0.2
+        for: 1m
+        labels:
+          severity: warning
+          team: trading
+        annotations:
+          summary: "Cash guard blocking orders frequently"
+          description: "Cash guard is blocking orders at >0.2/second. Available cash may be critically low."
+
+  # ── Account Health ───────────────────────────────────────────────────────────
+  - name: account_health
+    interval: 30s
+    rules:
+      - alert: LowAvailableCash
+        expr: cashguard_account_cash_available < 100
+        for: 5m
+        labels:
+          severity: warning
+          team: trading
+        annotations:
+          summary: "Available cash critically low"
+          description: "Available cash is below £100 (current: {{ $value | humanize }}). New orders may be blocked."
+
+      - alert: HighOpenPositions
+        expr: cashguard_account_open_positions > 8
+        for: 2m
+        labels:
+          severity: warning
+          team: trading
+        annotations:
+          summary: "Unusually high number of open positions"
+          description: "{{ $value }} open positions detected, which is above the expected threshold."
+
+  # ── API Health ───────────────────────────────────────────────────────────────
+  - name: api_health
+    interval: 15s
+    rules:
+      - alert: BrokerRequestLatencyHigh
+        expr: histogram_quantile(0.95, rate(cashguard_broker_request_duration_seconds_bucket[5m])) > 5
+        for: 2m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Broker API p95 latency above 5s"
+          description: "The 95th percentile broker request duration is {{ $value | humanizeDuration }}. Orders may be delayed."
+
+      - alert: BrokerRequestLatencyCritical
+        expr: histogram_quantile(0.99, rate(cashguard_broker_request_duration_seconds_bucket[5m])) > 15
+        for: 1m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Broker API p99 latency above 15s"
+          description: "The 99th percentile broker request duration is {{ $value | humanizeDuration }}. The broker may be down."
+
+      - alert: APIDown
+        expr: up{job="cashguard_api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "CashGuard API is unreachable"
+          description: "Prometheus cannot scrape the CashGuard API /metrics endpoint. The service may be down."
+
+      - alert: PostgresDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Postgres exporter is down"
+          description: "Cannot reach the Postgres exporter. Database may be unavailable."
+
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Redis exporter is down"
+          description: "Cannot reach the Redis exporter. Cache/queue layer may be unavailable."

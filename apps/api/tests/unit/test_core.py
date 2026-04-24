@@ -1,0 +1,342 @@
+"""
+Unit tests: risk engine, ORB strategy, security helpers, sell quantity convention.
+"""
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+from decimal import Decimal
+
+import pytest
+import pytest_asyncio
+
+
+# ─── Security ────────────────────────────────────────────────────────────────
+
+class TestSecurity:
+    def test_password_hash_and_verify(self):
+        from app.core.security import hash_password, verify_password
+        hashed = hash_password("mypassword123")
+        assert verify_password("mypassword123", hashed)
+        assert not verify_password("wrongpassword", hashed)
+
+    def test_create_and_decode_token(self):
+        from app.core.security import create_access_token, decode_access_token
+        token = create_access_token("user-123")
+        payload = decode_access_token(token)
+        assert payload["sub"] == "user-123"
+        assert payload["type"] == "access"
+
+    def test_field_encryption_roundtrip(self):
+        from app.core.security import encrypt_field, decrypt_field
+        secret = "my-api-secret-key-12345"
+        encrypted = encrypt_field(secret)
+        assert encrypted != secret
+        decrypted = decrypt_field(encrypted)
+        assert decrypted == secret
+
+    def test_different_values_encrypt_differently(self):
+        from app.core.security import encrypt_field
+        e1 = encrypt_field("key-one")
+        e2 = encrypt_field("key-two")
+        assert e1 != e2
+
+
+# ─── Sell Quantity Convention ─────────────────────────────────────────────────
+
+class TestSellQuantityConvention:
+    """
+    Critical: Trading 212 requires negative quantity for sell orders.
+    """
+
+    def test_make_sell_quantity_positive_input(self):
+        from app.broker.trading212 import make_sell_quantity
+        result = make_sell_quantity(Decimal("10.5"))
+        assert result == Decimal("-10.5")
+        assert result < 0
+
+    def test_make_sell_quantity_already_negative(self):
+        from app.broker.trading212 import make_sell_quantity
+        result = make_sell_quantity(Decimal("-10.5"))
+        assert result == Decimal("-10.5")
+        assert result < 0
+
+    def test_make_sell_quantity_never_positive(self):
+        from app.broker.trading212 import make_sell_quantity
+        for qty in [Decimal("1"), Decimal("100"), Decimal("0.5"), Decimal("-5")]:
+            assert make_sell_quantity(qty) < 0, f"Sell quantity must be negative, got: {make_sell_quantity(qty)}"
+
+    def test_buy_quantity_positive(self):
+        """Buy quantities should be positive."""
+        buy_qty = Decimal("10")
+        assert buy_qty > 0
+
+
+# ─── ORB Strategy ─────────────────────────────────────────────────────────────
+
+class TestORBStrategy:
+    def _make_candle(self, open_=100, high=105, low=95, close=102, ts=None):
+        from app.strategies.orb import OHLCV
+        return OHLCV(
+            timestamp=ts or datetime.now(timezone.utc),
+            open=Decimal(str(open_)),
+            high=Decimal(str(high)),
+            low=Decimal(str(low)),
+            close=Decimal(str(close)),
+            volume=Decimal("100000"),
+        )
+
+    def test_compute_opening_range_sufficient_candles(self):
+        from app.strategies.orb import OpeningRangeBreakoutStrategy
+        strat = OpeningRangeBreakoutStrategy({"orb_minutes": 15})
+        # 15 min / 5 min candles = 3 candles
+        candles = [
+            self._make_candle(100, 110, 95, 105),
+            self._make_candle(105, 112, 98, 108),
+            self._make_candle(108, 115, 100, 112),
+        ]
+        result = strat.compute_opening_range(candles)
+        assert result is not None
+        orb_high, orb_low = result
+        assert orb_high == Decimal("115")
+        assert orb_low == Decimal("95")
+
+    def test_compute_opening_range_insufficient_candles(self):
+        from app.strategies.orb import OpeningRangeBreakoutStrategy
+        strat = OpeningRangeBreakoutStrategy({"orb_minutes": 15})
+        candles = [self._make_candle()]  # only 1, need 3
+        result = strat.compute_opening_range(candles)
+        assert result is None
+
+    def test_validate_range_valid(self):
+        from app.strategies.orb import OpeningRangeBreakoutStrategy
+        strat = OpeningRangeBreakoutStrategy()
+        valid, reason = strat.validate_range(Decimal("105"), Decimal("100"), Decimal("100"))
+        assert valid
+        assert "valid" in reason.lower()
+
+    def test_validate_range_too_narrow(self):
+        from app.strategies.orb import OpeningRangeBreakoutStrategy
+        strat = OpeningRangeBreakoutStrategy({"min_range_pct": 1.0})
+        valid, reason = strat.validate_range(Decimal("100.05"), Decimal("100.00"), Decimal("100"))
+        assert not valid
+        assert "narrow" in reason.lower()
+
+    def test_validate_range_too_wide(self):
+        from app.strategies.orb import OpeningRangeBreakoutStrategy
+        strat = OpeningRangeBreakoutStrategy({"max_range_pct": 2.0})
+        valid, reason = strat.validate_range(Decimal("110"), Decimal("100"), Decimal("100"))
+        assert not valid
+        assert "wide" in reason.lower()
+
+    def test_calculate_quantity_respects_risk_pct(self):
+        from app.strategies.orb import OpeningRangeBreakoutStrategy
+        strat = OpeningRangeBreakoutStrategy({"max_risk_per_trade_pct": 1.0})
+        qty = strat.calculate_quantity(
+            entry_price=Decimal("100"),
+            stop_price=Decimal("98"),  # $2 risk per share
+            account_value=Decimal("10000"),  # 1% = $100 risk
+            available_cash=Decimal("5000"),
+        )
+        # $100 risk / $2 per share = 50 shares
+        assert qty == Decimal("50.00")
+
+    def test_calculate_quantity_capped_by_cash(self):
+        from app.strategies.orb import OpeningRangeBreakoutStrategy
+        strat = OpeningRangeBreakoutStrategy({"max_risk_per_trade_pct": 50.0})
+        qty = strat.calculate_quantity(
+            entry_price=Decimal("100"),
+            stop_price=Decimal("50"),
+            account_value=Decimal("10000"),
+            available_cash=Decimal("200"),  # Only $200 cash → max 2 shares
+        )
+        assert qty <= Decimal("2.00")
+
+    def test_generate_signal_long_breakout(self):
+        from app.strategies.orb import OpeningRangeBreakoutStrategy, OHLCV
+        strat = OpeningRangeBreakoutStrategy({"orb_minutes": 15})
+        orb_candles = [
+            self._make_candle(100, 105, 98, 103),
+            self._make_candle(103, 106, 99, 104),
+            self._make_candle(104, 107, 100, 106),
+        ]
+        # Current price breaking above ORB high (107)
+        breakout_candle = self._make_candle(107, 110, 106, 109)
+        signal = strat.generate_signal(
+            ticker="AAPL",
+            current_price=Decimal("109"),
+            current_candle=breakout_candle,
+            opening_range_candles=orb_candles,
+            account_value=Decimal("10000"),
+            available_cash=Decimal("5000"),
+            session_candle_index=4,
+        )
+        assert signal is not None
+        assert signal.side == "buy"
+        assert signal.signal_type == "entry"
+        assert signal.entry_price > Decimal("107")
+        assert signal.stop_price < signal.entry_price
+        assert signal.take_profit_price > signal.entry_price
+
+    def test_generate_signal_no_breakout(self):
+        from app.strategies.orb import OpeningRangeBreakoutStrategy
+        strat = OpeningRangeBreakoutStrategy({"orb_minutes": 15})
+        orb_candles = [
+            self._make_candle(100, 105, 98, 103),
+            self._make_candle(103, 106, 99, 104),
+            self._make_candle(104, 107, 100, 106),
+        ]
+        # Current price within range — no signal
+        no_breakout_candle = self._make_candle(104, 106, 103, 104)
+        signal = strat.generate_signal(
+            ticker="AAPL",
+            current_price=Decimal("104"),
+            current_candle=no_breakout_candle,
+            opening_range_candles=orb_candles,
+            account_value=Decimal("10000"),
+            available_cash=Decimal("5000"),
+            session_candle_index=4,
+        )
+        assert signal is None
+
+
+# ─── Mock Broker ─────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+class TestMockBroker:
+    async def test_test_connection(self):
+        from app.broker.mock_adapter import MockBrokerAdapter
+        async with MockBrokerAdapter() as broker:
+            result = await broker.test_connection()
+        assert result["is_ok"] is True
+        assert result["account_id"] is not None
+        assert result["error"] is None
+
+    async def test_get_account_summary(self):
+        from app.broker.mock_adapter import MockBrokerAdapter
+        async with MockBrokerAdapter() as broker:
+            summary = await broker.get_account_summary()
+        assert "cash" in summary
+        assert "total" in summary
+        assert summary["cash"] > 0
+
+    async def test_place_market_buy_order(self):
+        from app.broker.mock_adapter import MockBrokerAdapter
+        async with MockBrokerAdapter() as broker:
+            order = await broker.place_market_order("GOOGL", Decimal("5"))
+        assert order["ticker"] == "GOOGL"
+        assert order["status"] == "FILLED"
+        assert order["filledQuantity"] == 5.0
+
+    async def test_sell_order_uses_negative_quantity(self):
+        """T212 sell orders must use negative quantity."""
+        from app.broker.mock_adapter import MockBrokerAdapter
+        from app.broker.trading212 import make_sell_quantity
+        async with MockBrokerAdapter() as broker:
+            # Ensure we have a position first
+            await broker.place_market_order("AAPL", Decimal("5"))
+            sell_qty = make_sell_quantity(Decimal("3"))
+            assert sell_qty == Decimal("-3")
+            order = await broker.place_market_order("AAPL", sell_qty)
+        assert order["quantity"] == -3.0
+
+    async def test_get_positions(self):
+        from app.broker.mock_adapter import MockBrokerAdapter
+        async with MockBrokerAdapter() as broker:
+            positions = await broker.get_positions()
+        assert isinstance(positions, list)
+        assert len(positions) >= 1
+        for p in positions:
+            assert "ticker" in p
+            assert "quantity" in p
+
+
+class TestBrokerSchemasAndAdapter:
+    def test_broker_connect_request_trims_whitespace(self):
+        from app.api.schemas import BrokerConnectRequest
+
+        payload = BrokerConnectRequest(
+            api_key="  demo-key  ",
+            api_secret="\n demo-secret \t",
+            environment="demo",
+        )
+
+        assert payload.api_key == "demo-key"
+        assert payload.api_secret == "demo-secret"
+
+    @pytest.mark.asyncio
+    async def test_trading212_auth_failure_returns_actionable_guidance(self, monkeypatch):
+        from app.broker.trading212 import T212AuthError, Trading212Adapter
+
+        async def fake_get_account_metadata(self):
+            raise T212AuthError(401, "Unauthorized")
+
+        monkeypatch.setattr(Trading212Adapter, "get_account_metadata", fake_get_account_metadata)
+
+        async with Trading212Adapter("demo-key", "demo-secret", "demo") as broker:
+            result = await broker.test_connection()
+
+        assert result["is_ok"] is False
+        assert "demo API credentials" in result["error"]
+        assert "same environment" in result["error"]
+        assert "whitespace" in result["error"]
+        assert "public IP" in result["error"]
+
+
+# ─── Risk Engine ─────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+class TestRiskEngine:
+    async def test_cash_guard_blocks_overspend(self, db):
+        from app.risk.engine import RiskEngine, RiskViolation
+        engine = RiskEngine(db)
+        with pytest.raises(RiskViolation) as exc_info:
+            await engine.check_cash_guard(
+                ticker="AAPL",
+                quantity=Decimal("1000"),
+                estimated_price=Decimal("200"),
+                available_cash=Decimal("100"),  # Only $100 available
+            )
+        assert "cash guard" in exc_info.value.reason.lower()
+
+    async def test_cash_guard_allows_affordable_order(self, db):
+        from app.risk.engine import RiskEngine
+        engine = RiskEngine(db)
+        # Should not raise
+        await engine.check_cash_guard(
+            ticker="AAPL",
+            quantity=Decimal("1"),
+            estimated_price=Decimal("100"),
+            available_cash=Decimal("1000"),
+        )
+
+    async def test_cash_guard_ignores_sell_orders(self, db):
+        from app.risk.engine import RiskEngine
+        engine = RiskEngine(db)
+        # Sells don't need cash — should not raise regardless
+        await engine.check_cash_guard(
+            ticker="AAPL",
+            quantity=Decimal("-100"),  # Sell
+            estimated_price=Decimal("200"),
+            available_cash=Decimal("0"),  # Zero cash — still OK for sells
+        )
+
+    async def test_kill_switch_blocks_all_trades(self, db):
+        from app.db.models import AppSettings
+        from app.risk.engine import RiskEngine, RiskViolation
+
+        # Activate kill switch
+        result = await db.execute(
+            __import__("sqlalchemy", fromlist=["select"]).select(AppSettings).where(AppSettings.id == 1)
+        )
+        s = result.scalar_one_or_none()
+        if s:
+            s.kill_switch_active = True
+        else:
+            db.add(AppSettings(id=1, kill_switch_active=True, auto_trading_enabled=True))
+        await db.flush()
+
+        engine = RiskEngine(db)
+        with pytest.raises(RiskViolation) as exc_info:
+            await engine.check_kill_switch()
+        assert "kill switch" in exc_info.value.reason.lower()

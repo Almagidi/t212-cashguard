@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: CashGuard
+    orgId: 1
+    folder: CashGuard
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

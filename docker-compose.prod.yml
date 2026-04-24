@@ -1,0 +1,233 @@
+version: "3.9"
+
+# ── Production Docker Compose ─────────────────────────────────────────────────
+# For local laptop development, use: docker-compose.yml (simpler, no nginx/monitoring)
+# For production / VPS deployment, use this file:
+#   docker-compose -f docker-compose.prod.yml up -d
+
+services:
+  # ── Infrastructure ────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: cg_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cashguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+      POSTGRES_DB: ${POSTGRES_DB:-cashguard}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cashguard}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  redis:
+    image: redis:7-alpine
+    container_name: cg_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:?required}
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  # ── Application ───────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: cg_api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-cashguard}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cashguard}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:?required}
+      MASTER_KEY: ${MASTER_KEY:?required}
+      APP_MODE: ${APP_MODE:-demo}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      POLYGON_API_KEY: ${POLYGON_API_KEY:-}
+      DEBUG: "false"
+      COOKIE_SECURE: "true"
+    expose: ["8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks: [internal, external]
+
+  worker:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: cg_worker
+    restart: unless-stopped
+    # Give Celery enough time to finish any in-flight task before Docker sends
+    # SIGKILL.  The longest periodic task (position monitor / reconciliation)
+    # runs up to ~60s; 75s provides a comfortable margin.
+    stop_grace_period: 75s
+    command: >
+      celery -A app.workers.celery_app worker
+      --loglevel=info
+      -Q default,orders,reconciliation
+      --concurrency=2
+      --max-tasks-per-child=100
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-cashguard}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cashguard}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:?required}
+      MASTER_KEY: ${MASTER_KEY:?required}
+      APP_MODE: ${APP_MODE:-demo}
+      POLYGON_API_KEY: ${POLYGON_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.workers.celery_app", "inspect", "ping"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+    networks: [internal]
+
+  beat:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: cg_beat
+    restart: unless-stopped
+    # Beat only dispatches tasks — it holds no in-flight work itself.
+    stop_grace_period: 15s
+    command: >
+      celery -A app.workers.celery_app beat
+      --loglevel=info
+      --scheduler celery.beat:PersistentScheduler
+      --pidfile=/tmp/celerybeat.pid
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-cashguard}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cashguard}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:?required}
+      MASTER_KEY: ${MASTER_KEY:?required}
+      APP_MODE: ${APP_MODE:-demo}
+      POLYGON_API_KEY: ${POLYGON_API_KEY:-}
+    depends_on:
+      - worker
+    networks: [internal]
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ""  # Proxied through nginx
+        NEXT_PUBLIC_APP_MODE: ${APP_MODE:-demo}
+    container_name: cg_web
+    restart: unless-stopped
+    expose: ["3000"]
+    depends_on:
+      - api
+    networks: [internal, external]
+
+  # ── Reverse proxy ─────────────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: cg_nginx
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - api
+      - web
+    networks: [external]
+
+  # ── Monitoring ────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: cg_prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    expose: ["9090"]
+    networks: [internal]
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: cg_alertmanager
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.external-url=http://alertmanager:9093
+    volumes:
+      - ./infra/prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    expose: ["9093"]
+    depends_on:
+      - prometheus
+    networks: [internal]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: cg_grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?required}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s/grafana"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    expose: ["3000"]
+    depends_on:
+      - prometheus
+    networks: [internal]
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  alertmanager_data:
+  nginx_logs:
+
+networks:
+  internal:
+    driver: bridge
+    internal: true
+  external:
+    driver: bridge

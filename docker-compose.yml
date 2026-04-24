@@ -1,0 +1,115 @@
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: t212_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cashguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cashguard_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-cashguard}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cashguard}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: t212_redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-cashguard_redis}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-cashguard_redis}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: t212_api
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-cashguard}:${POSTGRES_PASSWORD:-cashguard_secret}@postgres:5432/${POSTGRES_DB:-cashguard}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-cashguard_redis}@redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production-32-chars-min}
+      - MASTER_KEY=${MASTER_KEY:-change-me-master-key-32-chars-min}
+      - APP_MODE=${APP_MODE:-mock}
+      - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/api:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  worker:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: t212_worker
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-cashguard}:${POSTGRES_PASSWORD:-cashguard_secret}@postgres:5432/${POSTGRES_DB:-cashguard}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-cashguard_redis}@redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production-32-chars-min}
+      - MASTER_KEY=${MASTER_KEY:-change-me-master-key-32-chars-min}
+      - APP_MODE=${APP_MODE:-mock}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/api:/app
+    command: celery -A app.workers.celery_app worker --loglevel=info -Q default,orders,reconciliation --concurrency=4
+
+  beat:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: t212_beat
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-cashguard}:${POSTGRES_PASSWORD:-cashguard_secret}@postgres:5432/${POSTGRES_DB:-cashguard}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-cashguard_redis}@redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production-32-chars-min}
+      - MASTER_KEY=${MASTER_KEY:-change-me-master-key-32-chars-min}
+      - APP_MODE=${APP_MODE:-mock}
+    depends_on:
+      - worker
+    volumes:
+      - ./apps/api:/app
+    command: celery -A app.workers.celery_app beat --loglevel=info --scheduler celery.beat:PersistentScheduler
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    container_name: t212_web
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_APP_MODE=${APP_MODE:-mock}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
+      - /app/.next
+
+volumes:
+  postgres_data:
+  redis_data:

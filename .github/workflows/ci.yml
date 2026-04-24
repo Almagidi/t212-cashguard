@@ -1,0 +1,364 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Backend ──────────────────────────────────────────────────────────────────
+  backend:
+    name: Backend (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cashguard
+          POSTGRES_PASSWORD: cashguard_secret
+          POSTGRES_DB: cashguard_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    defaults:
+      run:
+        working-directory: apps/api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: apps/api/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Dependency vulnerability scan (pip-audit)
+        run: pip install pip-audit && pip-audit -r requirements.txt
+
+      - name: Lint (ruff)
+        run: python -m ruff check app/ tests/
+
+      - name: Format check (ruff)
+        run: python -m ruff format --check app/ tests/
+
+      - name: Type check (mypy)
+        run: python -m mypy app/ --ignore-missing-imports
+
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
+        run: alembic upgrade head
+
+      - name: Run unit tests
+        env:
+          DATABASE_URL: sqlite+aiosqlite:///:memory:
+          REDIS_URL: redis://localhost:6379/15
+          SECRET_KEY: test-secret-key-32-chars-minimum-x
+          MASTER_KEY: test-master-key-32-chars-minimum-x
+          APP_MODE: mock
+        run: |
+          python -m pytest tests/unit/ -v --tb=short \
+            --cov=app --cov-report=xml --cov-report=term-missing \
+            --cov-fail-under=60
+
+      - name: Run integration tests
+        env:
+          DATABASE_URL: sqlite+aiosqlite:///:memory:
+          REDIS_URL: redis://localhost:6379/15
+          SECRET_KEY: test-secret-key-32-chars-minimum-x
+          MASTER_KEY: test-master-key-32-chars-minimum-x
+          APP_MODE: mock
+        run: python -m pytest tests/integration/ -v --tb=short
+
+      - name: Run property-based tests
+        env:
+          DATABASE_URL: sqlite+aiosqlite:///:memory:
+          SECRET_KEY: test-secret-key-32-chars-minimum-x
+          MASTER_KEY: test-master-key-32-chars-minimum-x
+          APP_MODE: mock
+        run: python -m pytest tests/unit/test_properties.py -v
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: apps/api/coverage.xml
+          flags: backend
+
+      - name: Migration smoke test (upgrade + downgrade + upgrade)
+        env:
+          DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
+        run: |
+          alembic downgrade base
+          alembic upgrade head
+          echo "Migration round-trip passed"
+
+  # ── Frontend ──────────────────────────────────────────────────────────────────
+  frontend:
+    name: Frontend (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ["20"]
+
+    defaults:
+      run:
+        working-directory: apps/web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Dependency vulnerability scan (npm audit)
+        run: npm audit --audit-level=moderate
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test -- --watchAll=false --coverage --coverageThreshold='{"global":{"lines":50}}'
+
+      - name: Build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+          NEXT_PUBLIC_APP_MODE: mock
+        run: npm run build
+
+      - name: Type check
+        run: npm run typecheck
+
+  # ── End-to-end ──────────────────────────────────────────────────────────────
+  e2e:
+    name: End-to-end (Playwright)
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cashguard
+          POSTGRES_PASSWORD: cashguard_secret
+          POSTGRES_DB: cashguard_e2e
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/api/requirements.txt
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: apps/api
+        run: pip install -r requirements.txt
+
+      - name: Install frontend dependencies
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+
+      - name: Migrate and seed API database
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@127.0.0.1:5432/cashguard_e2e
+          REDIS_URL: redis://127.0.0.1:6379/15
+          SECRET_KEY: test-secret-key-32-chars-minimum-x
+          MASTER_KEY: test-master-key-32-chars-minimum-x
+          APP_MODE: mock
+          ADMIN_EMAIL: admin@localhost
+          ADMIN_PASSWORD: change-me
+        run: |
+          alembic upgrade head
+          python -m app.db.seed
+
+      - name: Run Playwright end-to-end suite
+        working-directory: apps/web
+        env:
+          DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@127.0.0.1:5432/cashguard_e2e
+          REDIS_URL: redis://127.0.0.1:6379/15
+          SECRET_KEY: test-secret-key-32-chars-minimum-x
+          MASTER_KEY: test-master-key-32-chars-minimum-x
+          APP_MODE: mock
+          ADMIN_EMAIL: admin@localhost
+          ADMIN_PASSWORD: change-me
+          NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+          NEXT_PUBLIC_APP_MODE: mock
+          BASE_URL: http://127.0.0.1:3000
+        run: |
+          (
+            cd ../api
+            uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/cashguard-api.log 2>&1
+          ) &
+          npm run dev > /tmp/cashguard-web.log 2>&1 &
+
+          for attempt in {1..60}; do
+            curl -fsS http://127.0.0.1:8000/v1/health/live >/dev/null && break
+            sleep 2
+          done
+
+          for attempt in {1..60}; do
+            curl -fsS http://127.0.0.1:3000 >/dev/null && break
+            sleep 2
+          done
+
+          curl -fsS http://127.0.0.1:8000/v1/health/live >/dev/null
+          curl -fsS http://127.0.0.1:3000 >/dev/null
+
+          npm run e2e
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report
+          if-no-files-found: ignore
+
+      - name: Upload server logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-server-logs
+          path: |
+            /tmp/cashguard-api.log
+            /tmp/cashguard-web.log
+          if-no-files-found: ignore
+
+  # ── Security ──────────────────────────────────────────────────────────────────
+  security:
+    name: Security scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for secrets (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Check for deposit/bank code
+        run: |
+          echo "Checking for prohibited financial code patterns..."
+          if grep -rni \
+            "open.banking\|plaid\|truelayer\|bank.account.number\|sort.code\|debit.card\|iban\|add.funds\|top.up" \
+            apps/api/app/ apps/web/app/ apps/web/components/ apps/web/services/ \
+            --include="*.py" --include="*.ts" --include="*.tsx" 2>/dev/null; then
+            echo "FAIL: Prohibited financial code found"
+            exit 1
+          else
+            echo "PASS: No prohibited financial code found"
+          fi
+
+      - name: Check cash-only mode is hardcoded
+        run: |
+          grep -n "CASH_ONLY_MODE.*True" apps/api/app/core/config.py
+          echo "PASS: cash-only mode hardcoded"
+
+      - name: Check live trading default is False
+        run: |
+          grep -n "LIVE_TRADING_ENABLED.*False" apps/api/app/core/config.py
+          echo "PASS: live trading default is False"
+
+  # ── Docker build ──────────────────────────────────────────────────────────────
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    needs: [backend, frontend, e2e]
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API image
+        uses: docker/build-push-action@v5
+        with:
+          context: apps/api
+          push: false
+          tags: t212-cashguard-api:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Web image
+        uses: docker/build-push-action@v5
+        with:
+          context: apps/web
+          push: false
+          tags: t212-cashguard-web:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan API image (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: t212-cashguard-api:${{ github.sha }}
+          format: table
+          exit-code: 0   # Don't fail CI on vuln scan — report only
+          severity: HIGH,CRITICAL

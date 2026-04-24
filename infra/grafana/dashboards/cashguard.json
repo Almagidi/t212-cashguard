@@ -1,0 +1,132 @@
+{
+  "title": "CashGuard Trader",
+  "uid": "cashguard-main",
+  "tags": ["trading", "cashguard"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Kill Switch Status",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "INACTIVE", "color": "green" }, "1": { "text": "ACTIVE", "color": "red" } } }
+          ],
+          "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "red", "value": 1 }] }
+        }
+      },
+      "targets": [{ "expr": "cashguard_kill_switch_active", "legendFormat": "Kill Switch" }]
+    },
+    {
+      "id": 2,
+      "title": "Available Cash",
+      "type": "stat",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
+      "targets": [{ "expr": "cashguard_account_cash_available", "legendFormat": "Cash" }]
+    },
+    {
+      "id": 3,
+      "title": "Account Total Value",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
+      "targets": [{ "expr": "cashguard_account_total_value", "legendFormat": "Total Value" }]
+    },
+    {
+      "id": 4,
+      "title": "Open Positions",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "cashguard_open_positions_count", "legendFormat": "Positions" }]
+    },
+    {
+      "id": 5,
+      "title": "Auto Trading Enabled",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DISABLED", "color": "orange" }, "1": { "text": "ENABLED", "color": "green" } } }
+          ]
+        }
+      },
+      "targets": [{ "expr": "cashguard_auto_trading_enabled", "legendFormat": "" }]
+    },
+    {
+      "id": 6,
+      "title": "Orders Placed (last 1h)",
+      "type": "graph",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "increase(cashguard_orders_placed_total[5m])", "legendFormat": "{{side}} {{status}}" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Risk Violations Rate",
+      "type": "graph",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "increase(cashguard_risk_violations_total[5m])", "legendFormat": "{{violation_type}}" }
+      ],
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "orange" } } }
+    },
+    {
+      "id": 8,
+      "title": "Cash Guard Blocks (cumulative)",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 12, "w": 6, "h": 4 },
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "red" } } },
+      "targets": [{ "expr": "cashguard_cash_guard_blocks_total", "legendFormat": "Cash Guard Blocks" }]
+    },
+    {
+      "id": 9,
+      "title": "Kill Switch Activations (cumulative)",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 12, "w": 6, "h": 4 },
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "red" } } },
+      "targets": [{ "expr": "cashguard_kill_switch_activations_total", "legendFormat": "Activations" }]
+    },
+    {
+      "id": 10,
+      "title": "Broker API Latency (p95)",
+      "type": "graph",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(cashguard_broker_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95 {{endpoint}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 11,
+      "title": "Signals Generated",
+      "type": "graph",
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "increase(cashguard_signals_generated_total[1h])", "legendFormat": "{{strategy_type}} {{side}} live={{is_live}}" }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Circuit Breaker State",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 20, "w": 6, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "CLOSED (OK)", "color": "green" }, "1": { "text": "OPEN (FAILING)", "color": "red" } } }
+          ]
+        }
+      },
+      "targets": [{ "expr": "cashguard_circuit_breaker_open", "legendFormat": "{{name}}" }]
+    }
+  ]
+}

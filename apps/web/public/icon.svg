@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">CashGuard Icon</title>
+  <desc id="desc">Rounded dark square with a white lightning bolt mark.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#182033" />
+      <stop offset="100%" stop-color="#0b101a" />
+    </linearGradient>
+  </defs>
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="url(#bg)" />
+  <path
+    d="M288 76c9 0 16 8 13 17l-39 118h105c11 0 18 11 12 20L208 436c-9 11-27 1-23-12l42-134H127c-11 0-18-12-11-21L278 82c3-4 7-6 10-6Z"
+    fill="#f8fafc"
+  />
+</svg>
