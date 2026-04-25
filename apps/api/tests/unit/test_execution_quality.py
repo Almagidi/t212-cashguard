@@ -12,16 +12,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import uuid
+
 from app.services.execution_quality import (
     ABNORMAL_SLIPPAGE_PCT,
     ABNORMAL_SLIPPAGE_VALUE,
     TERMINAL_STATUSES,
+    ExecutionQualityService,
     _avg,
     _decimal,
     _float,
     _pct,
     _round,
     _aware_datetime,
+    apply_order_execution_quality,
     calculate_order_execution_quality,
     grade_execution_quality,
     infer_execution_environment,
@@ -537,3 +541,328 @@ class TestMarkSlippageAlerted:
         o = _order(execution_quality_notes=None)
         mark_slippage_alerted(o)
         assert o.execution_quality_notes["slippage_alerted"] is True
+
+
+# ── apply_order_execution_quality ─────────────────────────────────────────────
+
+class TestApplyOrderExecutionQuality:
+    def test_mutates_order_fields(self):
+        o = _order(
+            status="filled",
+            side="buy",
+            order_type="market",
+            expected_fill_price=Decimal("100.00"),
+            avg_fill_price=Decimal("100.50"),
+            filled_quantity=Decimal("10"),
+        )
+        metrics = apply_order_execution_quality(o)
+        # The function should have written metrics onto the order
+        assert o.execution_quality_score is not None
+        assert o.execution_quality_grade is not None
+        assert o.execution_environment in ("broker", "dry_run", "paper")
+        # Return value matches what was set
+        assert metrics["execution_quality_score"] == o.execution_quality_score
+
+    def test_pending_order_sets_pending_grade(self):
+        o = _order(status="pending_intent")
+        apply_order_execution_quality(o)
+        assert o.execution_quality_grade == "pending"
+        assert o.execution_quality_score is None
+
+
+# ── ExecutionQualityService (sync private methods) ────────────────────────────
+
+def _snap(
+    *,
+    ticker: str = "AAPL",
+    side: str = "buy",
+    order_type: str = "market",
+    status: str = "filled",
+    environment: str = "broker",
+    is_dry_run: bool = False,
+    score: float | None = 95.0,
+    grade: str = "excellent",
+    slippage_pct: float | None = None,
+    slippage_value: float | None = None,
+    broker_latency_ms: int | None = None,
+    fill_latency_ms: int | None = None,
+    reconciliation_latency_ms: int | None = None,
+    expected_fill_price: float | None = None,
+    avg_fill_price: float | None = None,
+    error_message: str | None = None,
+    created_at: datetime | None = None,
+) -> dict:
+    return {
+        "id": str(uuid.uuid4()),
+        "ticker": ticker,
+        "side": side,
+        "order_type": order_type,
+        "status": status,
+        "environment": environment,
+        "is_dry_run": is_dry_run,
+        "score": score,
+        "grade": grade,
+        "slippage_pct": slippage_pct,
+        "slippage_value": slippage_value,
+        "broker_latency_ms": broker_latency_ms,
+        "fill_latency_ms": fill_latency_ms,
+        "reconciliation_latency_ms": reconciliation_latency_ms,
+        "expected_fill_price": expected_fill_price,
+        "avg_fill_price": avg_fill_price,
+        "error_message": error_message,
+        "created_at": created_at or datetime.now(UTC),
+    }
+
+
+def _svc() -> ExecutionQualityService:
+    return ExecutionQualityService(db=MagicMock())
+
+
+class TestExecutionQualityServiceSnapshot:
+    def test_snapshot_keys_present(self):
+        svc = _svc()
+        o = _order(
+            id=uuid.uuid4(),
+            ticker="TSLA",
+            side="sell",
+            order_type="limit",
+            status="filled",
+            is_dry_run=False,
+            avg_fill_price=Decimal("250.00"),
+        )
+        snap = svc._snapshot(o)
+        for key in ("id", "ticker", "side", "order_type", "status", "environment",
+                    "score", "grade", "slippage_pct", "broker_latency_ms", "created_at"):
+            assert key in snap, f"missing key: {key}"
+        assert snap["ticker"] == "TSLA"
+        assert snap["status"] == "filled"
+
+    def test_snapshot_dry_run_environment(self):
+        svc = _svc()
+        o = _order(id=uuid.uuid4(), is_dry_run=True, status="filled")
+        snap = svc._snapshot(o)
+        assert snap["environment"] == "dry_run"
+
+
+class TestExecutionQualityServiceSummary:
+    def test_empty_snapshots_no_data(self):
+        svc = _svc()
+        since = datetime.now(UTC) - timedelta(days=30)
+        result = svc._summary([], since=since, days=30)
+        assert result["status"] == "no_data"
+        assert result["total_orders"] == 0
+        assert result["fill_rate"] == 0.0
+
+    def test_all_filled_summary(self):
+        since = datetime.now(UTC) - timedelta(days=30)
+        snaps = [_snap(status="filled", score=92.0, grade="excellent") for _ in range(5)]
+        svc = _svc()
+        result = svc._summary(snaps, since=since, days=30)
+        assert result["total_orders"] == 5
+        assert result["filled_orders"] == 5
+        assert result["fill_rate"] == 1.0
+        assert result["status"] == "ok"
+
+    def test_high_reject_rate_is_degraded(self):
+        since = datetime.now(UTC) - timedelta(days=30)
+        snaps = (
+            [_snap(status="filled", score=90.0)] * 8
+            + [_snap(status="rejected", score=30.0)] * 2
+        )
+        svc = _svc()
+        result = svc._summary(snaps, since=since, days=30)
+        assert result["status"] == "degraded"
+
+    def test_adverse_slippage_aggregated(self):
+        since = datetime.now(UTC) - timedelta(days=30)
+        snaps = [
+            _snap(status="filled", score=80.0, slippage_pct=0.5, slippage_value=5.0),
+            _snap(status="filled", score=80.0, slippage_pct=1.0, slippage_value=10.0),
+        ]
+        svc = _svc()
+        result = svc._summary(snaps, since=since, days=30)
+        assert result["total_slippage_value"] == 15.0
+        assert result["avg_slippage_pct"] is not None and result["avg_slippage_pct"] > 0
+
+    def test_score_delta_computed_from_halves(self):
+        """Recent half should show score_delta vs prior half."""
+        now = datetime.now(UTC)
+        since = now - timedelta(days=30)
+        midpoint = since + timedelta(days=15)
+        # Prior half: low scores; recent half: high scores
+        prior = [_snap(score=50.0, created_at=since + timedelta(days=2)) for _ in range(3)]
+        recent = [_snap(score=95.0, created_at=now - timedelta(days=2)) for _ in range(3)]
+        svc = _svc()
+        result = svc._summary(prior + recent, since=since, days=30)
+        assert result["score_delta"] is not None
+        assert result["score_delta"] > 0  # recent is better
+
+    def test_environments_collected(self):
+        since = datetime.now(UTC) - timedelta(days=30)
+        snaps = [
+            _snap(environment="broker"),
+            _snap(environment="dry_run"),
+        ]
+        result = _svc()._summary(snaps, since=since, days=30)
+        assert "broker" in result["environments"]
+        assert "dry_run" in result["environments"]
+
+
+class TestExecutionQualityStatusAndReason:
+    def _call(self, **kwargs):
+        defaults = dict(
+            total=10, avg_score=90.0, score_delta=None,
+            reject_rate=0.0, cancel_rate=0.0,
+            error_rate=0.0, abnormal_slippage_count=0,
+        )
+        defaults.update(kwargs)
+        return _svc()._status_and_reason(**defaults)
+
+    def test_no_orders_is_no_data(self):
+        status, reason = self._call(total=0)
+        assert status == "no_data"
+
+    def test_low_avg_score_is_degraded(self):
+        status, _ = self._call(avg_score=60.0)
+        assert status == "degraded"
+
+    def test_high_reject_rate_is_degraded(self):
+        status, _ = self._call(reject_rate=0.12)
+        assert status == "degraded"
+
+    def test_high_error_rate_is_degraded(self):
+        status, _ = self._call(error_rate=0.06)
+        assert status == "degraded"
+
+    def test_multiple_abnormal_slippage_is_degraded(self):
+        status, _ = self._call(abnormal_slippage_count=2)
+        assert status == "degraded"
+
+    def test_falling_score_delta_is_watch(self):
+        status, _ = self._call(avg_score=85.0, score_delta=-10.0)
+        assert status == "watch"
+
+    def test_score_below_80_is_watch(self):
+        status, _ = self._call(avg_score=72.0)
+        assert status == "watch"
+
+    def test_high_cancel_rate_is_watch(self):
+        status, _ = self._call(cancel_rate=0.12)
+        assert status == "watch"
+
+    def test_healthy_is_ok(self):
+        status, reason = self._call(avg_score=95.0)
+        assert status == "ok"
+        assert len(reason) > 0
+
+
+class TestExecutionQualityBuckets:
+    def test_buckets_grouped_by_env_ticker_type(self):
+        snaps = [
+            _snap(environment="broker", ticker="AAPL", order_type="market", status="filled", score=90.0),
+            _snap(environment="broker", ticker="AAPL", order_type="market", status="filled", score=80.0),
+            _snap(environment="broker", ticker="TSLA", order_type="limit",  status="cancelled", score=65.0),
+        ]
+        buckets = _svc()._bucket_by_symbol_order_type(snaps)
+        tickers = {b["ticker"] for b in buckets}
+        assert "AAPL" in tickers
+        assert "TSLA" in tickers
+        aapl = next(b for b in buckets if b["ticker"] == "AAPL")
+        assert aapl["order_count"] == 2
+        assert aapl["filled_count"] == 2
+        assert aapl["avg_score"] == 85.0
+
+    def test_empty_snapshots_returns_empty_list(self):
+        assert _svc()._bucket_by_symbol_order_type([]) == []
+
+    def test_adverse_slippage_aggregated_in_bucket(self):
+        snaps = [
+            _snap(ticker="GOOG", order_type="market", status="filled",
+                  slippage_pct=0.5, slippage_value=5.0, score=88.0),
+            _snap(ticker="GOOG", order_type="market", status="filled",
+                  slippage_pct=1.0, slippage_value=10.0, score=72.0),
+        ]
+        buckets = _svc()._bucket_by_symbol_order_type(snaps)
+        assert len(buckets) == 1
+        assert buckets[0]["total_slippage_value"] == 15.0
+        assert buckets[0]["worst_slippage_pct"] == 1.0
+
+    def test_no_adverse_slippage_gives_none_worst(self):
+        snaps = [_snap(ticker="MSFT", order_type="market", status="filled", slippage_pct=None)]
+        buckets = _svc()._bucket_by_symbol_order_type(snaps)
+        assert buckets[0]["worst_slippage_pct"] is None
+
+
+class TestRejectCancelPatterns:
+    def test_filled_orders_excluded(self):
+        snaps = [_snap(status="filled")]
+        assert _svc()._reject_cancel_patterns(snaps) == []
+
+    def test_rejected_orders_grouped_by_reason(self):
+        snaps = [
+            _snap(status="rejected", ticker="AAPL", order_type="market",
+                  error_message="Insufficient funds"),
+            _snap(status="rejected", ticker="AAPL", order_type="market",
+                  error_message="Insufficient funds"),
+            _snap(status="cancelled", ticker="TSLA", order_type="limit",
+                  error_message=None),
+        ]
+        patterns = _svc()._reject_cancel_patterns(snaps)
+        assert len(patterns) == 2
+        rejected = next(p for p in patterns if p["status"] == "rejected")
+        assert rejected["count"] == 2
+        assert rejected["ticker"] == "AAPL"
+        assert "Insufficient funds" in rejected["reason"]
+
+    def test_patterns_capped_at_12(self):
+        snaps = [
+            _snap(status="rejected", ticker=f"SYM{i}", order_type="market",
+                  error_message=f"err{i}")
+            for i in range(20)
+        ]
+        patterns = _svc()._reject_cancel_patterns(snaps)
+        assert len(patterns) <= 12
+
+    def test_last_seen_at_updated(self):
+        t_old = datetime.now(UTC) - timedelta(hours=2)
+        t_new = datetime.now(UTC) - timedelta(minutes=5)
+        snaps = [
+            _snap(status="rejected", ticker="X", order_type="market",
+                  error_message="err", created_at=t_old),
+            _snap(status="rejected", ticker="X", order_type="market",
+                  error_message="err", created_at=t_new),
+        ]
+        patterns = _svc()._reject_cancel_patterns(snaps)
+        assert patterns[0]["last_seen_at"] == t_new
+
+
+class TestWorstOrders:
+    def test_empty_returns_empty(self):
+        assert _svc()._worst_orders([]) == []
+
+    def test_non_filled_excluded(self):
+        snaps = [_snap(status="cancelled", score=20.0)]
+        assert _svc()._worst_orders(snaps) == []
+
+    def test_worst_scored_order_first(self):
+        snaps = [
+            _snap(status="filled", score=90.0, slippage_pct=0.1, slippage_value=1.0),
+            _snap(status="filled", score=40.0, slippage_pct=2.0, slippage_value=20.0),
+            _snap(status="filled", score=75.0, slippage_pct=0.5, slippage_value=5.0),
+        ]
+        worst = _svc()._worst_orders(snaps)
+        assert len(worst) == 3
+        assert worst[0]["score"] == 40.0  # lowest score first
+
+    def test_capped_at_10(self):
+        snaps = [_snap(status="filled", score=float(i), slippage_pct=0.1,
+                       slippage_value=1.0) for i in range(20)]
+        assert len(_svc()._worst_orders(snaps)) == 10
+
+    def test_result_keys_present(self):
+        snaps = [_snap(status="filled", score=85.0, slippage_pct=0.2,
+                       slippage_value=2.0, ticker="NVDA")]
+        worst = _svc()._worst_orders(snaps)
+        for key in ("id", "ticker", "side", "order_type", "environment",
+                    "status", "score", "grade", "slippage_pct", "created_at"):
+            assert key in worst[0], f"missing key: {key}"

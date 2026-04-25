@@ -8,13 +8,11 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import bcrypt as _bcrypt
 from cryptography.fernet import Fernet, InvalidToken
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from app.core.config import settings
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 class CredentialDecryptionError(Exception):
@@ -23,14 +21,25 @@ class CredentialDecryptionError(Exception):
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Password hashing
+#
+# bcrypt hard-truncates at 72 bytes.  passlib 1.7.4 is incompatible with
+# bcrypt ≥4.0 (its internal wrap-bug probe uses a >72-byte secret, causing
+# bcrypt to raise ValueError).  We call bcrypt directly and explicitly cap
+# at 72 bytes so callers never hit a surprising silent truncation.
 # ──────────────────────────────────────────────────────────────────────────────
 
+_BCRYPT_ROUNDS = 12
+_BCRYPT_MAX_BYTES = 72
+
+
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    pw_bytes = password.encode("utf-8")[:_BCRYPT_MAX_BYTES]
+    return _bcrypt.hashpw(pw_bytes, _bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    pw_bytes = plain.encode("utf-8")[:_BCRYPT_MAX_BYTES]
+    return _bcrypt.checkpw(pw_bytes, hashed.encode("utf-8"))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -48,12 +57,12 @@ def create_access_token(subject: str | int, extra: dict[str, Any] | None = None)
     }
     if extra:
         payload.update(extra)
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)  # type: ignore[no-any-return]
 
 
 def decode_access_token(token: str) -> dict[str, Any]:
     """Raises JWTError on invalid/expired tokens."""
-    return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])  # type: ignore[no-any-return]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
