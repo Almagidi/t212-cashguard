@@ -1,0 +1,120 @@
+import fs from 'node:fs'
+import path from 'node:path'
+import { expect, type Page } from '@playwright/test'
+
+function readEnvValue(name: string): string | undefined {
+  const envPath = path.resolve(process.cwd(), '..', '..', '.env')
+
+  if (!fs.existsSync(envPath)) return undefined
+
+  const content = fs.readFileSync(envPath, 'utf8')
+  const match = content.match(new RegExp(`^${name}=(.*)$`, 'm'))
+  if (!match) return undefined
+
+  return match[1]?.trim().replace(/^['"]|['"]$/g, '')
+}
+
+export const adminEmail = process.env.E2E_ADMIN_EMAIL ?? readEnvValue('ADMIN_EMAIL') ?? 'admin@localhost'
+export const adminPassword = process.env.E2E_ADMIN_PASSWORD ?? readEnvValue('ADMIN_PASSWORD') ?? 'change-me'
+
+const apiUrl = (process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
+const testUser = {
+  id: '00000000-0000-0000-0000-000000000001',
+  email: adminEmail,
+  is_active: true,
+  is_admin: true,
+  created_at: '2026-01-01T00:00:00Z',
+}
+let cachedToken: string | undefined
+
+export async function loginThroughUi(page: Page, email = adminEmail, password = adminPassword) {
+  await page.goto('/auth/login')
+  await page.waitForSelector('input[name="email"]')
+  await page.fill('input[name="email"]', email)
+  await page.fill('input[type="password"]', password)
+  await page.click('button[type="submit"]')
+  await page.waitForURL('**/app/**', { timeout: 10_000 })
+  await expect(page.locator('header h1')).toBeVisible({ timeout: 10_000 })
+}
+
+export async function clearClientAuth(page: Page) {
+  await page.goto('/auth/login')
+  await page.context().clearCookies()
+  await page.evaluate(() => {
+    window.localStorage.clear()
+    window.sessionStorage.clear()
+  })
+}
+
+export async function expectTopbarTitle(page: Page, title: string) {
+  await expect(page.locator('header h1').filter({ hasText: title })).toBeVisible({ timeout: 10_000 })
+}
+
+export async function expectMainHeading(page: Page, title: string) {
+  await expect(page.locator('main h2').filter({ hasText: title })).toBeVisible({ timeout: 10_000 })
+}
+
+export async function installAuthMeStub(page: Page) {
+  await page.route('**/v1/auth/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(testUser),
+    })
+  })
+}
+
+export async function ensureLoggedIn(page: Page) {
+  await installAuthMeStub(page)
+  await page.goto('/auth/login')
+
+  if (!cachedToken) {
+    const loginResult = await page.evaluate(async ({ email, password, apiUrl }) => {
+      const response = await fetch(`${apiUrl}/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
+      const data = await response.json().catch(() => null)
+      return { ok: response.ok, status: response.status, data }
+    }, { email: adminEmail, password: adminPassword, apiUrl })
+
+    expect(loginResult.ok, `login bootstrap failed with status ${loginResult.status}`).toBe(true)
+    cachedToken = loginResult.data?.access_token as string | undefined
+    expect(cachedToken).toBeTruthy()
+  }
+
+  await page.evaluate((accessToken) => {
+    localStorage.setItem('cg_token', accessToken)
+  }, cachedToken!)
+
+  await page.goto('/app/dashboard')
+  await expectTopbarTitle(page, 'Dashboard')
+}
+
+export async function ensureAppPage(page: Page, path: string, title: string) {
+  await ensureLoggedIn(page)
+  await page.goto(path)
+  await expectTopbarTitle(page, title)
+}
+
+export async function expectToast(page: Page, text: string | RegExp) {
+  await expect(page.locator('[role="status"]').filter({ hasText: text }).first()).toBeVisible({ timeout: 10_000 })
+}
+
+export async function expectAnyVisible(page: Page, labels: Array<string | RegExp>) {
+  const timeoutAt = Date.now() + 10_000
+
+  while (Date.now() < timeoutAt) {
+    for (const label of labels) {
+      const locator = page.getByText(label)
+      if (await locator.first().isVisible().catch(() => false)) {
+        return
+      }
+    }
+
+    await page.waitForTimeout(250)
+  }
+
+  throw new Error(`None of the expected labels were visible: ${labels.map(String).join(', ')}`)
+}
