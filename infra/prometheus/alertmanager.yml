@@ -2,10 +2,10 @@ global:
   # How long to wait before re-sending an alert that hasn't been resolved
   resolve_timeout: 5m
   # SMTP settings — override via environment or Docker secrets
-  smtp_smarthost: '${SMTP_HOST:-localhost}:${SMTP_PORT:-587}'
-  smtp_from: '${ALERT_EMAIL_FROM:-alerts@cashguard.local}'
-  smtp_auth_username: '${SMTP_USER:-}'
-  smtp_auth_password: '${SMTP_PASSWORD:-}'
+  smtp_smarthost: '${SMTP_HOST}:${SMTP_PORT}'
+  smtp_from: '${ALERT_EMAIL_FROM}'
+  smtp_auth_username: '${SMTP_USER}'
+  smtp_auth_password: '${SMTP_PASSWORD}'
   smtp_require_tls: true
 
 # ── Inhibition rules ──────────────────────────────────────────────────────────
@@ -53,12 +53,12 @@ route:
 receivers:
   - name: default
     email_configs:
-      - to: '${ALERT_EMAIL_TO:-admin@cashguard.local}'
+      - to: '${ALERT_EMAIL_TO}'
         send_resolved: true
 
   - name: trading-critical
     email_configs:
-      - to: '${ALERT_EMAIL_TO:-admin@cashguard.local}'
+      - to: '${ALERT_EMAIL_TO}'
         send_resolved: true
         headers:
           Subject: '[CRITICAL] CashGuard Trading Alert: {{ .GroupLabels.alertname }}'
@@ -72,14 +72,14 @@ receivers:
 
   - name: ops-critical
     email_configs:
-      - to: '${ALERT_EMAIL_TO:-admin@cashguard.local}'
+      - to: '${ALERT_EMAIL_TO}'
         send_resolved: true
         headers:
           Subject: '[CRITICAL] CashGuard Ops Alert: {{ .GroupLabels.alertname }}'
 
   - name: warnings
     email_configs:
-      - to: '${ALERT_EMAIL_TO:-admin@cashguard.local}'
+      - to: '${ALERT_EMAIL_TO}'
         send_resolved: false
         headers:
           Subject: '[WARNING] CashGuard Alert Digest'

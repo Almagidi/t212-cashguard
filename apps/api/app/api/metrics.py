@@ -119,6 +119,13 @@ if PROMETHEUS_AVAILABLE:
         "Whether kill switch is active (1=active, 0=inactive)",
     )
 
+    # ── Worker health ─────────────────────────────────────────────────────────
+    task_failures = Counter(
+        "cashguard_task_failures_total",
+        "Celery tasks that exhausted all retries and were dead-lettered",
+        ["task_name"],
+    )
+
 
 @router.get("/metrics")
 async def metrics():
@@ -183,3 +190,8 @@ def update_account_metrics(cash: float, total: float, positions: int) -> None:
         account_cash.set(cash)
         account_total_value.set(total)
         open_positions_count.set(positions)
+
+
+def record_task_failure(task_name: str) -> None:
+    if PROMETHEUS_AVAILABLE:
+        task_failures.labels(task_name=task_name).inc()

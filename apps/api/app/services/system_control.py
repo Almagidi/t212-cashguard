@@ -213,6 +213,7 @@ class SystemControlService:
                     order_type="market",
                     quantity=qty,
                     is_dry_run=(settings.APP_MODE == "mock"),
+                    estimated_price=Decimal(str(position.get("currentPrice", 0) or position.get("averagePrice", 0) or 0)),
                 )
                 await engine.submit_order(order)
                 flattened += 1

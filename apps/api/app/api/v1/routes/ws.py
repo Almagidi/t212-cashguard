@@ -1,6 +1,8 @@
 """
 WebSocket live feed — real-time account, positions, orders, signals, regime.
-Clients connect at /v1/ws/live?token=<jwt>
+Clients connect at /v1/ws/live, then send {"type":"auth","token":"<jwt>"} as
+the first message (within 5 s).  The token never appears in query params or
+Nginx access logs.
 """
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import structlog
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jose import JWTError
 from sqlalchemy import select
 
@@ -43,6 +45,8 @@ _HEARTBEAT_INTERVAL = 30
 # connection dead. Must be > 2 * _HEARTBEAT_INTERVAL so a single missed
 # pong doesn't trigger a false positive.
 _HEARTBEAT_TIMEOUT = 65
+# Seconds the server waits for the initial auth message after accepting.
+_AUTH_TIMEOUT = 5
 
 
 # ── Connection manager ────────────────────────────────────────────────────────
@@ -52,7 +56,7 @@ class ConnectionManager:
         self._active: dict[str, WebSocket] = {}
 
     async def connect(self, ws: WebSocket, client_id: str) -> None:
-        await ws.accept()
+        # Caller must already have called ws.accept() (done before auth).
         self._active[client_id] = ws
         log.info("ws.connected", client=client_id, total=len(self._active))
 
@@ -85,7 +89,33 @@ def _json_serial(obj):
     raise TypeError(f"Not serializable: {type(obj)}")
 
 
-# ── Auth helper ───────────────────────────────────────────────────────────────
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+
+async def _auth_first_message(websocket: WebSocket, db: AsyncSession) -> User | None:
+    """Await the mandatory first-message auth frame; close 4001 on any failure."""
+    try:
+        raw = await asyncio.wait_for(websocket.receive_json(), timeout=_AUTH_TIMEOUT)
+    except asyncio.TimeoutError:
+        with contextlib.suppress(Exception):
+            await websocket.close(code=4001, reason="auth_timeout")
+        return None
+    except Exception:
+        with contextlib.suppress(Exception):
+            await websocket.close(code=4001, reason="auth_error")
+        return None
+
+    if not isinstance(raw, dict) or raw.get("type") != "auth":
+        with contextlib.suppress(Exception):
+            await websocket.close(code=4001, reason="expected_auth_message")
+        return None
+
+    user = await _authenticate(raw.get("token"), db)
+    if not user:
+        with contextlib.suppress(Exception):
+            await websocket.close(code=4001, reason="Unauthorized")
+        return None
+    return user
+
 
 async def _authenticate(token: str | None, db: AsyncSession) -> User | None:
     if not token:
@@ -237,15 +267,13 @@ async def _mock_payload() -> dict:
 # ── WebSocket endpoint ────────────────────────────────────────────────────────
 
 @router.websocket("/v1/ws/live")
-async def websocket_live(
-    websocket: WebSocket,
-    token: str | None = Query(default=None),
-) -> None:
+async def websocket_live(websocket: WebSocket) -> None:
+    await websocket.accept()
+
     async with AsyncSessionLocal() as db:
-        user = await _authenticate(token, db)
-        if not user:
-            await websocket.close(code=4001, reason="Unauthorized")
-            return
+        user = await _auth_first_message(websocket, db)
+    if not user:
+        return
 
     client_id = str(uuid.uuid4())[:8]
     await manager.connect(websocket, client_id)

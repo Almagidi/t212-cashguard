@@ -101,6 +101,30 @@ export function orderStatusBg(status: string): string {
   return map[status] ?? 'bg-muted/50 text-muted-foreground'
 }
 
+export function executionQualityClass(grade: string | null | undefined): string {
+  const map: Record<string, string> = {
+    excellent: 'text-emerald-400',
+    good: 'text-emerald-400',
+    watch: 'text-amber-400',
+    degraded: 'text-red-400',
+    poor: 'text-red-400',
+    pending: 'text-muted-foreground',
+  }
+  return map[grade ?? ''] ?? 'text-muted-foreground'
+}
+
+export function executionQualityBadge(grade: string | null | undefined): string {
+  const map: Record<string, string> = {
+    excellent: 'bg-emerald-500/15 text-emerald-400',
+    good: 'bg-emerald-500/15 text-emerald-400',
+    watch: 'bg-amber-500/15 text-amber-400',
+    degraded: 'bg-red-500/15 text-red-400',
+    poor: 'bg-red-500/15 text-red-400',
+    pending: 'bg-muted/50 text-muted-foreground',
+  }
+  return map[grade ?? ''] ?? 'bg-muted/50 text-muted-foreground'
+}
+
 export function envBadgeClass(env: string): string {
   if (env === 'live') return 'badge-live'
   if (env === 'demo') return 'badge-demo'

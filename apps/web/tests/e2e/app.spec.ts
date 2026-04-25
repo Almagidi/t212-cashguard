@@ -17,6 +17,14 @@ function readEnvValue(name: string): string | undefined {
 const adminEmail = process.env.E2E_ADMIN_EMAIL ?? readEnvValue('ADMIN_EMAIL') ?? 'admin@localhost'
 const adminPassword = process.env.E2E_ADMIN_PASSWORD ?? readEnvValue('ADMIN_PASSWORD') ?? 'change-me'
 const apiUrl = (process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
+const testUser = {
+  id: '00000000-0000-0000-0000-000000000001',
+  email: adminEmail,
+  is_active: true,
+  is_admin: true,
+  created_at: '2026-01-01T00:00:00Z',
+}
+let cachedToken: string | undefined
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -47,25 +55,39 @@ async function expectMainHeading(page: Page, title: string) {
   await expect(page.locator('main h2').filter({ hasText: title })).toBeVisible({ timeout: 10_000 })
 }
 
-async function ensureLoggedIn(page: Page) {
-  await page.goto('/auth/login')
-  const loginResult = await page.evaluate(async ({ email, password, apiUrl }) => {
-    const response = await fetch(`${apiUrl}/v1/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
+async function installAuthMeStub(page: Page) {
+  await page.route('**/v1/auth/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(testUser),
     })
-    const data = await response.json().catch(() => null)
-    return { ok: response.ok, status: response.status, data }
-  }, { email: adminEmail, password: adminPassword, apiUrl })
+  })
+}
 
-  expect(loginResult.ok, `login bootstrap failed with status ${loginResult.status}`).toBe(true)
-  const token = loginResult.data?.access_token as string | undefined
-  expect(token).toBeTruthy()
+async function ensureLoggedIn(page: Page) {
+  await installAuthMeStub(page)
+  await page.goto('/auth/login')
+
+  if (!cachedToken) {
+    const loginResult = await page.evaluate(async ({ email, password, apiUrl }) => {
+      const response = await fetch(`${apiUrl}/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
+      const data = await response.json().catch(() => null)
+      return { ok: response.ok, status: response.status, data }
+    }, { email: adminEmail, password: adminPassword, apiUrl })
+
+    expect(loginResult.ok, `login bootstrap failed with status ${loginResult.status}`).toBe(true)
+    cachedToken = loginResult.data?.access_token as string | undefined
+    expect(cachedToken).toBeTruthy()
+  }
 
   await page.evaluate((accessToken) => {
     localStorage.setItem('cg_token', accessToken)
-  }, token!)
+  }, cachedToken!)
 
   await page.goto('/app/dashboard')
   await expectTopbarTitle(page, 'Dashboard')
@@ -142,7 +164,7 @@ test.describe('Dashboard', () => {
 
   test('renders overview section', async ({ page }) => {
     await expectTopbarTitle(page, 'Dashboard')
-    await expect(page.locator('text=Overview')).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByRole('heading', { name: 'Portfolio Overview' })).toBeVisible({ timeout: 10_000 })
   })
 
   test('shows account stats cards', async ({ page }) => {
@@ -197,7 +219,7 @@ test.describe('Broker', () => {
   })
 
   test('mentions credential encryption', async ({ page }) => {
-    await expect(page.locator('text=AES-256')).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByText('encrypted at rest')).toBeVisible({ timeout: 10_000 })
   })
 })
 
@@ -240,7 +262,7 @@ test.describe('Risk Controls', () => {
   })
 
   test('kill switch button exists', async ({ page }) => {
-    const btn = page.locator('button:has-text("Kill Switch")')
+    const btn = page.getByRole('button', { name: /Activate Kill Switch|Deactivate/ })
     await expect(btn).toBeVisible({ timeout: 10_000 })
   })
 
@@ -259,7 +281,7 @@ test.describe('Emergency Controls', () => {
   })
 
   test('shows danger warning header', async ({ page }) => {
-    await expect(page.locator('text=Emergency Controls')).toBeVisible({ timeout: 10_000 })
+    await expectMainHeading(page, 'Emergency Controls')
   })
 
   test('shows all four emergency actions', async ({ page }) => {
@@ -459,6 +481,23 @@ test.describe('Reports', () => {
   test('shows performance stats', async ({ page }) => {
     await expect(page.locator('text=Total Trades')).toBeVisible({ timeout: 10_000 })
     await expect(page.locator('text=Win Rate')).toBeVisible()
+  })
+
+  test('shows degraded API errors with retry affordance', async ({ page }) => {
+    await installAuthMeStub(page)
+    await page.route('**/v1/reports/performance**', async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'Performance API degraded' }),
+      })
+    })
+
+    await ensureLoggedIn(page)
+    await page.goto('/app/reports')
+    await expect(page.getByText('Failed to load performance report')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('Performance API degraded')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible()
   })
 })
 

@@ -4,7 +4,7 @@ import type {
   BacktestJob, BacktestJobResponse, BacktestRunRequest, BacktestStrategyInfo,
   BrokerStatus, BrokerTestResult, CashGuardStatus,
   CreateOrderPayload, CreateStrategyPayload, CreateStrategyPresetPayload,
-  DepsHealth, EmergencyActionResult, HealthStatus,
+  DepsHealth, EmergencyActionResult, ExecutionQualityReport, HealthStatus,
   Instrument, InstrumentList, LoginRequest, LoginResponse,
   MarketDataHealth, MarketRegime,
   LiveReadinessAction, LiveReadinessStatus,
@@ -17,7 +17,8 @@ import type {
   WatchlistIntelligence,
 } from '@/types'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const DEFAULT_API_URL = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8000'
+const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL).replace(/\/$/, '')
 
 class ApiClient {
   private client: AxiosInstance
@@ -312,6 +313,11 @@ class ApiClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async getPerformanceByStrategy(days = 30): Promise<any[]> {
     return (await this.client.get('/reports/performance/by-strategy', { params: { days } })).data
+  }
+  async getExecutionQualityReport(days = 30, includeDryRun = false): Promise<ExecutionQualityReport> {
+    return (await this.client.get<ExecutionQualityReport>('/reports/execution-quality', {
+      params: { days, include_dry_run: includeDryRun },
+    })).data
   }
   async getTradesReport(limit = 100): Promise<Order[]> {
     return (await this.client.get<Order[]>('/reports/trades', { params: { limit } })).data

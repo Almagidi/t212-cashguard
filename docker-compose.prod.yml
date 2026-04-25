@@ -1,5 +1,3 @@
-version: "3.9"
-
 # ── Production Docker Compose ─────────────────────────────────────────────────
 # For local laptop development, use: docker-compose.yml (simpler, no nginx/monitoring)
 # For production / VPS deployment, use this file:
@@ -140,8 +138,10 @@ services:
       context: ./apps/web
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: ""  # Proxied through nginx
+        NEXT_PUBLIC_API_URL: ""  # Empty = same-origin /v1 through nginx
         NEXT_PUBLIC_APP_MODE: ${APP_MODE:-demo}
+        NEXT_PUBLIC_APP_VERSION: ${APP_VERSION:-1.0.0}
+        NEXT_PUBLIC_ENABLE_PWA: ${NEXT_PUBLIC_ENABLE_PWA:-false}
     container_name: cg_web
     restart: unless-stopped
     expose: ["3000"]
@@ -178,8 +178,13 @@ services:
       - --web.enable-lifecycle
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus_data:/prometheus
     expose: ["9090"]
+    depends_on:
+      - alertmanager
+      - postgres-exporter
+      - redis-exporter
     networks: [internal]
 
   alertmanager:
@@ -187,15 +192,45 @@ services:
     container_name: cg_alertmanager
     restart: unless-stopped
     command:
-      - --config.file=/etc/alertmanager/alertmanager.yml
-      - --storage.path=/alertmanager
-      - --web.external-url=http://alertmanager:9093
+      - sh
+      - /etc/alertmanager/render-alertmanager.sh
+    environment:
+      SMTP_HOST: ${SMTP_HOST:-localhost}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-alerts@cashguard.local}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-admin@cashguard.local}
     volumes:
       - ./infra/prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./infra/prometheus/render-alertmanager.sh:/etc/alertmanager/render-alertmanager.sh:ro
       - alertmanager_data:/alertmanager
     expose: ["9093"]
+    networks: [internal]
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    container_name: cg_postgres_exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-cashguard}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cashguard}?sslmode=disable
+    expose: ["9187"]
     depends_on:
-      - prometheus
+      postgres:
+        condition: service_healthy
+    networks: [internal]
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    container_name: cg_redis_exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    expose: ["9121"]
+    depends_on:
+      redis:
+        condition: service_healthy
     networks: [internal]
 
   grafana:

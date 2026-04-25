@@ -67,26 +67,28 @@ const nextConfig = {
 // even before `npm install` has been run (e.g. in a fresh checkout without the
 // lock file).  The try/catch ensures a missing package never breaks the build.
 let exportedConfig = nextConfig
-try {
-  const { withSentryConfig } = require('@sentry/nextjs')
-  exportedConfig = withSentryConfig(nextConfig, {
-    // Sentry webpack plugin options
-    silent: !isDev,             // Suppress upload logs in production
-    hideSourceMaps: true,       // Don't expose source maps to the browser
+if (process.env.SENTRY_DSN || process.env.NEXT_PUBLIC_SENTRY_DSN) {
+  try {
+    const { withSentryConfig } = require('@sentry/nextjs')
+    exportedConfig = withSentryConfig(nextConfig, {
+      // Sentry webpack plugin options
+      silent: !isDev,             // Suppress upload logs in production
+      hideSourceMaps: true,       // Don't expose source maps to the browser
 
-    // Tunnel Sentry requests through our own Next.js server to avoid ad-blockers
-    // (requests go to /monitoring instead of directly to sentry.io)
-    tunnelRoute: '/monitoring',
+      // Tunnel Sentry requests through our own Next.js server to avoid ad-blockers
+      // (requests go to /monitoring instead of directly to sentry.io)
+      tunnelRoute: '/monitoring',
 
-    // Automatically tree-shake Sentry logger statements in production
-    disableLogger: !isDev,
+      // Automatically tree-shake Sentry logger statements in production
+      disableLogger: !isDev,
 
-    // Don't widen the CSP automatically — we manage it ourselves above
-    autoInstrumentServerFunctions: true,
-    autoInstrumentMiddleware: true,
-  })
-} catch {
-  // @sentry/nextjs not installed — continue without it
+      // Don't widen the CSP automatically — we manage it ourselves above
+      autoInstrumentServerFunctions: true,
+      autoInstrumentMiddleware: true,
+    })
+  } catch {
+    // @sentry/nextjs not installed — continue without it
+  }
 }
 
 module.exports = exportedConfig

@@ -1,7 +1,9 @@
 /**
  * useWebSocket — live feed hook with auto-reconnect.
  *
- * Connects to /v1/ws/live?token=<jwt> and broadcasts JSON snapshots every 2s.
+ * Connects to /v1/ws/live (no query params), then sends
+ * {"type":"auth","token":"<jwt>"} as the very first frame so the JWT never
+ * appears in Nginx access logs or browser history.
  * Reconnects automatically with exponential back-off on unexpected disconnects.
  * All incoming frames are validated against WsSnapshotSchema (Zod) so malformed
  * payloads surface as console errors and trigger a reconnect rather than silently
@@ -144,11 +146,13 @@ export function useWebSocket(options: UseWebSocketOptions) {
 
     setStatus(retries.current > 0 ? "reconnecting" : "connecting");
 
-    const ws = new WebSocket(`${url}?token=${encodeURIComponent(token)}`);
+    const ws = new WebSocket(url);
     wsRef.current = ws;
 
     ws.onopen = () => {
       if (unmountedRef.current) { ws.close(); return; }
+      // Send auth as the very first frame — token never touches the URL.
+      ws.send(JSON.stringify({ type: "auth", token }));
       retries.current = 0;
       lastPingRef.current = new Date();
       setStatus("connected");

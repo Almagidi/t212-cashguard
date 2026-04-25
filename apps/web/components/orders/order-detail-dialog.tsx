@@ -5,7 +5,7 @@ import { AlertTriangle, CheckSquare, ChevronDown, ChevronRight, Clock3, Pin, Squ
 
 import type { OrderDetail } from '@/types'
 import { Badge, Button, Card } from '@/components/ui'
-import { cn, formatCurrency, formatDate, orderStatusBg } from '@/lib/utils'
+import { cn, executionQualityBadge, executionQualityClass, formatCurrency, formatDate, orderStatusBg } from '@/lib/utils'
 
 interface OrderDetailDialogProps {
   open: boolean
@@ -196,6 +196,12 @@ function DetailRow({ label, value }: { label: string; value: React.ReactNode }) 
   )
 }
 
+function formatMs(value: number | null): string {
+  if (value === null) return '—'
+  if (value >= 1000) return `${(value / 1000).toFixed(2)}s`
+  return `${value}ms`
+}
+
 export function OrderDetailDialog({ open, onClose, order, loading = false }: OrderDetailDialogProps) {
   const [expandedEventIds, setExpandedEventIds] = React.useState<string[]>([])
   const [baselineTargetId, setBaselineTargetId] = React.useState<string | null>(null)
@@ -250,6 +256,17 @@ export function OrderDetailDialog({ open, onClose, order, loading = false }: Ord
       broker_order_id: order.broker_order_id,
       filled_quantity: order.filled_quantity,
       avg_fill_price: order.avg_fill_price,
+      expected_fill_price: order.expected_fill_price,
+      slippage_pct: order.slippage_pct,
+      slippage_value: order.slippage_value,
+      submitted_at: order.submitted_at,
+      first_ack_at: order.first_ack_at,
+      filled_at: order.filled_at,
+      broker_latency_ms: order.broker_latency_ms,
+      fill_latency_ms: order.fill_latency_ms,
+      reconciliation_latency_ms: order.reconciliation_latency_ms,
+      execution_quality_score: order.execution_quality_score,
+      execution_quality_grade: order.execution_quality_grade,
       cash_used: order.cash_used,
       retry_count: order.retry_count,
       error_message: order.error_message,
@@ -426,9 +443,36 @@ export function OrderDetailDialog({ open, onClose, order, loading = false }: Ord
                 )} />
                 <DetailRow label="Broker / Mode" value={(
                   <div className="space-y-1 text-xs text-muted-foreground">
-                    <p>{order.is_dry_run ? 'Dry-run simulation' : 'Broker-submitted order'}</p>
+                    <p>{order.is_dry_run ? 'Dry-run simulation' : `${order.execution_environment ?? 'broker'} broker order`}</p>
                     <p>Broker order id: {order.broker_order_id ?? 'Not assigned'}</p>
                     <p>Retry count: {order.retry_count}</p>
+                  </div>
+                )} />
+                <DetailRow label="Execution Quality" value={(
+                  <div className="space-y-1">
+                    {order.execution_quality_score ? (
+                      <div className="flex items-center gap-2">
+                        <span className={cn('inline-flex items-center text-[10px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider', executionQualityBadge(order.execution_quality_grade))}>
+                          {Number(order.execution_quality_score).toFixed(0)}
+                        </span>
+                        <span className={cn('text-xs capitalize', executionQualityClass(order.execution_quality_grade))}>
+                          {order.execution_quality_grade ?? 'pending'}
+                        </span>
+                      </div>
+                    ) : (
+                      <p className="text-muted-foreground">Pending final execution metrics.</p>
+                    )}
+                    <p className="text-xs text-muted-foreground">
+                      Expected {order.expected_fill_price ? formatCurrency(Number(order.expected_fill_price)) : '—'}
+                      {order.slippage_pct !== null ? ` · Slip ${Number(order.slippage_pct).toFixed(3)}%` : ''}
+                    </p>
+                  </div>
+                )} />
+                <DetailRow label="Timing" value={(
+                  <div className="space-y-1 text-xs text-muted-foreground">
+                    <p>First ack: {formatMs(order.broker_latency_ms)}</p>
+                    <p>Fill: {formatMs(order.fill_latency_ms)}</p>
+                    <p>Reconciliation: {formatMs(order.reconciliation_latency_ms)}</p>
                   </div>
                 )} />
               </div>
@@ -457,6 +501,11 @@ export function OrderDetailDialog({ open, onClose, order, loading = false }: Ord
                   <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Broker Response</p>
                   <JsonBlock value={order.broker_response} />
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Execution Quality Notes</p>
+                <JsonBlock value={order.execution_quality_notes} />
               </div>
 
               <div className="space-y-3">

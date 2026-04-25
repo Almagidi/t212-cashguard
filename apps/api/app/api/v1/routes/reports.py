@@ -14,9 +14,10 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.api.schemas import OrderOut, PerformanceReport
+from app.api.schemas import ExecutionQualityReport, OrderOut, PerformanceReport
 from app.db.models import Order, Signal, Strategy, Trade, User
 from app.db.session import get_db
+from app.services.execution_quality import ExecutionQualityService
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -187,6 +188,19 @@ async def get_performance_by_strategy(
     # Sort by total P&L descending
     results.sort(key=lambda r: r["total_pnl"], reverse=True)
     return results
+
+
+@router.get("/execution-quality", response_model=ExecutionQualityReport)
+async def get_execution_quality(
+    days: int = Query(30, ge=1, le=365),
+    include_dry_run: bool = Query(False),
+    _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    return await ExecutionQualityService(db).report(
+        days=days,
+        include_dry_run=include_dry_run,
+    )
 
 
 # ── CSV trade export ──────────────────────────────────────────────────────────

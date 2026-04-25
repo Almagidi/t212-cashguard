@@ -77,6 +77,30 @@ groups:
           summary: "Unusually high number of open positions"
           description: "{{ $value }} open positions detected, which is above the expected threshold."
 
+  # ── Worker Reliability ───────────────────────────────────────────────────
+  - name: worker_reliability
+    interval: 30s
+    rules:
+      - alert: CashGuardTaskFailureSpiking
+        expr: rate(cashguard_task_failures_total[5m]) * 300 > 2
+        for: 0m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Celery task failures are elevated"
+          description: "More than 2 tasks have exhausted all retries and landed in the dead-letter queue in the last 5 minutes. Task: {{ $labels.task_name }}."
+
+      - alert: CashGuardTaskFailuresCritical
+        expr: rate(cashguard_task_failures_total[5m]) * 300 > 5
+        for: 0m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Celery task failures are critical"
+          description: "More than 5 tasks have exhausted all retries and landed in the dead-letter queue in the last 5 minutes. Task: {{ $labels.task_name }}. Investigate dead-letter queue immediately."
+
   # ── API Health ───────────────────────────────────────────────────────────────
   - name: api_health
     interval: 15s

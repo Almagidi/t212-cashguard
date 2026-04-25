@@ -379,6 +379,21 @@ export interface Order {
   limit_price: string | null; stop_price: string | null; time_validity: string
   status: OrderStatus; broker_order_id: string | null
   filled_quantity: string | null; avg_fill_price: string | null
+  execution_environment: string | null
+  expected_fill_price: string | null
+  slippage_pct: string | null
+  slippage_value: string | null
+  submitted_at: string | null
+  first_ack_at: string | null
+  filled_at: string | null
+  cancelled_at: string | null
+  rejected_at: string | null
+  broker_latency_ms: number | null
+  fill_latency_ms: number | null
+  reconciliation_latency_ms: number | null
+  execution_quality_score: string | null
+  execution_quality_grade: string | null
+  execution_quality_notes: Record<string, unknown> | null
   is_dry_run: boolean; cash_used: string | null; error_message: string | null
   signal_reason: string | null; signal_confidence: string | null; signal_risk_rejected: boolean | null; signal_risk_rejection_reason: string | null
   retry_count: number; last_reconciled_at: string | null; created_at: string; updated_at: string
@@ -408,6 +423,83 @@ export interface Position {
   ticker: string; quantity: number; avg_price: number
   current_price: number | null; unrealized_pnl: number | null
   quantity_available: number | null; value: number | null
+}
+
+// ── Execution Quality ────────────────────────────────────────────────────────
+export type ExecutionQualityStatus = 'ok' | 'watch' | 'degraded' | 'no_data'
+export interface ExecutionQualitySummary {
+  status: ExecutionQualityStatus
+  status_reason: string
+  total_orders: number
+  filled_orders: number
+  rejected_orders: number
+  cancelled_orders: number
+  error_orders: number
+  fill_rate: number
+  reject_rate: number
+  cancel_rate: number
+  error_rate: number
+  avg_score: number | null
+  score_delta: number | null
+  avg_slippage_pct: number | null
+  total_slippage_value: number
+  adverse_slippage_rate: number
+  abnormal_slippage_count: number
+  avg_broker_latency_ms: number | null
+  avg_fill_latency_ms: number | null
+  avg_reconciliation_latency_ms: number | null
+  environments: string[]
+}
+export interface ExecutionQualityBucket {
+  environment: string
+  ticker: string
+  order_type: string
+  order_count: number
+  filled_count: number
+  rejected_count: number
+  cancelled_count: number
+  error_count: number
+  fill_rate: number
+  avg_score: number | null
+  avg_slippage_pct: number | null
+  total_slippage_value: number
+  avg_broker_latency_ms: number | null
+  avg_fill_latency_ms: number | null
+  worst_slippage_pct: number | null
+}
+export interface ExecutionQualityPattern {
+  status: string
+  ticker: string
+  order_type: string
+  reason: string
+  count: number
+  last_seen_at: string
+}
+export interface ExecutionQualityWorstOrder {
+  id: string
+  ticker: string
+  side: string
+  order_type: string
+  environment: string
+  status: string
+  expected_fill_price: number | null
+  avg_fill_price: number | null
+  slippage_pct: number | null
+  slippage_value: number | null
+  broker_latency_ms: number | null
+  fill_latency_ms: number | null
+  score: number | null
+  grade: string
+  created_at: string
+}
+export interface ExecutionQualityReport {
+  period_days: number
+  generated_at: string
+  include_dry_run: boolean
+  summary: ExecutionQualitySummary
+  by_symbol_order_type: ExecutionQualityBucket[]
+  reject_cancel_patterns: ExecutionQualityPattern[]
+  worst_orders: ExecutionQualityWorstOrder[]
 }
 
 // ── Alerts ────────────────────────────────────────────────────────────────────

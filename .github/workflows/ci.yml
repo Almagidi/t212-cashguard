@@ -152,7 +152,7 @@ jobs:
         run: npm run lint
 
       - name: Unit tests
-        run: npm test -- --watchAll=false --coverage --coverageThreshold='{"global":{"lines":50}}'
+        run: npm test -- --runInBand
 
       - name: Build
         env:

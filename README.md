@@ -165,6 +165,9 @@ See [`.env.example`](.env.example) for the full list. Key variables:
 | `TELEGRAM_WEBHOOK_SECRET` | Shared secret for Telegram webhook validation | empty |
 | `TELEGRAM_CONFIRM_WINDOW_SECONDS` | Confirmation TTL for risky Telegram commands | `120` |
 | `BENZINGA_API_KEY` | Optional structured news/catalyst feed for watchlist intelligence | empty |
+| `SENTRY_DSN` / `NEXT_PUBLIC_SENTRY_DSN` | Optional backend/frontend Sentry DSNs. Leave empty to disable. | empty |
+| `DISCORD_WEBHOOK_URL` / `SLACK_WEBHOOK_URL` | Optional alert fan-out webhooks | empty |
+| `LIVE_TRADING_ENABLED` | Additional live-mode execution gate | `false` |
 
 ---
 
@@ -214,6 +217,38 @@ npx playwright test --ui
 ```
 
 The GitHub Actions CI pipeline now runs backend verification, frontend lint/type/unit/build checks, and a seeded Playwright end-to-end pass before mainline changes are considered green.
+
+---
+
+## Production Operations Runbook
+
+### Boot and validate
+
+```bash
+cp .env.example .env
+# Set real POSTGRES_PASSWORD, REDIS_PASSWORD, SECRET_KEY, MASTER_KEY,
+# ADMIN_PASSWORD, GRAFANA_PASSWORD, and notification credentials.
+docker compose -f docker-compose.prod.yml --env-file .env config
+docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+docker compose -f docker-compose.prod.yml --env-file .env ps
+```
+
+Prometheus loads `infra/prometheus/prometheus.yml` plus `infra/prometheus/alerts.yml`. Alertmanager expands SMTP/email environment variables at startup. Grafana is available behind `/grafana/` through nginx when the prod stack is healthy.
+
+### Alert response
+
+| Alert | First response |
+|-------|----------------|
+| `KillSwitchActivated` | Open **Emergency Controls**, confirm auto trading is halted, review **Audit Log**, then inspect broker/order state before re-enabling anything. |
+| `CircuitBreakerOpen` | Stop strategy promotion/live execution, test the broker connection, check Trading 212/API credentials and recent order errors. |
+| `APIDown` | Check `docker compose ... logs api`, then Postgres/Redis health. Do not restart repeatedly until database connectivity is understood. |
+| `PostgresDown` / `RedisDown` | Check the backing container and exporter logs, verify disk/memory pressure, then restart the affected service if the dependency itself is unhealthy. |
+| `CashGuardTaskFailuresCritical` | Inspect worker logs and the dead-letter queue path, identify the failing task, and keep auto trading disabled if order execution or reconciliation is affected. |
+| `BrokerRequestLatencyCritical` | Treat broker-backed order flow as degraded. Keep or activate the kill switch if latency coincides with order errors or stale reconciliation. |
+
+### Sentry
+
+Sentry is optional. Leave `SENTRY_DSN` and `NEXT_PUBLIC_SENTRY_DSN` empty to run with no Sentry initialization or webpack wrapping. When enabling it, set backend and frontend DSNs explicitly and confirm no auth headers or cookies appear in captured events.
 
 ---
 

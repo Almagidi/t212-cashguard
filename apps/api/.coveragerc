@@ -1,0 +1,62 @@
+[run]
+source = app
+omit =
+    # Celery task wrappers — thin shells around service calls
+    app/workers/tasks.py
+    # Celery app config
+    app/workers/celery_app.py
+    # Route aggregator — just imports & registers
+    app/api/v1/routes/__init__.py
+    # Alembic migrations — SQL DDL
+    app/db/migrations/*
+    # Seed data script
+    app/db/seed.py
+    # External broker HTTP adapters
+    app/broker/trading212.py
+    app/broker/mock_adapter.py
+    # External market data HTTP adapters
+    app/market_data/alpaca_provider.py
+    app/market_data/polygon_provider.py
+    app/market_data/mock_provider.py
+    # Route aggregator — just imports & registers all sub-routers
+    app/api/v1/routes/all_routes.py
+    # Redis connection factory — requires live Redis
+    app/core/redis.py
+    # Morning scanner — requires live market-data endpoint
+    app/scanner/morning_scan.py
+    # System readiness — probes live broker/DB/Redis connections
+    app/services/live_readiness.py
+    # FastAPI route handlers — exercised by integration/test_api.py, not unit tests
+    app/api/v1/routes/account.py
+    app/api/v1/routes/alerts.py
+    app/api/v1/routes/audit.py
+    app/api/v1/routes/auth.py
+    app/api/v1/routes/backtest.py
+    app/api/v1/routes/broker.py
+    app/api/v1/routes/emergency.py
+    app/api/v1/routes/health.py
+    app/api/v1/routes/instruments.py
+    app/api/v1/routes/intelligence.py
+    app/api/v1/routes/orders.py
+    app/api/v1/routes/positions.py
+    app/api/v1/routes/reports.py
+    app/api/v1/routes/risk.py
+    app/api/v1/routes/settings.py
+    app/api/v1/routes/signals.py
+    app/api/v1/routes/strategies.py
+    app/api/v1/routes/telegram.py
+    app/api/v1/routes/trades.py
+    app/api/v1/routes/ws.py
+    # FastAPI dependency injection — requires running application context
+    app/api/deps.py
+    # Telegram bot service — requires live Telegram API token
+    app/services/telegram_control.py
+    # Worker health — requires live Celery/Redis connections
+    app/services/worker_health.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    raise NotImplementedError
+    \.\.\.

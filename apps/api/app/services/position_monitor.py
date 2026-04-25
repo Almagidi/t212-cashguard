@@ -370,6 +370,7 @@ class PositionMonitor:
                 quantity=sell_qty,
                 signal_id=last_signal.id,
                 is_dry_run=(settings.APP_MODE == "mock"),
+                estimated_price=current_price,
             )
             order = await engine.submit_order(order)
 
@@ -468,6 +469,7 @@ class PositionMonitor:
                         order_type="market",
                         quantity=qty,
                         is_dry_run=(settings.APP_MODE == "mock"),
+                        estimated_price=Decimal(str(pos.get("currentPrice", 0) or pos.get("averagePrice", 0) or 0)),
                     )
                     await engine.submit_order(order)
                     flattened += 1

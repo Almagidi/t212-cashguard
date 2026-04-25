@@ -768,6 +768,7 @@ class StrategyRunner:
             order = await exec_engine.create_order_intent(
                 ticker=ticker, side="sell", order_type="market",
                 quantity=sell_qty, signal_id=last_sig.id,
+                estimated_price=current_price,
             )
             order = await exec_engine.submit_order(order)
 

@@ -47,6 +47,7 @@ export const QK = {
   telegramStatus: ['telegram', 'status'],
   performance: ['reports', 'performance'],
   performanceByStrategy: (days: number) => ['reports', 'performance', 'by-strategy', days],
+  executionQuality: (days: number, includeDryRun: boolean) => ['reports', 'execution-quality', days, includeDryRun],
   trades: ['reports', 'trades'],
   tradesList: (p?: object) => ['trades', 'list', p],
   trade: (id: string) => ['trades', id],
@@ -388,6 +389,13 @@ export const usePerformanceReport = (days = 30) =>
 
 export const usePerformanceByStrategy = (days = 30) =>
   useQuery({ queryKey: QK.performanceByStrategy(days), queryFn: () => api.getPerformanceByStrategy(days) })
+
+export const useExecutionQualityReport = (days = 30, includeDryRun = false) =>
+  useQuery({
+    queryKey: QK.executionQuality(days, includeDryRun),
+    queryFn: () => api.getExecutionQualityReport(days, includeDryRun),
+    refetchInterval: 30_000,
+  })
 
 export const useTradesReport = (limit = 100) =>
   useQuery({ queryKey: QK.trades, queryFn: () => api.getTradesReport(limit) })

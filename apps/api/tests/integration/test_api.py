@@ -1411,6 +1411,90 @@ class TestOrderFlow:
         assert data["events"][0]["event_type"] == "reconciled"
         assert data["events"][0]["to_status"] == "accepted"
 
+    async def test_execution_quality_report_summarizes_slippage_and_rejections(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        db,
+    ):
+        from app.db.models import Order, Signal, Strategy
+
+        now = datetime.now(UTC)
+        strategy = Strategy(
+            id=uuid.uuid4(),
+            name="Execution Quality Strategy",
+            type="orb",
+            params={},
+            allowed_tickers=["AAPL", "MSFT"],
+        )
+        signal = Signal(
+            id=uuid.uuid4(),
+            strategy_id=strategy.id,
+            ticker="AAPL",
+            side="buy",
+            signal_type="entry",
+            status="executed",
+            entry_price=Decimal("100"),
+            suggested_quantity=Decimal("5"),
+            confidence=Decimal("0.75"),
+            generated_at=now - timedelta(minutes=10),
+        )
+        filled = Order(
+            id=uuid.uuid4(),
+            signal_id=signal.id,
+            client_order_key="execution-quality-filled",
+            ticker="AAPL",
+            side="buy",
+            order_type="market",
+            quantity=Decimal("5"),
+            filled_quantity=Decimal("5"),
+            avg_fill_price=Decimal("101"),
+            status="filled",
+            is_dry_run=False,
+            execution_environment="demo",
+            expected_fill_price=Decimal("100"),
+            submitted_at=now - timedelta(minutes=9),
+            first_ack_at=now - timedelta(minutes=9, milliseconds=-120),
+            filled_at=now - timedelta(minutes=9, milliseconds=-450),
+            broker_latency_ms=120,
+            fill_latency_ms=450,
+            created_at=now - timedelta(minutes=10),
+            updated_at=now - timedelta(minutes=9),
+        )
+        rejected = Order(
+            id=uuid.uuid4(),
+            client_order_key="execution-quality-rejected",
+            ticker="MSFT",
+            side="sell",
+            order_type="limit",
+            quantity=Decimal("2"),
+            status="rejected",
+            is_dry_run=False,
+            execution_environment="demo",
+            error_message="Broker rejected limit outside valid price band",
+            submitted_at=now - timedelta(minutes=8),
+            first_ack_at=now - timedelta(minutes=8, milliseconds=-200),
+            broker_latency_ms=200,
+            created_at=now - timedelta(minutes=8),
+            updated_at=now - timedelta(minutes=8),
+        )
+        db.add_all([strategy, signal, filled, rejected])
+        await db.commit()
+
+        resp = await client.get("/v1/reports/execution-quality", headers=auth_headers)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["summary"]["total_orders"] == 2
+        assert data["summary"]["filled_orders"] == 1
+        assert data["summary"]["rejected_orders"] == 1
+        assert data["summary"]["status"] == "degraded"
+        assert data["summary"]["avg_slippage_pct"] == 1.0
+        assert data["summary"]["total_slippage_value"] == 5.0
+        assert data["by_symbol_order_type"][0]["ticker"] in {"AAPL", "MSFT"}
+        assert any(row["ticker"] == "AAPL" and row["avg_score"] == 82.0 for row in data["by_symbol_order_type"])
+        assert data["reject_cancel_patterns"][0]["reason"].startswith("Broker rejected")
+        assert data["worst_orders"][0]["ticker"] in {"AAPL", "MSFT"}
+
 
 @pytest.mark.asyncio
 class TestEmergencyFlow:

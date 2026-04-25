@@ -6,7 +6,7 @@ import { Button, Card, CardContent, Badge, Spinner, EmptyState } from '@/compone
 import { QueryError } from '@/components/shared/query-error'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { OrderDetailDialog } from '@/components/orders/order-detail-dialog'
-import { formatCurrency, formatDate, orderStatusBg, cn } from '@/lib/utils'
+import { executionQualityBadge, formatCurrency, formatDate, orderStatusBg, cn } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Order } from '@/types'
 
@@ -113,7 +113,7 @@ export default function OrdersPage() {
         <Card>
           <CardContent className="p-0">
             <div className="overflow-x-auto scrollbar-none">
-              <table className="w-full data-table min-w-[720px]">
+              <table className="w-full data-table min-w-[920px]">
                 <thead>
                   <tr>
                     <th className="sticky left-0 bg-card z-10">Symbol</th>
@@ -121,6 +121,8 @@ export default function OrdersPage() {
                     <th className="hidden sm:table-cell">Type</th>
                     <th className="text-right">Qty</th>
                     <th className="text-right">Fill Price</th>
+                    <th className="text-right hidden lg:table-cell">Slippage</th>
+                    <th className="hidden md:table-cell">Exec Score</th>
                     <th>Status</th>
                     <th className="text-right hidden md:table-cell">Cash Used</th>
                     <th className="hidden md:table-cell">Mode</th>
@@ -160,6 +162,24 @@ export default function OrdersPage() {
                       <td className="text-muted-foreground capitalize text-xs hidden sm:table-cell">{o.order_type}</td>
                       <td className="tnum text-right">{o.quantity}</td>
                       <td className="tnum text-right">{o.avg_fill_price ? formatCurrency(Number(o.avg_fill_price)) : <span className="text-muted-foreground/50">—</span>}</td>
+                      <td className="tnum text-right hidden lg:table-cell">
+                        {o.slippage_pct !== null ? (
+                          <span className={Number(o.slippage_pct) > 0 ? 'text-red-400' : 'text-emerald-400'}>
+                            {Number(o.slippage_pct).toFixed(3)}%
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground/50">—</span>
+                        )}
+                      </td>
+                      <td className="hidden md:table-cell">
+                        {o.execution_quality_score !== null ? (
+                          <span className={cn('inline-flex items-center text-[10px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider', executionQualityBadge(o.execution_quality_grade))}>
+                            {Number(o.execution_quality_score).toFixed(0)}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-muted-foreground">pending</span>
+                        )}
+                      </td>
                       <td>
                         <div className="space-y-1">
                           <span className={cn('inline-flex items-center text-[10px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider', orderStatusBg(o.status))}>
@@ -184,9 +204,17 @@ export default function OrdersPage() {
                           <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-purple-500/10 border border-purple-500/20 text-purple-400 uppercase tracking-wider">
                             dry
                           </span>
-                        ) : (
+                        ) : o.execution_environment === 'demo' ? (
+                          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-sky-500/10 border border-sky-500/20 text-sky-400 uppercase tracking-wider">
+                            demo
+                          </span>
+                        ) : o.execution_environment === 'live' ? (
                           <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 text-blue-400 uppercase tracking-wider">
                             live
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-slate-500/10 border border-slate-500/20 text-slate-300 uppercase tracking-wider">
+                            {o.execution_environment ?? 'broker'}
                           </span>
                         )}
                       </td>

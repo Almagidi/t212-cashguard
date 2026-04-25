@@ -1,14 +1,32 @@
 'use client'
-import { useState } from 'react'
-import { usePerformanceReport, useTradesReport } from '@/hooks/use-api'
+import { useExecutionQualityReport, usePerformanceReport, useTradesReport } from '@/hooks/use-api'
 import { Card, CardHeader, CardTitle, CardContent, StatCard, Spinner, EmptyState, Button, Badge } from '@/components/ui'
 import { QueryError } from '@/components/shared/query-error'
-import { formatCurrency, formatDate, orderStatusBg, pnlClass, cn } from '@/lib/utils'
+import { executionQualityClass, formatCurrency, formatDate, orderStatusBg, pnlClass, cn } from '@/lib/utils'
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
-import { BarChart2, Download, TrendingUp, TrendingDown } from 'lucide-react'
+import { AlertTriangle, BarChart2, Download, Gauge, TimerReset, TrendingUp, TrendingDown } from 'lucide-react'
+
+function rate(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—'
+  return `${(value * 100).toFixed(1)}%`
+}
+
+function ms(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—'
+  if (value >= 1000) return `${(value / 1000).toFixed(2)}s`
+  return `${value.toFixed(0)}ms`
+}
+
+function executionStatusVariant(status: string): 'success' | 'warning' | 'destructive' | 'outline' {
+  if (status === 'ok') return 'success'
+  if (status === 'watch') return 'warning'
+  if (status === 'degraded') return 'destructive'
+  return 'outline'
+}
 
 export default function ReportsPage() {
   const { data: perf, isLoading, isError, error, refetch } = usePerformanceReport()
+  const { data: execQuality } = useExecutionQualityReport(30, false)
   const { data: trades = [] } = useTradesReport(200)
 
   const exportCSV = () => {
@@ -67,6 +85,162 @@ export default function ReportsPage() {
                 : <span className="text-muted-foreground">—</span>}
               sub={perf.sharpe_ratio !== null ? 'Annualised' : 'Need more data'} />
           </div>
+
+          {execQuality && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <h3 className="text-sm font-semibold tracking-tight">Execution Quality</h3>
+                  <p className="mt-1 text-xs text-muted-foreground">{execQuality.summary.status_reason}</p>
+                </div>
+                <Badge variant={executionStatusVariant(execQuality.summary.status)}>
+                  {execQuality.summary.status.replace(/_/g, ' ')}
+                </Badge>
+              </div>
+
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <StatCard
+                  label="Execution Score"
+                  icon={<Gauge className="h-4 w-4" />}
+                  value={execQuality.summary.avg_score !== null
+                    ? <span className={executionQualityClass(execQuality.summary.avg_score >= 75 ? 'good' : execQuality.summary.avg_score >= 60 ? 'watch' : 'degraded')}>{execQuality.summary.avg_score.toFixed(0)}</span>
+                    : <span className="text-muted-foreground">—</span>}
+                  sub={execQuality.summary.score_delta !== null ? `${execQuality.summary.score_delta >= 0 ? '+' : ''}${execQuality.summary.score_delta.toFixed(1)} vs prior window` : 'No prior comparison'}
+                />
+                <StatCard
+                  label="Adverse Slippage"
+                  value={<span className={execQuality.summary.avg_slippage_pct && execQuality.summary.avg_slippage_pct > 0.5 ? 'text-red-400' : 'text-muted-foreground'}>{execQuality.summary.avg_slippage_pct !== null ? `${execQuality.summary.avg_slippage_pct.toFixed(3)}%` : '—'}</span>}
+                  sub={`${formatCurrency(execQuality.summary.total_slippage_value)} total cost`}
+                />
+                <StatCard
+                  label="First Ack"
+                  icon={<TimerReset className="h-4 w-4" />}
+                  value={ms(execQuality.summary.avg_broker_latency_ms)}
+                  sub={`Fill ${ms(execQuality.summary.avg_fill_latency_ms)}`}
+                />
+                <StatCard
+                  label="Reject / Error"
+                  icon={<AlertTriangle className="h-4 w-4" />}
+                  value={<span className={execQuality.summary.reject_rate + execQuality.summary.error_rate > 0.05 ? 'text-red-400' : 'text-emerald-400'}>{rate(execQuality.summary.reject_rate + execQuality.summary.error_rate)}</span>}
+                  sub={`${execQuality.summary.rejected_orders} rejected · ${execQuality.summary.error_orders} errors`}
+                />
+              </div>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Execution Score by Symbol / Type</CardTitle>
+                </CardHeader>
+                <CardContent className="p-0">
+                  {execQuality.by_symbol_order_type.length === 0 ? (
+                    <EmptyState title="No broker execution data" description="Demo and live broker orders will appear here." />
+                  ) : (
+                    <div className="overflow-x-auto scrollbar-none">
+                      <table className="w-full data-table min-w-[780px]">
+                        <thead>
+                          <tr>
+                            <th>Symbol</th>
+                            <th>Type</th>
+                            <th>Env</th>
+                            <th className="text-right">Orders</th>
+                            <th className="text-right">Fill Rate</th>
+                            <th className="text-right">Score</th>
+                            <th className="text-right">Avg Slip</th>
+                            <th className="text-right">Ack</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {execQuality.by_symbol_order_type.slice(0, 12).map(row => (
+                            <tr key={`${row.environment}-${row.ticker}-${row.order_type}`}>
+                              <td className="font-semibold">{row.ticker}</td>
+                              <td className="text-xs capitalize text-muted-foreground">{row.order_type.replace(/_/g, ' ')}</td>
+                              <td><Badge variant="outline">{row.environment}</Badge></td>
+                              <td className="tnum text-right">{row.order_count}</td>
+                              <td className="tnum text-right">{rate(row.fill_rate)}</td>
+                              <td className={cn('tnum text-right font-medium', executionQualityClass(row.avg_score === null ? 'pending' : row.avg_score >= 75 ? 'good' : row.avg_score >= 60 ? 'watch' : 'degraded'))}>
+                                {row.avg_score !== null ? row.avg_score.toFixed(0) : '—'}
+                              </td>
+                              <td className={cn('tnum text-right', row.avg_slippage_pct && row.avg_slippage_pct > 0 ? 'text-red-400' : 'text-muted-foreground')}>
+                                {row.avg_slippage_pct !== null ? `${row.avg_slippage_pct.toFixed(3)}%` : '—'}
+                              </td>
+                              <td className="tnum text-right text-muted-foreground">{ms(row.avg_broker_latency_ms)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <div className="grid gap-6 lg:grid-cols-2">
+                <Card>
+                  <CardHeader><CardTitle>Reject / Cancel Patterns</CardTitle></CardHeader>
+                  <CardContent className="p-0">
+                    {execQuality.reject_cancel_patterns.length === 0 ? (
+                      <EmptyState title="No reject patterns" description="Rejected, cancelled, and errored orders will be summarized here." />
+                    ) : (
+                      <div className="overflow-x-auto scrollbar-none">
+                        <table className="w-full data-table">
+                          <thead>
+                            <tr>
+                              <th>Status</th>
+                              <th>Symbol</th>
+                              <th className="text-right">Count</th>
+                              <th>Reason</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {execQuality.reject_cancel_patterns.map(pattern => (
+                              <tr key={`${pattern.status}-${pattern.ticker}-${pattern.order_type}-${pattern.reason}`}>
+                                <td><span className={cn('inline-flex items-center text-[10px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider', orderStatusBg(pattern.status))}>{pattern.status}</span></td>
+                                <td className="font-semibold">{pattern.ticker}</td>
+                                <td className="tnum text-right">{pattern.count}</td>
+                                <td className="max-w-[14rem] truncate text-xs text-muted-foreground">{pattern.reason}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader><CardTitle>Worst Fills</CardTitle></CardHeader>
+                  <CardContent className="p-0">
+                    {execQuality.worst_orders.length === 0 ? (
+                      <EmptyState title="No filled orders scored" description="Filled broker orders with expected prices will appear here." />
+                    ) : (
+                      <div className="overflow-x-auto scrollbar-none">
+                        <table className="w-full data-table">
+                          <thead>
+                            <tr>
+                              <th>Symbol</th>
+                              <th className="text-right">Slip</th>
+                              <th className="text-right">Cost</th>
+                              <th className="text-right">Score</th>
+                              <th>Time</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {execQuality.worst_orders.slice(0, 6).map(order => (
+                              <tr key={order.id}>
+                                <td className="font-semibold">{order.ticker}</td>
+                                <td className="tnum text-right text-red-400">{order.slippage_pct !== null ? `${order.slippage_pct.toFixed(3)}%` : '—'}</td>
+                                <td className="tnum text-right">{formatCurrency(order.slippage_value)}</td>
+                                <td className={cn('tnum text-right font-medium', executionQualityClass(order.grade))}>{order.score !== null ? order.score.toFixed(0) : '—'}</td>
+                                <td className="whitespace-nowrap text-xs text-muted-foreground">{formatDate(order.created_at)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <Card>

@@ -56,6 +56,13 @@ logs/
 # Alembic
 alembic/versions/*.pyc
 
+# Celery runtime artifacts
+celerybeat-schedule.db
+celerybeat-schedule
+
+# Hypothesis test data
+.hypothesis/
+
 # Secrets — never commit these
 *.pem
 *.key

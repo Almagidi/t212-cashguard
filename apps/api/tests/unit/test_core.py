@@ -340,3 +340,158 @@ class TestRiskEngine:
         with pytest.raises(RiskViolation) as exc_info:
             await engine.check_kill_switch()
         assert "kill switch" in exc_info.value.reason.lower()
+
+    def _make_profile(self, **overrides):
+        """Return a minimal RiskProfile with sensible defaults."""
+        from app.db.models import RiskProfile
+        defaults = dict(
+            id=uuid.uuid4(), name="Test Profile",
+            max_risk_per_trade_pct=Decimal("1.0"),
+            max_daily_loss_pct=Decimal("3.0"),
+            max_open_positions=5,
+            max_position_size_pct=Decimal("10.0"),
+            max_trades_per_day=20,
+            stop_after_consecutive_losses=3,
+            symbol_cooldown_seconds=0,
+            force_flat_eod=False,
+            is_default=True,
+        )
+        defaults.update(overrides)
+        return RiskProfile(**defaults)
+
+    async def test_daily_loss_limit_blocks_when_breached(self, db):
+        from app.risk.engine import RiskEngine, RiskViolation
+
+        profile = self._make_profile(max_daily_loss_pct=Decimal("3.0"))
+        db.add(profile)
+        await db.flush()
+
+        engine = RiskEngine(db)
+        with pytest.raises(RiskViolation) as exc_info:
+            # -3.5% loss on a $10 000 account → breaches 3% limit
+            await engine.check_daily_loss_limit(
+                realized_pnl_today=Decimal("-350"),
+                account_value=Decimal("10000"),
+                risk_profile=profile,
+            )
+        assert "daily loss" in exc_info.value.reason.lower()
+
+    async def test_daily_loss_limit_passes_when_profitable(self, db):
+        from app.risk.engine import RiskEngine
+
+        profile = self._make_profile(max_daily_loss_pct=Decimal("3.0"))
+        db.add(profile)
+        await db.flush()
+
+        engine = RiskEngine(db)
+        await engine.check_daily_loss_limit(
+            realized_pnl_today=Decimal("50"),
+            account_value=Decimal("10000"),
+            risk_profile=profile,
+        )  # must not raise
+
+    async def test_max_open_positions_blocks_at_limit(self, db):
+        from app.risk.engine import RiskEngine, RiskViolation
+
+        profile = self._make_profile(max_open_positions=3)
+        db.add(profile)
+        await db.flush()
+
+        engine = RiskEngine(db)
+        with pytest.raises(RiskViolation):
+            await engine.check_max_open_positions(current_open=3, risk_profile=profile)
+
+    async def test_max_open_positions_passes_below_limit(self, db):
+        from app.risk.engine import RiskEngine
+
+        profile = self._make_profile(max_open_positions=5)
+        db.add(profile)
+        await db.flush()
+
+        engine = RiskEngine(db)
+        await engine.check_max_open_positions(current_open=2, risk_profile=profile)
+
+    async def test_duplicate_order_blocks_active_order(self, db):
+        from app.db.models import Order
+        from app.risk.engine import RiskEngine, RiskViolation
+
+        order = Order(
+            id=uuid.uuid4(),
+            client_order_key="key-dup-test",
+            ticker="AAPL",
+            side="buy",
+            order_type="market",
+            quantity=Decimal("5"),
+            status="accepted",
+            time_validity="DAY",
+            is_dry_run=False,
+        )
+        db.add(order)
+        await db.flush()
+
+        engine = RiskEngine(db)
+        with pytest.raises(RiskViolation) as exc_info:
+            await engine.check_duplicate_order("AAPL", "buy")
+        assert "duplicate" in exc_info.value.reason.lower()
+
+    async def test_duplicate_order_passes_with_no_active_order(self, db):
+        from app.risk.engine import RiskEngine
+
+        engine = RiskEngine(db)
+        await engine.check_duplicate_order("AAPL", "buy")  # must not raise
+
+    async def test_position_size_blocks_oversized_trade(self, db):
+        from app.risk.engine import RiskEngine, RiskViolation
+
+        profile = self._make_profile(max_position_size_pct=Decimal("10.0"))
+        db.add(profile)
+        await db.flush()
+
+        engine = RiskEngine(db)
+        with pytest.raises(RiskViolation):
+            # $2 000 position on a $10 000 account = 20% > 10% limit
+            await engine.check_position_size(
+                ticker="AAPL",
+                estimated_cost=Decimal("2000"),
+                account_value=Decimal("10000"),
+                risk_profile=profile,
+            )
+
+
+# ── Drawdown sizing — sync, no DB needed ─────────────────────────────────────
+
+class TestDrawdownSizing:
+    def test_full_at_zero_loss(self):
+        from app.risk.engine import RiskEngine
+
+        engine = RiskEngine(None)
+        factor, tier = engine.get_drawdown_size_factor(Decimal("0"), Decimal("10000"))
+        assert factor == Decimal("1.0")
+        assert tier == "full"
+
+    def test_reduced_between_tier1_and_tier2(self):
+        from app.risk.engine import RiskEngine
+
+        engine = RiskEngine(None)
+        # -0.6% loss: above TIER1 (0.5%) but below TIER2 (1.0%) → reduced
+        factor, tier = engine.get_drawdown_size_factor(Decimal("-60"), Decimal("10000"))
+        assert factor == Decimal("0.75")
+        assert tier == "reduced"
+
+    def test_half_at_tier2(self):
+        from app.risk.engine import RiskEngine
+
+        engine = RiskEngine(None)
+        # -1.2% loss (≥ TIER2=1.0%, < TIER3=1.5%) → half
+        factor, tier = engine.get_drawdown_size_factor(Decimal("-120"), Decimal("10000"))
+        assert factor == Decimal("0.50")
+        assert tier == "half"
+
+    def test_quarter_at_tier3(self):
+        from app.risk.engine import RiskEngine
+
+        engine = RiskEngine(None)
+        # -2% loss (≥ TIER3=1.5%) → quarter
+        factor, tier = engine.get_drawdown_size_factor(Decimal("-200"), Decimal("10000"))
+        assert factor == Decimal("0.25")
+        assert tier == "quarter"

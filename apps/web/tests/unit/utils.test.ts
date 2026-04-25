@@ -1,4 +1,14 @@
-import { formatCurrency, formatPnL, pnlClass, orderStatusBg, truncate, timeAgo } from '@/lib/utils'
+import { describe, expect, it } from '@jest/globals'
+import {
+  executionQualityBadge,
+  executionQualityClass,
+  formatCurrency,
+  formatPnL,
+  orderStatusBg,
+  pnlClass,
+  timeAgo,
+  truncate,
+} from '@/lib/utils'
 
 describe('formatCurrency', () => {
   it('formats positive number', () => expect(formatCurrency(1234.56)).toBe('$1,234.56'))
@@ -26,6 +36,18 @@ describe('orderStatusBg', () => {
   it('error orders get red styling', () => expect(orderStatusBg('error')).toContain('red'))
   it('submitted orders get blue styling', () => expect(orderStatusBg('submitted')).toContain('blue'))
   it('unknown status returns muted', () => expect(orderStatusBg('unknown')).toContain('muted'))
+})
+
+describe('executionQuality helpers', () => {
+  it('maps good grades to green styling', () => {
+    expect(executionQualityClass('good')).toContain('emerald')
+    expect(executionQualityBadge('excellent')).toContain('emerald')
+  })
+
+  it('maps degraded grades to red styling', () => {
+    expect(executionQualityClass('poor')).toContain('red')
+    expect(executionQualityBadge('degraded')).toContain('red')
+  })
 })
 
 describe('truncate', () => {

@@ -606,6 +606,21 @@ class OrderOut(BaseSchema):
     broker_order_id: str | None
     filled_quantity: Decimal | None
     avg_fill_price: Decimal | None
+    execution_environment: str | None = None
+    expected_fill_price: Decimal | None = None
+    slippage_pct: Decimal | None = None
+    slippage_value: Decimal | None = None
+    submitted_at: datetime | None = None
+    first_ack_at: datetime | None = None
+    filled_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    rejected_at: datetime | None = None
+    broker_latency_ms: int | None = None
+    fill_latency_ms: int | None = None
+    reconciliation_latency_ms: int | None = None
+    execution_quality_score: Decimal | None = None
+    execution_quality_grade: str | None = None
+    execution_quality_notes: dict[str, Any] | None = None
     is_dry_run: bool
     cash_used: Decimal | None
     error_message: str | None
@@ -782,6 +797,85 @@ class PerformanceReport(BaseModel):
     max_drawdown: float
     sharpe_ratio: float | None
     daily_pnl: list[dict[str, Any]]
+
+
+class ExecutionQualitySummary(BaseModel):
+    status: Literal["ok", "watch", "degraded", "no_data"]
+    status_reason: str
+    total_orders: int
+    filled_orders: int
+    rejected_orders: int
+    cancelled_orders: int
+    error_orders: int
+    fill_rate: float
+    reject_rate: float
+    cancel_rate: float
+    error_rate: float
+    avg_score: float | None
+    score_delta: float | None
+    avg_slippage_pct: float | None
+    total_slippage_value: float
+    adverse_slippage_rate: float
+    abnormal_slippage_count: int
+    avg_broker_latency_ms: float | None
+    avg_fill_latency_ms: float | None
+    avg_reconciliation_latency_ms: float | None
+    environments: list[str]
+
+
+class ExecutionQualityBucket(BaseModel):
+    environment: str
+    ticker: str
+    order_type: str
+    order_count: int
+    filled_count: int
+    rejected_count: int
+    cancelled_count: int
+    error_count: int
+    fill_rate: float
+    avg_score: float | None
+    avg_slippage_pct: float | None
+    total_slippage_value: float
+    avg_broker_latency_ms: float | None
+    avg_fill_latency_ms: float | None
+    worst_slippage_pct: float | None
+
+
+class ExecutionQualityPattern(BaseModel):
+    status: str
+    ticker: str
+    order_type: str
+    reason: str
+    count: int
+    last_seen_at: datetime
+
+
+class ExecutionQualityWorstOrder(BaseModel):
+    id: uuid.UUID
+    ticker: str
+    side: str
+    order_type: str
+    environment: str
+    status: str
+    expected_fill_price: float | None
+    avg_fill_price: float | None
+    slippage_pct: float | None
+    slippage_value: float | None
+    broker_latency_ms: int | None
+    fill_latency_ms: int | None
+    score: float | None
+    grade: str
+    created_at: datetime
+
+
+class ExecutionQualityReport(BaseModel):
+    period_days: int
+    generated_at: datetime
+    include_dry_run: bool
+    summary: ExecutionQualitySummary
+    by_symbol_order_type: list[ExecutionQualityBucket]
+    reject_cancel_patterns: list[ExecutionQualityPattern]
+    worst_orders: list[ExecutionQualityWorstOrder]
 
 
 # ─── Health ──────────────────────────────────────────────────────────────────

@@ -15,7 +15,14 @@ import structlog
 from sqlalchemy import select
 
 from app.broker.trading212 import make_sell_quantity
+from app.core.config import settings
 from app.db.models import Order, OrderEvent
+from app.services.execution_quality import (
+    apply_order_execution_quality,
+    mark_slippage_alerted,
+    milliseconds_between,
+    should_alert_abnormal_slippage,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -121,6 +128,7 @@ class ExecutionEngine:
         cash_used = None
         if side == "buy" and estimated_price and quantity > 0:
             cash_used = quantity * estimated_price
+        expected_fill_price = estimated_price or limit_price or stop_price
 
         order = Order(
             id=uuid.uuid4(),
@@ -135,6 +143,8 @@ class ExecutionEngine:
             time_validity=time_validity,
             status="pending_intent",
             is_dry_run=is_dry_run,
+            execution_environment="dry_run" if is_dry_run else settings.APP_MODE,
+            expected_fill_price=expected_fill_price,
             cash_used=cash_used,
             available_cash_at_submission=available_cash,
         )
@@ -189,6 +199,32 @@ class ExecutionEngine:
             return candidate
         return None
 
+    async def _maybe_alert_abnormal_slippage(self, order: Order) -> None:
+        if not should_alert_abnormal_slippage(order):
+            return
+
+        try:
+            from app.services.alert_service import alert_abnormal_slippage
+
+            await alert_abnormal_slippage(
+                self.db,
+                order_id=str(order.id),
+                ticker=order.ticker,
+                side=order.side,
+                expected_price=float(order.expected_fill_price or 0),
+                fill_price=float(order.avg_fill_price or 0),
+                slippage_pct=float(order.slippage_pct or 0),
+                slippage_value=float(order.slippage_value or 0),
+            )
+            mark_slippage_alerted(order)
+        except Exception as exc:
+            log.warning(
+                "execution.slippage_alert_failed",
+                order_id=str(order.id),
+                ticker=order.ticker,
+                error=str(exc),
+            )
+
     async def submit_order(self, order: Order) -> Order:
         """
         Submit order to broker. Updates order status throughout.
@@ -199,17 +235,34 @@ class ExecutionEngine:
 
         # Dry-run: simulate fill
         if order.is_dry_run:
+            now = datetime.now(UTC)
             order.status = "filled"
             order.filled_quantity = order.quantity
-            order.avg_fill_price = order.limit_price or Decimal("100.00")
+            order.avg_fill_price = order.expected_fill_price or order.limit_price or Decimal("100.00")
+            order.submitted_at = now
+            order.first_ack_at = now
+            order.filled_at = now
+            order.broker_latency_ms = 0
+            order.fill_latency_ms = 0
+            order.reconciliation_latency_ms = 0
             order.broker_response = {"dry_run": True, "simulated": True}
+            apply_order_execution_quality(order)
             await self._log_order_event(order.id, "dry_run_fill", from_status="pending_intent", to_status="filled")
             await self.db.flush()
             return order
 
         # Real submission
+        submitted_at = datetime.now(UTC)
         order.status = "submitted"
-        await self._log_order_event(order.id, "submitted", from_status="pending_intent", to_status="submitted")
+        order.submitted_at = submitted_at
+        order.execution_environment = order.execution_environment or settings.APP_MODE
+        await self._log_order_event(
+            order.id,
+            "submitted",
+            from_status="pending_intent",
+            to_status="submitted",
+            payload={"submitted_at": submitted_at.isoformat()},
+        )
         await self.db.flush()
 
         try:
@@ -252,8 +305,11 @@ class ExecutionEngine:
             else:
                 raise ValueError(f"Unknown order type: {order.order_type}")
 
+            first_ack_at = datetime.now(UTC)
             order.broker_response = response
             order.broker_order_id = str(response.get("id", ""))
+            order.first_ack_at = first_ack_at
+            order.broker_latency_ms = milliseconds_between(order.submitted_at, first_ack_at)
 
             # Map broker status
             broker_status = response.get("status", "")
@@ -261,15 +317,32 @@ class ExecutionEngine:
                 order.status = "filled"
                 order.filled_quantity = Decimal(str(response.get("filledQuantity", float(abs(order.quantity)))))
                 order.avg_fill_price = Decimal(str(response.get("filledPrice", 0) or 0))
+                order.filled_at = first_ack_at
+                order.fill_latency_ms = milliseconds_between(order.submitted_at, first_ack_at)
+                order.reconciliation_latency_ms = order.fill_latency_ms
+            elif broker_status in ("CANCELLED",):
+                order.status = "cancelled"
+                order.cancelled_at = first_ack_at
+            elif broker_status in ("REJECTED",):
+                order.status = "rejected"
+                order.rejected_at = first_ack_at
             elif broker_status in ("WORKING", "PENDING"):
                 order.status = "accepted"
             else:
                 order.status = "accepted"
 
+            apply_order_execution_quality(order)
+            await self._maybe_alert_abnormal_slippage(order)
             await self._log_order_event(
                 order.id, "broker_accepted",
                 from_status="submitted", to_status=order.status,
-                payload={"broker_status": broker_status, "broker_order_id": order.broker_order_id}
+                payload={
+                    "broker_status": broker_status,
+                    "broker_order_id": order.broker_order_id,
+                    "broker_latency_ms": order.broker_latency_ms,
+                    "execution_quality_score": float(order.execution_quality_score) if order.execution_quality_score is not None else None,
+                    "slippage_pct": float(order.slippage_pct) if order.slippage_pct is not None else None,
+                }
             )
 
         except Exception as e:
@@ -278,6 +351,7 @@ class ExecutionEngine:
             # broker integration failures (connectivity, schema drift, auth).
             order.status = "error"
             order.error_message = str(e)
+            apply_order_execution_quality(order)
             log.exception(
                 "execution.broker_submit_error",
                 order_id=str(order.id),
@@ -302,10 +376,15 @@ class ExecutionEngine:
                 order.error_message = f"Cancel error: {e}"
 
         old_status = order.status
+        now = datetime.now(UTC)
         order.status = "cancelled"
+        order.cancelled_at = now
+        order.reconciliation_latency_ms = milliseconds_between(order.submitted_at, now)
+        apply_order_execution_quality(order)
         await self._log_order_event(
             order.id, "cancelled",
             from_status=old_status, to_status="cancelled",
+            payload={"reconciliation_latency_ms": order.reconciliation_latency_ms},
         )
         await self.db.flush()
         return order
@@ -328,24 +407,51 @@ class ExecutionEngine:
 
             if broker_status == "FILLED":
                 old_status = order.status
+                reconciled_at = datetime.now(UTC)
                 order.status = "filled"
                 order.filled_quantity = Decimal(str(response.get("filledQuantity", 0)))
                 order.avg_fill_price = Decimal(str(response.get("filledPrice", 0) or 0))
                 order.broker_response = response
+                order.filled_at = order.filled_at or reconciled_at
+                order.fill_latency_ms = milliseconds_between(order.submitted_at, order.filled_at)
+                order.reconciliation_latency_ms = milliseconds_between(order.submitted_at, reconciled_at)
+                order.last_reconciled_at = reconciled_at
+                apply_order_execution_quality(order)
+                await self._maybe_alert_abnormal_slippage(order)
                 await self._log_order_event(
                     order.id, "reconciled_fill",
                     from_status=old_status, to_status="filled",
+                    payload={
+                        "broker_status": broker_status,
+                        "fill_latency_ms": order.fill_latency_ms,
+                        "reconciliation_latency_ms": order.reconciliation_latency_ms,
+                        "execution_quality_score": float(order.execution_quality_score) if order.execution_quality_score is not None else None,
+                        "slippage_pct": float(order.slippage_pct) if order.slippage_pct is not None else None,
+                    },
                 )
             elif broker_status in ("CANCELLED", "REJECTED"):
                 old_status = order.status
+                reconciled_at = datetime.now(UTC)
                 order.status = broker_status.lower()
+                if order.status == "cancelled":
+                    order.cancelled_at = order.cancelled_at or reconciled_at
+                else:
+                    order.rejected_at = order.rejected_at or reconciled_at
+                order.reconciliation_latency_ms = milliseconds_between(order.submitted_at, reconciled_at)
+                order.last_reconciled_at = reconciled_at
+                order.broker_response = response
+                apply_order_execution_quality(order)
                 await self._log_order_event(
                     order.id, "reconciled_status",
                     from_status=old_status, to_status=order.status,
-                    payload={"broker_status": broker_status}
+                    payload={
+                        "broker_status": broker_status,
+                        "reconciliation_latency_ms": order.reconciliation_latency_ms,
+                        "execution_quality_score": float(order.execution_quality_score) if order.execution_quality_score is not None else None,
+                    }
                 )
-
-            order.last_reconciled_at = datetime.now(UTC)
+            else:
+                order.last_reconciled_at = datetime.now(UTC)
 
         except Exception as e:
             # Deliberately do not mutate order status on a reconciliation error —

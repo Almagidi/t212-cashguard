@@ -245,6 +245,41 @@ async def alert_order_failed(
     )
 
 
+async def alert_abnormal_slippage(
+    db: AsyncSession,
+    *,
+    order_id: str,
+    ticker: str,
+    side: str,
+    expected_price: float,
+    fill_price: float,
+    slippage_pct: float,
+    slippage_value: float,
+) -> None:
+    svc = AlertService(db)
+    await svc.send(
+        alert_type="abnormal_slippage",
+        title=f"Abnormal Slippage: {ticker}",
+        message=(
+            f"Order:    {order_id}\n"
+            f"Side:     {side.upper()}\n"
+            f"Expected: ${expected_price:.4f}\n"
+            f"Fill:     ${fill_price:.4f}\n"
+            f"Slippage: {slippage_pct:.3f}% / ${slippage_value:.2f}"
+        ),
+        severity="warning" if slippage_pct < 1.5 else "critical",
+        payload={
+            "order_id": order_id,
+            "ticker": ticker,
+            "side": side,
+            "expected_price": expected_price,
+            "fill_price": fill_price,
+            "slippage_pct": slippage_pct,
+            "slippage_value": slippage_value,
+        },
+    )
+
+
 async def alert_daily_loss_breach(
     db: AsyncSession, loss_pct: float, limit_pct: float
 ) -> None:

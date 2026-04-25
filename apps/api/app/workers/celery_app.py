@@ -4,6 +4,8 @@ from __future__ import annotations
 from celery import Celery
 from celery.schedules import crontab
 
+from celery.signals import task_failure
+
 from app.core.config import settings
 
 celery_app = Celery(
@@ -88,3 +90,8 @@ celery_app.conf.update(
         },
     },
 )
+
+# Wire up dead-letter queue on task exhaustion.
+# Import here (after celery_app is defined) to avoid circular imports.
+from app.workers.dead_letter import handle_task_failure  # noqa: E402
+task_failure.connect(handle_task_failure)

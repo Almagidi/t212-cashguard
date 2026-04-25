@@ -326,6 +326,21 @@ class Order(Base):
     broker_order_id: Mapped[str | None] = mapped_column(String(100), index=True)
     filled_quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    execution_environment: Mapped[str | None] = mapped_column(String(20))
+    expected_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    slippage_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    slippage_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_ack_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    broker_latency_ms: Mapped[int | None] = mapped_column(Integer)
+    fill_latency_ms: Mapped[int | None] = mapped_column(Integer)
+    reconciliation_latency_ms: Mapped[int | None] = mapped_column(Integer)
+    execution_quality_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    execution_quality_grade: Mapped[str | None] = mapped_column(String(20))
+    execution_quality_notes: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
     is_dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
     cash_used: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     available_cash_at_submission: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
@@ -379,6 +394,7 @@ class Order(Base):
     __table_args__ = (
         Index("ix_orders_ticker_status", "ticker", "status"),
         Index("ix_orders_created_at", "created_at"),
+        Index("ix_orders_execution_quality", "execution_environment", "ticker", "order_type", "created_at"),
     )
 
 
