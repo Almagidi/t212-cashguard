@@ -1,7 +1,7 @@
 'use client'
 import { RefreshCw, TrendingUp, TrendingDown } from 'lucide-react'
 import { usePositions } from '@/hooks/use-api'
-import { Button, Card, CardContent, Spinner, EmptyState, StatCard } from '@/components/ui'
+import { Button, Card, CardContent, Spinner, EmptyState, TerminalCard, PageHeader } from '@/components/ui'
 import { QueryError } from '@/components/shared/query-error'
 import { formatCurrency, formatPnL, pnlClass, cn } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
@@ -21,37 +21,40 @@ export default function PositionsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h2 className="text-xl font-semibold tracking-tight">Positions</h2>
-          <p className="text-[13px] text-muted-foreground mt-1">
-            {positions.length} open position{positions.length !== 1 ? 's' : ''}
-            {positions.length > 0 && ` · ${formatCurrency(totalValue)} invested`}
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={refresh}>
-          <RefreshCw className="w-3.5 h-3.5" />
-          Refresh
-        </Button>
-      </div>
+      <PageHeader
+        icon={<TrendingUp className="h-5 w-5" />}
+        label="Positions"
+        sub={<>
+          {positions.length} open position{positions.length !== 1 ? 's' : ''}
+          {positions.length > 0 && <> · {formatCurrency(totalValue)} invested</>}
+        </>}
+        actions={
+          <Button variant="outline" size="sm" onClick={refresh}>
+            <RefreshCw className="w-3.5 h-3.5" />
+            Refresh
+          </Button>
+        }
+      />
 
       {positions.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <StatCard
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <TerminalCard
             label="Position Value"
             value={formatCurrency(totalValue)}
             sub="Current market value"
+            variant="cyan"
           />
-          <StatCard
+          <TerminalCard
             label="Unrealized P&L"
-            value={<span className={pnlClass(totalPnl)}>{formatPnL(totalPnl)}</span>}
-            trend={totalPnl > 0 ? 'up' : totalPnl < 0 ? 'down' : 'neutral'}
+            value={formatPnL(totalPnl)}
             sub={totalPnl > 0 ? 'Profitable' : totalPnl < 0 ? 'In drawdown' : 'Flat'}
+            variant={totalPnl > 0 ? 'teal' : totalPnl < 0 ? 'red' : 'cyan'}
           />
-          <StatCard
+          <TerminalCard
             label="Open Positions"
             value={positions.length.toString()}
             sub="Across all symbols"
+            variant="cyan"
           />
         </div>
       )}
