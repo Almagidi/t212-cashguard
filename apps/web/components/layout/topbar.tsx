@@ -62,7 +62,7 @@ export function TopBar() {
   const pathname = usePathname()
   const { data: settings } = useSettings()
   const { data: health }   = useHealth()
-  const { theme, setTheme } = useTheme()
+  const { resolvedTheme, setTheme } = useTheme()
   const sidebarCollapsed   = useUIStore((s) => s.sidebarCollapsed)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
@@ -115,11 +115,11 @@ export function TopBar() {
 
           {/* Theme toggle */}
           <button
-            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
             className="flex items-center justify-center w-8 h-8 rounded-lg hover:bg-accent transition-colors"
             aria-label="Toggle theme"
           >
-            {theme === 'dark'
+            {resolvedTheme === 'dark'
               ? <Sun  className="w-4 h-4 text-muted-foreground hover:text-foreground transition-colors" />
               : <Moon className="w-4 h-4 text-muted-foreground hover:text-foreground transition-colors" />
             }
