@@ -1,7 +1,7 @@
 'use client'
 import { Bell, CheckCheck } from 'lucide-react'
 import { useAlerts } from '@/hooks/use-api'
-import { Button, Card, CardContent, Badge, Spinner, EmptyState } from '@/components/ui'
+import { Button, Card, CardContent, Badge, Spinner, EmptyState, PageHeader } from '@/components/ui'
 import { formatDate, cn } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import api from '@/services/api'
@@ -32,22 +32,19 @@ export default function AlertsPage() {
 
   return (
     <div className="max-w-3xl space-y-5">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h2 className="text-xl font-semibold tracking-tight">Alerts</h2>
-          <p className="text-[13px] text-muted-foreground mt-1">
-            {unread > 0 ? (
-              <span><span className="text-primary font-medium">{unread} unread</span> · {alerts.length} total</span>
-            ) : (
-              <span>{alerts.length} total · All caught up</span>
-            )}
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={sendTest}>
-          <Bell className="w-3.5 h-3.5" />
-          Send Test
-        </Button>
-      </div>
+      <PageHeader
+        icon={<Bell className="h-5 w-5" />}
+        label="Alerts"
+        sub={unread > 0
+          ? <><span className="text-primary font-medium">{unread} unread</span> · {alerts.length} total</>
+          : <>{alerts.length} total · All caught up</>}
+        actions={
+          <Button variant="outline" size="sm" onClick={sendTest}>
+            <Bell className="w-3.5 h-3.5" />
+            Send Test
+          </Button>
+        }
+      />
 
       {isLoading ? (
         <Card>
