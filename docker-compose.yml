@@ -43,6 +43,9 @@ services:
       - SECRET_KEY=${SECRET_KEY:-change-me-in-production-32-chars-min}
       - MASTER_KEY=${MASTER_KEY:-change-me-master-key-32-chars-min}
       - APP_MODE=${APP_MODE:-mock}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@localhost}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-change-me}
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
       - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     ports:
@@ -67,6 +70,9 @@ services:
       - SECRET_KEY=${SECRET_KEY:-change-me-in-production-32-chars-min}
       - MASTER_KEY=${MASTER_KEY:-change-me-master-key-32-chars-min}
       - APP_MODE=${APP_MODE:-mock}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@localhost}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-change-me}
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,6 +93,9 @@ services:
       - SECRET_KEY=${SECRET_KEY:-change-me-in-production-32-chars-min}
       - MASTER_KEY=${MASTER_KEY:-change-me-master-key-32-chars-min}
       - APP_MODE=${APP_MODE:-mock}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@localhost}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-change-me}
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
     depends_on:
       - worker
     volumes:
@@ -105,10 +114,6 @@ services:
       - "3000:3000"
     depends_on:
       - api
-    volumes:
-      - ./apps/web:/app
-      - /app/node_modules
-      - /app/.next
 
 volumes:
   postgres_data:

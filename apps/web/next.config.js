@@ -4,6 +4,11 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 const API_HOST = (() => {
   try { return new URL(API_URL).host } catch { return 'localhost:8000' }
 })()
+const connectHosts = Array.from(new Set([
+  API_HOST,
+  'localhost:8000',
+  '127.0.0.1:8000',
+]))
 
 // Build a strict CSP. In development we relax script-src for Next.js HMR.
 const isDev = process.env.NODE_ENV === 'development'
@@ -20,8 +25,12 @@ const cspDirectives = [
   // Also allow sentry.io when a DSN is configured.
   [
     `connect-src 'self'`,
-    `http://${API_HOST}`, `https://${API_HOST}`,
-    `ws://${API_HOST}`,  `wss://${API_HOST}`,
+    ...connectHosts.flatMap((host) => [
+      `http://${host}`,
+      `https://${host}`,
+      `ws://${host}`,
+      `wss://${host}`,
+    ]),
     ...(process.env.NEXT_PUBLIC_SENTRY_DSN ? ['https://*.sentry.io'] : []),
   ].join(' '),
   `frame-ancestors 'none'`,
@@ -42,6 +51,7 @@ const securityHeaders = [
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  output: 'standalone',
 
   async headers() {
     return [

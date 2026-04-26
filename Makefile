@@ -54,12 +54,16 @@ down: ## Stop the Docker Compose stack
 
 migrate: ## Run database migrations
 	@echo "$(YELLOW)→ Running database migrations...$(RESET)"
-	cd apps/api && alembic upgrade head
+	cd apps/api && PYTHONPATH=. alembic upgrade head
 	@echo "$(GREEN)✓ Migrations complete$(RESET)"
 
 seed: ## Seed database with demo data
 	@echo "$(YELLOW)→ Seeding database...$(RESET)"
-	cd apps/api && python -m app.db.seed
+	@if [ "$$(docker-compose ps -q api)" ] && [ "$$(docker inspect -f '{{.State.Running}}' t212_api 2>/dev/null)" = "true" ]; then \
+		docker-compose exec -T api python -m app.db.seed; \
+	else \
+		cd apps/api && PYTHONPATH=. python -m app.db.seed; \
+	fi
 	@echo "$(GREEN)✓ Database seeded$(RESET)"
 
 reset: ## Reset database (drop + recreate + migrate + seed)

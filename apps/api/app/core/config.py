@@ -9,10 +9,16 @@ from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Resolve the project root .env regardless of the working directory uvicorn
-# is invoked from (it runs from apps/api/, but .env lives at the repo root).
-_HERE = Path(__file__).resolve()                # .../apps/api/app/core/config.py
-_ENV_FILE = _HERE.parents[4] / ".env"           # climb 5 levels → project root
+def _find_env_file(start: Path) -> Path:
+    """Find the nearest ancestor .env without assuming a fixed checkout depth."""
+    for directory in (start.parent, *start.parents):
+        candidate = directory / ".env"
+        if candidate.exists():
+            return candidate
+    return Path(".env")
+
+
+_ENV_FILE = _find_env_file(Path(__file__).resolve())
 
 
 class Settings(BaseSettings):
