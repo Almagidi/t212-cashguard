@@ -5,7 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { CheckCircle2, XCircle, Plug, PlugZap, Unplug, AlertTriangle, ShieldAlert, KeyRound, Globe2 } from 'lucide-react'
 import { useBrokerStatus, useTestBroker, useDisconnectBroker, useAccount } from '@/hooks/use-api'
-import { Button, Card, CardHeader, CardTitle, CardContent, Input, Label, Badge, StatCard, Spinner } from '@/components/ui'
+import { Button, Card, CardHeader, CardTitle, CardContent, Input, Label, Badge, TerminalCard, Spinner, PageHeader } from '@/components/ui'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { formatDate, formatCurrency, cn } from '@/lib/utils'
 import api from '@/services/api'
@@ -140,12 +140,11 @@ export default function BrokerPage() {
 
   return (
     <div className="max-w-3xl space-y-6">
-      <div>
-        <h2 className="text-xl font-semibold tracking-tight">Broker Account</h2>
-        <p className="text-[13px] text-muted-foreground mt-1">
-          Trading 212 connection and account details
-        </p>
-      </div>
+      <PageHeader
+        icon={<PlugZap className="h-5 w-5" />}
+        label="Broker Account"
+        sub="Trading 212 connection and account details"
+      />
 
       {/* Cash-only enforcement notice */}
       <div className="flex items-start gap-3 p-4 bg-amber-500/8 border border-amber-500/25 rounded-xl text-amber-300">
@@ -225,9 +224,9 @@ export default function BrokerPage() {
 
             {account && (
               <div className="grid grid-cols-3 gap-3 mb-4 pt-4 border-t border-border">
-                <StatCard label="Total Value" value={formatCurrency(account.total_value, account.currency)} />
-                <StatCard label="Cash" value={formatCurrency(account.cash, account.currency)} />
-                <StatCard label="Available to Trade" value={formatCurrency(account.free_funds, account.currency)} />
+                <TerminalCard label="Total Value" value={formatCurrency(account.total_value, account.currency)} variant="cyan" />
+                <TerminalCard label="Cash" value={formatCurrency(account.cash, account.currency)} variant="cyan" />
+                <TerminalCard label="Available to Trade" value={formatCurrency(account.free_funds, account.currency)} variant="teal" />
               </div>
             )}
 
