@@ -5,5 +5,6 @@ declare namespace jest {
     toBeInTheDocument(): R
     toBeEmptyDOMElement(): R
     toHaveValue(value?: string | number | string[]): R
+    toHaveClass(...classNames: string[]): R
   }
 }

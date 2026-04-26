@@ -1,4 +1,4 @@
-import '@testing-library/jest-dom'
+import '@testing-library/jest-dom/jest-globals'
 import { describe, expect, it } from '@jest/globals'
 import { render, screen } from '@testing-library/react'
 import { TerminalCard } from '@/components/ui/terminal-card'
@@ -17,17 +17,17 @@ describe('TerminalCard', () => {
 
   it('applies cyan variant class by default', () => {
     const { container } = render(<TerminalCard label="X" value="Y" />)
-    expect(container.firstChild).toHaveClass('terminal-card-cyan')
+    expect(container.firstChild as HTMLElement).toHaveClass('terminal-card-cyan')
   })
 
   it('applies teal variant class when variant=teal', () => {
     const { container } = render(<TerminalCard label="X" value="Y" variant="teal" />)
-    expect(container.firstChild).toHaveClass('terminal-card-teal')
+    expect(container.firstChild as HTMLElement).toHaveClass('terminal-card-teal')
   })
 
   it('applies red variant class when variant=red', () => {
     const { container } = render(<TerminalCard label="X" value="Y" variant="red" />)
-    expect(container.firstChild).toHaveClass('terminal-card-red')
+    expect(container.firstChild as HTMLElement).toHaveClass('terminal-card-red')
   })
 
   it('shows live pulse dot when live=true', () => {
