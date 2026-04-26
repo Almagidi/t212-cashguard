@@ -5,7 +5,7 @@ import {
   Clock, Target, BarChart3, Zap, ArrowUpRight,
 } from 'lucide-react'
 import { useStrategies, useToggleStrategy, useCreateStrategy, usePerformanceByStrategy } from '@/hooks/use-api'
-import { Button, Card, CardContent, Badge, Spinner, EmptyState } from '@/components/ui'
+import { Button, Card, CardContent, Badge, Spinner, EmptyState, PageHeader } from '@/components/ui'
 import { QueryError } from '@/components/shared/query-error'
 import { formatDate, formatPnL, pnlClass, cn } from '@/lib/utils'
 import { Sparkline } from '@/components/charts/equity-curve'
@@ -235,31 +235,31 @@ export default function StrategiesPage() {
 
   return (
     <div className="max-w-4xl space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h2 className="text-xl font-semibold tracking-tight">Strategies</h2>
-          <p className="text-[13px] text-muted-foreground mt-1">
-            {active.length} active · {strategies.length} total
-            {totalTrades > 0 && ` · ${totalTrades} trades (30d)`}
-          </p>
-        </div>
-        <div className="flex gap-2">
-          {totalPnl !== 0 && (
-            <span className={cn('text-sm font-bold self-center', pnlClass(totalPnl))}>
-              {formatPnL(totalPnl)} 30d
-            </span>
-          )}
-          <Button variant="outline" size="sm" onClick={createPortfolioDemo} loading={createMutation.isPending}>
-            <TrendingUp className="w-3.5 h-3.5" />
-            Add Core Portfolio
-          </Button>
-          <Button variant="outline" size="sm" onClick={createDemo} loading={createMutation.isPending}>
-            <FlaskConical className="w-3.5 h-3.5" />
-            Add Demo ORB
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        icon={<Zap className="h-5 w-5" />}
+        label="Strategies"
+        sub={<>
+          {active.length} active · {strategies.length} total
+          {totalTrades > 0 && ` · ${totalTrades} trades (30d)`}
+        </>}
+        actions={
+          <div className="flex gap-2">
+            {totalPnl !== 0 && (
+              <span className={cn('text-sm font-bold self-center', pnlClass(totalPnl))}>
+                {formatPnL(totalPnl)} 30d
+              </span>
+            )}
+            <Button variant="outline" size="sm" onClick={createPortfolioDemo} loading={createMutation.isPending}>
+              <TrendingUp className="w-3.5 h-3.5" />
+              Add Core Portfolio
+            </Button>
+            <Button variant="outline" size="sm" onClick={createDemo} loading={createMutation.isPending}>
+              <FlaskConical className="w-3.5 h-3.5" />
+              Add Demo ORB
+            </Button>
+          </div>
+        }
+      />
 
       <StrategyPresetGrid
         title="Demo-Ready Intraday Presets"
