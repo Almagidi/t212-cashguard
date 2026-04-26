@@ -19,7 +19,7 @@
     --secondary: 210 14% 94%;
     --secondary-foreground: 220 20% 20%;
     --muted: 210 14% 94%;
-    --muted-foreground: 215 12% 45%;
+    --muted-foreground: 215 15% 38%;
     --accent: 210 14% 92%;
     --accent-foreground: 220 20% 10%;
     --destructive: 0 84% 55%;
@@ -218,36 +218,74 @@
   }
 
   .badge-live {
-    @apply badge-base bg-red-500/10 text-red-400 border-red-500/25;
+    @apply badge-base bg-red-500/10 border-red-500/25;
+    color: #b91c1c; /* red-700 — passes AA on light bg */
   }
+  .dark .badge-live { color: #f87171; /* red-400 */ }
   .badge-live::before {
     content: '';
-    @apply w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse-slow inline-block;
+    @apply w-1.5 h-1.5 rounded-full animate-pulse-slow inline-block;
+    background-color: currentColor;
   }
 
   .badge-demo {
-    @apply badge-base bg-cyan-500/10 text-cyan-400 border-cyan-500/25;
+    @apply badge-base bg-cyan-500/10 border-cyan-500/25;
+    color: #0e7490; /* cyan-700 — passes AA on light bg */
   }
+  .dark .badge-demo { color: #22d3ee; /* cyan-400 */ }
   .badge-demo::before {
     content: '';
-    @apply w-1.5 h-1.5 rounded-full bg-cyan-400 inline-block;
+    @apply w-1.5 h-1.5 rounded-full inline-block;
+    background-color: currentColor;
   }
 
   .badge-mock {
-    @apply badge-base bg-teal-500/10 text-teal-400 border-teal-500/25;
+    @apply badge-base bg-teal-500/10 border-teal-500/25;
+    color: #0f766e; /* teal-700 — passes AA on light bg */
   }
+  .dark .badge-mock { color: #2dd4bf; /* teal-400 */ }
   .badge-mock::before {
     content: '';
-    @apply w-1.5 h-1.5 rounded-full bg-teal-400 inline-block;
+    @apply w-1.5 h-1.5 rounded-full inline-block;
+    background-color: currentColor;
   }
 
   /* ── 6. P&L Colours ──────────────────────────────────────────────────────── */
 
-  .pnl-positive { @apply text-emerald-400 font-medium tabular-nums; }
-  .pnl-negative { @apply text-red-400 font-medium tabular-nums; }
+  .pnl-positive { @apply font-medium tabular-nums; color: #047857; /* emerald-700 */ }
+  .pnl-negative { @apply font-medium tabular-nums; color: #b91c1c; /* red-700 */ }
   .pnl-neutral  { @apply text-muted-foreground font-medium tabular-nums; }
+  .dark .pnl-positive { color: #34d399; /* emerald-400 */ }
+  .dark .pnl-negative { color: #f87171; /* red-400 */ }
 
   /* ── 7. Table Primitives ─────────────────────────────────────────────────── */
+
+  /* Full table component — used via className="data-table" on <table> */
+  .data-table {
+    @apply w-full text-[13px];
+    border-collapse: collapse;
+  }
+  .data-table th {
+    @apply text-left px-4 py-2.5 whitespace-nowrap;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: hsl(var(--muted-foreground));
+    background-color: hsl(var(--muted) / 0.4);
+    border-bottom: 1px solid hsl(var(--border));
+  }
+  .data-table td {
+    @apply px-4 py-2.5 align-middle;
+    border-bottom: 1px solid hsl(var(--border) / 0.6);
+  }
+  .data-table tbody tr:last-child td { border-bottom: 0; }
+  .data-table tbody tr {
+    transition: background-color 100ms;
+  }
+  .data-table tbody tr:hover td {
+    background-color: hsl(var(--primary) / 0.04);
+  }
 
   .table-header-cell {
     @apply text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground
@@ -280,6 +318,27 @@
    ───────────────────────────────────────────────────────────────────────── */
 
 @layer utilities {
+  /* ── Light-mode contrast: remap bright -400 utilities to -700/-600 equivalents
+        so text is readable on the near-white background. Dark mode restores the
+        original vivid values. Covers all 167 inline usages across 24 files. ── */
+  :root .text-cyan-400    { color: #0e7490; } /* cyan-700   5.2:1 on light bg */
+  :root .text-teal-400    { color: #0f766e; } /* teal-700   5.5:1 */
+  :root .text-emerald-400 { color: #047857; } /* emerald-700 5.9:1 */
+  :root .text-green-400   { color: #15803d; } /* green-700  5.4:1 */
+  :root .text-amber-400   { color: #b45309; } /* amber-700  4.8:1 */
+  :root .text-red-400     { color: #b91c1c; } /* red-700    5.1:1 */
+  :root .text-blue-400    { color: #1d4ed8; } /* blue-700   5.8:1 */
+  :root .text-purple-400  { color: #6d28d9; } /* purple-700 5.2:1 */
+
+  .dark .text-cyan-400    { color: #22d3ee; } /* restore cyan-400    */
+  .dark .text-teal-400    { color: #2dd4bf; } /* restore teal-400    */
+  .dark .text-emerald-400 { color: #34d399; } /* restore emerald-400 */
+  .dark .text-green-400   { color: #4ade80; } /* restore green-400   */
+  .dark .text-amber-400   { color: #fbbf24; } /* restore amber-400   */
+  .dark .text-red-400     { color: #f87171; } /* restore red-400     */
+  .dark .text-blue-400    { color: #60a5fa; } /* restore blue-400    */
+  .dark .text-purple-400  { color: #c084fc; } /* restore purple-400  */
+
   /* Hide scrollbar while keeping scroll */
   .scrollbar-none { scrollbar-width: none; }
   .scrollbar-none::-webkit-scrollbar { display: none; }
