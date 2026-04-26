@@ -1,8 +1,8 @@
 'use client'
 import { useState } from 'react'
-import { Search, ChevronDown, ChevronRight } from 'lucide-react'
+import { Search, ChevronDown, ChevronRight, ScrollText } from 'lucide-react'
 import { useAuditLogs } from '@/hooks/use-api'
-import { Button, Card, CardContent, Input, Spinner, EmptyState } from '@/components/ui'
+import { Button, Card, CardContent, Input, Spinner, EmptyState, PageHeader } from '@/components/ui'
 import { QueryError } from '@/components/shared/query-error'
 import { formatDate, cn } from '@/lib/utils'
 import type { AuditLog } from '@/types'
@@ -75,14 +75,11 @@ export default function AuditPage() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h2 className="text-xl font-semibold tracking-tight">Audit Log</h2>
-          <p className="text-[13px] text-muted-foreground mt-1 tabular-nums">
-            {total.toLocaleString()} events recorded
-          </p>
-        </div>
-      </div>
+      <PageHeader
+        icon={<ScrollText className="h-5 w-5" />}
+        label="Audit Log"
+        sub={<span className="tabular-nums">{total.toLocaleString()} events recorded</span>}
+      />
 
       {/* Search */}
       <div className="relative max-w-sm">
