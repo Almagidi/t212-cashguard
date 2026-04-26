@@ -28,4 +28,14 @@ describe('useUIStore', () => {
     useUIStore.getState().setSidebarCollapsed(false)
     expect(useUIStore.getState().sidebarCollapsed).toBe(false)
   })
+
+  it('persists sidebarCollapsed to localStorage and restores on reimport', async () => {
+    const { useUIStore: store1 } = await import('@/stores/ui-store')
+    store1.getState().setSidebarCollapsed(true)
+    expect(localStorage.getItem('ui-prefs')).toBeTruthy()
+
+    jest.resetModules()
+    const { useUIStore: store2 } = await import('@/stores/ui-store')
+    expect(store2.getState().sidebarCollapsed).toBe(true)
+  })
 })
