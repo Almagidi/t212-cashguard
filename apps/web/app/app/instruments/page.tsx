@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { Search, RefreshCw, CheckCircle2, XCircle, Database } from 'lucide-react'
 import { useInstruments, useSyncInstruments } from '@/hooks/use-api'
-import { Button, Card, CardContent, Input, Badge, Spinner, EmptyState } from '@/components/ui'
+import { Button, Card, CardContent, Input, Badge, Spinner, EmptyState, PageHeader } from '@/components/ui'
 import { QueryError } from '@/components/shared/query-error'
 import { formatDate, cn } from '@/lib/utils'
 
@@ -20,26 +20,19 @@ export default function InstrumentsPage() {
 
   return (
     <div className="space-y-5">
-      {/* Page header */}
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border/60 bg-primary/10 text-primary">
-            <Database className="h-5 w-5" />
-          </div>
-          <div>
-            <h2 className="text-xl font-semibold tracking-tight">Instruments</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {total > 0
-                ? <><span className="tnum">{total.toLocaleString()}</span> instruments · <span className="tnum">{enabledCount}</span> trading enabled</>
-                : 'Sync from your broker to populate the instrument list'}
-            </p>
-          </div>
-        </div>
-        <Button variant="outline" size="sm" onClick={() => syncMutation.mutate()} loading={syncMutation.isPending}>
-          <RefreshCw className="h-3.5 w-3.5" />
-          Sync from Broker
-        </Button>
-      </div>
+      <PageHeader
+        icon={<Database className="h-5 w-5" />}
+        label="Instruments"
+        sub={total > 0
+          ? <><span className="tnum">{total.toLocaleString()}</span> instruments · <span className="tnum">{enabledCount}</span> trading enabled</>
+          : 'Sync from your broker to populate the instrument list'}
+        actions={
+          <Button variant="outline" size="sm" onClick={() => syncMutation.mutate()} loading={syncMutation.isPending}>
+            <RefreshCw className="h-3.5 w-3.5" />
+            Sync from Broker
+          </Button>
+        }
+      />
 
       {/* Search */}
       <div className="relative max-w-md">
