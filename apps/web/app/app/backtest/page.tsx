@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  FlaskConical,
   Play,
   ShieldAlert,
   TrendingUp,
