@@ -4,67 +4,62 @@
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   DESIGN TOKENS
-   Refined charcoal + indigo palette tuned for long-session data readability.
-   ───────────────────────────────────────────────────────────────────────── */
-
 @layer base {
   :root {
-    --background: 220 15% 97%;
-    --foreground: 222 20% 12%;
+    /* Light mode — cool pale surfaces, cyan primary */
+    --background: 210 20% 96%;
+    --foreground: 220 20% 10%;
     --card: 0 0% 100%;
-    --card-foreground: 222 20% 12%;
-    --border: 220 14% 90%;
-    --input: 220 14% 90%;
-    --ring: 221 83% 56%;
-    --primary: 221 83% 53%;
+    --card-foreground: 220 20% 10%;
+    --border: 210 14% 88%;
+    --input: 210 14% 88%;
+    --ring: 192 85% 40%;
+    --primary: 192 85% 40%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 220 14% 94%;
-    --secondary-foreground: 222 20% 20%;
-    --muted: 220 14% 94%;
-    --muted-foreground: 220 9% 42%;
-    --accent: 220 14% 94%;
-    --accent-foreground: 222 20% 12%;
+    --secondary: 210 14% 94%;
+    --secondary-foreground: 220 20% 20%;
+    --muted: 210 14% 94%;
+    --muted-foreground: 215 12% 45%;
+    --accent: 210 14% 92%;
+    --accent-foreground: 220 20% 10%;
     --destructive: 0 84% 55%;
     --destructive-foreground: 0 0% 100%;
     --radius: 0.625rem;
 
-    /* Surface elevation steps */
-    --surface-0: 220 15% 97%;
+    --surface-0: 210 20% 96%;
     --surface-1: 0 0% 100%;
-    --surface-2: 220 15% 99%;
-    --elev-1: 0 1px 2px 0 rgb(0 0 0 / 0.04);
-    --elev-2: 0 4px 16px -4px rgb(0 0 0 / 0.08);
-    --elev-3: 0 12px 32px -8px rgb(0 0 0 / 0.12);
+    --surface-2: 210 18% 98%;
+    --elev-1: 0 1px 2px 0 rgb(0 0 0 / 0.06);
+    --elev-2: 0 4px 16px -4px rgb(0 0 0 / 0.1);
+    --elev-3: 0 12px 32px -8px rgb(0 0 0 / 0.14);
   }
 
   .dark {
-    /* Deep neutral charcoal with cool indigo accents — premium fintech */
-    --background: 224 19% 8%;
+    /* Dark mode — deep cool charcoal, cyan primary */
+    --background: 220 20% 7%;
     --foreground: 210 20% 92%;
-    --card: 224 18% 11%;
+    --card: 220 18% 10%;
     --card-foreground: 210 20% 92%;
-    --border: 224 14% 18%;
-    --input: 224 14% 18%;
-    --ring: 221 90% 64%;
-    --primary: 221 90% 62%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 224 14% 15%;
-    --secondary-foreground: 210 18% 85%;
-    --muted: 224 14% 15%;
-    --muted-foreground: 215 15% 55%;
-    --accent: 224 14% 18%;
+    --border: 220 14% 16%;
+    --input: 220 14% 16%;
+    --ring: 192 85% 48%;
+    --primary: 192 85% 48%;
+    --primary-foreground: 220 20% 7%;
+    --secondary: 220 14% 14%;
+    --secondary-foreground: 210 18% 82%;
+    --muted: 220 14% 14%;
+    --muted-foreground: 215 15% 52%;
+    --accent: 220 14% 16%;
     --accent-foreground: 210 20% 92%;
     --destructive: 0 75% 58%;
     --destructive-foreground: 0 0% 100%;
 
-    --surface-0: 224 19% 8%;
-    --surface-1: 224 18% 11%;
-    --surface-2: 224 16% 13%;
-    --elev-1: 0 1px 2px 0 rgb(0 0 0 / 0.45);
-    --elev-2: 0 6px 20px -6px rgb(0 0 0 / 0.5);
-    --elev-3: 0 16px 40px -12px rgb(0 0 0 / 0.65);
+    --surface-0: 220 20% 7%;
+    --surface-1: 220 18% 10%;
+    --surface-2: 220 16% 13%;
+    --elev-1: 0 1px 3px 0 rgb(0 0 0 / 0.5);
+    --elev-2: 0 6px 24px -6px rgb(0 0 0 / 0.6);
+    --elev-3: 0 16px 48px -12px rgb(0 0 0 / 0.75);
   }
 }
 
@@ -119,12 +114,12 @@
   input[type='number'] { -moz-appearance: textfield; }
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   COMPONENTS — reusable primitives (cards, badges, tables, stat chrome)
-   ───────────────────────────────────────────────────────────────────────── */
+/* ── DESIGN SYSTEM ────────────────────────────────────────────────────────── */
 
 @layer components {
-  /* ── Surfaces ─────────────────────────────────────────────────────────── */
+
+  /* ── 1. Surfaces & Elevation ────────────────────────────────────────────── */
+
   .surface-1 { background-color: hsl(var(--surface-1)); }
   .surface-2 { background-color: hsl(var(--surface-2)); }
 
@@ -133,32 +128,90 @@
     box-shadow: var(--elev-1);
   }
 
-  .panel-elevated {
-    @apply bg-card border border-border rounded-xl;
-    box-shadow: var(--elev-2);
+  /* ── 2. Typography Scale ─────────────────────────────────────────────────── */
+
+  .mono-value {
+    @apply font-mono text-xl font-semibold tabular-nums tracking-tight text-foreground;
   }
 
-  .hairline { @apply border-border/70; }
-
-  /* ── Stat cards ───────────────────────────────────────────────────────── */
-  .stat-card {
-    @apply bg-card border border-border rounded-xl p-4 flex flex-col gap-1.5;
-    box-shadow: var(--elev-1);
-    transition: border-color .15s ease, transform .15s ease;
+  .stat-label {
+    @apply text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground;
   }
-  .stat-card:hover { @apply border-border/90; }
 
+  .stat-sub {
+    @apply text-[11px] text-muted-foreground/70 leading-tight;
+  }
+
+  /* stat-value kept for backwards compat with non-terminal pages */
   .stat-value {
     @apply text-2xl font-semibold tracking-tight tabular-nums text-foreground;
   }
-  .stat-label {
-    @apply text-[11px] text-muted-foreground uppercase tracking-[0.08em] font-medium;
-  }
-  .stat-sub {
-    @apply text-[11px] text-muted-foreground tabular-nums;
+
+  /* ── 3. Navigation Primitives ────────────────────────────────────────────── */
+
+  .nav-section-header {
+    @apply text-[10px] font-semibold uppercase tracking-[0.1em];
+    color: hsl(var(--primary) / 0.55);
   }
 
-  /* ── Environment badges ───────────────────────────────────────────────── */
+  .nav-badge {
+    @apply inline-flex items-center justify-center min-w-[18px] h-[18px] px-1
+           rounded-full text-[10px] font-bold leading-none;
+  }
+
+  .nav-link {
+    @apply flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px]
+           text-muted-foreground font-medium transition-colors duration-100
+           hover:text-foreground relative;
+  }
+
+  .nav-link:hover {
+    background: linear-gradient(to right, hsl(var(--primary) / 0.06), transparent);
+  }
+
+  .nav-link-active {
+    @apply text-foreground;
+    background: linear-gradient(to right, hsl(var(--primary) / 0.12), transparent);
+  }
+
+  .nav-link-active::before {
+    content: '';
+    @apply absolute left-0 top-[20%] bottom-[20%] w-[3px] rounded-r-full;
+    background-color: hsl(var(--primary));
+  }
+
+  /* ── 4. Card Primitives ──────────────────────────────────────────────────── */
+
+  .terminal-card {
+    @apply bg-card border border-border rounded-xl p-3 border-l-2 transition-shadow duration-150;
+    box-shadow: var(--elev-1);
+  }
+
+  .terminal-card-cyan {
+    border-left-color: hsl(192 85% 48% / 0.6);
+  }
+
+  .terminal-card-teal {
+    border-left-color: hsl(172 70% 42% / 0.6);
+  }
+
+  .terminal-card-red {
+    border-left-color: hsl(0 75% 58% / 0.6);
+  }
+
+  .terminal-card:hover {
+    box-shadow: var(--elev-1), 0 0 0 1px hsl(var(--primary) / 0.2);
+  }
+
+  /* stat-card kept for pages not yet migrated to terminal-card */
+  .stat-card {
+    @apply bg-card border border-border rounded-xl p-4 flex flex-col gap-1.5;
+    box-shadow: var(--elev-1);
+    transition: border-color .15s ease;
+  }
+
+  /* ── 5. Badge Primitives ─────────────────────────────────────────────────── */
+
   .badge-base {
     @apply inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full
            uppercase tracking-[0.09em] border;
@@ -173,77 +226,53 @@
   }
 
   .badge-demo {
-    @apply badge-base bg-blue-500/10 text-blue-400 border-blue-500/25;
+    @apply badge-base bg-cyan-500/10 text-cyan-400 border-cyan-500/25;
   }
   .badge-demo::before {
     content: '';
-    @apply w-1.5 h-1.5 rounded-full bg-blue-400 inline-block;
+    @apply w-1.5 h-1.5 rounded-full bg-cyan-400 inline-block;
   }
 
   .badge-mock {
-    @apply badge-base bg-purple-500/10 text-purple-400 border-purple-500/25;
+    @apply badge-base bg-teal-500/10 text-teal-400 border-teal-500/25;
   }
   .badge-mock::before {
     content: '';
-    @apply w-1.5 h-1.5 rounded-full bg-purple-400 inline-block;
+    @apply w-1.5 h-1.5 rounded-full bg-teal-400 inline-block;
   }
 
-  /* ── P&L colours ──────────────────────────────────────────────────────── */
+  /* ── 6. P&L Colours ──────────────────────────────────────────────────────── */
+
   .pnl-positive { @apply text-emerald-400 font-medium tabular-nums; }
   .pnl-negative { @apply text-red-400 font-medium tabular-nums; }
-  .pnl-neutral  { @apply text-muted-foreground tabular-nums; }
+  .pnl-neutral  { @apply text-muted-foreground font-medium tabular-nums; }
 
-  /* ── Data tables ──────────────────────────────────────────────────────── */
-  .data-table {
-    @apply w-full border-collapse text-sm;
-  }
-  .data-table thead th {
-    @apply text-[10px] font-semibold text-muted-foreground uppercase tracking-[0.08em]
-           px-4 py-2.5 bg-muted/40 text-left border-b border-border
-           first:rounded-tl-lg last:rounded-tr-lg;
-  }
-  .data-table tbody td {
-    @apply px-4 py-3 text-sm border-b border-border/60 text-foreground/90;
-  }
-  .data-table tbody tr:last-child td { @apply border-b-0; }
-  .data-table tbody tr {
-    transition: background-color .1s ease;
-  }
-  .data-table tbody tr:hover { @apply bg-muted/25; }
-  .data-table tbody tr:hover td { }
+  /* ── 7. Table Primitives ─────────────────────────────────────────────────── */
 
-  /* ── Section headings ─────────────────────────────────────────────────── */
-  .section-title {
-    @apply text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground;
+  .table-header-cell {
+    @apply text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground
+           px-4 py-2 text-left;
   }
 
-  /* ── Nav link ─────────────────────────────────────────────────────────── */
-  .nav-link {
-    @apply flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] font-medium
-           text-muted-foreground/90 transition-colors relative;
+  .table-row-hover {
+    @apply transition-colors duration-100;
   }
-  .nav-link:hover {
-    @apply text-foreground bg-accent/60;
-  }
-  .nav-link-active {
-    @apply text-foreground bg-primary/10;
-  }
-  .nav-link-active::before {
-    content: '';
-    @apply absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-primary;
+  .table-row-hover:hover {
+    background-color: hsl(var(--primary) / 0.04);
   }
 
-  /* ── Key/value list ───────────────────────────────────────────────────── */
+  /* ── 8. Form Controls ────────────────────────────────────────────────────── */
+
   .kv-row {
-    @apply flex items-center justify-between py-2 text-sm border-b border-border/50 last:border-b-0;
+    @apply flex items-center justify-between py-2.5 border-b border-border/50 last:border-0 text-[13px];
   }
-  .kv-label { @apply text-muted-foreground; }
-  .kv-value { @apply text-foreground font-medium tabular-nums; }
 
-  /* ── Subtle divider text ──────────────────────────────────────────────── */
-  .divider-label {
-    @apply text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/70;
+  /* ── 9. Status / Section Labels ──────────────────────────────────────────── */
+
+  .section-title {
+    @apply text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground;
   }
+
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
