@@ -4,7 +4,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Zap, Lock, Mail, Eye, EyeOff } from 'lucide-react'
+import { Zap, Lock, Mail, Eye, EyeOff, ShieldCheck, Server, Activity } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { Button, Card, Input, Label } from '@/components/ui'
 import { useAuthStore } from '@/stores/auth'
@@ -50,87 +50,135 @@ function LoginPageContent() {
   }
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-4 relative overflow-hidden">
-      {/* Ambient background effects */}
-      <div className="absolute inset-0 bg-grid opacity-[0.25] pointer-events-none" />
-      <div className="absolute inset-0 bg-radial-fade pointer-events-none" />
-      <div className="absolute -top-1/2 left-1/2 -translate-x-1/2 w-[900px] h-[900px] rounded-full bg-primary/5 blur-3xl pointer-events-none" />
-
-      <div className="w-full max-w-[380px] relative animate-fade-in">
-        {/* Logo */}
-        <div className="flex flex-col items-center mb-8">
-          <div className="w-14 h-14 rounded-2xl bg-primary flex items-center justify-center mb-4 shadow-xl shadow-primary/30 ring-1 ring-primary/40 relative">
-            <div className="absolute inset-0 rounded-2xl bg-gradient-to-b from-white/15 to-transparent" />
-            <Zap className="w-7 h-7 text-white relative" strokeWidth={2.5} />
+    <div className="relative grid min-h-screen overflow-hidden bg-background lg:grid-cols-[minmax(0,0.92fr)_minmax(420px,1fr)]">
+      <section className="relative hidden min-h-screen border-r border-border bg-card lg:flex">
+        <div className="absolute inset-0 bg-grid opacity-[0.18] pointer-events-none" />
+        <div className="relative z-10 flex w-full flex-col p-10">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 text-primary">
+              <Zap className="h-5 w-5" strokeWidth={2.4} />
+            </div>
+            <div>
+              <p className="text-sm font-semibold leading-tight">CashGuard</p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">Trading 212 control room</p>
+            </div>
           </div>
-          <h1 className="text-2xl font-semibold tracking-tight">CashGuard Trader</h1>
-          <p className="text-[13px] text-muted-foreground mt-1.5">
-            Trading 212 · Local-first · Cash-only
-          </p>
-        </div>
 
-        <Card className="p-7 shadow-[var(--elev-3)] backdrop-blur-sm bg-card/95">
-          <div className="mb-5">
-            <h2 className="text-base font-semibold tracking-tight">Sign in</h2>
-            <p className="text-xs text-muted-foreground mt-1">
-              Access your trading dashboard
+          <div className="mt-auto max-w-md space-y-7">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">Local stack</p>
+              <h2 className="mt-3 text-3xl font-semibold tracking-tight">Cash-only automation with every guard visible.</h2>
+              <p className="mt-4 text-sm leading-6 text-muted-foreground">
+                Broker state, risk limits, emergency controls, and seeded verification data stay close to the dashboard.
+              </p>
+            </div>
+
+            <div className="grid gap-3">
+              <AuthSignal icon={ShieldCheck} label="Cash-only invariant" value="No leverage path" />
+              <AuthSignal icon={Server} label="Seeded stack" value="Postgres, Redis, worker, API" />
+              <AuthSignal icon={Activity} label="Runtime checks" value="Dashboard, broker, risk, reports" />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <main className="flex min-h-screen items-center justify-center px-4 py-10 sm:px-6 lg:px-10">
+        <div className="w-full max-w-[400px] animate-fade-in">
+          <div className="mb-8 flex flex-col items-center text-center lg:items-start lg:text-left">
+            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-lg border border-primary/25 bg-primary text-primary-foreground shadow-lg shadow-primary/20">
+              <Zap className="h-6 w-6" strokeWidth={2.4} />
+            </div>
+            <h1 className="text-2xl font-semibold tracking-tight">CashGuard Trader</h1>
+            <p className="mt-1.5 text-[13px] text-muted-foreground">
+              Trading 212 - local-first - cash-only
             </p>
           </div>
 
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="email">Email</Label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/70 pointer-events-none" />
-                <Input
-                  id="email"
-                  type="text"
-                  autoComplete="username"
-                  className="pl-9 h-10"
-                  placeholder="admin@localhost"
-                  {...register('email')}
-                />
-              </div>
-              {errors.email && (
-                <p className="text-xs text-red-400 mt-1">{errors.email.message}</p>
-              )}
+          <Card className="rounded-lg p-6 shadow-[var(--elev-2)] sm:p-7">
+            <div className="mb-6">
+              <h2 className="text-base font-semibold tracking-tight">Sign in</h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Access your trading dashboard
+              </p>
             </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="password">Password</Label>
-              <div className="relative">
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/70 pointer-events-none" />
-                <Input
-                  id="password"
-                  type={showPass ? 'text' : 'password'}
-                  className="pl-9 pr-9 h-10"
-                  placeholder="••••••••"
-                  {...register('password')}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPass(!showPass)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground/70 hover:text-foreground transition-colors"
-                  tabIndex={-1}
-                >
-                  {showPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                </button>
+            <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="email">Email</Label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/70 pointer-events-none" />
+                  <Input
+                    id="email"
+                    type="text"
+                    autoComplete="username"
+                    className="h-10 pl-9"
+                    placeholder="admin@localhost"
+                    {...register('email')}
+                  />
+                </div>
+                {errors.email && (
+                  <p className="mt-1 text-xs text-red-400">{errors.email.message}</p>
+                )}
               </div>
-              {errors.password && (
-                <p className="text-xs text-red-400 mt-1">{errors.password.message}</p>
-              )}
-            </div>
 
-            <Button type="submit" className="w-full h-10 mt-1" loading={loading}>
-              Sign in
-            </Button>
-          </form>
-        </Card>
+              <div className="space-y-1.5">
+                <Label htmlFor="password">Password</Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/70 pointer-events-none" />
+                  <Input
+                    id="password"
+                    type={showPass ? 'text' : 'password'}
+                    className="h-10 pl-9 pr-9"
+                    placeholder="Password"
+                    {...register('password')}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPass(!showPass)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground/70 hover:text-foreground transition-colors"
+                    tabIndex={-1}
+                    aria-label={showPass ? 'Hide password' : 'Show password'}
+                  >
+                    {showPass ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
+                {errors.password && (
+                  <p className="mt-1 text-xs text-red-400">{errors.password.message}</p>
+                )}
+              </div>
 
-        <div className="mt-6 flex items-center justify-center gap-2 text-[11px] text-muted-foreground/70">
-          <div className="w-1 h-1 rounded-full bg-emerald-500/80" />
-          <span>Default credentials: admin@localhost · change-me</span>
+              <Button type="submit" className="mt-1 h-10 w-full" loading={loading}>
+                Sign in
+              </Button>
+            </form>
+          </Card>
+
+          <p className="mt-5 text-center text-[11px] text-muted-foreground/75 lg:text-left">
+            Default credentials: admin@localhost - change-me
+          </p>
         </div>
+      </main>
+    </div>
+  )
+}
+
+function AuthSignal({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: React.ElementType
+  label: string
+  value: string
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-border/70 bg-background/55 px-3 py-3">
+      <div className="flex h-8 w-8 items-center justify-center rounded-md border border-border/70 bg-card text-primary">
+        <Icon className="h-4 w-4" />
+      </div>
+      <div>
+        <p className="text-xs font-medium text-foreground">{label}</p>
+        <p className="mt-0.5 text-[11px] text-muted-foreground">{value}</p>
       </div>
     </div>
   )
@@ -145,7 +193,7 @@ function LoginFallback() {
             <Zap className="w-6 h-6 text-white" />
           </div>
           <h1 className="text-xl font-semibold">CashGuard Trader</h1>
-          <p className="text-sm text-muted-foreground mt-1">Trading 212 · Local-first · Cash-only</p>
+          <p className="text-sm text-muted-foreground mt-1">Trading 212 - local-first - cash-only</p>
         </div>
       </div>
     </div>

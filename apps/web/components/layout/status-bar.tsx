@@ -3,11 +3,13 @@ import { useEffect, useState } from 'react'
 import { AlertOctagon, TrendingUp, Wifi, WifiOff, Activity, Clock } from 'lucide-react'
 import { useSettings, useAccount, useDepsHealth } from '@/hooks/use-api'
 import { formatCurrency, cn } from '@/lib/utils'
+import { useUIStore } from '@/stores/ui-store'
 
 export function StatusBar() {
   const { data: settings } = useSettings()
   const { data: account } = useAccount()
   const { data: deps } = useDepsHealth()
+  const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
 
   const isHealthy = deps?.database === 'ok' && deps?.redis === 'ok'
   const mode = process.env.NEXT_PUBLIC_APP_MODE ?? 'mock'
@@ -15,8 +17,9 @@ export function StatusBar() {
   return (
     <div
       className={cn(
-        'fixed bottom-0 left-56 right-0 z-20 h-7 flex items-center px-6 gap-5',
+        'fixed bottom-0 right-0 z-20 hidden h-7 items-center gap-5 px-6 md:flex',
         'text-[11px] font-medium border-t backdrop-blur-xl transition-colors tabular-nums',
+        sidebarCollapsed ? 'left-16' : 'left-56',
         settings?.kill_switch_active
           ? 'bg-red-950/85 border-red-900/60 text-red-200'
           : 'bg-card/80 border-border text-muted-foreground'

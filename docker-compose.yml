@@ -106,9 +106,13 @@ services:
     build:
       context: ./apps/web
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: /api
+        API_URL: http://api:8000
     container_name: t212_web
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_API_URL=/api
+      - API_URL=http://api:8000
       - NEXT_PUBLIC_APP_MODE=${APP_MODE:-mock}
     ports:
       - "3000:3000"

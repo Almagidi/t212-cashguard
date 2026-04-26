@@ -17,8 +17,8 @@ import type {
   WatchlistIntelligence,
 } from '@/types'
 
-const DEFAULT_API_URL = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8000'
-const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL).replace(/\/$/, '')
+const DEFAULT_API_URL = process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000'
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || DEFAULT_API_URL).replace(/\/$/, '')
 
 class ApiClient {
   private client: AxiosInstance

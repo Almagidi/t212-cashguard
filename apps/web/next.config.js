@@ -1,6 +1,9 @@
 /** @type {import('next').NextConfig} */
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const PUBLIC_API_URL = process.env.NEXT_PUBLIC_API_URL || ''
+const API_URL = process.env.API_URL || (
+  PUBLIC_API_URL.startsWith('http') ? PUBLIC_API_URL : 'http://localhost:8000'
+)
 const API_HOST = (() => {
   try { return new URL(API_URL).host } catch { return 'localhost:8000' }
 })()
@@ -14,10 +17,11 @@ const connectHosts = Array.from(new Set([
 const isDev = process.env.NODE_ENV === 'development'
 const cspDirectives = [
   `default-src 'self'`,
-  // Next.js requires 'unsafe-eval' in development for fast-refresh
+  // Next.js emits inline bootstrap/theme scripts. A nonce-based CSP would be
+  // stricter, but the current app has no per-request nonce plumbing.
   isDev
     ? `script-src 'self' 'unsafe-eval' 'unsafe-inline'`
-    : `script-src 'self'`,
+    : `script-src 'self' 'unsafe-inline'`,
   `style-src 'self' 'unsafe-inline'`,   // Tailwind inlines critical CSS
   `img-src 'self' data: blob:`,
   `font-src 'self'`,

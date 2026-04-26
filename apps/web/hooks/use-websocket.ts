@@ -132,10 +132,11 @@ export function useWebSocket(options: UseWebSocketOptions) {
     if (options.wsBaseUrl) return options.wsBaseUrl;
     if (typeof window === "undefined") return null;
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host  = process.env.NEXT_PUBLIC_API_URL
-      ? new URL(process.env.NEXT_PUBLIC_API_URL).host
-      : window.location.host;
-    return `${proto}//${host}/v1/ws/live`;
+    const publicApiUrl = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
+    if (publicApiUrl?.startsWith("http")) {
+      return `${proto}//${new URL(publicApiUrl).host}/v1/ws/live`;
+    }
+    return `${proto}//${window.location.host}${publicApiUrl || ""}/v1/ws/live`;
   }, [options.wsBaseUrl]);
 
   const connect = useCallback(() => {
