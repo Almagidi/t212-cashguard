@@ -1,6 +1,6 @@
 'use client'
 import { useExecutionQualityReport, usePerformanceReport, useTradesReport } from '@/hooks/use-api'
-import { Card, CardHeader, CardTitle, CardContent, TerminalCard, Spinner, EmptyState, Button, Badge, PageHeader } from '@/components/ui'
+import { Card, CardHeader, CardTitle, CardContent, TerminalCard, StatCard, Spinner, EmptyState, Button, Badge, PageHeader } from '@/components/ui'
 import { QueryError } from '@/components/shared/query-error'
 import { executionQualityClass, formatCurrency, formatDate, orderStatusBg, pnlClass, cn } from '@/lib/utils'
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
