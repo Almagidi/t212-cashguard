@@ -7,7 +7,7 @@ import {
 import { useTradesList, useUpdateTradeJournal } from '@/hooks/use-api'
 import {
   Card, CardContent, CardHeader, CardTitle,
-  Button, Badge, Spinner, EmptyState,
+  Button, Badge, Spinner, EmptyState, PageHeader,
 } from '@/components/ui'
 import { formatCurrency, formatPnL, pnlClass, cn } from '@/lib/utils'
 
@@ -312,20 +312,11 @@ export default function JournalPage() {
 
   return (
     <div className="max-w-4xl space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-start gap-3">
-          <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/25 flex items-center justify-center flex-shrink-0">
-            <BookOpen className="w-4 h-4 text-primary" />
-          </div>
-          <div>
-            <h2 className="text-xl font-semibold tracking-tight">Trade Journal</h2>
-            <p className="text-[13px] text-muted-foreground mt-1 tabular-nums">
-              {total} trades · {journaledCount} journaled this page
-            </p>
-          </div>
-        </div>
-      </div>
+      <PageHeader
+        icon={<BookOpen className="h-5 w-5" />}
+        label="Trade Journal"
+        sub={`${total} trades · ${journaledCount} journaled this page`}
+      />
 
       {/* Filters */}
       <div className="flex items-center gap-2 flex-wrap">
