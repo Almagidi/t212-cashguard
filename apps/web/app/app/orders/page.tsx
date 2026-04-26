@@ -1,8 +1,8 @@
 'use client'
 import { useState } from 'react'
-import { Eye, RefreshCw, X } from 'lucide-react'
+import { Eye, RefreshCw, X, ClipboardList } from 'lucide-react'
 import { useOrder, useOrders, useCancelOrder, useCancelAllPending } from '@/hooks/use-api'
-import { Button, Card, CardContent, Badge, Spinner, EmptyState } from '@/components/ui'
+import { Button, Card, CardContent, Badge, Spinner, EmptyState, PageHeader } from '@/components/ui'
 import { QueryError } from '@/components/shared/query-error'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { OrderDetailDialog } from '@/components/orders/order-detail-dialog'
@@ -37,27 +37,28 @@ export default function OrdersPage() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h2 className="text-xl font-semibold tracking-tight">Orders</h2>
-          <p className="text-[13px] text-muted-foreground mt-1">
-            {allOrders.length} total
-            {pendingCount > 0 && <span> · <span className="text-amber-400 font-medium">{pendingCount} pending</span></span>}
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => qc.invalidateQueries({ queryKey: ['orders'] })}>
-            <RefreshCw className="w-3.5 h-3.5" />
-            Refresh
-          </Button>
-          {pendingCount > 0 && (
-            <Button variant="danger" size="sm" onClick={() => setShowCancelAll(true)}>
-              <X className="w-3.5 h-3.5" />
-              Cancel All ({pendingCount})
+      <PageHeader
+        icon={<ClipboardList className="h-5 w-5" />}
+        label="Orders"
+        sub={<>
+          {allOrders.length} total
+          {pendingCount > 0 && <> · <span className="text-amber-400 font-medium">{pendingCount} pending</span></>}
+        </>}
+        actions={
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => qc.invalidateQueries({ queryKey: ['orders'] })}>
+              <RefreshCw className="w-3.5 h-3.5" />
+              Refresh
             </Button>
-          )}
-        </div>
-      </div>
+            {pendingCount > 0 && (
+              <Button variant="danger" size="sm" onClick={() => setShowCancelAll(true)}>
+                <X className="w-3.5 h-3.5" />
+                Cancel All ({pendingCount})
+              </Button>
+            )}
+          </div>
+        }
+      />
 
       {/* Tabs */}
       <div className="inline-flex gap-0.5 p-1 bg-muted/40 border border-border rounded-lg">
