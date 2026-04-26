@@ -5,7 +5,7 @@ import {
   useSettings, useEmergencyKillSwitch, useEmergencyAutoTradingOff,
   useEmergencyAutoTradingOn, useEmergencyCancelAll, useEmergencyFlattenAll,
 } from '@/hooks/use-api'
-import { Button, Card, CardContent, Spinner } from '@/components/ui'
+import { Button, Card, CardContent, Spinner, PageHeader } from '@/components/ui'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { cn } from '@/lib/utils'
 
@@ -87,12 +87,11 @@ export default function EmergencyPage() {
 
   return (
     <div className="max-w-3xl space-y-6">
-      <div>
-        <h2 className="text-xl font-semibold tracking-tight">Emergency Controls</h2>
-        <p className="text-[13px] text-muted-foreground mt-1">
-          Kill switch and rapid unwind · All actions are audit-logged
-        </p>
-      </div>
+      <PageHeader
+        icon={<AlertOctagon className="h-5 w-5" />}
+        label="Emergency Controls"
+        sub="Kill switch and rapid unwind · All actions are audit-logged"
+      />
 
       {/* Warning header */}
       <div className="p-4 bg-red-500/8 border border-red-500/25 rounded-xl">
