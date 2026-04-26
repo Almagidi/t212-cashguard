@@ -154,7 +154,7 @@ function LoginPageContent() {
           </Card>
 
           <p className="mt-5 text-center text-[11px] text-muted-foreground/75 lg:text-left">
-            Default credentials: admin@localhost - change-me
+            Default credentials: admin@localhost - mero5564
           </p>
         </div>
       </main>

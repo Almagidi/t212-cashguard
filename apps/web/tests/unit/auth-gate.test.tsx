@@ -67,9 +67,10 @@ describe('AuthGate', () => {
     })
   })
 
-  it('logs out and redirects when session verification fails', async () => {
+  it('logs out and redirects when session verification fails with 401', async () => {
     getToken.mockReturnValue('bad-token')
-    getMe.mockRejectedValue(new Error('Unauthorized'))
+    const err = Object.assign(new Error('Unauthorized'), { response: { status: 401 } })
+    getMe.mockRejectedValue(err)
     logoutApi.mockResolvedValue(undefined)
 
     render(<AuthGate><div>secret page</div></AuthGate>)

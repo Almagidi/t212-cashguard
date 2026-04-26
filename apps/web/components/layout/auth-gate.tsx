@@ -35,11 +35,17 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         if (!active) return
         setUser(me)
         setIsChecking(false)
-      } catch {
+      } catch (err: unknown) {
         if (!active) return
-        await api.logout().catch(() => {})
-        logout()
-        router.replace(buildLoginTarget(pathname))
+        const status = (err as { response?: { status?: number } })?.response?.status
+        if (status === 401) {
+          await api.logout().catch(() => {})
+          logout()
+          router.replace(buildLoginTarget(pathname))
+        } else {
+          // Network or server error — token may still be valid, let the app render
+          setIsChecking(false)
+        }
       }
     }
 
