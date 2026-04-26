@@ -13,7 +13,7 @@ import { useSettings, useOrders, usePositions, useAlerts } from '@/hooks/use-api
 import { useUIStore } from '@/stores/ui-store'
 import { ShieldLogo } from './shield-logo'
 import api from '@/services/api'
-import { useState, useEffect } from 'react'
+import { useEffect } from 'react'
 
 // ── Nav groups ────────────────────────────────────────────────────────────────
 
@@ -119,12 +119,13 @@ function NavLink({
 
 // ── Sidebar content ───────────────────────────────────────────────────────────
 
-function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
+function SidebarContent({ onNavigate, forceExpanded = false }: { onNavigate?: () => void; forceExpanded?: boolean }) {
   const pathname   = usePathname()
   const router     = useRouter()
   const { logout } = useAuthStore()
   const { data: settings } = useSettings()
-  const { sidebarCollapsed, toggleSidebar } = useUIStore()
+  const { sidebarCollapsed: storeCollapsed, toggleSidebar } = useUIStore()
+  const sidebarCollapsed = forceExpanded ? false : storeCollapsed
   const badges     = useNavBadges()
 
   const getBadge = (key?: 'orders' | 'positions' | 'alerts') =>
@@ -166,7 +167,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       )}
 
       {/* ── Nav groups ───────────────────────────────────────────────────── */}
-      <nav className="flex-1 overflow-y-auto py-3 min-h-0 scrollbar-none space-y-4"
+      <nav className="flex-1 overflow-y-auto min-h-0 scrollbar-none space-y-4"
            style={{ padding: sidebarCollapsed ? '12px 8px' : '12px' }}>
         {NAV_GROUPS.map((group) => (
           <div key={group.label}>
@@ -214,16 +215,18 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
       {/* ── Footer: collapse toggle + logout ─────────────────────────────── */}
       <div className="p-3 border-t border-border flex-shrink-0 space-y-1">
-        <button
-          onClick={toggleSidebar}
-          title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          className={cn('nav-link w-full', sidebarCollapsed && 'justify-center px-0')}
-        >
-          {sidebarCollapsed
-            ? <ChevronRight className="w-[15px] h-[15px]" />
-            : <><ChevronLeft className="w-[15px] h-[15px]" /><span className="truncate">Collapse</span></>
-          }
-        </button>
+        {!forceExpanded && (
+          <button
+            onClick={toggleSidebar}
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            className={cn('nav-link w-full', sidebarCollapsed && 'justify-center px-0')}
+          >
+            {sidebarCollapsed
+              ? <ChevronRight className="w-[15px] h-[15px]" />
+              : <><ChevronLeft className="w-[15px] h-[15px]" /><span className="truncate">Collapse</span></>
+            }
+          </button>
+        )}
         <button
           onClick={handleLogout}
           title={sidebarCollapsed ? 'Logout' : undefined}
@@ -288,7 +291,7 @@ export function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => 
     <>
       <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden" onClick={onClose} />
       <aside className="fixed left-0 top-0 h-full w-64 bg-card border-r border-border flex flex-col z-50 md:hidden animate-slide-in">
-        <SidebarContent onNavigate={onClose} />
+        <SidebarContent onNavigate={onClose} forceExpanded />
       </aside>
     </>
   )
