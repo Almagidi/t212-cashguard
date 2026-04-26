@@ -306,6 +306,7 @@ export const EmptyState = ({
 )
 
 export { TerminalCard } from './terminal-card'
+export { PageHeader } from '../layout/page-header'
 
 /* ─────────────────────────────────────────────────────────────────────────────
    STAT CARD
