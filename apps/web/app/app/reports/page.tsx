@@ -1,6 +1,6 @@
 'use client'
 import { useExecutionQualityReport, usePerformanceReport, useTradesReport } from '@/hooks/use-api'
-import { Card, CardHeader, CardTitle, CardContent, StatCard, Spinner, EmptyState, Button, Badge } from '@/components/ui'
+import { Card, CardHeader, CardTitle, CardContent, TerminalCard, Spinner, EmptyState, Button, Badge, PageHeader } from '@/components/ui'
 import { QueryError } from '@/components/shared/query-error'
 import { executionQualityClass, formatCurrency, formatDate, orderStatusBg, pnlClass, cn } from '@/lib/utils'
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
@@ -45,16 +45,17 @@ export default function ReportsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h2 className="text-xl font-semibold tracking-tight">Reports</h2>
-          <p className="text-[13px] text-muted-foreground mt-1">Performance analytics and trade history</p>
-        </div>
-        <Button variant="outline" size="sm" onClick={exportCSV} disabled={!trades.length}>
-          <Download className="w-3.5 h-3.5" />
-          Export CSV
-        </Button>
-      </div>
+      <PageHeader
+        icon={<BarChart2 className="h-5 w-5" />}
+        label="Reports"
+        sub="Performance analytics and trade history"
+        actions={
+          <Button variant="outline" size="sm" onClick={exportCSV} disabled={!trades.length}>
+            <Download className="w-3.5 h-3.5" />
+            Export CSV
+          </Button>
+        }
+      />
 
       {isLoading ? (
         <div className="flex items-center gap-2 text-muted-foreground text-sm"><Spinner className="w-4 h-4" />Loading...</div>
@@ -62,28 +63,37 @@ export default function ReportsPage() {
         <QueryError error={error} onRetry={refetch} label="performance report" />
       ) : perf ? (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard label="Total Trades" value={perf.total_trades.toString()} />
-            <StatCard label="Win Rate"
-              value={<span className={perf.win_rate >= 0.5 ? 'text-emerald-400' : 'text-red-400'}>{(perf.win_rate * 100).toFixed(1)}%</span>}
-              sub={`${perf.winning_trades}W · ${perf.losing_trades}L`} />
-            <StatCard label="Total P&L"
-              value={<span className={pnlClass(perf.total_pnl)}>{perf.total_pnl >= 0 ? '+' : ''}{formatCurrency(perf.total_pnl)}</span>}
-              trend={perf.total_pnl > 0 ? 'up' : perf.total_pnl < 0 ? 'down' : 'neutral'} />
-            <StatCard label="Profit Factor"
-              value={<span className={perf.profit_factor >= 1 ? 'text-emerald-400' : 'text-red-400'}>{perf.profit_factor.toFixed(2)}</span>}
-              sub={perf.profit_factor >= 1 ? 'Profitable' : 'Unprofitable'} />
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <TerminalCard label="Total Trades" value={perf.total_trades.toString()} variant="cyan" />
+            <TerminalCard
+              label="Win Rate"
+              value={`${(perf.win_rate * 100).toFixed(1)}%`}
+              sub={`${perf.winning_trades}W · ${perf.losing_trades}L`}
+              variant={perf.win_rate >= 0.5 ? 'teal' : 'red'}
+            />
+            <TerminalCard
+              label="Total P&L"
+              value={`${perf.total_pnl >= 0 ? '+' : ''}${formatCurrency(perf.total_pnl)}`}
+              variant={perf.total_pnl > 0 ? 'teal' : perf.total_pnl < 0 ? 'red' : 'cyan'}
+            />
+            <TerminalCard
+              label="Profit Factor"
+              value={perf.profit_factor.toFixed(2)}
+              sub={perf.profit_factor >= 1 ? 'Profitable' : 'Unprofitable'}
+              variant={perf.profit_factor >= 1 ? 'teal' : 'red'}
+            />
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard label="Avg Win" value={<span className="text-emerald-400">{formatCurrency(perf.avg_win)}</span>} />
-            <StatCard label="Avg Loss" value={<span className="text-red-400">{formatCurrency(perf.avg_loss)}</span>} />
-            <StatCard label="Max Drawdown" value={<span className="text-red-400">{formatCurrency(perf.max_drawdown)}</span>} />
-            <StatCard label="Sharpe Ratio"
-              value={perf.sharpe_ratio !== null
-                ? <span className={perf.sharpe_ratio >= 1 ? 'text-emerald-400' : 'text-muted-foreground'}>{perf.sharpe_ratio.toFixed(2)}</span>
-                : <span className="text-muted-foreground">—</span>}
-              sub={perf.sharpe_ratio !== null ? 'Annualised' : 'Need more data'} />
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <TerminalCard label="Avg Win" value={formatCurrency(perf.avg_win)} variant="teal" />
+            <TerminalCard label="Avg Loss" value={formatCurrency(perf.avg_loss)} variant="red" />
+            <TerminalCard label="Max Drawdown" value={formatCurrency(perf.max_drawdown)} variant="red" />
+            <TerminalCard
+              label="Sharpe Ratio"
+              value={perf.sharpe_ratio !== null ? perf.sharpe_ratio.toFixed(2) : '—'}
+              sub={perf.sharpe_ratio !== null ? 'Annualised' : 'Need more data'}
+              variant={perf.sharpe_ratio !== null && perf.sharpe_ratio >= 1 ? 'teal' : 'cyan'}
+            />
           </div>
 
           {execQuality && (
