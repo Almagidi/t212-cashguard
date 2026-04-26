@@ -1,7 +1,8 @@
 'use client'
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
-import { BellRing, CheckCircle2, Lock, MessageSquare, Moon, Save, ShieldAlert, Sun, Unlock, XCircle } from 'lucide-react'
+import { BellRing, CheckCircle2, Lock, MessageSquare, Monitor, Moon, Save, ShieldAlert, Sun, Unlock, XCircle } from 'lucide-react'
+import { useTheme } from 'next-themes'
 import { useLiveReadiness, useSettings, useTelegramStatus, useTelegramTestAlert, useUpdateLiveReadiness, useUpdateSettings } from '@/hooks/use-api'
 import { Button, Card, CardHeader, CardTitle, CardContent, Input, Label, Spinner } from '@/components/ui'
 import { cn } from '@/lib/utils'
@@ -29,6 +30,7 @@ export default function SettingsPage() {
   const updateSettings = useUpdateSettings()
   const updateLiveReadiness = useUpdateLiveReadiness()
   const [pendingAction, setPendingAction] = useState<LiveReadinessAction | null>(null)
+  const { theme, setTheme } = useTheme()
 
   const { register, handleSubmit, watch, setValue, formState: { isDirty } } = useForm<PreferencesForm>({
     values: settings ? {
@@ -38,7 +40,7 @@ export default function SettingsPage() {
     } : undefined,
   })
 
-  const theme = watch('theme')
+  const formTheme = watch('theme')
 
   const onSubmit = (data: PreferencesForm) => updateSettings.mutate(data)
 
@@ -64,6 +66,44 @@ export default function SettingsPage() {
           Application preferences, integrations, and live-trading readiness
         </p>
       </div>
+
+      {/* Appearance */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Appearance</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-1">
+          {(
+            [
+              { label: 'Light',  value: 'light',  Icon: Sun  },
+              { label: 'Dark',   value: 'dark',   Icon: Moon },
+              { label: 'System', value: 'system', Icon: Monitor },
+            ] as const
+          ).map(({ label, value, Icon }) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setTheme(value)}
+              className={cn(
+                'kv-row w-full text-left cursor-pointer rounded-lg px-2 transition-colors',
+                theme === value
+                  ? 'text-primary font-medium'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              <span className="flex items-center gap-2 text-[13px]">
+                <Icon className="w-4 h-4" />
+                {label}
+              </span>
+              {theme === value && (
+                <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-primary">
+                  Active
+                </span>
+              )}
+            </button>
+          ))}
+        </CardContent>
+      </Card>
 
       {/* App info */}
       <Card>
@@ -110,7 +150,7 @@ export default function SettingsPage() {
                     onClick={() => setValue('theme', t, { shouldDirty: true })}
                     className={cn(
                       'flex items-center gap-2 px-3 py-2 rounded-md border text-sm transition-colors',
-                      theme === t ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-border/80 text-muted-foreground'
+                      formTheme === t ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:border-border/80 text-muted-foreground'
                     )}
                   >
                     {t === 'dark' ? <Moon className="w-3.5 h-3.5" /> : <Sun className="w-3.5 h-3.5" />}
