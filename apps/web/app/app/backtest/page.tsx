@@ -33,6 +33,7 @@ import {
   CardTitle,
   Input,
   Label,
+  PageHeader,
   Spinner,
   StatCard,
 } from '@/components/ui'
@@ -623,12 +624,11 @@ export default function BacktestPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-xl font-semibold tracking-tight">Backtest Engine</h2>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          Research strategies in demo-first mode with execution costs, drawdown controls, and walk-forward checks.
-        </p>
-      </div>
+      <PageHeader
+        icon={<FlaskConical className="h-5 w-5" />}
+        label="Backtest Engine"
+        sub="Research strategies in demo-first mode with execution costs, drawdown controls, and walk-forward checks."
+      />
 
       <div className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/10 p-4 text-amber-400">
         <ShieldAlert className="mt-0.5 h-4 w-4 flex-shrink-0" />
