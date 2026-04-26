@@ -16,8 +16,8 @@ describe('PageHeader', () => {
   })
 
   it('does not render sub when omitted', () => {
-    render(<PageHeader icon={<Database />} label="Instruments" />)
-    expect(screen.queryByRole('paragraph')).toBeNull()
+    const { container } = render(<PageHeader icon={<Database />} label="Instruments" />)
+    expect(container.querySelector('p')).toBeNull()
   })
 
   it('renders actions slot', () => {
