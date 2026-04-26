@@ -5,7 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { ShieldAlert, ShieldOff, Save, AlertTriangle } from 'lucide-react'
 import { useRiskProfile, useUpdateRiskProfile, useRiskEvents, useKillSwitch, useSettings } from '@/hooks/use-api'
-import { Button, Card, CardHeader, CardTitle, CardContent, Input, Label, Spinner } from '@/components/ui'
+import { Button, Card, CardHeader, CardTitle, CardContent, Input, Label, Spinner, PageHeader } from '@/components/ui'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { formatDate, cn } from '@/lib/utils'
 
@@ -57,12 +57,11 @@ export default function RiskPage() {
 
   return (
     <div className="max-w-3xl space-y-6">
-      <div>
-        <h2 className="text-xl font-semibold tracking-tight">Risk Controls</h2>
-        <p className="text-[13px] text-muted-foreground mt-1">
-          Limits, guards, and circuit breakers
-        </p>
-      </div>
+      <PageHeader
+        icon={<ShieldAlert className="h-5 w-5" />}
+        label="Risk Controls"
+        sub="Limits, guards, and circuit breakers"
+      />
 
       {/* Kill switch status */}
       <div className={cn(
