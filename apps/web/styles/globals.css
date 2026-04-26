@@ -32,6 +32,12 @@
     --elev-1: 0 1px 2px 0 rgb(0 0 0 / 0.06);
     --elev-2: 0 4px 16px -4px rgb(0 0 0 / 0.1);
     --elev-3: 0 12px 32px -8px rgb(0 0 0 / 0.14);
+
+    --chart-positive: 158 64% 30%;
+    --chart-negative: 0 73% 42%;
+    --chart-neutral: 215 16% 47%;
+    --chart-grid: 215 16% 47%;
+    --chart-zero: 215 16% 47%;
   }
 
   .dark {
@@ -60,6 +66,12 @@
     --elev-1: 0 1px 3px 0 rgb(0 0 0 / 0.5);
     --elev-2: 0 6px 24px -6px rgb(0 0 0 / 0.6);
     --elev-3: 0 16px 48px -12px rgb(0 0 0 / 0.75);
+
+    --chart-positive: 158 64% 52%;
+    --chart-negative: 0 91% 71%;
+    --chart-neutral: 215 16% 64%;
+    --chart-grid: 215 16% 64%;
+    --chart-zero: 215 16% 64%;
   }
 }
 
@@ -284,6 +296,15 @@
     transition: background-color 100ms;
   }
   .data-table tbody tr:hover td {
+    background-color: hsl(var(--primary) / 0.04);
+  }
+  .data-table th.sticky {
+    background-color: hsl(var(--muted) / 0.7);
+  }
+  .data-table td.sticky {
+    background-color: hsl(var(--card));
+  }
+  .data-table tbody tr:hover td.sticky {
     background-color: hsl(var(--primary) / 0.04);
   }
 

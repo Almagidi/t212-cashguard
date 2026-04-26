@@ -22,6 +22,13 @@ function formatValue(v: number) {
   return v >= 0 ? `+$${v.toFixed(2)}` : `-$${Math.abs(v).toFixed(2)}`
 }
 
+const chartColors = {
+  positive: 'hsl(var(--chart-positive))',
+  negative: 'hsl(var(--chart-negative))',
+  grid: 'hsl(var(--chart-grid) / 0.18)',
+  zero: 'hsl(var(--chart-zero) / 0.35)',
+}
+
 // Custom tooltip
 function CustomTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null
@@ -50,7 +57,7 @@ export function EquityCurve({ data, className, height = 180, showGrid = false }:
 
   const lastVal   = data[data.length - 1]?.pnl ?? 0
   const isPositive = lastVal >= 0
-  const strokeColor = isPositive ? '#34d399' : '#f87171'
+  const strokeColor = isPositive ? chartColors.positive : chartColors.negative
   const fillId      = isPositive ? 'green-fill' : 'red-fill'
 
   return (
@@ -59,17 +66,17 @@ export function EquityCurve({ data, className, height = 180, showGrid = false }:
         <AreaChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
           <defs>
             <linearGradient id="green-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%"  stopColor="#34d399" stopOpacity={0.25} />
-              <stop offset="95%" stopColor="#34d399" stopOpacity={0} />
+              <stop offset="5%"  stopColor={chartColors.positive} stopOpacity={0.22} />
+              <stop offset="95%" stopColor={chartColors.positive} stopOpacity={0} />
             </linearGradient>
             <linearGradient id="red-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%"  stopColor="#f87171" stopOpacity={0.25} />
-              <stop offset="95%" stopColor="#f87171" stopOpacity={0} />
+              <stop offset="5%"  stopColor={chartColors.negative} stopOpacity={0.22} />
+              <stop offset="95%" stopColor={chartColors.negative} stopOpacity={0} />
             </linearGradient>
           </defs>
 
           {showGrid && (
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+            <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} vertical={false} />
           )}
 
           <XAxis
@@ -87,7 +94,7 @@ export function EquityCurve({ data, className, height = 180, showGrid = false }:
             width={45}
           />
           <Tooltip content={<CustomTooltip />} />
-          <ReferenceLine y={0} stroke="rgba(255,255,255,0.15)" strokeDasharray="3 3" />
+          <ReferenceLine y={0} stroke={chartColors.zero} strokeDasharray="3 3" />
 
           <Area
             type="monotone"
@@ -117,7 +124,7 @@ interface SparklineProps {
 export function Sparkline({ data, width = 80, height = 32, positive, className }: SparklineProps) {
   const pts = data.map((v, i) => ({ i, v }))
   const isPos = positive ?? (data[data.length - 1] ?? 0) >= (data[0] ?? 0)
-  const color = isPos ? '#34d399' : '#f87171'
+  const color = isPos ? chartColors.positive : chartColors.negative
   const fillId = `spark-${isPos ? 'g' : 'r'}-${Math.random().toString(36).slice(2, 6)}`
 
   if (!data.length) return null

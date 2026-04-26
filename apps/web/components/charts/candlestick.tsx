@@ -11,6 +11,13 @@ import {
 import { ArrowUpRight, ArrowDownRight } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
 
+const chartColors = {
+  positive: 'hsl(var(--chart-positive))',
+  negative: 'hsl(var(--chart-negative))',
+  neutral: 'hsl(var(--chart-neutral) / 0.55)',
+  grid: 'hsl(var(--chart-grid) / 0.16)',
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface OHLCBar {
@@ -46,8 +53,8 @@ function CandleShape(props: any) {
   const { open, close, high, low } = payload
   const isUp = close >= open
 
-  const fill   = isUp ? '#34d399' : '#f87171'
-  const stroke = isUp ? '#10b981' : '#ef4444'
+  const fill   = isUp ? chartColors.positive : chartColors.negative
+  const stroke = isUp ? chartColors.positive : chartColors.negative
 
   // We compute pixel positions manually. recharts passes y = top of bar, height = bar height
   // We need to map price range → pixel coords
@@ -95,7 +102,7 @@ function SignalDot(props: any) {
   const { cx, cy, payload } = props
   if (!payload) return null
   const isBuy = payload.side === 'buy'
-  const color = isBuy ? '#34d399' : '#f87171'
+  const color = isBuy ? chartColors.positive : chartColors.negative
   const arrow = isBuy ? '▲' : '▼'
   return (
     <g>
@@ -177,7 +184,7 @@ export function CandlestickChart({
     <div className={className} style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+          <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} vertical={false} />
           <XAxis
             dataKey="date"
             tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
@@ -206,7 +213,7 @@ export function CandlestickChart({
           <Line
             type="monotone"
             dataKey="close"
-            stroke="rgba(148,163,184,0.3)"
+            stroke={chartColors.neutral}
             strokeWidth={1}
             dot={false}
             strokeDasharray="4 4"
@@ -272,8 +279,12 @@ export function CandlestickDemo({ ticker = 'AAPL', className }: { ticker?: strin
       <CandlestickChart data={data} signals={signals} height={220} />
       {/* Signal legend */}
       <div className="flex items-center gap-4 text-[10px] text-muted-foreground">
-        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" /> Buy signal</span>
-        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400 inline-block" /> Sell signal</span>
+        <span className="flex items-center gap-1">
+          <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: chartColors.positive }} /> Buy signal
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: chartColors.negative }} /> Sell signal
+        </span>
       </div>
     </div>
   )
