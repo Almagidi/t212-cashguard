@@ -11,7 +11,7 @@ import type { WidgetId } from '@/stores/dashboard'
 import { useAccount, useCashGuard, useMarketDataHealth, usePortfolioAttribution, usePortfolioMonitoring, usePositions, useOrders, useSignals, useSettings, useRiskProfile, usePerformanceReport, useWatchlistIntelligence } from '@/hooks/use-api'
 import {
   Card, CardHeader, CardTitle, CardContent,
-  Badge, Button, Spinner, EmptyState,
+  Badge, Button, Spinner, EmptyState, TerminalCard,
 } from '@/components/ui'
 import { formatCurrency, formatPnL, pnlClass, formatDateShort, orderStatusBg, cn } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
@@ -22,78 +22,10 @@ import api from '@/services/api'
 import { StrategyPresetGrid } from '@/components/strategies/strategy-preset-grid'
 import type { AllocatorDecision } from '@/types'
 
-// ── Stat card with glassmorphism ──────────────────────────────────────────────
-
-interface GlassStatProps {
-  label: string
-  value: React.ReactNode
-  sub?: string
-  accent?: 'blue' | 'emerald' | 'red' | 'amber' | 'purple'
-  trend?: 'up' | 'down' | 'neutral'
-  icon?: React.ReactNode
-  live?: boolean
-}
-
 function allocationFromSnapshot(snapshot: Record<string, unknown> | null): AllocatorDecision | null {
   const allocation = snapshot?.allocation
   if (!allocation || typeof allocation !== 'object') return null
   return allocation as AllocatorDecision
-}
-
-function GlassStat({ label, value, sub, accent = 'blue', trend, icon, live }: GlassStatProps) {
-  const accentMap = {
-    blue:    { glow: 'from-blue-500/8',    ring: 'group-hover:border-blue-500/30',    icon: 'text-blue-400',    dot: 'bg-blue-400' },
-    emerald: { glow: 'from-emerald-500/8', ring: 'group-hover:border-emerald-500/30', icon: 'text-emerald-400', dot: 'bg-emerald-400' },
-    red:     { glow: 'from-red-500/8',     ring: 'group-hover:border-red-500/30',     icon: 'text-red-400',     dot: 'bg-red-400' },
-    amber:   { glow: 'from-amber-500/8',   ring: 'group-hover:border-amber-500/30',   icon: 'text-amber-400',   dot: 'bg-amber-400' },
-    purple:  { glow: 'from-purple-500/8',  ring: 'group-hover:border-purple-500/30',  icon: 'text-purple-400',  dot: 'bg-purple-400' },
-  }
-  const a = accentMap[accent]
-  return (
-    <div
-      className={cn(
-        'stat-card group relative overflow-hidden transition-all duration-200',
-        a.ring,
-      )}
-    >
-      {/* Subtle accent glow */}
-      <div
-        className={cn(
-          'pointer-events-none absolute inset-0 bg-gradient-to-br to-transparent opacity-60',
-          a.glow,
-        )}
-      />
-      {/* Live pulse dot */}
-      {live && (
-        <span className="absolute top-3.5 right-3.5 flex items-center justify-center">
-          <span className={cn('absolute w-2.5 h-2.5 rounded-full opacity-40 animate-ping', a.dot)} />
-          <span className={cn('relative w-1.5 h-1.5 rounded-full', a.dot)} />
-        </span>
-      )}
-      <div className="relative flex items-start justify-between gap-2">
-        <div className="flex-1 min-w-0 space-y-1.5">
-          <p className="stat-label">{label}</p>
-          <div className="text-[22px] font-semibold tabular-nums tracking-tight truncate leading-tight">
-            {value}
-          </div>
-          {sub && <p className="stat-sub">{sub}</p>}
-        </div>
-        {icon && (
-          <div className={cn('flex-shrink-0 p-2 rounded-lg bg-background/40 border border-border/50', a.icon)}>
-            {icon}
-          </div>
-        )}
-      </div>
-      {trend && trend !== 'neutral' && (
-        <div
-          className={cn(
-            'absolute bottom-0 left-0 right-0 h-[2px]',
-            trend === 'up' ? 'bg-gradient-to-r from-emerald-500/0 via-emerald-500/60 to-emerald-500/0' : 'bg-gradient-to-r from-red-500/0 via-red-500/60 to-red-500/0',
-          )}
-        />
-      )}
-    </div>
-  )
 }
 
 // ── WS status pill ────────────────────────────────────────────────────────────
@@ -339,34 +271,33 @@ export default function DashboardPage() {
         </div>
       ) : (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <GlassStat
+          <TerminalCard
             label="Total Value"
             value={formatCurrency(totalValue)}
             sub={liveAccount?.currency ?? account?.currency ?? 'GBP'}
-            accent="blue"
+            variant="cyan"
             icon={<Wallet className="w-5 h-5" />}
             live={wsStatus === 'connected'}
           />
-          <GlassStat
+          <TerminalCard
             label="Available to Trade"
             value={formatCurrency(freeCash)}
             sub="Cash-only · no leverage"
-            accent="purple"
+            variant="cyan"
             icon={<ShieldCheck className="w-5 h-5" />}
           />
-          <GlassStat
+          <TerminalCard
             label="Invested"
             value={formatCurrency(invested)}
             sub={`${livePositions.length} position${livePositions.length !== 1 ? 's' : ''}`}
-            accent="amber"
+            variant="cyan"
             icon={<BarChart2 className="w-5 h-5" />}
           />
-          <GlassStat
+          <TerminalCard
             label="Unrealized P&L"
             value={<span className={pnlClass(unrealizedPnl)}>{formatPnL(unrealizedPnl)}</span>}
             sub={unrealizedPnl > 0 ? 'Profitable' : unrealizedPnl < 0 ? 'In drawdown' : 'Flat'}
-            accent={unrealizedPnl >= 0 ? 'emerald' : 'red'}
-            trend={unrealizedPnl > 0 ? 'up' : unrealizedPnl < 0 ? 'down' : 'neutral'}
+            variant={unrealizedPnl >= 0 ? 'teal' : 'red'}
             icon={unrealizedPnl >= 0 ? <TrendingUp className="w-5 h-5" /> : <ArrowDownRight className="w-5 h-5" />}
             live={wsStatus === 'connected'}
           />
