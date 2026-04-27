@@ -70,8 +70,9 @@ celerybeat-schedule
 # Tool-session artifacts (superpowers, brainstorm outputs)
 .superpowers/
 
-# Claude Code worktrees (local tool state, not project config)
+# Claude Code local state (worktrees, user-specific permissions)
 .claude/worktrees/
+.claude/settings.local.json
 
 # SWC compiler cache (Next.js)
 .swc/
