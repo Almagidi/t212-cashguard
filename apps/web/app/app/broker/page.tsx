@@ -45,7 +45,7 @@ function BrokerDiagnosticsPanel({ diagnostics }: { diagnostics: BrokerDiagnostic
     <Card className="border-amber-500/20 bg-amber-500/5">
       <CardHeader>
         <div className="flex items-start gap-3">
-          <ShieldAlert className="w-5 h-5 text-amber-300 mt-0.5" />
+          <ShieldAlert className="w-5 h-5 text-amber-700 dark:text-amber-300 mt-0.5" />
           <div>
             <CardTitle className="text-base">{diagnostics.title}</CardTitle>
             <p className="text-sm text-muted-foreground mt-1">{diagnostics.summary}</p>
@@ -60,12 +60,14 @@ function BrokerDiagnosticsPanel({ diagnostics }: { diagnostics: BrokerDiagnostic
               <div key={cause.key} className="rounded-lg border border-border/70 bg-background/60 p-3">
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <Icon className="w-4 h-4 text-amber-300" />
+                    <Icon className="w-4 h-4 text-amber-700 dark:text-amber-300" />
                     <p className="text-sm font-medium">{cause.label}</p>
                   </div>
                   <span className={cn(
                     'text-[11px] px-2 py-0.5 rounded-full font-medium',
-                    cause.likelihood === 'likely' ? 'bg-amber-500/15 text-amber-300' : 'bg-sky-500/15 text-sky-300'
+                    cause.likelihood === 'likely'
+                      ? 'bg-amber-500/15 text-amber-800 dark:text-amber-300'
+                      : 'bg-sky-500/15 text-sky-700 dark:text-sky-300'
                   )}>
                     {cause.likelihood === 'likely' ? 'Likely' : 'Possible'}
                   </span>
@@ -147,24 +149,24 @@ export default function BrokerPage() {
       />
 
       {/* Cash-only enforcement notice */}
-      <div className="flex items-start gap-3 p-4 bg-amber-500/8 border border-amber-500/25 rounded-xl text-amber-300">
+      <div className="flex items-start gap-3 p-4 bg-amber-500/8 border border-amber-500/25 rounded-xl text-amber-800 dark:text-amber-300">
         <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/25 flex items-center justify-center flex-shrink-0">
           <ShieldAlert className="w-4 h-4" />
         </div>
         <div className="text-sm">
           <p className="font-semibold">Cash-Only Mode Enforced</p>
-          <p className="text-amber-300/80 mt-1 leading-relaxed">
+          <p className="text-amber-700 dark:text-amber-300/80 mt-1 leading-relaxed">
             This application only trades using existing cash in your Trading 212 account. No deposits, leverage, or bank connections are ever made.
           </p>
         </div>
       </div>
 
       {status?.credential_state === 'reconnect_required' && (
-        <div className="flex items-start gap-3 p-4 bg-red-500/10 border border-red-500/20 rounded-lg text-red-300">
+        <div className="flex items-start gap-3 p-4 bg-red-500/10 border border-red-500/20 rounded-lg text-red-700 dark:text-red-300">
           <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
           <div className="text-sm">
             <p className="font-medium">Broker reconnection required</p>
-            <p className="text-red-200/80 mt-0.5">
+            <p className="text-red-800/80 dark:text-red-200/80 mt-0.5">
               {status.recovery_hint || 'Saved broker credentials can no longer be decrypted. Re-enter your Trading 212 API key and secret below to restore broker-backed features.'}
             </p>
           </div>
@@ -185,7 +187,7 @@ export default function BrokerPage() {
                 <span className={cn(
                   'text-xs px-2 py-0.5 rounded-full font-medium',
                   status.credential_state === 'reconnect_required'
-                    ? 'bg-amber-500/15 text-amber-300'
+                    ? 'bg-amber-500/15 text-amber-800 dark:text-amber-300'
                     : status.is_active && status.last_test_ok
                       ? 'bg-emerald-500/15 text-emerald-400'
                       : 'bg-red-500/15 text-red-400'

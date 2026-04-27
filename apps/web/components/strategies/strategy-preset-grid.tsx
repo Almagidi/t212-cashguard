@@ -44,17 +44,22 @@ function StrategyPresetCard({
   return (
     <Card className="border-border/70 bg-background/70">
       <CardHeader className={cn(compact ? 'pb-2' : 'pb-3')}>
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3">
+        <div className="grid grid-cols-[minmax(0,1fr)_112px] items-start gap-3">
+          <div className="flex min-w-0 items-start gap-3">
             <div className={cn('rounded-xl border p-2', PRESET_ACCENT[preset.key])}>
               {PRESET_ICON[preset.key]}
             </div>
-            <div className="space-y-1">
+            <div className="min-w-0 space-y-1">
               <CardTitle className="text-sm">{preset.label}</CardTitle>
               <p className="text-xs text-muted-foreground">{preset.style}</p>
             </div>
           </div>
-          <Badge variant="outline">Dry-run first</Badge>
+          <Badge
+            variant="outline"
+            className="w-[112px] justify-center whitespace-normal text-center leading-tight"
+          >
+            Dry-run first
+          </Badge>
         </div>
       </CardHeader>
       <CardContent className={cn('space-y-3', compact ? 'pt-0' : 'pt-0')}>
