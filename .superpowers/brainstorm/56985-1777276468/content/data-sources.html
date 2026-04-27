@@ -1,0 +1,83 @@
+<h2>Data source landscape</h2>
+<p class="subtitle">Pick everything you're willing to use. Some are already wired into the project.</p>
+
+<div class="options" data-multiselect>
+
+  <div class="option" data-choice="capitol_trades" onclick="toggleSelect(this)">
+    <div class="letter" style="background:rgba(16,185,129,0.15);color:#10b981">✓</div>
+    <div class="content">
+      <h3>Capitol Trades API <span style="font-size:11px;font-weight:400;color:#10b981;margin-left:8px">FREE</span></h3>
+      <p>Congressional STOCK Act disclosures. Every trade filed by House + Senate members. Updated within hours of filing. Also covers some executive branch officials.</p>
+      <p style="font-size:12px;margin-top:6px;color:var(--text-secondary)">⏱ 45-day max delay (STOCK Act window) · Coverage: all ~535 members · No key required</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="gdelt" onclick="toggleSelect(this)">
+    <div class="letter" style="background:rgba(16,185,129,0.15);color:#10b981">✓</div>
+    <div class="content">
+      <h3>GDELT <span style="font-size:11px;font-weight:400;color:#10b981;margin-left:8px">FREE</span></h3>
+      <p>Global Database of Events, Language and Tone. Monitors news across 100+ languages, updated every 15 minutes. Covers politics, business leaders, geopolitics, influential figures worldwide.</p>
+      <p style="font-size:12px;margin-top:6px;color:var(--text-secondary)">⏱ 15-min lag · Massive coverage · BigQuery or REST API</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="polygon_news" onclick="toggleSelect(this)">
+    <div class="letter" style="background:rgba(16,185,129,0.15);color:#10b981">★</div>
+    <div class="content">
+      <h3>Polygon News <span style="font-size:11px;font-weight:400;color:#10b981;margin-left:8px">ALREADY INTEGRATED</span></h3>
+      <p>Already wired in for ticker-scoped news. Can be extended to cover political and macro stories without any new API key.</p>
+      <p style="font-size:12px;margin-top:6px;color:var(--text-secondary)">Extend existing integration · No extra cost</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="stocktwits" onclick="toggleSelect(this)">
+    <div class="letter" style="background:rgba(99,102,241,0.15);color:#818cf8">~</div>
+    <div class="content">
+      <h3>StockTwits API <span style="font-size:11px;font-weight:400;color:#818cf8;margin-left:8px">FREE TIER</span></h3>
+      <p>Real-time social sentiment per ticker. Bullish/bearish ratios, message volume, trending tickers. Good proxy for retail sentiment without X/Twitter costs.</p>
+      <p style="font-size:12px;margin-top:6px;color:var(--text-secondary)">Free: 200 req/hr · Paid: $99/month for higher limits</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="reddit" onclick="toggleSelect(this)">
+    <div class="letter" style="background:rgba(99,102,241,0.15);color:#818cf8">~</div>
+    <div class="content">
+      <h3>Reddit API <span style="font-size:11px;font-weight:400;color:#818cf8;margin-left:8px">FREE</span></h3>
+      <p>r/wallstreetbets, r/stocks, r/investing mention counts and sentiment. Free tier is generous enough for this use case. Good for meme/retail momentum signals.</p>
+      <p style="font-size:12px;margin-top:6px;color:var(--text-secondary)">Free: 100 req/min · No paid tier needed for this use case</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="newsapi" onclick="toggleSelect(this)">
+    <div class="letter" style="background:rgba(99,102,241,0.15);color:#818cf8">~</div>
+    <div class="content">
+      <h3>NewsAPI <span style="font-size:11px;font-weight:400;color:#818cf8;margin-left:8px">$449/MONTH</span></h3>
+      <p>Broad news coverage across business, politics, technology. Free dev tier: 100 req/day, no live data. Real-time requires paid plan.</p>
+      <p style="font-size:12px;margin-top:6px;color:var(--text-secondary)">Dev: free (delayed) · Business: $449/mo (real-time)</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="quiverquant" onclick="toggleSelect(this)">
+    <div class="letter" style="background:rgba(99,102,241,0.15);color:#818cf8">~</div>
+    <div class="content">
+      <h3>QuiverQuant <span style="font-size:11px;font-weight:400;color:#818cf8;margin-left:8px">$50/MONTH</span></h3>
+      <p>Aggregates congressional trades, lobbying data, government contracts, and political Twitter sentiment into clean structured feeds. Easier than raw STOCK Act scraping.</p>
+      <p style="font-size:12px;margin-top:6px;color:var(--text-secondary)">$50/mo · Congress + lobbying + govt contracts in one API</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="twitter" onclick="toggleSelect(this)">
+    <div class="letter" style="background:rgba(239,68,68,0.15);color:#f87171">$$$</div>
+    <div class="content">
+      <h3>X / Twitter API <span style="font-size:11px;font-weight:400;color:#f87171;margin-left:8px">~$5,000/MONTH</span></h3>
+      <p>Real-time tweets from politicians and executives. Highest signal density but prohibitively expensive for retail. Basic tier ($100/mo) is too rate-limited for live trading.</p>
+      <p style="font-size:12px;margin-top:6px;color:var(--text-secondary)">Basic: $100/mo (very limited) · Enterprise: ~$5k/mo</p>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:20px;padding:14px;background:rgba(255,255,255,0.04);border-radius:10px;border:1px solid rgba(255,255,255,0.08)">
+  <p class="label">Recommended baseline — $0/month</p>
+  <p style="margin-top:6px;font-size:13px;color:var(--text-secondary)">Capitol Trades + GDELT + Polygon News (already wired) + StockTwits + Reddit covers all four intelligence layers for free. Add QuiverQuant ($50/mo) for cleaner congressional data with lobbying and government contract context.</p>
+</div>
