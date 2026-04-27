@@ -69,6 +69,7 @@ Runs instantly on every intelligence event. No API calls. Produces a `rule_score
 | StockTwits bullish ratio >70% | +6 |
 | StockTwits bearish ratio >70% | −6 |
 | Reddit mention spike (>3× avg) bullish | +4 |
+| Reddit mention spike (>3× avg) bearish | −4 |
 | Yahoo/Polygon news positive sentiment | +5 |
 | Yahoo/Polygon news negative sentiment | −5 |
 
@@ -92,10 +93,12 @@ Called only when `abs(rule_score) >= 8.0` — roughly 5–15 times per day, well
 - **If all three providers fail** → raise `AIUnavailableError` → trade enters manual review queue
 
 ### Score merge
+`rule_score` (range −20/+20) is normalised to [−10, +10] before merging:
 ```
-final_score = 0.4 × rule_score + 0.6 × llm_score
+normalised_rule = rule_score / 2.0
+final_score = 0.4 × normalised_rule + 0.6 × llm_score
 ```
-Both scores stored separately in `intelligence_snapshots` for audit.
+`final_score` is always in [−10, +10]. Both raw scores stored separately in `intelligence_snapshots` for audit.
 
 ---
 
@@ -212,6 +215,7 @@ Indexes: `(ticker, created_at DESC)`, `(sector, created_at DESC)`, `(expires_at)
 | stop_loss_price | DECIMAL(12,4) | placed at entry |
 | take_profit_price | DECIMAL(12,4) | placed at entry |
 | snapshot_ids | UUID[] | events that triggered entry |
+| t212_position_id | VARCHAR(50) | T212 API position ID, used to close/modify |
 | exit_price | DECIMAL(12,4) | null until closed |
 | pnl_usd | DECIMAL(12,2) | null until closed |
 | opened_at | TIMESTAMPTZ | default now() |
@@ -240,7 +244,24 @@ Indexes: `(ticker, status)`, `(status, hold_type)`, `(opened_at DESC)`
 
 ---
 
-## 11. New Backend Files
+## 11. New API Routes
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/v1/intelligence/feed` | Paginated intelligence event feed (all sources) |
+| GET | `/api/v1/intelligence/snapshots/{ticker}` | Per-ticker event history and current scores |
+| GET | `/api/v1/intelligence/congressional` | Congressional trades feed |
+| GET | `/api/v1/intelligence/social` | Social sentiment per ticker |
+| GET | `/api/v1/intelligence/positions` | Active Track B positions |
+| GET | `/api/v1/intelligence/review-queue` | Pending manual review items |
+| POST | `/api/v1/intelligence/review/{id}/approve` | Approve a queued trade |
+| POST | `/api/v1/intelligence/review/{id}/reject` | Reject a queued trade |
+| GET | `/api/v1/intelligence/status` | AI provider health + universe count |
+| GET | `/api/v1/intelligence/conviction` | Top conviction scores across universe |
+
+---
+
+## 12. New Backend Files
 
 | File | Purpose |
 |---|---|
@@ -265,7 +286,7 @@ Indexes: `(ticker, status)`, `(status, hold_type)`, `(opened_at DESC)`
 
 ---
 
-## 12. New Frontend Files
+## 13. New Frontend Files
 
 | File | Purpose |
 |---|---|
