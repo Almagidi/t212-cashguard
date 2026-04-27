@@ -1,0 +1,58 @@
+<h2>How should the AI reasoning layer work?</h2>
+<p class="subtitle">Deep analysis of news + congressional + social signals requires processing power. These are the free options.</p>
+
+<div class="options">
+
+  <div class="option" data-choice="rule_based" onclick="toggleSelect(this)">
+    <div class="letter" style="background:rgba(16,185,129,0.15);color:#10b981">A</div>
+    <div class="content">
+      <h3>Rule-Based Scoring <span style="font-size:11px;font-weight:400;color:#10b981;margin-left:8px">FREE · FAST · RELIABLE</span></h3>
+      <p>Weighted scoring formulas across all signals. Congressional buy on ticker X = +15 conviction. Negative GDELT tone on sector = −10. StockTwits bullish ratio >70% = +8. Scores combine into a per-ticker sentiment score that acts as the filter.</p>
+      <div style="margin-top:10px;padding:10px;background:rgba(16,185,129,0.06);border-radius:8px;font-size:12px">
+        <strong>Example:</strong> NVDA score: +32 (congressional buy +15, GDELT AI regulation positive +12, StockTwits bullish +8) → ORB signal ALLOWED, confidence +10%
+      </div>
+      <div class="pros-cons" style="margin-top:10px">
+        <div class="pros"><h4>Pros</h4><ul><li>Zero API cost, zero latency</li><li>Fully auditable — see exactly why a score changed</li><li>Backtestable against historical signals</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Can't understand nuance ("beat earnings but CFO resigned")</li><li>Requires manual weight tuning over time</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="gemini" onclick="toggleSelect(this)">
+    <div class="letter" style="background:rgba(99,102,241,0.15);color:#818cf8">B</div>
+    <div class="content">
+      <h3>Google Gemini Flash <span style="font-size:11px;font-weight:400;color:#818cf8;margin-left:8px">FREE · 1,500 REQ/DAY</span></h3>
+      <p>Gemini 2.0 Flash free tier: 1,500 requests/day, 1M tokens/minute. Feed it a bundle of news + congressional + social context and get back a structured conviction score with full reasoning chain.</p>
+      <div style="margin-top:10px;padding:10px;background:rgba(99,102,241,0.06);border-radius:8px;font-size:12px">
+        <strong>Example prompt:</strong> "Given these events about NVDA [congressional buy $250k, AI regulation news positive, StockTwits 74% bullish], rate market impact −10 to +10 with reasoning."
+      </div>
+      <div class="pros-cons" style="margin-top:10px">
+        <div class="pros"><h4>Pros</h4><ul><li>Understands nuance and complex relationships</li><li>Reasons: "Pelosi buys NVDA → AI committee chair → regulatory tailwind"</li><li>Free at trading volumes (dozens of analyses/day)</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Adds 1–3s latency per analysis</li><li>Can hallucinate — needs output validation</li><li>Google dependency</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="hybrid" onclick="toggleSelect(this)">
+    <div class="letter" style="background:rgba(245,158,11,0.15);color:#fbbf24">C</div>
+    <div class="content">
+      <h3>Hybrid: Rules + Gemini Flash <span style="font-size:11px;font-weight:400;color:#fbbf24;margin-left:8px">FREE · BEST OF BOTH</span></h3>
+      <p>Rule-based scoring runs instantly for every signal. Gemini is called only when a high-conviction event is detected — large congressional trade, major political news, or sharp sentiment spike. Rules handle volume, LLM handles depth.</p>
+      <div style="margin-top:10px;padding:10px;background:rgba(245,158,11,0.06);border-radius:8px;font-size:12px">
+        <strong>Logic:</strong> Rule score computed instantly → if score exceeds threshold → call Gemini for deep reasoning → merge both scores → final filter decision
+      </div>
+      <div class="pros-cons" style="margin-top:10px">
+        <div class="pros"><h4>Pros</h4><ul><li>Fast for routine signals, deep for high-impact events</li><li>Stays well within Gemini free tier (few LLM calls/day)</li><li>Auditable at both layers</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>More moving parts to build and test</li><li>Threshold tuning required to decide when to call LLM</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:20px;padding:14px;background:rgba(255,255,255,0.04);border-radius:10px;border:1px solid rgba(255,255,255,0.08)">
+  <p class="label">My recommendation</p>
+  <p style="margin-top:6px;font-size:13px;color:var(--text-secondary)">
+    <strong style="color:var(--text)">C — Hybrid.</strong> Rules give instant auditable scoring for every event. Gemini Flash (free, 1,500 req/day) handles deep reasoning for high-conviction events like large congressional trades or major political news. Covers the full "deep reasoning" requirement at zero cost.
+  </p>
+</div>
