@@ -1,0 +1,517 @@
+"""API tests for the unified read-only operator status endpoint."""
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from sqlalchemy import func, select
+
+from app.broker.kraken import KrakenAdapter
+from app.broker.trading212 import Trading212Adapter
+from app.db.models import (
+    AuditLog,
+    DcaConfig,
+    DcaPlanState,
+    Order,
+    Strategy,
+    VenueConfig,
+    WorkerHeartbeat,
+)
+from app.db.seed import seed_dca_configs
+from app.execution.engine import ExecutionEngine
+from app.market_data.kraken_provider import KrakenMarketDataProvider
+from app.strategies.kraken_dca_planner import KrakenDCAPlanner
+from app.workers import tasks_dca, tasks_heartbeat
+
+BASE_TIME = datetime(2026, 5, 1, 10, 0, tzinfo=UTC)
+
+
+async def _count(db, model) -> int:
+    return (await db.execute(select(func.count()).select_from(model))).scalar_one()
+
+
+def _venue(
+    venue: str,
+    *,
+    kill_switch_active: bool = False,
+    auto_trading_enabled: bool = False,
+    degraded_mode_active: bool = False,
+    note: str | None = None,
+) -> VenueConfig:
+    return VenueConfig(
+        venue=venue,
+        kill_switch_active=kill_switch_active,
+        auto_trading_enabled=auto_trading_enabled,
+        degraded_mode_active=degraded_mode_active,
+        note=note,
+        updated_at=BASE_TIME,
+    )
+
+
+def _strategy(
+    *,
+    venue: str = "t212",
+    is_live: bool = False,
+    live_approved: bool = False,
+) -> Strategy:
+    params = {}
+    if live_approved:
+        params = {"promotion": {"live_approved_at": BASE_TIME.isoformat()}}
+    return Strategy(
+        id=uuid.uuid4(),
+        name=f"{venue} strategy",
+        type="kraken_trend_follow" if venue == "kraken" else "orb",
+        is_enabled=True,
+        is_live=is_live,
+        venue=venue,
+        params=params,
+        allowed_tickers=["BTC/USD"] if venue == "kraken" else ["AAPL"],
+    )
+
+
+def _order(
+    *,
+    venue: str = "t212",
+    status: str = "submitted",
+    created_at: datetime = BASE_TIME,
+) -> Order:
+    return Order(
+        id=uuid.uuid4(),
+        client_order_key=f"{venue}-{status}-{uuid.uuid4()}",
+        ticker="BTC/USD" if venue == "kraken" else "AAPL",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("1"),
+        status=status,
+        venue=venue,
+        created_at=created_at,
+    )
+
+
+def _dca_decision(
+    *,
+    ticker: str = "BTC/USD",
+    code: str = "BUY_DUE",
+    occurred_at: datetime = BASE_TIME,
+) -> AuditLog:
+    return AuditLog(
+        action="dca_paper_decision",
+        entity_type="dca_plan_state",
+        entity_id=f"kraken:{ticker}",
+        actor="worker:dca_scheduler",
+        payload={
+            "ticker": ticker,
+            "venue": "kraken",
+            "paper_only": True,
+            "decision_code": code,
+            "reason": "test decision",
+            "amount_usd": "100.00000000",
+        },
+        occurred_at=occurred_at,
+    )
+
+
+def _heartbeat(*, last_seen_at: datetime, worker_name: str = "worker-a") -> WorkerHeartbeat:
+    return WorkerHeartbeat(
+        component="celery_worker",
+        worker_name=worker_name,
+        status="healthy",
+        last_seen_at=last_seen_at,
+        payload={"source": "test"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_operator_status_returns_control_tower_summary(
+    client,
+    auth_headers,
+    db,
+):
+    await seed_dca_configs(db)
+    eth_config = (
+        await db.execute(select(DcaConfig).where(DcaConfig.ticker == "ETH/USD"))
+    ).scalar_one()
+    eth_config.enabled = True
+    db.add_all(
+        [
+            _venue("t212", auto_trading_enabled=False, note="normal"),
+            _venue("kraken", auto_trading_enabled=False, note="paper only"),
+            _strategy(venue="t212", live_approved=True),
+            _strategy(venue="kraken"),
+            _order(
+                venue="t212",
+                status="submitted",
+                created_at=datetime.now(UTC) - timedelta(minutes=5),
+            ),
+            _order(
+                venue="kraken",
+                status="filled",
+                created_at=datetime.now(UTC) - timedelta(minutes=4),
+            ),
+            DcaPlanState(
+                ticker="BTC/USD",
+                venue="kraken",
+                last_buy_at=date(2026, 4, 30),
+                last_decision_at=date(2026, 5, 1),
+                total_allocated_usd=Decimal("250.00000000"),
+                executions_count=2,
+                last_decision_code="BUY_DUE",
+            ),
+            _dca_decision(ticker="BTC/USD", code="BUY_DUE", occurred_at=BASE_TIME),
+            _dca_decision(
+                ticker="ETH/USD",
+                code="BLOCKED_LOW_CASH",
+                occurred_at=BASE_TIME - timedelta(minutes=1),
+            ),
+            _dca_decision(
+                ticker="BTC/USD",
+                code="SKIP_ALREADY_BOUGHT_THIS_WINDOW",
+                occurred_at=BASE_TIME - timedelta(minutes=2),
+            ),
+        ]
+    )
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["subsystem"] == "operator"
+    assert body["mode"] == "read_only_status"
+    assert body["overall_status"] == "degraded"
+    assert body["live_trading_possible"] is False
+    assert body["live_trading_enabled_anywhere"] is False
+
+    venues = {item["venue"]: item for item in body["venues"]}
+    assert venues["t212"]["present"] is True
+    assert venues["t212"]["kill_switch_active"] is False
+    assert venues["kraken"]["note"] == "paper only"
+
+    assert body["trading212"]["strategies_count"] == 1
+    assert body["trading212"]["live_approved_strategies_count"] == 1
+    assert body["trading212"]["active_orders_count"] == 1
+    assert body["trading212"]["recent_orders_count"] == 1
+    assert body["trading212"]["latest_order_status"] == "submitted"
+    assert body["trading212"]["live_readiness_status"]["ready_for_live"] is False
+
+    assert body["kraken"]["strategies_count"] == 1
+    assert body["kraken"]["paper_only_strategies_count"] == 1
+    assert body["kraken"]["live_enabled"] is False
+    assert body["kraken"]["active_orders_count"] == 0
+    assert body["kraken"]["recent_orders_count"] == 1
+    assert "disabled/unproven" in body["kraken"]["safety_notes"][0]
+
+    assert body["dca"]["config_count"] == 2
+    assert body["dca"]["enabled_config_count"] == 1
+    assert body["dca"]["decision_count_total"] == 3
+    assert body["dca"]["buy_due_count"] == 1
+    assert body["dca"]["blocked_count"] == 1
+    assert body["dca"]["skipped_count"] == 1
+    assert body["dca"]["total_paper_allocated_usd"] == "250.00000000"
+    assert body["dca"]["scheduler_registered"] is True
+    assert body["dca"]["scheduler_cadence"] == "daily at 01:00 UTC"
+    assert body["dca"]["worker_health"] == "missing"
+    assert body["dca"]["runnable"] is False
+    assert body["dca"]["live_enabled"] is False
+    assert body["dca"]["paper_only"] is True
+    assert body["dca"]["tickers"] == ["BTC/USD", "ETH/USD"]
+
+    assert body["schedulers"] == {
+        "dca_paper_evaluate_registered": True,
+        "dca_paper_evaluate_cadence": "daily at 01:00 UTC",
+        "heartbeat_registered": True,
+        "heartbeat_cadence": "60.0",
+        "worker_health": "missing",
+        "heartbeat_component": "celery_worker",
+        "heartbeat_last_seen_at": None,
+        "heartbeat_stale_after_seconds": 180,
+    }
+    assert body["safety_flags"]["endpoint_read_only"] is True
+    assert body["safety_flags"]["creates_orders"] is False
+    assert body["safety_flags"]["calls_brokers"] is False
+    assert body["safety_flags"]["triggers_schedulers"] is False
+    assert body["safety_flags"]["runs_strategies"] is False
+    assert body["safety_flags"]["dca_runnable"] is False
+    assert body["safety_flags"]["dca_live_enabled"] is False
+    assert body["safety_flags"]["kraken_live_enabled"] is False
+    assert body["safety_flags"]["worker_health_known"] is False
+
+    dca_activity = [
+        item for item in body["recent_activity"]
+        if item["action"] == "dca_paper_decision"
+    ]
+    assert len(dca_activity) == 3
+    assert dca_activity[0]["payload_summary"]["ticker"] == "BTC/USD"
+    assert "api_key" not in dca_activity[0]["payload_summary"]
+
+
+@pytest.mark.asyncio
+async def test_operator_status_reports_recent_persisted_heartbeat_as_healthy(
+    client,
+    auth_headers,
+    db,
+):
+    db.add_all([
+        _venue("t212"),
+        _venue("kraken"),
+        _heartbeat(last_seen_at=datetime.now(UTC)),
+    ])
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dca"]["worker_health"] == "healthy"
+    assert body["schedulers"]["worker_health"] == "healthy"
+    assert body["schedulers"]["heartbeat_component"] == "celery_worker"
+    assert body["schedulers"]["heartbeat_last_seen_at"] is not None
+    assert body["schedulers"]["heartbeat_stale_after_seconds"] == 180
+    assert body["safety_flags"]["worker_health_known"] is True
+
+
+@pytest.mark.asyncio
+async def test_operator_status_reports_old_persisted_heartbeat_as_stale(
+    client,
+    auth_headers,
+    db,
+):
+    db.add_all([
+        _venue("t212"),
+        _venue("kraken"),
+        _heartbeat(last_seen_at=datetime.now(UTC) - timedelta(seconds=181)),
+    ])
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dca"]["worker_health"] == "stale"
+    assert body["schedulers"]["worker_health"] == "stale"
+    assert body["safety_flags"]["worker_health_known"] is False
+
+
+@pytest.mark.asyncio
+async def test_operator_status_does_not_treat_beat_registration_as_worker_health(
+    client,
+    auth_headers,
+    db,
+):
+    db.add_all([_venue("t212"), _venue("kraken")])
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schedulers"]["heartbeat_registered"] is True
+    assert body["schedulers"]["worker_health"] == "missing"
+    assert body["dca"]["scheduler_registered"] is True
+    assert body["dca"]["worker_health"] == "missing"
+
+
+@pytest.mark.asyncio
+async def test_operator_status_route_boundary_has_no_mutation_or_control_paths(
+    client,
+    auth_headers,
+):
+    for method in (client.post, client.patch, client.put, client.delete):
+        response = await method("/v1/operator/status", headers=auth_headers)
+        assert response.status_code == 405
+
+    for path in (
+        "/v1/operator/execute",
+        "/v1/operator/run",
+        "/v1/operator/trade",
+        "/v1/operator/live",
+        "/v1/operator/status/execute",
+        "/v1/operator/status/run",
+        "/v1/operator/status/trade",
+        "/v1/operator/status/live",
+    ):
+        response = await client.post(path, headers=auth_headers)
+        assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_operator_status_is_read_only_and_calls_no_side_effect_paths(
+    client,
+    auth_headers,
+    db,
+    monkeypatch,
+):
+    await seed_dca_configs(db)
+    db.add_all(
+        [
+            _venue("t212"),
+            _venue("kraken"),
+            DcaPlanState(
+                ticker="BTC/USD",
+                venue="kraken",
+                total_allocated_usd=Decimal("100.00000000"),
+                executions_count=1,
+                last_decision_code="BUY_DUE",
+            ),
+        ]
+    )
+    await db.commit()
+
+    create_order_intent = MagicMock()
+    submit_order = AsyncMock()
+    kraken_test_connection = AsyncMock()
+    kraken_place_market_order = AsyncMock()
+    t212_test_connection = AsyncMock()
+    t212_place_market_order = AsyncMock()
+    provider_get_quote = AsyncMock()
+    provider_get_bars = AsyncMock()
+    task_delay = MagicMock()
+    task_apply_async = MagicMock()
+    heartbeat_task_delay = MagicMock()
+    heartbeat_task_apply_async = MagicMock()
+    evaluate_plan = MagicMock()
+
+    monkeypatch.setattr(ExecutionEngine, "create_order_intent", create_order_intent)
+    monkeypatch.setattr(ExecutionEngine, "submit_order", submit_order)
+    monkeypatch.setattr(KrakenAdapter, "test_connection", kraken_test_connection)
+    monkeypatch.setattr(KrakenAdapter, "place_market_order", kraken_place_market_order)
+    monkeypatch.setattr(Trading212Adapter, "test_connection", t212_test_connection)
+    monkeypatch.setattr(Trading212Adapter, "place_market_order", t212_place_market_order)
+    monkeypatch.setattr(KrakenMarketDataProvider, "get_quote", provider_get_quote)
+    monkeypatch.setattr(KrakenMarketDataProvider, "get_bars", provider_get_bars)
+    monkeypatch.setattr(tasks_dca.evaluate_due_plans_task, "delay", task_delay)
+    monkeypatch.setattr(tasks_dca.evaluate_due_plans_task, "apply_async", task_apply_async)
+    monkeypatch.setattr(tasks_heartbeat.record_worker_heartbeat_task, "delay", heartbeat_task_delay)
+    monkeypatch.setattr(
+        tasks_heartbeat.record_worker_heartbeat_task,
+        "apply_async",
+        heartbeat_task_apply_async,
+    )
+    monkeypatch.setattr(KrakenDCAPlanner, "evaluate_plan", evaluate_plan)
+
+    before_orders = await _count(db, Order)
+    before_audits = await _count(db, AuditLog)
+    before_heartbeats = await _count(db, WorkerHeartbeat)
+    t212_before = (
+        await db.execute(select(VenueConfig).where(VenueConfig.venue == "t212"))
+    ).scalar_one()
+    config_before = (
+        await db.execute(select(DcaConfig).where(DcaConfig.ticker == "BTC/USD"))
+    ).scalar_one()
+    state_before = (
+        await db.execute(select(DcaPlanState).where(DcaPlanState.ticker == "BTC/USD"))
+    ).scalar_one()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+
+    t212_after = (
+        await db.execute(select(VenueConfig).where(VenueConfig.venue == "t212"))
+    ).scalar_one()
+    config_after = (
+        await db.execute(select(DcaConfig).where(DcaConfig.ticker == "BTC/USD"))
+    ).scalar_one()
+    state_after = (
+        await db.execute(select(DcaPlanState).where(DcaPlanState.ticker == "BTC/USD"))
+    ).scalar_one()
+
+    assert response.status_code == 200
+    assert await _count(db, Order) == before_orders == 0
+    assert await _count(db, AuditLog) == before_audits
+    assert await _count(db, WorkerHeartbeat) == before_heartbeats == 0
+    assert t212_after.kill_switch_active == t212_before.kill_switch_active
+    assert t212_after.auto_trading_enabled == t212_before.auto_trading_enabled
+    assert t212_after.degraded_mode_active == t212_before.degraded_mode_active
+    assert config_after.enabled == config_before.enabled
+    assert config_after.paper_only == config_before.paper_only
+    assert config_after.fixed_cash_amount == config_before.fixed_cash_amount
+    assert state_after.total_allocated_usd == state_before.total_allocated_usd
+    assert state_after.executions_count == state_before.executions_count
+    assert state_after.last_decision_code == state_before.last_decision_code
+
+    create_order_intent.assert_not_called()
+    submit_order.assert_not_called()
+    kraken_test_connection.assert_not_called()
+    kraken_place_market_order.assert_not_called()
+    t212_test_connection.assert_not_called()
+    t212_place_market_order.assert_not_called()
+    provider_get_quote.assert_not_called()
+    provider_get_bars.assert_not_called()
+    task_delay.assert_not_called()
+    task_apply_async.assert_not_called()
+    heartbeat_task_delay.assert_not_called()
+    heartbeat_task_apply_async.assert_not_called()
+    evaluate_plan.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_operator_status_kill_switch_blocks_and_missing_venues_degrade(
+    client,
+    auth_headers,
+    db,
+):
+    db.add_all([
+        _venue("t212", kill_switch_active=True),
+        _venue("kraken"),
+    ])
+    await db.commit()
+
+    blocked = await client.get("/v1/operator/status", headers=auth_headers)
+    assert blocked.status_code == 200
+    assert blocked.json()["overall_status"] == "blocked"
+    assert blocked.json()["safety_flags"]["any_venue_kill_switch_active"] is True
+
+    await db.delete(
+        (await db.execute(select(VenueConfig).where(VenueConfig.venue == "t212"))).scalar_one()
+    )
+    await db.commit()
+
+    degraded = await client.get("/v1/operator/status", headers=auth_headers)
+    body = degraded.json()
+    assert degraded.status_code == 200
+    assert body["overall_status"] == "degraded"
+    assert body["safety_flags"]["missing_expected_venue_configs"] is True
+    assert body["venues"][0]["present"] is False
+    assert "missing" in body["venues"][0]["note"]
+
+
+@pytest.mark.asyncio
+async def test_operator_status_recent_activity_limit_is_bounded(
+    client,
+    auth_headers,
+    db,
+):
+    db.add_all([_venue("t212"), _venue("kraken")])
+    db.add_all(
+        [
+            AuditLog(
+                action="dca_config_updated",
+                entity_type="dca_config",
+                entity_id=str(index),
+                actor="test",
+                payload={"ticker": "BTC/USD", "api_key": "should-not-leak"},
+                occurred_at=BASE_TIME - timedelta(seconds=index),
+            )
+            for index in range(101)
+        ]
+    )
+    await db.commit()
+
+    response = await client.get(
+        "/v1/operator/status?audit_limit=100",
+        headers=auth_headers,
+    )
+    too_large = await client.get(
+        "/v1/operator/status?audit_limit=101",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["recent_activity"]) == 100
+    payload_summaries = [item["payload_summary"] for item in body["recent_activity"]]
+    assert {"ticker": "BTC/USD"} in payload_summaries
+    assert all("api_key" not in summary for summary in payload_summaries)
+    assert too_large.status_code == 422

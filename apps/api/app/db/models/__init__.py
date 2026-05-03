@@ -5,13 +5,14 @@ All tables with proper constraints, indexes, and JSONB fields.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -235,6 +236,7 @@ class Strategy(Base):
     session_end: Mapped[str] = mapped_column(String(10), default="16:00")
     extended_hours: Mapped[bool] = mapped_column(Boolean, default=False)
     eod_flatten: Mapped[bool] = mapped_column(Boolean, default=True)
+    venue: Mapped[str] = mapped_column(String(50), nullable=False, default="t212", index=True)
     last_signal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -341,6 +343,7 @@ class Order(Base):
     execution_quality_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     execution_quality_grade: Mapped[str | None] = mapped_column(String(20))
     execution_quality_notes: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
+    venue: Mapped[str] = mapped_column(String(50), nullable=False, default="t212", index=True)
     is_dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
     cash_used: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     available_cash_at_submission: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
@@ -616,3 +619,129 @@ class AuditLog(Base):
         if payload is None:
             return None
         return to_jsonable(payload)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Venue Configuration
+# ──────────────────────────────────────────────────────────────────────────────
+
+class VenueConfig(Base):
+    __tablename__ = "venue_configs"
+
+    venue: Mapped[str] = mapped_column(String(50), primary_key=True)
+    kill_switch_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    auto_trading_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    degraded_mode_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DCA Config
+# Persistent paper-only policy for KrakenDCAPlanner. One row per (ticker, venue).
+# DCA remains outside the main strategy runner.
+# ──────────────────────────────────────────────────────────────────────────────
+
+class DcaConfig(Base):
+    __tablename__ = "dca_configs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticker: Mapped[str] = mapped_column(String(50), nullable=False)
+    venue: Mapped[str] = mapped_column(String(50), nullable=False)
+    cadence_days: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
+    fixed_cash_amount: Mapped[Decimal] = mapped_column(
+        Numeric(20, 8), nullable=False, default=Decimal("100")
+    )
+    dip_buy_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    dip_threshold_pct: Mapped[Decimal] = mapped_column(
+        Numeric(10, 4), nullable=False, default=Decimal("5.0")
+    )
+    dip_buy_multiplier: Mapped[Decimal] = mapped_column(
+        Numeric(10, 4), nullable=False, default=Decimal("2.0")
+    )
+    dip_ema_period: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    min_cash_reserve: Mapped[Decimal] = mapped_column(
+        Numeric(20, 8), nullable=False, default=Decimal("500")
+    )
+    max_position_percent: Mapped[Decimal] = mapped_column(
+        Numeric(10, 4), nullable=False, default=Decimal("25.0")
+    )
+    paper_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "venue", name="uq_dca_config_ticker_venue"),
+        Index("ix_dca_configs_ticker_venue", "ticker", "venue"),
+        Index("ix_dca_configs_enabled", "enabled"),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DCA Plan State
+# Persistent state for KrakenDCAPlanner. One row per (ticker, venue) pair.
+# PAPER_ONLY scaffold — not connected to any execution path.
+# ──────────────────────────────────────────────────────────────────────────────
+
+class DcaPlanState(Base):
+    __tablename__ = "dca_plan_states"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticker: Mapped[str] = mapped_column(String(50), nullable=False)
+    venue: Mapped[str] = mapped_column(String(50), nullable=False)
+    last_buy_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    last_decision_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    total_allocated_usd: Mapped[Decimal] = mapped_column(
+        Numeric(20, 8), nullable=False, default=Decimal("0")
+    )
+    executions_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_decision_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    last_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("ticker", "venue", name="uq_dca_plan_state_ticker_venue"),
+        Index("ix_dca_plan_states_ticker_venue", "ticker", "venue"),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Worker Heartbeat
+# Persisted observability-only liveness source for backend workers.
+# ──────────────────────────────────────────────────────────────────────────────
+
+class WorkerHeartbeat(Base):
+    __tablename__ = "worker_heartbeats"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    component: Mapped[str] = mapped_column(String(100), nullable=False)
+    worker_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="healthy")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("component", "worker_name", name="uq_worker_heartbeats_component_worker"),
+        Index("ix_worker_heartbeats_component", "component"),
+        Index("ix_worker_heartbeats_last_seen_at", "last_seen_at"),
+    )
+
+    @validates("payload")
+    def _normalize_payload(self, _key: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+        return cast(dict[str, Any], to_jsonable(payload or {}))
