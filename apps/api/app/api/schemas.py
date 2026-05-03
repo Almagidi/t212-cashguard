@@ -4,11 +4,11 @@ Pydantic v2 schemas for all API request/response models.
 from __future__ import annotations
 
 import uuid  # noqa: TC003
-from datetime import datetime  # noqa: TC003
+from datetime import date, datetime  # noqa: TC003
 from decimal import Decimal  # noqa: TC003
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 # ─── Base ───────────────────────────────────────────────────────────────────
 
@@ -51,6 +51,7 @@ class UserOut(BaseSchema):
 # ─── Broker ──────────────────────────────────────────────────────────────────
 
 class BrokerConnectRequest(BaseModel):
+    broker: Literal["trading212", "kraken"] = "trading212"
     api_key: str = Field(min_length=1)
     api_secret: str = Field(min_length=1)
     environment: Literal["demo", "live"] = "demo"
@@ -84,7 +85,7 @@ class BrokerDiagnostics(BaseModel):
 
 class BrokerStatusOut(BaseSchema):
     id: uuid.UUID
-    broker: str
+    broker: Literal["trading212", "kraken"]
     environment: str
     is_active: bool
     credential_state: Literal["mock", "configured", "reconnect_required", "not_connected"]
@@ -124,6 +125,273 @@ class CashGuardStatus(BaseModel):
     total_cash: float
     cash_only_mode: bool
     currency: str
+
+
+# ─── DCA Config Management / Operator Status ────────────────────────────────
+
+DcaSupportedTicker = Literal["BTC/USD", "ETH/USD"]
+
+
+class DcaConfigCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: DcaSupportedTicker
+    venue: Literal["kraken"] = "kraken"
+    cadence_days: int = Field(gt=0)
+    fixed_cash_amount: Decimal = Field(gt=0)
+    dip_buy_enabled: bool
+    dip_buy_multiplier: Decimal = Field(ge=1)
+    min_cash_reserve: Decimal = Field(ge=0)
+    max_position_percent: Decimal = Field(gt=0, le=50)
+    enabled: Literal[False] = False
+    paper_only: Literal[True] = True
+
+
+class DcaConfigUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cadence_days: int | None = Field(default=None, gt=0)
+    fixed_cash_amount: Decimal | None = Field(default=None, gt=0)
+    dip_buy_enabled: bool | None = None
+    dip_buy_multiplier: Decimal | None = Field(default=None, ge=1)
+    min_cash_reserve: Decimal | None = Field(default=None, ge=0)
+    max_position_percent: Decimal | None = Field(default=None, gt=0, le=50)
+
+
+class DcaConfigOut(BaseSchema):
+    id: uuid.UUID
+    ticker: str
+    venue: str
+    cadence_days: int
+    fixed_cash_amount: Decimal
+    dip_buy_enabled: bool
+    dip_buy_multiplier: Decimal
+    min_cash_reserve: Decimal
+    max_position_percent: Decimal
+    paper_only: bool
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class DcaLatestStateOut(BaseSchema):
+    last_buy_at: date | None
+    last_decision_at: date | None
+    total_allocated_usd: Decimal
+    executions_count: int
+    last_decision_code: str | None
+    last_reason: str | None
+
+
+class DcaConfigStatusOut(BaseSchema):
+    id: uuid.UUID
+    ticker: str
+    venue: str
+    enabled: bool
+    paper_only: bool
+    cadence_days: int
+    fixed_cash_amount: Decimal
+    min_cash_reserve: Decimal
+    max_position_percent: Decimal
+    dip_buy_enabled: bool
+    dip_buy_multiplier: Decimal
+    latest_state: DcaLatestStateOut | None = None
+
+
+class DcaAuditEntryOut(BaseModel):
+    id: uuid.UUID
+    created_at: datetime
+    action: str
+    entity_type: str | None
+    entity_id: str | None
+    actor: str
+    metadata: dict[str, Any] | None
+
+
+class DcaSafetyFlagsOut(BaseModel):
+    dca_planner_runnable_is_false: bool
+    dca_planner_paper_only_is_true: bool
+    main_runner_registered: bool
+    order_creation_supported: bool
+
+
+class DcaOperatorStatusOut(BaseModel):
+    subsystem: Literal["kraken_dca"]
+    mode: Literal["paper_only"]
+    runnable: bool
+    live_enabled: bool
+    scheduler_registered: bool
+    scheduler_cadence: str | None
+    config_count: int
+    enabled_config_count: int
+    configs: list[DcaConfigStatusOut]
+    recent_audit_entries: list[DcaAuditEntryOut]
+    safety_flags: DcaSafetyFlagsOut
+
+
+class DcaActivityConfigOut(BaseSchema):
+    id: uuid.UUID
+    ticker: str
+    venue: str
+    enabled: bool
+    paper_only: bool
+    cadence_days: int
+    fixed_cash_amount: Decimal
+    max_position_percent: Decimal
+
+
+class DcaTickerActivityOut(BaseModel):
+    ticker: str
+    venue: str
+    enabled: bool
+    latest_decision_code: str | None
+    latest_decision_at: datetime | None
+    latest_reason: str | None
+    total_allocated_usd: Decimal
+    executions_count: int
+    last_buy_at: date | None
+    decision_counts_by_code: dict[str, int]
+
+
+class DcaRecentDecisionOut(BaseModel):
+    audit_id: uuid.UUID
+    occurred_at: datetime
+    ticker: str | None
+    venue: str | None
+    decision_code: str | None
+    reason: str | None
+    payload_summary: dict[str, Any]
+
+
+class DcaActivitySafetyFlagsOut(DcaSafetyFlagsOut):
+    execution_called_by_report: bool
+    provider_called_by_report: bool
+    scheduler_triggered_by_report: bool
+
+
+class DcaActivityReportOut(BaseModel):
+    subsystem: Literal["kraken_dca"]
+    mode: Literal["paper_only"]
+    runnable: bool
+    live_enabled: bool
+    generated_at: datetime
+    config_count: int
+    enabled_config_count: int
+    decision_count_total: int
+    decision_counts_by_code: dict[str, int]
+    buy_due_count: int
+    blocked_count: int
+    skipped_count: int
+    total_paper_allocated_usd: Decimal
+    order_count_sanity: int
+    configs: list[DcaActivityConfigOut]
+    per_ticker_activity: list[DcaTickerActivityOut]
+    recent_decisions: list[DcaRecentDecisionOut]
+    safety_flags: DcaActivitySafetyFlagsOut
+
+
+# ─── Unified Operator Status ─────────────────────────────────────────────────
+
+class OperatorVenueStatusOut(BaseModel):
+    venue: str
+    present: bool
+    kill_switch_active: bool | None
+    auto_trading_enabled: bool | None
+    degraded_mode_active: bool | None
+    note: str | None
+    updated_at: datetime | None
+
+
+class OperatorTrading212StatusOut(BaseModel):
+    strategies_count: int
+    live_approved_strategies_count: int
+    active_orders_count: int
+    recent_orders_count: int
+    latest_order_status: str | None
+    live_readiness_status: LiveReadinessStatus | None
+    safety_notes: list[str]
+
+
+class OperatorKrakenStatusOut(BaseModel):
+    strategies_count: int
+    paper_only_strategies_count: int
+    live_enabled: bool
+    recent_orders_count: int
+    active_orders_count: int
+    venue_config: OperatorVenueStatusOut | None
+    safety_notes: list[str]
+
+
+class OperatorDcaStatusOut(BaseModel):
+    config_count: int
+    enabled_config_count: int
+    decision_count_total: int
+    buy_due_count: int
+    blocked_count: int
+    skipped_count: int
+    total_paper_allocated_usd: Decimal
+    scheduler_registered: bool
+    scheduler_cadence: str | None
+    worker_health: Literal["healthy", "stale", "missing", "unknown"]
+    runnable: bool
+    live_enabled: bool
+    paper_only: bool
+    tickers: list[str]
+
+
+class OperatorSchedulersStatusOut(BaseModel):
+    dca_paper_evaluate_registered: bool
+    dca_paper_evaluate_cadence: str | None
+    heartbeat_registered: bool
+    heartbeat_cadence: str | None
+    worker_health: Literal["healthy", "stale", "missing", "unknown"]
+    heartbeat_component: str
+    heartbeat_last_seen_at: datetime | None
+    heartbeat_stale_after_seconds: int
+
+
+class OperatorRecentActivityOut(BaseModel):
+    id: uuid.UUID
+    occurred_at: datetime
+    action: str
+    entity_type: str | None
+    entity_id: str | None
+    actor: str
+    payload_summary: dict[str, Any]
+
+
+class OperatorSafetyFlagsOut(BaseModel):
+    endpoint_read_only: bool
+    creates_orders: bool
+    calls_brokers: bool
+    triggers_schedulers: bool
+    runs_strategies: bool
+    dca_runnable: bool
+    dca_live_enabled: bool
+    kraken_live_enabled: bool
+    cash_only_mode: bool
+    live_trading_enabled_setting: bool
+    app_live_trading_unlocked: bool
+    any_venue_kill_switch_active: bool
+    any_venue_degraded: bool
+    missing_expected_venue_configs: bool
+    worker_health_known: bool
+
+
+class OperatorStatusOut(BaseModel):
+    subsystem: Literal["operator"]
+    mode: Literal["read_only_status"]
+    generated_at: datetime
+    overall_status: Literal["ok", "degraded", "blocked"]
+    live_trading_possible: bool
+    live_trading_enabled_anywhere: bool
+    venues: list[OperatorVenueStatusOut]
+    trading212: OperatorTrading212StatusOut
+    kraken: OperatorKrakenStatusOut
+    dca: OperatorDcaStatusOut
+    schedulers: OperatorSchedulersStatusOut
+    recent_activity: list[OperatorRecentActivityOut]
+    safety_flags: OperatorSafetyFlagsOut
 
 
 # ─── Instruments ─────────────────────────────────────────────────────────────
@@ -197,6 +465,8 @@ StrategyType = Literal[
     "cross_sectional_momentum",
     "low_volatility_tilt",
     "trend_following_tactical",
+    "kraken_breakout_retest",
+    "kraken_trend_follow",
 ]
 
 StrategyPresetKey = Literal[
@@ -206,6 +476,13 @@ StrategyPresetKey = Literal[
     "closing_momentum",
     "intraday_periodicity",
 ]
+
+VenueType = Literal["t212", "kraken"]
+
+_KRAKEN_STRATEGY_TYPES: frozenset[str] = frozenset({
+    "kraken_breakout_retest",
+    "kraken_trend_follow",
+})
 
 
 class StrategyCreate(BaseModel):
@@ -219,6 +496,20 @@ class StrategyCreate(BaseModel):
     session_end: str = "16:00"
     extended_hours: bool = False
     eod_flatten: bool = True
+    venue: VenueType = "t212"
+
+    @model_validator(mode="after")
+    def venue_must_match_strategy_type(self) -> StrategyCreate:
+        is_kraken = self.type in _KRAKEN_STRATEGY_TYPES
+        if is_kraken and self.venue != "kraken":
+            raise ValueError(
+                f"Strategy type {self.type!r} requires venue='kraken', got venue={self.venue!r}"
+            )
+        if not is_kraken and self.venue == "kraken":
+            raise ValueError(
+                f"Strategy type {self.type!r} is not a Kraken strategy type; venue must be 't212'"
+            )
+        return self
 
 
 class StrategyPresetCreate(BaseModel):
@@ -259,6 +550,7 @@ class StrategyOut(BaseSchema):
     description: str | None
     is_enabled: bool
     is_live: bool
+    venue: str
     risk_profile_id: uuid.UUID | None
     params: dict[str, Any]
     allowed_tickers: list[str]
@@ -575,14 +867,14 @@ class OrderCreate(BaseModel):
 
     @field_validator("limit_price")
     @classmethod
-    def validate_limit_price(cls, v, info):
+    def validate_limit_price(cls, v: Decimal | None, info: ValidationInfo) -> Decimal | None:
         if info.data.get("order_type") in ("limit", "stop_limit") and v is None:
             raise ValueError("limit_price is required for limit and stop_limit orders")
         return v
 
     @field_validator("stop_price")
     @classmethod
-    def validate_stop_price(cls, v, info):
+    def validate_stop_price(cls, v: Decimal | None, info: ValidationInfo) -> Decimal | None:
         if info.data.get("order_type") in ("stop", "stop_limit") and v is None:
             raise ValueError("stop_price is required for stop and stop_limit orders")
         return v

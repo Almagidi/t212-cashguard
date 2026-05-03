@@ -6,12 +6,11 @@ settings / emergency / health / reports
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -21,9 +20,10 @@ from app.api.schemas import (
     AppSettingsOut,
     AppSettingsUpdate,
     AuditLogList,
-    AuditLogOut,
     CashGuardStatus,
+    DepsHealth,
     EmergencyActionResult,
+    HealthStatus,
     InstrumentList,
     InstrumentOut,
     OrderCreate,
@@ -38,15 +38,12 @@ from app.api.schemas import (
     StrategyCreate,
     StrategyOut,
     StrategyUpdate,
-    DepsHealth,
-    HealthStatus,
 )
 from app.core.config import settings
 from app.db.models import (
     Alert,
     AppSettings,
     AuditLog,
-    BrokerAccountSnapshot,
     BrokerConnection,
     Instrument,
     Order,
@@ -58,7 +55,6 @@ from app.db.models import (
 )
 from app.db.session import get_db
 from app.risk.engine import RiskEngine, RiskViolation, activate_kill_switch, deactivate_kill_switch
-
 
 # ─── Account ─────────────────────────────────────────────────────────────────
 
@@ -78,8 +74,8 @@ async def _get_broker(db: AsyncSession):
     if not conn:
         raise HTTPException(status_code=400, detail="No active broker connection. Connect to Trading 212 first.")
 
-    from app.core.security import decrypt_field
     from app.broker.trading212 import Trading212Adapter
+    from app.core.security import decrypt_field
     api_key = decrypt_field(conn.api_key_encrypted)
     api_secret = decrypt_field(conn.api_secret_encrypted)
     return Trading212Adapter(api_key, api_secret, conn.environment)
@@ -101,7 +97,7 @@ async def account_summary(
         invested=summary.get("invested", 0),
         result=summary.get("result", 0),
         currency="USD",
-        synced_at=datetime.now(timezone.utc),
+        synced_at=datetime.now(UTC),
         mode=settings.APP_MODE,
     )
 
@@ -170,7 +166,7 @@ async def sync_instruments(
         raw_instruments = await b.get_instruments()
 
     synced = 0
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for raw in raw_instruments:
         ticker = raw.get("ticker", "")
         if not ticker:
@@ -246,7 +242,7 @@ async def create_strategy(
     db.add(strategy)
     db.add(AuditLog(
         action="strategy_created", entity_type="strategy", entity_id=str(strategy.id),
-        actor=current_user.email, occurred_at=datetime.now(timezone.utc),
+        actor=current_user.email, occurred_at=datetime.now(UTC),
     ))
     await db.flush()
     return strategy
@@ -280,7 +276,7 @@ async def update_strategy(
         setattr(s, field, value)
     db.add(AuditLog(
         action="strategy_updated", entity_type="strategy", entity_id=str(strategy_id),
-        actor=current_user.email, occurred_at=datetime.now(timezone.utc),
+        actor=current_user.email, occurred_at=datetime.now(UTC),
     ))
     await db.flush()
     return s
@@ -299,7 +295,7 @@ async def enable_strategy(
     s.is_enabled = True
     db.add(AuditLog(
         action="strategy_enabled", entity_type="strategy", entity_id=str(strategy_id),
-        actor=current_user.email, occurred_at=datetime.now(timezone.utc),
+        actor=current_user.email, occurred_at=datetime.now(UTC),
     ))
     return {"enabled": True}
 
@@ -317,7 +313,7 @@ async def disable_strategy(
     s.is_enabled = False
     db.add(AuditLog(
         action="strategy_disabled", entity_type="strategy", entity_id=str(strategy_id),
-        actor=current_user.email, occurred_at=datetime.now(timezone.utc),
+        actor=current_user.email, occurred_at=datetime.now(UTC),
     ))
     return {"enabled": False}
 
@@ -352,7 +348,7 @@ async def run_strategy_dry(
 
     db.add(AuditLog(
         action="strategy_dry_run", entity_type="strategy", entity_id=str(strategy_id),
-        actor=current_user.email, occurred_at=datetime.now(timezone.utc),
+        actor=current_user.email, occurred_at=datetime.now(UTC),
     ))
     return {"message": f"Dry run initiated for strategy {s.name}", "is_live": False}
 
@@ -478,7 +474,7 @@ async def place_order(
     db.add(AuditLog(
         action="order_placed", entity_type="order", entity_id=str(order.id),
         actor=current_user.email, payload={"ticker": body.ticker, "side": body.side},
-        occurred_at=datetime.now(timezone.utc),
+        occurred_at=datetime.now(UTC),
     ))
     return order
 
@@ -517,7 +513,7 @@ async def cancel_order(
 
     db.add(AuditLog(
         action="order_cancelled", entity_type="order", entity_id=str(order_id),
-        actor=current_user.email, occurred_at=datetime.now(timezone.utc),
+        actor=current_user.email, occurred_at=datetime.now(UTC),
     ))
     return {"cancelled": True, "order_id": str(order_id)}
 
@@ -541,7 +537,7 @@ async def cancel_all_pending(
 
     db.add(AuditLog(
         action="cancel_all_pending", actor=current_user.email,
-        payload={"count": len(orders)}, occurred_at=datetime.now(timezone.utc),
+        payload={"count": len(orders)}, occurred_at=datetime.now(UTC),
     ))
     return {"cancelled": len(orders)}
 
@@ -582,7 +578,7 @@ async def refresh_positions(
     broker = await _get_broker(db)
     async with broker as b:
         positions = await b.get_positions()
-    return {"positions": len(positions), "refreshed_at": datetime.now(timezone.utc).isoformat()}
+    return {"positions": len(positions), "refreshed_at": datetime.now(UTC).isoformat()}
 
 
 # ─── Risk ─────────────────────────────────────────────────────────────────────
@@ -614,7 +610,7 @@ async def update_risk_profile(
     db.add(AuditLog(
         action="risk_profile_updated", entity_type="risk_profile", entity_id=str(profile.id),
         actor=current_user.email, payload=body.model_dump(exclude_none=True),
-        occurred_at=datetime.now(timezone.utc),
+        occurred_at=datetime.now(UTC),
     ))
     await db.flush()
     return profile
@@ -641,7 +637,7 @@ async def enable_kill_switch(
     await activate_kill_switch(db, actor=current_user.email)
     db.add(AuditLog(
         action="kill_switch_enabled", actor=current_user.email,
-        occurred_at=datetime.now(timezone.utc),
+        occurred_at=datetime.now(UTC),
     ))
     return {"kill_switch_active": True}
 
@@ -654,7 +650,7 @@ async def disable_kill_switch(
     await deactivate_kill_switch(db, actor=current_user.email)
     db.add(AuditLog(
         action="kill_switch_disabled", actor=current_user.email,
-        occurred_at=datetime.now(timezone.utc),
+        occurred_at=datetime.now(UTC),
     ))
     return {"kill_switch_active": False}
 
@@ -666,9 +662,9 @@ async def daily_reset(
 ):
     db.add(AuditLog(
         action="daily_reset", actor=current_user.email,
-        occurred_at=datetime.now(timezone.utc),
+        occurred_at=datetime.now(UTC),
     ))
-    return {"message": "Daily stats reset", "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {"message": "Daily stats reset", "timestamp": datetime.now(UTC).isoformat()}
 
 
 # ─── Alerts ──────────────────────────────────────────────────────────────────
@@ -702,7 +698,7 @@ async def test_alert(
         message="This is a test notification from T212 CashGuard.",
         severity="info",
         is_read=False,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     db.add(alert)
     await db.flush()
@@ -753,7 +749,7 @@ async def update_settings(
         setattr(s, field, value)
     db.add(AuditLog(
         action="settings_updated", actor=current_user.email,
-        payload=body.model_dump(exclude_none=True), occurred_at=datetime.now(timezone.utc),
+        payload=body.model_dump(exclude_none=True), occurred_at=datetime.now(UTC),
     ))
     await db.flush()
     return s
@@ -775,11 +771,11 @@ async def disable_auto_trading(
         s.auto_trading_enabled = False
     db.add(AuditLog(
         action="auto_trading_disabled", actor=current_user.email,
-        occurred_at=datetime.now(timezone.utc),
+        occurred_at=datetime.now(UTC),
     ))
     return EmergencyActionResult(
         success=True, action="auto_trading_off",
-        message="Auto-trading disabled", timestamp=datetime.now(timezone.utc),
+        message="Auto-trading disabled", timestamp=datetime.now(UTC),
     )
 
 
@@ -797,11 +793,11 @@ async def enable_auto_trading(
         s.auto_trading_enabled = True
     db.add(AuditLog(
         action="auto_trading_enabled", actor=current_user.email,
-        occurred_at=datetime.now(timezone.utc),
+        occurred_at=datetime.now(UTC),
     ))
     return EmergencyActionResult(
         success=True, action="auto_trading_on",
-        message="Auto-trading enabled", timestamp=datetime.now(timezone.utc),
+        message="Auto-trading enabled", timestamp=datetime.now(UTC),
     )
 
 
@@ -818,11 +814,11 @@ async def emergency_kill_switch(
         s.auto_trading_enabled = False
     db.add(AuditLog(
         action="emergency_kill_switch", actor=current_user.email,
-        occurred_at=datetime.now(timezone.utc),
+        occurred_at=datetime.now(UTC),
     ))
     return EmergencyActionResult(
         success=True, action="kill_switch",
-        message="KILL SWITCH ACTIVATED. All trading halted.", timestamp=datetime.now(timezone.utc),
+        message="KILL SWITCH ACTIVATED. All trading halted.", timestamp=datetime.now(UTC),
     )
 
 
@@ -844,11 +840,11 @@ async def emergency_cancel_all(
 
     db.add(AuditLog(
         action="emergency_cancel_all", actor=current_user.email,
-        payload={"cancelled_count": len(orders)}, occurred_at=datetime.now(timezone.utc),
+        payload={"cancelled_count": len(orders)}, occurred_at=datetime.now(UTC),
     ))
     return EmergencyActionResult(
         success=True, action="cancel_all",
-        message=f"Cancelled {len(orders)} pending orders", timestamp=datetime.now(timezone.utc),
+        message=f"Cancelled {len(orders)} pending orders", timestamp=datetime.now(UTC),
     )
 
 
@@ -879,11 +875,11 @@ async def emergency_flatten_all(
 
     db.add(AuditLog(
         action="emergency_flatten_all", actor=current_user.email,
-        payload={"flattened": flattened}, occurred_at=datetime.now(timezone.utc),
+        payload={"flattened": flattened}, occurred_at=datetime.now(UTC),
     ))
     return EmergencyActionResult(
         success=True, action="flatten_all",
-        message=f"Flattened {flattened} positions", timestamp=datetime.now(timezone.utc),
+        message=f"Flattened {flattened} positions", timestamp=datetime.now(UTC),
     )
 
 
@@ -974,7 +970,7 @@ health_router = APIRouter(prefix="/health", tags=["health"])
 async def health_live():
     return HealthStatus(
         status="ok",
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         version="1.0.0",
         mode=settings.APP_MODE,
     )
@@ -985,7 +981,7 @@ async def health_ready(db: AsyncSession = Depends(get_db)):
     try:
         await db.execute(select(func.now()))
         return HealthStatus(
-            status="ok", timestamp=datetime.now(timezone.utc),
+            status="ok", timestamp=datetime.now(UTC),
             version="1.0.0", mode=settings.APP_MODE,
         )
     except Exception as e:
