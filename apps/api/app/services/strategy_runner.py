@@ -17,6 +17,14 @@ Supported strategy types:
   "opening_fade" — Opening Fade (gap mean-reversion; choppy sessions)
   "closing_momentum"     — Late-session continuation after a strong first half-hour
   "intraday_periodicity" — Same-slot continuation with recent session confirmation
+
+Kraken strategy types (paper-only, approved ladder):
+  "kraken_breakout_retest" — S/R flip continuation on 4h bars (#3 approved ladder)
+  "kraken_trend_follow"    — Daily Donchian breakout with EMA50 trend filter (#2 approved ladder)
+
+Quarantined (not constructible):
+  "kraken_mean_reversion"  — APPROVED=False; no _make_engine arm
+  "kraken_momentum"        — APPROVED=False; no _make_engine arm
 """
 from __future__ import annotations
 
@@ -33,6 +41,7 @@ from sqlalchemy import desc, select
 from app.backtest.portfolio_strategies import is_portfolio_strategy_type
 from app.core.config import settings
 from app.db.models import AppSettings, AuditLog, BrokerConnection, Signal, Strategy
+from app.db.repositories.venue_config_repo import VenueConfigRepository
 from app.execution.engine import ExecutionEngine
 from app.risk.engine import RiskEngine, RiskViolation
 from app.services.alert_service import (
@@ -142,6 +151,47 @@ class StrategyRunner:
 
         return bars, bar_times, None
 
+    async def _fetch_kraken_context(
+        self,
+        ticker: str,
+        *,
+        history_days: int,
+        max_bars: int,
+        bar_interval_minutes: int,
+        now_utc: str,
+    ) -> tuple[list[Bar], list[datetime], list[Bar], list[datetime], Decimal | None, str]:
+        """Fetch Kraken crypto bars. No session filtering — crypto is 24/7."""
+        from datetime import timedelta
+        try:
+            from app.market_data.kraken_provider import KrakenMarketDataProvider
+            from_date = date.today() - timedelta(days=max(history_days + 2, 5))
+            async with KrakenMarketDataProvider() as md:
+                raw_bars = await md.get_bars(
+                    ticker,
+                    multiplier=bar_interval_minutes,
+                    from_date=from_date,
+                    limit=max_bars,
+                )
+            bars: list[Bar] = []
+            bar_times: list[datetime] = []
+            for raw_bar in raw_bars:
+                ts = raw_bar.timestamp
+                if ts is None:
+                    continue
+                bars.append(Bar(
+                    Decimal(str(raw_bar.open)),
+                    Decimal(str(raw_bar.high)),
+                    Decimal(str(raw_bar.low)),
+                    Decimal(str(raw_bar.close)),
+                    Decimal(str(raw_bar.volume)),
+                ))
+                bar_times.append(ts)
+            # Crypto is 24/7: all bars are "session" bars
+            return bars, bar_times, bars, bar_times, None, now_utc
+        except Exception as exc:
+            log.warning("runner.kraken_data_error", ticker=ticker, error=str(exc))
+            return [], [], [], [], None, now_utc
+
     async def _fetch_market_context(
         self,
         ticker: str,
@@ -149,6 +199,8 @@ class StrategyRunner:
         session_open_utc: str,
         history_days: int,
         max_bars: int,
+        data_provider_type: str = "equity",
+        bar_interval_minutes: int = 5,
     ) -> tuple[list[Bar], list[datetime], list[Bar], list[datetime], Decimal | None, str]:
         """
         Returns:
@@ -159,6 +211,16 @@ class StrategyRunner:
         arbitrary rolling window.
         """
         now_utc = datetime.now(UTC).strftime("%H:%M")
+
+        if data_provider_type == "kraken":
+            return await self._fetch_kraken_context(
+                ticker,
+                history_days=history_days,
+                max_bars=max_bars,
+                bar_interval_minutes=bar_interval_minutes,
+                now_utc=now_utc,
+            )
+
         try:
             from app.market_data import get_live_provider
             provider = get_live_provider()
@@ -316,6 +378,12 @@ class StrategyRunner:
         if strategy.type == "intraday_periodicity":
             from app.strategies.intraday_periodicity import IntradayPeriodicityStrategy
             return IntradayPeriodicityStrategy(strategy.params)
+        if strategy.type == "kraken_breakout_retest":
+            from app.strategies.kraken_breakout_retest import KrakenBreakoutRetestStrategy
+            return KrakenBreakoutRetestStrategy(strategy.params)
+        if strategy.type == "kraken_trend_follow":
+            from app.strategies.kraken_trend_follow import KrakenHTFBreakoutStrategy
+            return KrakenHTFBreakoutStrategy(strategy.params)
         return None
 
     def _build_signal_kwargs(
@@ -440,6 +508,47 @@ class StrategyRunner:
         if engine is None:
             return 0, 0, 0
 
+        # Venue-level safety gate — checked before PAPER_ONLY and promotion gates.
+        venue = getattr(engine, "VENUE", "t212")
+        venue_cfg = await VenueConfigRepository(self.db).get_by_venue(venue)
+        if venue_cfg is None:
+            log.error(
+                "runner.venue_config_missing",
+                venue=venue,
+                strategy=strategy.name,
+            )
+            return 0, 0, 0
+        if venue_cfg.kill_switch_active:
+            log.warning(
+                "runner.venue_kill_switch",
+                venue=venue,
+                strategy=strategy.name,
+            )
+            return 0, 0, 0
+        if venue_cfg.degraded_mode_active:
+            log.warning(
+                "runner.venue_degraded",
+                venue=venue,
+                strategy=strategy.name,
+            )
+            return 0, 0, 0
+        if strategy.is_live and not venue_cfg.auto_trading_enabled:
+            log.info(
+                "runner.venue_auto_trading_off",
+                venue=venue,
+                strategy=strategy.name,
+            )
+            return 0, 0, 0
+
+        # Paper-only strategies (e.g. Kraken crypto) must never reach live execution.
+        if getattr(engine, "PAPER_ONLY", False) and strategy.is_live:
+            log.warning(
+                "runner.paper_only_blocked",
+                strategy=strategy.name,
+                strategy_type=strategy.type,
+            )
+            return 0, 0, 0
+
         if strategy.is_live:
             allowed, reason = await StrategyPromotionService(self.db).execution_gate(strategy)
             if not allowed:
@@ -491,11 +600,15 @@ class StrategyRunner:
         session_open_utc = str(engine.params.get("session_open_utc", "14:30"))
         history_days = int(getattr(engine, "history_days", 5))
         max_history_bars = int(getattr(engine, "max_history_bars", 180))
+        data_provider_type = getattr(engine, "DATA_PROVIDER_TYPE", "equity")
+        bar_interval_minutes = int(getattr(engine, "BAR_INTERVAL_MINUTES", 5))
         session_bars, session_times, history_bars, history_bar_times, prev_close, now_utc = await self._fetch_market_context(
             ticker,
             session_open_utc=session_open_utc,
             history_days=history_days,
             max_bars=max_history_bars,
+            data_provider_type=data_provider_type,
+            bar_interval_minutes=bar_interval_minutes,
         )
         if len(session_bars) < max(4, int(getattr(engine, "required_bars", 4))):
             return 0, 0, 0
@@ -670,6 +783,7 @@ class StrategyRunner:
                     order_type="limit", quantity=qty, signal_id=sig.id,
                     available_cash=cash, estimated_price=price,
                     limit_price=limit_price,
+                    venue=strategy.venue,
                 )
                 order = await exec_engine.submit_order(order)
 
@@ -769,6 +883,7 @@ class StrategyRunner:
                 ticker=ticker, side="sell", order_type="market",
                 quantity=sell_qty, signal_id=last_sig.id,
                 estimated_price=current_price,
+                venue=strategy.venue,
             )
             order = await exec_engine.submit_order(order)
 

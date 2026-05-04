@@ -46,9 +46,9 @@ def atr(bars: list[Bar], period: int = 14) -> Decimal:
         trs.append(true_range(bars[i], bars[i - 1].close))
 
     # Wilder's smoothing: first ATR = simple mean of first N TRs
-    atr_val = sum(trs[:period]) / period
+    atr_val: Decimal = sum(trs[:period]) / Decimal(period)  # type: ignore[assignment]
     for tr in trs[period:]:
-        atr_val = (atr_val * (period - 1) + tr) / period
+        atr_val = (atr_val * (Decimal(period) - 1) + tr) / Decimal(period)  # type: ignore[assignment, operator]
 
     return Decimal(str(round(float(atr_val), 8)))
 
@@ -77,11 +77,11 @@ def ema(values: list[Decimal], period: int) -> list[Decimal]:
     k = Decimal(str(2)) / Decimal(str(period + 1))
 
     # Seed with simple mean of first period
-    seed = sum(values[:period]) / period
+    seed = sum(values[:period]) / Decimal(period)  # type: ignore[assignment]
     result.append(seed)
 
     for v in values[period:]:
-        result.append(v * k + result[-1] * (1 - k))
+        result.append(v * k + result[-1] * (Decimal(1) - k))
 
     return result
 
@@ -143,7 +143,7 @@ def volume_sma(bars: list[Bar], period: int = 20) -> Decimal:
     if len(bars) < period:
         return Decimal("0")
     vols = [b.volume for b in bars[-period:]]
-    return sum(vols) / len(vols)
+    return sum(vols) / Decimal(len(vols))  # type: ignore[return-value]
 
 
 def relative_volume(bars: list[Bar], period: int = 20) -> Decimal:
@@ -457,6 +457,73 @@ def kelly_position_size(
         qty = min(qty, max_by_cash)
 
     return qty.quantize(Decimal("0.01")) if qty > 0 else Decimal("0")
+
+
+# ── Bollinger Bands ───────────────────────────────────────────────────────────
+
+def bollinger_bands(
+    bars: list[Bar],
+    period: int = 20,
+    std_multiplier: float = 2.0,
+) -> tuple[Decimal, Decimal, Decimal]:
+    """
+    Bollinger Bands: (upper, middle, lower).
+    middle = SMA(period), bands = middle ± std_multiplier × std_dev(period).
+    Returns (price, price, price) when there is insufficient data.
+    """
+    if len(bars) < period:
+        price = bars[-1].close if bars else Decimal("0")
+        return price, price, price
+    closes = [b.close for b in bars[-period:]]
+    middle: Decimal = sum(closes) / Decimal(period)  # type: ignore[assignment]
+    variance: Decimal = sum((c - middle) ** 2 for c in closes) / Decimal(period)  # type: ignore[assignment]
+    std_dev = Decimal(str(math.sqrt(float(variance))))
+    mult = Decimal(str(std_multiplier))
+    return middle + mult * std_dev, middle, middle - mult * std_dev
+
+
+# ── Donchian Channel ──────────────────────────────────────────────────────────
+
+def donchian_channel(bars: list[Bar], period: int = 20) -> tuple[Decimal, Decimal]:
+    """
+    Donchian Channel: (upper, lower) = N-period high/low.
+    close > upper signals momentum breakout; close < lower signals breakdown.
+    Returns (0, 0) when insufficient data.
+    """
+    if len(bars) < period:
+        return Decimal("0"), Decimal("0")
+    recent = bars[-period:]
+    return max(b.high for b in recent), min(b.low for b in recent)
+
+
+# ── RSI (Relative Strength Index) ────────────────────────────────────────────
+
+def rsi(bars: list[Bar], period: int = 14) -> Decimal:
+    """
+    Wilder's RSI.  Range 0–100.  Returns 50 (neutral) when insufficient data.
+    """
+    if len(bars) < period + 1:
+        return Decimal("50")
+    closes = [b.close for b in bars]
+    gains: list[Decimal] = []
+    losses: list[Decimal] = []
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+        if diff >= 0:
+            gains.append(diff)
+            losses.append(Decimal("0"))
+        else:
+            gains.append(Decimal("0"))
+            losses.append(-diff)
+    avg_gain: Decimal = sum(gains[:period]) / Decimal(period)  # type: ignore[assignment]
+    avg_loss: Decimal = sum(losses[:period]) / Decimal(period)  # type: ignore[assignment]
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (Decimal(period) - 1) + gains[i]) / Decimal(period)
+        avg_loss = (avg_loss * (Decimal(period) - 1) + losses[i]) / Decimal(period)
+    if avg_loss == 0:
+        return Decimal("100")
+    rs = avg_gain / avg_loss
+    return (Decimal("100") - Decimal("100") / (1 + rs)).quantize(Decimal("0.01"))
 
 
 # ── Session time filters ──────────────────────────────────────────────────────
