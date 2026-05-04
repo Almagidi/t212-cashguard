@@ -130,3 +130,10 @@ clean: ## Remove build artifacts and caches
 
 check-all: lint typecheck test ## Run lint, typecheck, and tests in sequence
 	@echo "$(GREEN)✓ All checks passed$(RESET)"
+
+.PHONY: smoke readiness
+
+smoke:
+	cd apps/api && DATABASE_URL=sqlite+aiosqlite:///:memory: REDIS_URL=redis://localhost:6379/15 SECRET_KEY=test-secret-key-32-chars-minimum-x MASTER_KEY=test-master-key-32-chars-minimum-x APP_MODE=mock python3.12 -m pytest tests/smoke/ -v --tb=short --no-cov
+
+readiness: smoke
