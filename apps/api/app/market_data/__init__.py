@@ -64,6 +64,16 @@ def get_backtest_provider(api_key: str | None = None) -> Any:
     )
 
 
+def get_kraken_provider() -> Any:
+    """
+    Return the Kraken public market data provider.
+    No credentials required — all Kraken OHLC/Ticker endpoints are public.
+    Used exclusively by Kraken crypto strategy families.
+    """
+    from app.market_data.kraken_provider import KrakenMarketDataProvider
+    return KrakenMarketDataProvider()
+
+
 def get_provider_name() -> str:
     """Return name of active live data provider for display in UI."""
     if settings.ALPACA_API_KEY and settings.ALPACA_API_SECRET and settings.POLYGON_API_KEY:

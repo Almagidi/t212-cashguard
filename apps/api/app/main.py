@@ -244,6 +244,8 @@ from app.api.v1.routes.audit import router as audit_router
 from app.api.v1.routes.health import router as health_router
 from app.api.v1.routes.telegram import router as telegram_router
 from app.api.v1.routes.intelligence import router as intelligence_router, regime_router
+from app.api.v1.routes.operator import router as operator_router
+from app.api.v1.routes.dca import router as dca_router
 from app.api.metrics import router as metrics_router
 
 for r in [
@@ -251,7 +253,7 @@ for r in [
     strategies_router, signals_router, orders_router, positions_router,
     risk_router, alerts_router, settings_router, emergency_router,
     reports_router, trades_router, audit_router, health_router, telegram_router,
-    intelligence_router,
+    intelligence_router, operator_router, dca_router,
 ]:
     app.include_router(r, prefix=PREFIX)
 

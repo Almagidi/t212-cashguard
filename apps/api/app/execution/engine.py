@@ -81,6 +81,7 @@ class ExecutionEngine:
         is_dry_run: bool = False,
         available_cash: Decimal | None = None,
         estimated_price: Decimal | None = None,
+        venue: str = "t212",
     ) -> Order:
         """
         Create an order intent in the DB before any broker call.
@@ -143,6 +144,7 @@ class ExecutionEngine:
             time_validity=time_validity,
             status="pending_intent",
             is_dry_run=is_dry_run,
+            venue=venue,
             execution_environment="dry_run" if is_dry_run else settings.APP_MODE,
             expected_fill_price=expected_fill_price,
             cash_used=cash_used,

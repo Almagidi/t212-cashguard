@@ -7,28 +7,67 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.security import hash_password
-from app.db.session import AsyncSessionLocal
 from app.db.models import (
     AppSettings,
+    DcaConfig,
     Instrument,
     RiskProfile,
     Strategy,
     User,
 )
+from app.db.session import AsyncSessionLocal
+from app.strategies.kraken_dca_planner import DEFAULT_PARAMS
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+
+async def seed_dca_configs(db: AsyncSession) -> None:
+    """Seed disabled, paper-only Kraken DCA configs without overwriting local edits."""
+    dca_seeds = ["BTC/USD", "ETH/USD"]
+
+    for ticker in dca_seeds:
+        result = await db.execute(
+            select(DcaConfig).where(
+                DcaConfig.ticker == ticker,
+                DcaConfig.venue == "kraken",
+            )
+        )
+        if result.scalar_one_or_none():
+            continue
+
+        db.add(
+            DcaConfig(
+                id=uuid.uuid4(),
+                ticker=ticker,
+                venue="kraken",
+                cadence_days=int(DEFAULT_PARAMS["interval_days"]),
+                fixed_cash_amount=Decimal(str(DEFAULT_PARAMS["base_allocation_usd"])),
+                dip_buy_enabled=bool(DEFAULT_PARAMS["enable_dip_enhancement"]),
+                dip_threshold_pct=Decimal(str(DEFAULT_PARAMS["dip_threshold_pct"])),
+                dip_buy_multiplier=Decimal(str(DEFAULT_PARAMS["dip_multiplier"])),
+                dip_ema_period=int(DEFAULT_PARAMS["dip_ema_period"]),
+                min_cash_reserve=Decimal(str(DEFAULT_PARAMS["min_cash_reserve_usd"])),
+                max_position_percent=Decimal(str(DEFAULT_PARAMS["max_position_pct"])),
+                paper_only=True,
+                enabled=False,
+            )
+        )
 
 
 async def seed() -> None:
     async with AsyncSessionLocal() as db:
         # --- Admin user ---
         result = await db.execute(select(User).where(User.email == settings.ADMIN_EMAIL))
-        user = result.scalar_one_or_none()
+        user = result.scalar_one_or_none()  # type: ignore[assignment]
         if not user:
             user = User(
                 id=uuid.uuid4(),
@@ -47,7 +86,7 @@ async def seed() -> None:
 
         # --- App settings ---
         result = await db.execute(select(AppSettings).where(AppSettings.id == 1))
-        app_settings = result.scalar_one_or_none()
+        app_settings = result.scalar_one_or_none()  # type: ignore[assignment]
         if not app_settings:
             app_settings = AppSettings(
                 id=1,
@@ -63,7 +102,7 @@ async def seed() -> None:
 
         # --- Default risk profile ---
         result = await db.execute(select(RiskProfile).where(RiskProfile.is_default == True))  # noqa: E712
-        risk_profile = result.scalar_one_or_none()
+        risk_profile = result.scalar_one_or_none()  # type: ignore[assignment]
         if not risk_profile:
             risk_profile = RiskProfile(
                 id=uuid.uuid4(),
@@ -110,14 +149,14 @@ async def seed() -> None:
                     extended_hours=True,
                     working_schedule_id=1,
                     trading_enabled=True,
-                    synced_at=datetime.now(timezone.utc),
+                    synced_at=datetime.now(UTC),
                 )
                 db.add(inst)
         print(f"✓ Seeded {len(demo_instruments)} instruments")
 
         # --- Demo ORB strategy ---
         result = await db.execute(select(Strategy).where(Strategy.name == "ORB Demo Strategy"))
-        strategy = result.scalar_one_or_none()
+        strategy = result.scalar_one_or_none()  # type: ignore[assignment]
         if not strategy:
             result2 = await db.execute(select(RiskProfile).where(RiskProfile.is_default == True))  # noqa: E712
             rp = result2.scalar_one_or_none()
@@ -128,6 +167,7 @@ async def seed() -> None:
                 description="Opening Range Breakout — trades the first 15-minute candle breakout at session open.",
                 is_enabled=False,
                 is_live=False,
+                venue="t212",
                 risk_profile_id=rp.id if rp else None,
                 params={
                     "orb_minutes": 15,
@@ -143,6 +183,51 @@ async def seed() -> None:
             )
             db.add(strategy)
             print("✓ Created demo ORB strategy")
+
+        # --- Kraken demo strategies (disabled, paper-only, venue="kraken") ---
+        kraken_seeds = [
+            {
+                "name": "Kraken Breakout Retest Demo",
+                "type": "kraken_breakout_retest",
+                "description": "Kraken crypto S/R flip continuation on 4h bars — breakout then retest confirmation. Approved ladder #3. Paper-only.",
+                "params": {},
+                "tickers": ["BTC/USD", "ETH/USD"],
+            },
+            {
+                "name": "Kraken Trend Follow Demo",
+                "type": "kraken_trend_follow",
+                "description": "Kraken crypto daily Donchian breakout with EMA50 trend filter. Approved ladder #2. Paper-only.",
+                "params": {},
+                "tickers": ["BTC/USD", "ETH/USD", "SOL/USD"],
+            },
+        ]
+        for kd in kraken_seeds:
+            result = await db.execute(select(Strategy).where(Strategy.name == kd["name"]))
+            if not result.scalar_one_or_none():
+                result2 = await db.execute(select(RiskProfile).where(RiskProfile.is_default == True))  # noqa: E712
+                rp = result2.scalar_one_or_none()
+                db.add(Strategy(
+                    id=uuid.uuid4(),
+                    name=kd["name"],
+                    type=kd["type"],
+                    description=kd["description"],
+                    is_enabled=False,
+                    is_live=False,
+                    venue="kraken",
+                    risk_profile_id=rp.id if rp else None,
+                    params=kd["params"],
+                    allowed_tickers=kd["tickers"],
+                    session_start="00:00",
+                    session_end="23:59",
+                    extended_hours=False,
+                    eod_flatten=False,
+                ))
+                print(f"✓ Created demo {kd['name']}")
+        print(f"✓ Seeded {len(kraken_seeds)} Kraken demo strategies")
+
+        # --- Kraken DCA configs (disabled, paper-only, not runnable strategies) ---
+        await seed_dca_configs(db)
+        print("✓ Seeded disabled paper-only Kraken DCA configs")
 
         await db.commit()
         print("\n✅ Database seeding complete")
