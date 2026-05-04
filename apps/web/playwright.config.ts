@@ -1,5 +1,8 @@
 import { defineConfig, devices } from '@playwright/test'
 
+const webPort = process.env.E2E_WEB_PORT ?? '3000'
+const webUrl = process.env.BASE_URL || `http://localhost:${webPort}`
+
 export default defineConfig({
   testDir: './tests/e2e',
   globalSetup: './tests/e2e/global-setup.ts',
@@ -9,7 +12,7 @@ export default defineConfig({
   workers: process.env.CI ? undefined : 1,
   reporter: [['html', { open: 'never' }], ['list']],
   use: {
-    baseURL: process.env.BASE_URL || 'http://localhost:3000',
+    baseURL: webUrl,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
     // Give each action/assertion a generous timeout for slower CI runners
@@ -24,8 +27,8 @@ export default defineConfig({
   ],
   // Start the dev server automatically when running e2e tests locally
   webServer: process.env.CI ? undefined : {
-    command: 'npm run dev',
-    url: 'http://localhost:3000',
+    command: `npx next dev -p ${webPort}`,
+    url: webUrl,
     reuseExistingServer: true,
     timeout: 120_000,
   },

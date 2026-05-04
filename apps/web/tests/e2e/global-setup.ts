@@ -26,7 +26,9 @@ async function probe(url: string, label: string, retries = 3): Promise<void> {
 }
 
 export default async function globalSetup(_config: FullConfig) {
-  await probe(`${API_URL}/v1/health/live`, 'API server')
+  if (process.env.E2E_MOCK_API !== '1') {
+    await probe(`${API_URL}/v1/health/live`, 'API server')
+  }
   await probe(`${WEB_URL}/auth/login`, 'Web server')
   console.log(`\n✅  Both servers reachable — starting E2E suite\n`)
 }

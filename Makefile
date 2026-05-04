@@ -1,4 +1,4 @@
-.PHONY: help setup dev up down migrate seed reset test lint typecheck e2e logs clean
+.PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator logs clean
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -111,6 +111,11 @@ e2e: ## Run Playwright end-to-end tests
 	cd apps/web && npx playwright test
 	@echo "$(GREEN)✓ E2E tests complete$(RESET)"
 
+e2e-operator: ## Run mock-mode operator dashboard readiness e2e test
+	@echo "$(YELLOW)→ Running operator dashboard readiness e2e test...$(RESET)"
+	cd apps/web && E2E_MOCK_API=1 E2E_WEB_PORT=3100 BASE_URL=http://localhost:3100 NEXT_PUBLIC_APP_MODE=mock NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 npx playwright test tests/e2e/operator.spec.ts
+	@echo "$(GREEN)✓ Operator dashboard readiness e2e complete$(RESET)"
+
 logs: ## Tail all Docker logs
 	docker-compose logs -f
 
@@ -136,4 +141,4 @@ check-all: lint typecheck test ## Run lint, typecheck, and tests in sequence
 smoke:
 	cd apps/api && DATABASE_URL=sqlite+aiosqlite:///:memory: REDIS_URL=redis://localhost:6379/15 SECRET_KEY=test-secret-key-32-chars-minimum-x MASTER_KEY=test-master-key-32-chars-minimum-x APP_MODE=mock python3.12 -m pytest tests/smoke/ -v --tb=short --no-cov
 
-readiness: smoke
+readiness: smoke e2e-operator
