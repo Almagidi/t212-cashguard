@@ -60,8 +60,27 @@ alembic/versions/*.pyc
 celerybeat-schedule.db
 celerybeat-schedule
 
-# Hypothesis test data
+# Hypothesis test data (regenerated automatically on test run)
 .hypothesis/
+
+# Runtime process state
+.pids
+.setup_complete
+
+# Tool-session artifacts (superpowers, brainstorm outputs)
+.superpowers/
+
+# Claude Code local state (worktrees, user-specific permissions)
+.claude/worktrees/
+.claude/settings.local.json
+
+# SWC compiler cache (Next.js)
+.swc/
+
+# Backup / temp files
+*.bak
+*.tmp
+*.temp
 
 # Secrets — never commit these
 *.pem

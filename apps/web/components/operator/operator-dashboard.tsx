@@ -1,0 +1,773 @@
+"use client";
+
+import {
+  AlertTriangle,
+  Clock3,
+  Eye,
+  ListChecks,
+  Lock,
+  ShieldAlert,
+} from "lucide-react";
+import {
+  Badge,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  EmptyState,
+  PageHeader,
+  Skeleton,
+  StatCard,
+} from "@/components/ui";
+import { cn, formatCurrency, formatDate } from "@/lib/utils";
+import { BrokerStatusPanel } from "./broker-status-panel";
+import { useBrokerStatus } from "@/hooks/use-api";
+import type {
+  OperatorOverallStatus,
+  OperatorRecentActivity,
+  OperatorStatus,
+  OperatorVenueStatus,
+  OperatorWorkerHealth,
+} from "@/types";
+
+type OperatorDashboardProps = {
+  status?: OperatorStatus;
+  isLoading?: boolean;
+  isError?: boolean;
+};
+
+const BOOL_LABEL: Record<"true" | "false", string> = {
+  true: "Yes",
+  false: "No",
+};
+
+function statusBadgeVariant(status: OperatorOverallStatus) {
+  if (status === "ok") return "success";
+  if (status === "blocked") return "destructive";
+  return "warning";
+}
+
+function healthBadgeVariant(health: OperatorWorkerHealth) {
+  if (health === "healthy") return "success";
+  if (health === "stale" || health === "missing") return "destructive";
+  return "warning";
+}
+
+function boolTone(value: boolean | null | undefined, riskyWhenTrue = false) {
+  if (value === null || value === undefined) return "text-muted-foreground";
+  if (riskyWhenTrue) return value ? "text-red-400" : "text-emerald-400";
+  return value ? "text-emerald-400" : "text-muted-foreground";
+}
+
+function boolLabel(value: boolean | null | undefined) {
+  if (value === null || value === undefined) return "Unknown";
+  return BOOL_LABEL[String(value) as "true" | "false"];
+}
+
+function TextBadge({
+  children,
+  tone = "outline",
+}: {
+  children: React.ReactNode;
+  tone?: "outline" | "success" | "warning" | "destructive" | "info";
+}) {
+  return <Badge variant={tone}>{children}</Badge>;
+}
+
+function InfoRow({
+  label,
+  value,
+  valueClassName,
+}: {
+  label: string;
+  value: React.ReactNode;
+  valueClassName?: string;
+}) {
+  return (
+    <div className="kv-row">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd
+        className={cn("text-right font-medium text-foreground", valueClassName)}
+      >
+        {value}
+      </dd>
+    </div>
+  );
+}
+
+function FlagRow({
+  label,
+  value,
+  riskyWhenTrue = false,
+}: {
+  label: string;
+  value: boolean;
+  riskyWhenTrue?: boolean;
+}) {
+  return (
+    <InfoRow
+      label={label}
+      value={value ? "True" : "False"}
+      valueClassName={boolTone(value, riskyWhenTrue)}
+    />
+  );
+}
+
+function LoadingState() {
+  return (
+    <div className="space-y-5" aria-label="Loading operator status">
+      <PageHeader
+        icon={<Eye className="h-5 w-5" />}
+        label="Read-only Operator Dashboard"
+        sub="Loading operator status..."
+      />
+      <div className="grid gap-4 md:grid-cols-3">
+        {[0, 1, 2].map((item) => (
+          <Card key={item}>
+            <CardContent className="space-y-3 pt-5">
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="h-8 w-32" />
+              <Skeleton className="h-3 w-full" />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+      <Card>
+        <CardContent className="space-y-3 pt-5">
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-28 w-full" />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function ErrorState() {
+  return (
+    <div className="space-y-5">
+      <PageHeader
+        icon={<ShieldAlert className="h-5 w-5" />}
+        label="Read-only Operator Dashboard"
+        sub="Operator status unavailable. Treat automation state as unknown."
+      />
+      <Card className="border-amber-500/30 bg-amber-500/5">
+        <CardContent className="pt-5">
+          <div className="flex items-start gap-3 text-amber-100">
+            <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-300" />
+            <div>
+              <p className="text-sm font-semibold">
+                Operator status unavailable
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-amber-100/80">
+                Treat automation state as unknown. This page is read-only and no
+                trading action is available from this page.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function TopSafetySummary({ status }: { status: OperatorStatus }) {
+  const generatedMissing = !status.generated_at;
+
+  return (
+    <div className="space-y-4">
+      <PageHeader
+        icon={<Eye className="h-5 w-5" />}
+        label="Read-only Operator Dashboard"
+        sub="Trading system status from persisted backend state only"
+      />
+      <Card
+        className={cn(
+          status.overall_status === "blocked" && "border-red-500/40",
+          status.overall_status === "degraded" && "border-amber-500/40",
+        )}
+      >
+        <CardContent className="space-y-4 pt-5">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={statusBadgeVariant(status.overall_status)}>
+              Overall {status.overall_status}
+            </Badge>
+            <TextBadge tone={status.dca.paper_only ? "success" : "warning"}>
+              Paper-only
+            </TextBadge>
+            <TextBadge
+              tone={
+                !status.live_trading_enabled_anywhere ? "success" : "warning"
+              }
+            >
+              Live disabled
+            </TextBadge>
+            <TextBadge tone="info">Read-only</TextBadge>
+            {generatedMissing && (
+              <TextBadge tone="warning">Timestamp unknown</TextBadge>
+            )}
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            <StatCard
+              label="Live Trading Possible"
+              value={status.live_trading_possible ? "Yes" : "No"}
+              trend={status.live_trading_possible ? "down" : "neutral"}
+              sub="Backend computed gate state"
+              icon={<Lock className="h-4 w-4" />}
+            />
+            <StatCard
+              label="Live Enabled Anywhere"
+              value={status.live_trading_enabled_anywhere ? "Yes" : "No"}
+              trend={status.live_trading_enabled_anywhere ? "down" : "neutral"}
+              sub="Includes app, settings, and venue flags"
+              icon={<ShieldAlert className="h-4 w-4" />}
+            />
+            <StatCard
+              label="Generated At"
+              value={
+                status.generated_at
+                  ? formatDate(status.generated_at)
+                  : "Unknown"
+              }
+              sub={
+                generatedMissing
+                  ? "Treat data freshness as unknown"
+                  : "Backend status timestamp"
+              }
+              icon={<Clock3 className="h-4 w-4" />}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            No trading action available from this page.
+          </p>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function VenueCard({ venue }: { venue: OperatorVenueStatus }) {
+  const blocked = venue.kill_switch_active === true;
+  const degraded = venue.degraded_mode_active === true;
+
+  return (
+    <Card
+      className={cn(
+        blocked && "border-red-500/40 bg-red-500/5",
+        degraded && !blocked && "border-amber-500/40 bg-amber-500/5",
+      )}
+    >
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="uppercase">{venue.venue}</CardTitle>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {blocked && (
+              <TextBadge tone="destructive">Kill switch active</TextBadge>
+            )}
+            {degraded && <TextBadge tone="warning">Degraded</TextBadge>}
+            {!venue.present && (
+              <TextBadge tone="warning">Config missing</TextBadge>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <dl>
+          <InfoRow
+            label="Kill switch active"
+            value={boolLabel(venue.kill_switch_active)}
+            valueClassName={boolTone(venue.kill_switch_active, true)}
+          />
+          <InfoRow
+            label="Auto trading enabled"
+            value={boolLabel(venue.auto_trading_enabled)}
+            valueClassName={boolTone(venue.auto_trading_enabled, true)}
+          />
+          <InfoRow
+            label="Degraded mode active"
+            value={boolLabel(venue.degraded_mode_active)}
+            valueClassName={boolTone(venue.degraded_mode_active, true)}
+          />
+          <InfoRow label="Updated" value={formatDate(venue.updated_at)} />
+        </dl>
+        {venue.note && (
+          <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+            {venue.note}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function Trading212Summary({ status }: { status: OperatorStatus }) {
+  const readiness = status.trading212.live_readiness_status;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Trading212 Summary</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <dl>
+          <InfoRow
+            label="Strategies"
+            value={status.trading212.strategies_count}
+          />
+          <InfoRow
+            label="Live-approved strategies"
+            value={status.trading212.live_approved_strategies_count}
+          />
+          <InfoRow
+            label="Active orders"
+            value={status.trading212.active_orders_count}
+          />
+          <InfoRow
+            label="Recent orders"
+            value={status.trading212.recent_orders_count}
+          />
+          <InfoRow
+            label="Latest order status"
+            value={status.trading212.latest_order_status ?? "None"}
+          />
+          <InfoRow
+            label="Readiness status"
+            value={
+              readiness
+                ? readiness.ready_for_live
+                  ? "Backend reports ready_for_live"
+                  : "Blocked or incomplete"
+                : "Not available"
+            }
+            valueClassName={
+              readiness?.ready_for_live
+                ? "text-amber-300"
+                : "text-muted-foreground"
+            }
+          />
+        </dl>
+        <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
+          {status.trading212.safety_notes.map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+function KrakenSummary({ status }: { status: OperatorStatus }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle>Kraken Summary</CardTitle>
+          <TextBadge tone={status.kraken.live_enabled ? "warning" : "success"}>
+            {status.kraken.live_enabled ? "Live enabled" : "Live disabled"}
+          </TextBadge>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <dl>
+          <InfoRow label="Strategies" value={status.kraken.strategies_count} />
+          <InfoRow
+            label="Paper-only strategies"
+            value={status.kraken.paper_only_strategies_count}
+          />
+          <InfoRow
+            label="Recent orders"
+            value={status.kraken.recent_orders_count}
+          />
+          <InfoRow
+            label="Active orders"
+            value={status.kraken.active_orders_count}
+          />
+          <InfoRow
+            label="Venue status"
+            value={
+              status.kraken.venue_config?.degraded_mode_active
+                ? "Degraded"
+                : status.kraken.venue_config
+                  ? "Configured"
+                  : "Unknown"
+            }
+          />
+        </dl>
+        <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
+          {status.kraken.safety_notes.map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+function DcaSummary({ status }: { status: OperatorStatus }) {
+  const dcaActivity = status.recent_activity
+    .filter((activity) => activity.action === "dca_paper_decision")
+    .slice(0, 4);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle>DCA Summary</CardTitle>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            <TextBadge tone={status.dca.paper_only ? "success" : "warning"}>
+              Paper-only
+            </TextBadge>
+            <TextBadge tone={!status.dca.runnable ? "success" : "destructive"}>
+              Runnable {String(status.dca.runnable)}
+            </TextBadge>
+            <TextBadge
+              tone={!status.dca.live_enabled ? "success" : "destructive"}
+            >
+              Live {status.dca.live_enabled ? "enabled" : "disabled"}
+            </TextBadge>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <dl>
+          <InfoRow label="Configs" value={status.dca.config_count} />
+          <InfoRow
+            label="Enabled configs"
+            value={status.dca.enabled_config_count}
+          />
+          <InfoRow
+            label="Decision count total"
+            value={status.dca.decision_count_total}
+          />
+          <InfoRow label="BUY_DUE decisions" value={status.dca.buy_due_count} />
+          <InfoRow label="Blocked decisions" value={status.dca.blocked_count} />
+          <InfoRow label="Skipped decisions" value={status.dca.skipped_count} />
+          <InfoRow
+            label="Total paper allocated"
+            value={formatCurrency(status.dca.total_paper_allocated_usd)}
+          />
+        </dl>
+        {status.dca.config_count === 0 ? (
+          <EmptyState
+            title="No DCA configs"
+            description="No paper-only Kraken DCA configs were reported by operator status."
+            className="rounded-lg border border-border/60 py-8"
+          />
+        ) : (
+          <div>
+            <p className="text-xs font-medium text-muted-foreground">Tickers</p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {status.dca.tickers.map((ticker) => (
+                <Badge key={ticker} variant="secondary">
+                  {ticker}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        )}
+        <div>
+          <p className="text-xs font-medium text-muted-foreground">
+            Recent DCA decisions
+          </p>
+          {dcaActivity.length === 0 ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              No recent DCA decision activity in this operator status response.
+            </p>
+          ) : (
+            <div className="mt-2 space-y-2">
+              {dcaActivity.map((activity) => (
+                <ActivitySummary
+                  key={activity.id}
+                  activity={activity}
+                  compact
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SchedulerWorkerHealth({ status }: { status: OperatorStatus }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle>Scheduler / Worker Health</CardTitle>
+          <Badge variant={healthBadgeVariant(status.schedulers.worker_health)}>
+            Worker heartbeat {status.schedulers.worker_health}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <dl>
+          <InfoRow
+            label="DCA paper evaluate"
+            value={
+              status.schedulers.dca_paper_evaluate_registered
+                ? "Registered"
+                : "Not registered"
+            }
+            valueClassName={
+              status.schedulers.dca_paper_evaluate_registered
+                ? "text-emerald-400"
+                : "text-amber-400"
+            }
+          />
+          <InfoRow
+            label="DCA cadence"
+            value={status.schedulers.dca_paper_evaluate_cadence ?? "Unknown"}
+          />
+          <InfoRow
+            label="Heartbeat"
+            value={
+              status.schedulers.heartbeat_registered
+                ? "Registered"
+                : "Not registered"
+            }
+            valueClassName={
+              status.schedulers.heartbeat_registered
+                ? "text-emerald-400"
+                : "text-amber-400"
+            }
+          />
+          <InfoRow
+            label="Heartbeat cadence"
+            value={status.schedulers.heartbeat_cadence ?? "Unknown"}
+          />
+          <InfoRow
+            label="Heartbeat component"
+            value={status.schedulers.heartbeat_component}
+          />
+          <InfoRow
+            label="Last seen"
+            value={formatDate(status.schedulers.heartbeat_last_seen_at)}
+          />
+          <InfoRow
+            label="Stale threshold"
+            value={`${status.schedulers.heartbeat_stale_after_seconds}s`}
+          />
+        </dl>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Scheduler status means registered only. Worker health is based on
+          persisted heartbeat rows.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function safeSummaryEntries(summary: Record<string, unknown>) {
+  const sensitive =
+    /secret|token|password|credential|api[_-]?key|api[_-]?secret/i;
+  return Object.entries(summary)
+    .filter(([key]) => !sensitive.test(key))
+    .slice(0, 5);
+}
+
+function summaryValue(value: unknown) {
+  if (value === null || value === undefined) return "—";
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  )
+    return String(value);
+  return JSON.stringify(value).slice(0, 80);
+}
+
+function ActivitySummary({
+  activity,
+  compact = false,
+}: {
+  activity: OperatorRecentActivity;
+  compact?: boolean;
+}) {
+  const entries = safeSummaryEntries(activity.payload_summary);
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border border-border/60 bg-secondary/20 p-3",
+        compact && "p-2",
+      )}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="font-mono text-xs font-medium text-foreground">
+          {activity.action}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          {formatDate(activity.occurred_at)}
+        </p>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {activity.entity_type ?? "system"}
+        {activity.entity_id
+          ? ` · ${activity.entity_id.slice(0, 12)}...`
+          : ""} · {activity.actor}
+      </p>
+      {entries.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {entries.map(([key, value]) => (
+            <span
+              key={key}
+              className="rounded-md border border-border/60 bg-background/50 px-2 py-1 text-[11px] text-muted-foreground"
+            >
+              {key}:{" "}
+              <span className="text-foreground">{summaryValue(value)}</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RecentActivity({ status }: { status: OperatorStatus }) {
+  const activity = status.recent_activity.slice(0, 8);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Recent Activity</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {activity.length === 0 ? (
+          <EmptyState
+            title="No recent activity"
+            description="No bounded audit activity was included in this operator status response."
+            className="py-8"
+          />
+        ) : (
+          <div className="space-y-2">
+            {activity.map((item) => (
+              <ActivitySummary key={item.id} activity={item} />
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SafetyFlags({ status }: { status: OperatorStatus }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Safety Flags</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <dl className="grid gap-x-6 md:grid-cols-2">
+          <FlagRow
+            label="Endpoint read-only"
+            value={status.safety_flags.endpoint_read_only}
+          />
+          <FlagRow
+            label="Creates orders"
+            value={status.safety_flags.creates_orders}
+            riskyWhenTrue
+          />
+          <FlagRow
+            label="Calls brokers"
+            value={status.safety_flags.calls_brokers}
+            riskyWhenTrue
+          />
+          <FlagRow
+            label="Triggers schedulers"
+            value={status.safety_flags.triggers_schedulers}
+            riskyWhenTrue
+          />
+          <FlagRow
+            label="Runs strategies"
+            value={status.safety_flags.runs_strategies}
+            riskyWhenTrue
+          />
+          <FlagRow
+            label="DCA runnable"
+            value={status.safety_flags.dca_runnable}
+            riskyWhenTrue
+          />
+          <FlagRow
+            label="DCA live enabled"
+            value={status.safety_flags.dca_live_enabled}
+            riskyWhenTrue
+          />
+          <FlagRow
+            label="Kraken live enabled"
+            value={status.safety_flags.kraken_live_enabled}
+            riskyWhenTrue
+          />
+          <FlagRow
+            label="Any venue kill switch active"
+            value={status.safety_flags.any_venue_kill_switch_active}
+            riskyWhenTrue
+          />
+          <FlagRow
+            label="Any venue degraded"
+            value={status.safety_flags.any_venue_degraded}
+            riskyWhenTrue
+          />
+          <FlagRow
+            label="Worker health known"
+            value={status.safety_flags.worker_health_known}
+          />
+          <FlagRow
+            label="Cash-only mode"
+            value={status.safety_flags.cash_only_mode}
+          />
+        </dl>
+      </CardContent>
+    </Card>
+  );
+}
+
+export function OperatorDashboard({
+  status,
+  isLoading = false,
+  isError = false,
+}: OperatorDashboardProps) {
+  const brokerStatusQuery = useBrokerStatus();
+  if (isLoading) return <LoadingState />;
+  if (isError || !status) return <ErrorState />;
+
+  return (
+    <div className="space-y-5">
+      <TopSafetySummary status={status} />
+
+      <section className="grid gap-4 xl:grid-cols-2" aria-label="Venue status">
+        {status.venues.map((venue) => (
+          <VenueCard key={venue.venue} venue={venue} />
+        ))}
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-2">
+        <Trading212Summary status={status} />
+        <KrakenSummary status={status} />
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+        <DcaSummary status={status} />
+        <SchedulerWorkerHealth status={status} />
+      </section>
+
+      <SafetyFlags status={status} />
+      <RecentActivity status={status} />
+
+      <Card className="border-blue-500/20 bg-blue-500/5">
+        <CardContent className="flex flex-wrap items-center gap-3 pt-5 text-xs text-blue-100/80">
+          <ListChecks className="h-4 w-4 text-blue-300" />
+          <span>
+            Visibility only: no enable, disable, execute, trade, buy, sell,
+            scheduler, broker, or live controls are available here.
+          </span>
+        </CardContent>
+      </Card>
+      <BrokerStatusPanel
+        status={brokerStatusQuery.data}
+        isLoading={brokerStatusQuery.isLoading}
+        error={brokerStatusQuery.error}
+      />
+    </div>
+  );
+}

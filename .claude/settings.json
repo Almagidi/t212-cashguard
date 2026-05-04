@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd /Users/Ameer/Desktop/t212-cashguard && if [ -n \"$(git status --porcelain)\" ]; then git add -A && git commit -m \"Auto-commit: session changes $(date '+%Y-%m-%d %H:%M')\" -m \"Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>\" && git push origin main; fi",
+            "command": "cd /Users/Ameer/Desktop/t212-cashguard && git add -u && git diff --cached --quiet || git commit -m \"Auto-commit: session changes $(date '+%Y-%m-%d %H:%M')\" -m \"Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>\" && git push origin main",
             "timeout": 60,
             "statusMessage": "Committing and pushing session changes..."
           }
