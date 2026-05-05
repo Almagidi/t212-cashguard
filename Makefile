@@ -1,4 +1,4 @@
-.PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator logs clean
+.PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator e2e-operator-integration readiness-full logs clean
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -136,9 +136,55 @@ clean: ## Remove build artifacts and caches
 check-all: lint typecheck test ## Run lint, typecheck, and tests in sequence
 	@echo "$(GREEN)✓ All checks passed$(RESET)"
 
-.PHONY: smoke readiness
+.PHONY: smoke readiness e2e-operator-integration readiness-full
 
 smoke:
 	cd apps/api && DATABASE_URL=sqlite+aiosqlite:///:memory: REDIS_URL=redis://localhost:6379/15 SECRET_KEY=test-secret-key-32-chars-minimum-x MASTER_KEY=test-master-key-32-chars-minimum-x APP_MODE=mock python3.12 -m pytest tests/smoke/ -v --tb=short --no-cov
 
 readiness: smoke e2e-operator
+
+e2e-operator-integration: ## Run real-backend integration e2e for operator dashboard (SQLite, APP_MODE=mock, ports 8001/3001)
+	@echo "$(YELLOW)→ Initialising SQLite integration DB...$(RESET)"
+	@cd apps/api && \
+		INTEGRATION_DB_PATH=/tmp/t212_integration_test.db \
+		DATABASE_URL="sqlite+aiosqlite:////tmp/t212_integration_test.db" \
+		REDIS_URL=redis://localhost:6379/15 \
+		SECRET_KEY=integration-test-secret-key-32-chars-x \
+		MASTER_KEY=integration-test-master-key-32-chars-x \
+		APP_MODE=mock \
+		ADMIN_EMAIL=admin@localhost \
+		ADMIN_PASSWORD=change-me \
+		PYTHONPATH=. python3.12 scripts/init_integration_db.py
+	@echo "$(YELLOW)→ Starting API on :8001 (background)...$(RESET)"
+	@set -e; \
+	cd apps/api && \
+	DATABASE_URL="sqlite+aiosqlite:////tmp/t212_integration_test.db" \
+	REDIS_URL=redis://localhost:6379/15 \
+	SECRET_KEY=integration-test-secret-key-32-chars-x \
+	MASTER_KEY=integration-test-master-key-32-chars-x \
+	APP_MODE=mock \
+	ADMIN_EMAIL=admin@localhost \
+	ADMIN_PASSWORD=change-me \
+	CORS_ORIGINS="http://localhost:3001,http://127.0.0.1:3001" \
+	PYTHONPATH=. \
+	uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log & \
+	API_PID=$$!; \
+	trap "kill $$API_PID 2>/dev/null || true" EXIT INT TERM; \
+	echo "$(YELLOW)  → Waiting for API to be ready...$(RESET)"; \
+	for i in $$(seq 1 20); do \
+		curl -sf http://127.0.0.1:8001/v1/health/live >/dev/null 2>&1 && break || true; \
+		sleep 1; \
+	done; \
+	echo "$(YELLOW)  → Running Playwright integration tests...$(RESET)"; \
+	cd $(CURDIR)/apps/web && \
+		NEXT_PUBLIC_API_URL=http://127.0.0.1:8001 \
+		NEXT_PUBLIC_APP_MODE=mock \
+		BASE_URL=http://localhost:3001 \
+		ADMIN_EMAIL=admin@localhost \
+		ADMIN_PASSWORD=change-me \
+		INTEGRATION_API_PORT=8001 \
+		INTEGRATION_WEB_PORT=3001 \
+		npx playwright test --config=playwright.integration.config.ts; \
+	echo "$(GREEN)✓ Operator integration e2e complete$(RESET)"
+
+readiness-full: smoke e2e-operator e2e-operator-integration ## Full readiness: smoke + mock e2e + integration e2e
