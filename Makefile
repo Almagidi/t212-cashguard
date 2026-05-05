@@ -1,4 +1,7 @@
+
 .PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator e2e-operator-integration readiness-full logs clean
+
+.PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator logs clean
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
