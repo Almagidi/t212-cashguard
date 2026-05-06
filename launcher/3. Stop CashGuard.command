@@ -19,6 +19,8 @@ fail() { echo -e "  ${RED}✗${RESET} $1"; }
 step() { echo -e "  ${CYAN}▸${RESET} $1"; }
 
 COMPOSE_CMD=""
+NORMAL_API_PORT=8000
+NORMAL_WEB_PORT=3000
 if docker compose version >/dev/null 2>&1; then
     COMPOSE_CMD="docker compose"
 elif command -v docker-compose >/dev/null 2>&1; then
@@ -59,21 +61,20 @@ stop_pid_if_running() {
     fi
 }
 
-stop_port_listener() {
+describe_port_listener() {
     local port="$1"
     local pids
 
     pids=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
-    [ -z "$pids" ] && return 0
+    [ -z "$pids" ] && return 1
 
+    echo "    Port $port still has a listener:"
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | sed 's/^/      /' || true
     echo "$pids" | while read -r pid; do
         [ -z "$pid" ] && continue
-        kill "$pid" 2>/dev/null || true
-        sleep 1
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -9 "$pid" 2>/dev/null || true
-        fi
+        ps -p "$pid" -o pid=,ppid=,command= 2>/dev/null | sed 's/^/      /' || true
     done
+    return 0
 }
 
 clear
@@ -82,7 +83,21 @@ echo -e "${BOLD}  T212 CashGuard Trader - Stopping all services...${RESET}"
 echo ""
 
 step "Stopping launcher supervisors..."
-LAUNCHER_PIDS=$(pgrep -f "$PROJECT_ROOT/launcher/2. Start CashGuard.command" 2>/dev/null || true)
+LAUNCHER_PID_FILE="$PROJECT_ROOT/.launcher.pid"
+LAUNCHER_PIDS=""
+if [ -f "$LAUNCHER_PID_FILE" ]; then
+    SAVED_LAUNCHER_PID="$(cat "$LAUNCHER_PID_FILE" 2>/dev/null || true)"
+    if [ -n "$SAVED_LAUNCHER_PID" ] && kill -0 "$SAVED_LAUNCHER_PID" 2>/dev/null; then
+        LAUNCHER_PIDS="$SAVED_LAUNCHER_PID"
+    else
+        warn "Saved launcher supervisor PID is stale"
+    fi
+fi
+FOUND_LAUNCHER_PIDS=$(pgrep -f "$PROJECT_ROOT/launcher/2. Start CashGuard.command" 2>/dev/null || true)
+if [ -n "$FOUND_LAUNCHER_PIDS" ]; then
+    LAUNCHER_PIDS="$(printf "%s\n%s\n" "$LAUNCHER_PIDS" "$FOUND_LAUNCHER_PIDS" | awk 'NF && !seen[$0]++')"
+fi
+
 if [ -n "$LAUNCHER_PIDS" ]; then
     echo "$LAUNCHER_PIDS" | while read -r pid; do
         [ -z "$pid" ] && continue
@@ -96,6 +111,7 @@ if [ -n "$LAUNCHER_PIDS" ]; then
 else
     warn "No running start-launcher supervisor found"
 fi
+rm -f "$LAUNCHER_PID_FILE"
 
 step "Stopping saved service PIDs..."
 if [ -f "$PROJECT_ROOT/.pids" ]; then
@@ -108,10 +124,23 @@ else
     warn "No .pids file found - falling back to port/process checks"
 fi
 
-step "Clearing any remaining listeners..."
-stop_port_listener 8000
-stop_port_listener 3000
-ok "Ports 8000 and 3000 cleared"
+step "Checking normal launcher ports..."
+PORTS_CLEAR=true
+if describe_port_listener "$NORMAL_API_PORT"; then
+    PORTS_CLEAR=false
+fi
+if describe_port_listener "$NORMAL_WEB_PORT"; then
+    PORTS_CLEAR=false
+fi
+
+if [ "$PORTS_CLEAR" = true ]; then
+    ok "Normal ports $NORMAL_API_PORT and $NORMAL_WEB_PORT are free"
+else
+    warn "Some normal-port listeners remain; they were not killed without a matching saved PID"
+    echo "    Run make normal-status to inspect them."
+    echo "    If they are clearly stale processes from this repo, run make stop-normal-ports."
+    echo "    Manual QA ports 8002/3002 are separate; stop them with make operator-manual-stop."
+fi
 
 TELEGRAM_TUNNEL_PID_FILE="$PROJECT_ROOT/.telegram-control/tunnel.pid"
 if [ -f "$TELEGRAM_TUNNEL_PID_FILE" ]; then

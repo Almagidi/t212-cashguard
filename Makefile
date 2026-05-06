@@ -1,5 +1,5 @@
 
-.PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator e2e-operator-integration readiness-full logs clean operator-manual operator-manual-stop operator-manual-check manual-status stop-manual-ports
+.PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator e2e-operator-integration readiness-full logs clean launcher-check normal-status stop-normal-ports operator-manual operator-manual-stop operator-manual-check manual-status stop-manual-ports
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -8,6 +8,8 @@ GREEN  := \033[0;32m
 YELLOW := \033[1;33m
 RED    := \033[0;31m
 RESET  := \033[0m
+NORMAL_API_PORT ?= 8000
+NORMAL_WEB_PORT ?= 3000
 
 help: ## Show this help message
 	@echo ""
@@ -145,6 +147,18 @@ smoke:
 readiness: smoke e2e-operator
 
 e2e-operator-integration: ## Run real-backend integration e2e for operator dashboard (SQLite, APP_MODE=mock, ports 8001/3001)
+	@if lsof -tiTCP:8001 -sTCP:LISTEN >/dev/null 2>&1; then \
+		echo "$(RED)Integration API port 8001 is already in use.$(RESET)"; \
+		lsof -nP -iTCP:8001 -sTCP:LISTEN 2>/dev/null | sed 's/^/  /'; \
+		echo "Run make manual-status to inspect, or make stop-manual-ports if it is stale and project-owned."; \
+		exit 1; \
+	fi
+	@if lsof -tiTCP:3001 -sTCP:LISTEN >/dev/null 2>&1; then \
+		echo "$(RED)Integration web port 3001 is already in use.$(RESET)"; \
+		lsof -nP -iTCP:3001 -sTCP:LISTEN 2>/dev/null | sed 's/^/  /'; \
+		echo "Run make manual-status to inspect, or make stop-manual-ports if it is stale and project-owned."; \
+		exit 1; \
+	fi
 	@echo "$(YELLOW)→ Initialising SQLite integration DB...$(RESET)"
 	@cd apps/api && \
 		INTEGRATION_DB_PATH=/tmp/t212_integration_test.db \
@@ -158,24 +172,37 @@ e2e-operator-integration: ## Run real-backend integration e2e for operator dashb
 		PYTHONPATH=. python3.12 scripts/init_integration_db.py
 	@echo "$(YELLOW)→ Starting API on :8001 (background)...$(RESET)"
 	@set -e; \
-	cd apps/api && \
+	cd apps/api; \
 	DATABASE_URL="sqlite+aiosqlite:////tmp/t212_integration_test.db" \
-	REDIS_URL=redis://localhost:6379/15 \
-	SECRET_KEY=integration-test-secret-key-32-chars-x \
-	MASTER_KEY=integration-test-master-key-32-chars-x \
-	APP_MODE=mock \
-	ADMIN_EMAIL=admin@localhost \
-	ADMIN_PASSWORD=change-me \
-	CORS_ORIGINS="http://localhost:3001,http://127.0.0.1:3001" \
-	PYTHONPATH=. \
-	uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log & \
+		REDIS_URL=redis://localhost:6379/15 \
+		SECRET_KEY=integration-test-secret-key-32-chars-x \
+		MASTER_KEY=integration-test-master-key-32-chars-x \
+		APP_MODE=mock \
+		ADMIN_EMAIL=admin@localhost \
+		ADMIN_PASSWORD=change-me \
+		CORS_ORIGINS="http://localhost:3001,http://127.0.0.1:3001" \
+		PYTHONPATH=. \
+		uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log & \
 	API_PID=$$!; \
-	trap "kill $$API_PID 2>/dev/null || true" EXIT INT TERM; \
+	cleanup() { kill $$API_PID 2>/dev/null || true; wait $$API_PID 2>/dev/null || true; }; \
+	trap cleanup EXIT INT TERM; \
 	echo "$(YELLOW)  → Waiting for API to be ready...$(RESET)"; \
+	API_READY=0; \
 	for i in $$(seq 1 20); do \
-		curl -sf http://127.0.0.1:8001/v1/health/live >/dev/null 2>&1 && break || true; \
+		if ! kill -0 $$API_PID 2>/dev/null; then \
+			echo "$(RED)Integration API exited before readiness.$(RESET)"; \
+			exit 1; \
+		fi; \
+		if curl -sf http://127.0.0.1:8001/v1/health/live >/dev/null 2>&1; then \
+			API_READY=1; \
+			break; \
+		fi; \
 		sleep 1; \
 	done; \
+	if [ "$$API_READY" != "1" ]; then \
+		echo "$(RED)Integration API did not become ready on port 8001.$(RESET)"; \
+		exit 1; \
+	fi; \
 	echo "$(YELLOW)  → Running Playwright integration tests...$(RESET)"; \
 	cd $(CURDIR)/apps/web && \
 		NEXT_PUBLIC_API_URL=http://127.0.0.1:8001 \
@@ -189,6 +216,101 @@ e2e-operator-integration: ## Run real-backend integration e2e for operator dashb
 	echo "$(GREEN)✓ Operator integration e2e complete$(RESET)"
 
 readiness-full: smoke e2e-operator e2e-operator-integration ## Full readiness: smoke + mock e2e + integration e2e
+
+# ─── Normal launcher — ports 8000/3000, mode from .env ───────────────────────
+launcher-check: normal-status manual-status ## Show normal and manual launcher port/PID status without stopping anything
+
+normal-status: ## Show normal launcher status on ports 8000/3000 without stopping anything
+	@echo "$(YELLOW)→ Normal launcher status$(RESET)"
+	@echo "  Flow: normal app startup"
+	@echo "  API : http://localhost:$(NORMAL_API_PORT)"
+	@echo "  Web : http://localhost:$(NORMAL_WEB_PORT)"
+	@if [ -f .env ]; then \
+		mode=$$(grep -E '^APP_MODE=' .env | tail -1 | cut -d= -f2-); \
+		echo "  APP_MODE from .env: $${mode:-mock}"; \
+	else \
+		echo "  APP_MODE from .env: .env missing, launcher default is mock"; \
+	fi
+	@echo ""
+	@echo "  Saved normal launcher PIDs:"
+	@if [ -f .launcher.pid ]; then \
+		launcher=$$(cat .launcher.pid 2>/dev/null || true); \
+		if [ -n "$$launcher" ] && kill -0 "$$launcher" 2>/dev/null; then \
+			echo "    Launcher PID $$launcher running"; \
+		else \
+			echo "    Launcher PID $${launcher:-unknown} not running"; \
+		fi; \
+	else \
+		echo "    No .launcher.pid file found"; \
+	fi
+	@if [ -f .pids ]; then \
+		read api web celery < .pids || true; \
+		for pair in "API:$$api" "Web:$$web" "Workers:$$celery"; do \
+			label=$${pair%%:*}; pid=$${pair#*:}; \
+			if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
+				echo "    $$label PID $$pid running"; \
+			else \
+				echo "    $$label PID $${pid:-unknown} not running"; \
+			fi; \
+		done; \
+	else \
+		echo "    No .pids file found"; \
+	fi
+	@echo ""
+	@for port in $(NORMAL_API_PORT) $(NORMAL_WEB_PORT); do \
+		echo "  Port $$port listener:"; \
+		if lsof -nP -iTCP:$$port -sTCP:LISTEN >/dev/null 2>&1; then \
+			lsof -nP -iTCP:$$port -sTCP:LISTEN 2>/dev/null | sed 's/^/    /'; \
+		else \
+			echo "    free"; \
+		fi; \
+	done
+	@echo ""
+	@if curl -sf http://localhost:$(NORMAL_API_PORT)/v1/health/live >/dev/null 2>&1; then \
+		echo "  $(GREEN)✓ Normal API health responds$(RESET)"; \
+	else \
+		echo "  $(YELLOW)⚠ Normal API health is not reachable$(RESET)"; \
+	fi
+	@if curl -sf http://localhost:$(NORMAL_WEB_PORT)/auth/login >/dev/null 2>&1; then \
+		echo "  $(GREEN)✓ Normal web login page responds$(RESET)"; \
+	else \
+		echo "  $(YELLOW)⚠ Normal web login page is not reachable$(RESET)"; \
+	fi
+
+stop-normal-ports: ## Stop only project-owned stale listeners on normal ports 8000/3000
+	@echo "$(YELLOW)→ Stopping project-owned normal-port listeners only: $(NORMAL_API_PORT) $(NORMAL_WEB_PORT)$(RESET)"
+	@for port in $(NORMAL_API_PORT) $(NORMAL_WEB_PORT); do \
+		pids=$$(lsof -tiTCP:$$port -sTCP:LISTEN 2>/dev/null || true); \
+		if [ -z "$$pids" ]; then \
+			echo "  Port $$port: free"; \
+			continue; \
+		fi; \
+		echo "  Port $$port:"; \
+		lsof -nP -iTCP:$$port -sTCP:LISTEN 2>/dev/null | sed 's/^/    /' || true; \
+		for pid in $$pids; do \
+			cwd=$$(lsof -a -p $$pid -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1); \
+			cmd=$$(ps -p $$pid -o command= 2>/dev/null || true); \
+			case "$$cwd" in \
+				$(CURDIR)|$(CURDIR)/*) \
+					echo "    stopping PID $$pid from this repo: $$cmd"; \
+					kill $$pid 2>/dev/null || true; \
+					;; \
+				*) \
+					echo "    leaving PID $$pid alone; cwd is $${cwd:-unknown}, not $(CURDIR)"; \
+					;; \
+			esac; \
+		done; \
+	done
+	@sleep 1
+	@for port in $(NORMAL_API_PORT) $(NORMAL_WEB_PORT); do \
+		remaining=$$(lsof -tiTCP:$$port -sTCP:LISTEN 2>/dev/null || true); \
+		if [ -z "$$remaining" ]; then \
+			echo "  $(GREEN)✓ Port $$port is free$(RESET)"; \
+		else \
+			echo "  $(YELLOW)⚠ Port $$port still has listener(s): $$remaining$(RESET)"; \
+			echo "    Inspect with: make normal-status"; \
+		fi; \
+	done
 
 # ─── Manual QA — local real-backend in mock mode ──────────────────────────────
 MANUAL_QA_API_PORT ?= 8002
@@ -294,11 +416,15 @@ manual-status: ## Show listeners on manual/test ports without stopping anything
 	@for port in $(MANUAL_QA_PORTS); do \
 		echo ""; \
 		echo "Port $$port"; \
-		lsof -nP -iTCP:$$port -sTCP:LISTEN 2>/dev/null || echo "  free"; \
+		if lsof -nP -iTCP:$$port -sTCP:LISTEN >/dev/null 2>&1; then \
+			lsof -nP -iTCP:$$port -sTCP:LISTEN 2>/dev/null; \
+		else \
+			echo "  free"; \
+		fi; \
 	done
 
-stop-manual-ports: ## Stop listeners on known manual/test ports only (8001/8002/3001/3002/3100)
-	@echo "$(YELLOW)→ Stopping listeners on manual/test ports only: $(MANUAL_QA_PORTS)$(RESET)"
+stop-manual-ports: ## Stop project-owned listeners on known manual/test ports only (8001/8002/3001/3002/3100)
+	@echo "$(YELLOW)→ Stopping project-owned listeners on manual/test ports only: $(MANUAL_QA_PORTS)$(RESET)"
 	@for port in $(MANUAL_QA_PORTS); do \
 		pids=$$(lsof -tiTCP:$$port -sTCP:LISTEN 2>/dev/null || true); \
 		if [ -z "$$pids" ]; then \
@@ -308,13 +434,17 @@ stop-manual-ports: ## Stop listeners on known manual/test ports only (8001/8002/
 		echo "  Port $$port:"; \
 		lsof -nP -iTCP:$$port -sTCP:LISTEN 2>/dev/null | sed 's/^/    /' || true; \
 		for pid in $$pids; do \
-			kill $$pid 2>/dev/null || true; \
-		done; \
-		sleep 1; \
-		for pid in $$pids; do \
-			if kill -0 $$pid 2>/dev/null; then \
-				kill -9 $$pid 2>/dev/null || true; \
-			fi; \
+			cwd=$$(lsof -a -p $$pid -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1); \
+			cmd=$$(ps -p $$pid -o command= 2>/dev/null || true); \
+			case "$$cwd" in \
+				$(CURDIR)|$(CURDIR)/*) \
+					echo "    stopping PID $$pid from this repo: $$cmd"; \
+					kill $$pid 2>/dev/null || true; \
+					;; \
+				*) \
+					echo "    leaving PID $$pid alone; cwd is $${cwd:-unknown}, not $(CURDIR)"; \
+					;; \
+			esac; \
 		done; \
 	done
 	@echo "$(GREEN)✓ Manual/test port cleanup complete$(RESET)"
