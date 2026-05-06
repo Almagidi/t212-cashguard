@@ -1,5 +1,5 @@
 
-.PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator e2e-operator-integration readiness-full logs clean
+.PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator e2e-operator-integration readiness-full logs clean operator-manual operator-manual-stop
 
 .PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator logs clean
 
@@ -191,3 +191,95 @@ e2e-operator-integration: ## Run real-backend integration e2e for operator dashb
 	echo "$(GREEN)✓ Operator integration e2e complete$(RESET)"
 
 readiness-full: smoke e2e-operator e2e-operator-integration ## Full readiness: smoke + mock e2e + integration e2e
+
+# ─── Manual QA — local real-backend in mock mode ──────────────────────────────
+MANUAL_QA_API_PORT ?= 8002
+MANUAL_QA_WEB_PORT ?= 3002
+MANUAL_QA_DB_PATH  ?= /tmp/t212_manual_qa.db
+MANUAL_QA_API_PID  ?= /tmp/t212_manual_api.pid
+MANUAL_QA_WEB_PID  ?= /tmp/t212_manual_web.pid
+
+operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MODE=mock, no broker creds needed)
+	@echo "$(YELLOW)→ Initialising manual QA SQLite DB...$(RESET)"
+	@cd apps/api && \
+		INTEGRATION_DB_PATH=$(MANUAL_QA_DB_PATH) \
+		DATABASE_URL="sqlite+aiosqlite:///$(MANUAL_QA_DB_PATH)" \
+		REDIS_URL=redis://localhost:6379/15 \
+		SECRET_KEY=manual-qa-secret-key-32-chars-xxxxx \
+		MASTER_KEY=manual-qa-master-key-32-chars-xxxxx \
+		APP_MODE=mock \
+		ADMIN_EMAIL=admin@localhost \
+		ADMIN_PASSWORD=change-me \
+		PYTHONPATH=. python3.12 scripts/init_integration_db.py
+	@echo "$(YELLOW)→ Starting API on :$(MANUAL_QA_API_PORT) (APP_MODE=mock, background)...$(RESET)"
+	@( cd apps/api && exec env \
+		DATABASE_URL="sqlite+aiosqlite:///$(MANUAL_QA_DB_PATH)" \
+		REDIS_URL=redis://localhost:6379/15 \
+		SECRET_KEY=manual-qa-secret-key-32-chars-xxxxx \
+		MASTER_KEY=manual-qa-master-key-32-chars-xxxxx \
+		APP_MODE=mock \
+		ADMIN_EMAIL=admin@localhost \
+		ADMIN_PASSWORD=change-me \
+		CORS_ORIGINS="http://localhost:$(MANUAL_QA_WEB_PORT),http://127.0.0.1:$(MANUAL_QA_WEB_PORT)" \
+		PYTHONPATH=. \
+		uvicorn app.main:app --host 127.0.0.1 --port $(MANUAL_QA_API_PORT) --no-access-log \
+	) >> /tmp/t212_manual_api.log 2>&1 & echo $$! > $(MANUAL_QA_API_PID)
+	@echo "$(YELLOW)  → Waiting for API to be ready on :$(MANUAL_QA_API_PORT)...$(RESET)"
+	@for i in $$(seq 1 30); do \
+		curl -sf http://127.0.0.1:$(MANUAL_QA_API_PORT)/v1/health/live >/dev/null 2>&1 && break || true; \
+		sleep 1; \
+	done
+	@echo "$(YELLOW)→ Starting web app on :$(MANUAL_QA_WEB_PORT) (background)...$(RESET)"
+	@( cd apps/web && exec env \
+		NEXT_PUBLIC_API_URL=http://127.0.0.1:$(MANUAL_QA_API_PORT) \
+		NEXT_PUBLIC_APP_MODE=mock \
+		npx next dev -p $(MANUAL_QA_WEB_PORT) \
+	) >> /tmp/t212_manual_web.log 2>&1 & echo $$! > $(MANUAL_QA_WEB_PID)
+	@echo ""
+	@echo "$(GREEN)╔══════════════════════════════════════════════════════════╗$(RESET)"
+	@echo "$(GREEN)║      T212 CashGuard — Manual QA Servers Running          ║$(RESET)"
+	@echo "$(GREEN)╚══════════════════════════════════════════════════════════╝$(RESET)"
+	@echo ""
+	@echo "  Frontend : http://localhost:$(MANUAL_QA_WEB_PORT)"
+	@echo "  Backend  : http://127.0.0.1:$(MANUAL_QA_API_PORT)"
+	@echo "  API docs : http://127.0.0.1:$(MANUAL_QA_API_PORT)/docs"
+	@echo ""
+	@echo "  Login credentials"
+	@echo "    Email    : admin@localhost"
+	@echo "    Password : change-me"
+	@echo ""
+	@echo "  Page to open : http://localhost:$(MANUAL_QA_WEB_PORT)/app/operator"
+	@echo ""
+	@echo "  Logs"
+	@echo "    API  : tail -f /tmp/t212_manual_api.log"
+	@echo "    Web  : tail -f /tmp/t212_manual_web.log"
+	@echo ""
+	@echo "  $(YELLOW)Note: web app may take 15–30 s to compile on first load.$(RESET)"
+	@echo "  $(YELLOW)When finished run: make operator-manual-stop$(RESET)"
+	@echo ""
+	@echo "  See docs/operator-manual-qa.md for the full QA checklist."
+	@echo ""
+
+operator-manual-stop: ## Stop local manual QA servers started by operator-manual
+	@echo "$(YELLOW)→ Stopping manual QA servers...$(RESET)"
+	@if [ -f $(MANUAL_QA_API_PID) ]; then \
+		kill $$(cat $(MANUAL_QA_API_PID)) 2>/dev/null \
+			&& echo "  $(GREEN)✓ API stopped$(RESET)" \
+			|| echo "  API process already gone"; \
+		rm -f $(MANUAL_QA_API_PID); \
+	else \
+		lsof -ti tcp:$(MANUAL_QA_API_PORT) | xargs kill 2>/dev/null \
+			&& echo "  $(GREEN)✓ API port $(MANUAL_QA_API_PORT) cleared$(RESET)" \
+			|| echo "  Nothing on port $(MANUAL_QA_API_PORT)"; \
+	fi
+	@if [ -f $(MANUAL_QA_WEB_PID) ]; then \
+		kill $$(cat $(MANUAL_QA_WEB_PID)) 2>/dev/null \
+			&& echo "  $(GREEN)✓ Web stopped$(RESET)" \
+			|| echo "  Web process already gone"; \
+		rm -f $(MANUAL_QA_WEB_PID); \
+	else \
+		lsof -ti tcp:$(MANUAL_QA_WEB_PORT) | xargs kill 2>/dev/null \
+			&& echo "  $(GREEN)✓ Web port $(MANUAL_QA_WEB_PORT) cleared$(RESET)" \
+			|| echo "  Nothing on port $(MANUAL_QA_WEB_PORT)"; \
+	fi
+	@echo "$(GREEN)✓ Manual QA servers stopped$(RESET)"
