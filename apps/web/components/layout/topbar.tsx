@@ -13,6 +13,7 @@ const PAGE_META: Record<string, { title: string; subtitle?: string; live?: boole
   '/app/broker':      { title: 'Broker Account',     subtitle: 'Trading 212 connection and account' },
   '/app/instruments': { title: 'Instruments',        subtitle: 'Tradable symbols and market data' },
   '/app/strategies':  { title: 'Strategies',         subtitle: 'Automation rules and signal pipelines' },
+  '/app/operator':    { title: 'Operator',           subtitle: 'Read-only system readiness and safety status' },
   '/app/orders':      { title: 'Orders',             subtitle: 'Open, filled, and cancelled orders',  live: true },
   '/app/positions':   { title: 'Positions',          subtitle: 'Current holdings and unrealised P&L', live: true },
   '/app/risk':        { title: 'Risk Controls',      subtitle: 'Limits, guards, and circuit breakers' },
