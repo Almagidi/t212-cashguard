@@ -55,7 +55,9 @@ make manual-status
 make stop-manual-ports
 ```
 
-`stop-manual-ports` is intentionally limited to ports 8001, 8002, 3001, 3002, and 3100.
+`stop-manual-ports` is intentionally limited to ports 8001, 8002, 3001, 3002, and
+3100, and it only stops listeners whose current working directory is inside this repo.
+It prints and leaves unrelated processes alone.
 
 ## Login
 
@@ -164,6 +166,51 @@ The normal dashboard may not show Kraken because it focuses on account, position
 alerts, and Trading212 broker status from the normal app data. Kraken readiness is expected
 on the operator page and the Kraken DCA endpoints.
 
+## Understanding Dashboard Runtime Diagnostics
+
+Open `/app/operator` to see the runtime diagnostics panel. The normal dashboard also links
+to this panel and shows the frontend mode plus the API URL that the browser is using.
+
+The diagnostics panel is read-only. It checks:
+
+```text
+GET /v1/health/live
+GET /v1/auth/me
+GET /v1/operator/status
+GET /v1/kraken/dca/status
+GET /v1/kraken/dca/activity
+GET /v1/kraken/dca/configs
+```
+
+Use the runtime profile to confirm the intended path:
+
+| Profile | Web | API | Expected mode |
+| --- | ---: | ---: | --- |
+| Normal launcher | 3000 | 8000 | Root `.env` (`demo` on this machine) |
+| Manual QA | 3002 | 8002 | `mock` |
+| Integration | 3001 | 8001 | `mock` |
+| Mock E2E | 3100 | mocked | `mock` |
+
+In normal launcher demo mode, Kraken/DCA cards may not be seeded or visible unless the
+normal database has Kraken DCA config/state data. For mock Kraken/DCA QA, use:
+
+```bash
+make operator-manual
+```
+
+In manual QA mock mode, Kraken/DCA readiness data should be visible, read-only, and should
+not require Trading212 or Kraken credentials.
+
+Endpoint meanings:
+
+| Status | Meaning | Next action |
+| --- | --- | --- |
+| `200` | Route is reachable and returning data | Continue QA |
+| `401` | Browser token is missing or invalid | Log in again |
+| `404` | Route is not registered in this backend build | Check the backend/branch you started |
+| `500` | Route exists but failed | Check API logs |
+| Network error | Frontend cannot reach the configured API URL | Check ports and launcher/manual QA status |
+
 If `/v1/operator/status` returns Kraken data but the UI does not show it:
 
 1. Confirm you are on `/app/operator`, not the normal dashboard.
@@ -188,8 +235,30 @@ If a listed process is clearly a stale test/manual server:
 make stop-manual-ports
 ```
 
-For the normal launcher, use `launcher/3. Stop CashGuard.command`; it targets ports 8000 and
-3000 plus saved launcher PIDs.
+For the normal launcher, use `launcher/3. Stop CashGuard.command`; it stops saved launcher
+PIDs and then reports any remaining listeners on ports 8000 and 3000 without killing
+unknown processes.
+
+To inspect both normal and manual ports:
+
+```bash
+make launcher-check
+```
+
+To inspect only normal ports:
+
+```bash
+make normal-status
+```
+
+If a normal-port listener is clearly stale and belongs to this repo:
+
+```bash
+make stop-normal-ports
+```
+
+`stop-normal-ports` only stops listeners on 8000/3000 whose current working directory is
+inside this repo. If another app owns the port, stop that app directly.
 
 ### Setup Marker Missing
 
@@ -245,6 +314,7 @@ Before merging manual QA or launcher changes, run:
 
 ```bash
 git diff --check
+make launcher-check
 make smoke
 make e2e-operator
 make e2e-operator-integration

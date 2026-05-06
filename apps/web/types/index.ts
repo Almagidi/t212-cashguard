@@ -1184,6 +1184,70 @@ export interface DcaActivitySafetyFlags {
   [key: string]: boolean | string | number | null | undefined;
 }
 
+export interface DcaConfig {
+  id: string;
+  ticker: string;
+  venue: string;
+  cadence_days: number;
+  fixed_cash_amount: string | number;
+  dip_buy_enabled: boolean;
+  dip_buy_multiplier: string | number;
+  min_cash_reserve: string | number;
+  max_position_percent: string | number;
+  paper_only: boolean;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DcaLatestState {
+  last_buy_at: string | null;
+  last_decision_at: string | null;
+  total_allocated_usd: string | number;
+  executions_count: number;
+  last_decision_code: string | null;
+  last_reason: string | null;
+}
+
+export interface DcaConfigStatus {
+  id: string;
+  ticker: string;
+  venue: string;
+  enabled: boolean;
+  paper_only: boolean;
+  cadence_days: number;
+  fixed_cash_amount: string | number;
+  min_cash_reserve: string | number;
+  max_position_percent: string | number;
+  dip_buy_enabled: boolean;
+  dip_buy_multiplier: string | number;
+  latest_state: DcaLatestState | null;
+}
+
+export interface DcaAuditEntry {
+  id: string;
+  created_at: string;
+  action: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  actor: string;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface DcaOperatorStatus {
+  subsystem: "kraken_dca";
+  mode: "paper_only";
+  runnable: boolean;
+  live_enabled: boolean;
+  scheduler_registered: boolean;
+  scheduler_cadence: string | null;
+  config_count: number;
+  enabled_config_count: number;
+  configs: DcaConfigStatus[];
+  recent_audit_entries: DcaAuditEntry[];
+  safety_flags: DcaActivitySafetyFlags;
+}
+
 export interface DcaActivityResponse {
   subsystem: string;
   mode: string;
