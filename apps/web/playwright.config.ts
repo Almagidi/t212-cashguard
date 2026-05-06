@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test'
 
 const webPort = process.env.E2E_WEB_PORT ?? '3000'
 const webUrl = process.env.BASE_URL || `http://localhost:${webPort}`
+const webReadyUrl = `${webUrl.replace(/\/$/, '')}/auth/login`
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -28,7 +29,7 @@ export default defineConfig({
   // Start the dev server automatically when running e2e tests locally
   webServer: process.env.CI ? undefined : {
     command: `npx next dev -p ${webPort}`,
-    url: webUrl,
+    url: webReadyUrl,
     reuseExistingServer: true,
     timeout: 120_000,
   },

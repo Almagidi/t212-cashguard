@@ -4,6 +4,7 @@ const apiPort = process.env.INTEGRATION_API_PORT ?? '8001'
 const webPort = process.env.INTEGRATION_WEB_PORT ?? '3001'
 const apiUrl = `http://127.0.0.1:${apiPort}`
 const webUrl = `http://localhost:${webPort}`
+const webReadyUrl = `${webUrl}/auth/login`
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -29,7 +30,7 @@ export default defineConfig({
   ],
   webServer: {
     command: `npx next dev -p ${webPort}`,
-    url: webUrl,
+    url: webReadyUrl,
     reuseExistingServer: true,
     timeout: 120_000,
     env: {
