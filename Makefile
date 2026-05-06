@@ -200,6 +200,14 @@ MANUAL_QA_API_PID  ?= /tmp/t212_manual_api.pid
 MANUAL_QA_WEB_PID  ?= /tmp/t212_manual_web.pid
 
 operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MODE=mock, no broker creds needed)
+	@if lsof -ti tcp:$(MANUAL_QA_API_PORT) >/dev/null 2>&1; then \
+		echo "$(RED)API port $(MANUAL_QA_API_PORT) is already in use. Run make operator-manual-stop or choose MANUAL_QA_API_PORT=<port>.$(RESET)"; \
+		exit 1; \
+	fi
+	@if lsof -ti tcp:$(MANUAL_QA_WEB_PORT) >/dev/null 2>&1; then \
+		echo "$(RED)Web port $(MANUAL_QA_WEB_PORT) is already in use. Run make operator-manual-stop or choose MANUAL_QA_WEB_PORT=<port>.$(RESET)"; \
+		exit 1; \
+	fi
 	@echo "$(YELLOW)→ Initialising manual QA SQLite DB...$(RESET)"
 	@cd apps/api && \
 		INTEGRATION_DB_PATH=$(MANUAL_QA_DB_PATH) \
@@ -212,7 +220,7 @@ operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MOD
 		ADMIN_PASSWORD=change-me \
 		PYTHONPATH=. python3.12 scripts/init_integration_db.py
 	@echo "$(YELLOW)→ Starting API on :$(MANUAL_QA_API_PORT) (APP_MODE=mock, background)...$(RESET)"
-	@( cd apps/api && exec env \
+	@nohup bash -c 'cd apps/api && exec env \
 		DATABASE_URL="sqlite+aiosqlite:///$(MANUAL_QA_DB_PATH)" \
 		REDIS_URL=redis://localhost:6379/15 \
 		SECRET_KEY=manual-qa-secret-key-32-chars-xxxxx \
@@ -223,18 +231,35 @@ operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MOD
 		CORS_ORIGINS="http://localhost:$(MANUAL_QA_WEB_PORT),http://127.0.0.1:$(MANUAL_QA_WEB_PORT)" \
 		PYTHONPATH=. \
 		uvicorn app.main:app --host 127.0.0.1 --port $(MANUAL_QA_API_PORT) --no-access-log \
-	) >> /tmp/t212_manual_api.log 2>&1 & echo $$! > $(MANUAL_QA_API_PID)
+	' >> /tmp/t212_manual_api.log 2>&1 & echo $$! > $(MANUAL_QA_API_PID)
 	@echo "$(YELLOW)  → Waiting for API to be ready on :$(MANUAL_QA_API_PORT)...$(RESET)"
-	@for i in $$(seq 1 30); do \
-		curl -sf http://127.0.0.1:$(MANUAL_QA_API_PORT)/v1/health/live >/dev/null 2>&1 && break || true; \
+	@API_READY=0; \
+	for i in $$(seq 1 30); do \
+		if ! kill -0 $$(cat $(MANUAL_QA_API_PID)) 2>/dev/null; then \
+			echo "$(RED)API process exited before becoming ready. See /tmp/t212_manual_api.log.$(RESET)"; \
+			exit 1; \
+		fi; \
+		if curl -sf http://127.0.0.1:$(MANUAL_QA_API_PORT)/v1/health/live >/dev/null 2>&1; then \
+			API_READY=1; \
+			break; \
+		fi; \
 		sleep 1; \
-	done
+	done; \
+	if [ "$$API_READY" != "1" ]; then \
+		echo "$(RED)API did not become ready on port $(MANUAL_QA_API_PORT). See /tmp/t212_manual_api.log.$(RESET)"; \
+		exit 1; \
+	fi
 	@echo "$(YELLOW)→ Starting web app on :$(MANUAL_QA_WEB_PORT) (background)...$(RESET)"
-	@( cd apps/web && exec env \
+	@nohup bash -c 'cd apps/web && exec env \
 		NEXT_PUBLIC_API_URL=http://127.0.0.1:$(MANUAL_QA_API_PORT) \
 		NEXT_PUBLIC_APP_MODE=mock \
 		npx next dev -p $(MANUAL_QA_WEB_PORT) \
-	) >> /tmp/t212_manual_web.log 2>&1 & echo $$! > $(MANUAL_QA_WEB_PID)
+	' >> /tmp/t212_manual_web.log 2>&1 & echo $$! > $(MANUAL_QA_WEB_PID)
+	@sleep 2
+	@if ! kill -0 $$(cat $(MANUAL_QA_WEB_PID)) 2>/dev/null; then \
+		echo "$(RED)Web process exited early. See /tmp/t212_manual_web.log.$(RESET)"; \
+		exit 1; \
+	fi
 	@echo ""
 	@echo "$(GREEN)╔══════════════════════════════════════════════════════════╗$(RESET)"
 	@echo "$(GREEN)║      T212 CashGuard — Manual QA Servers Running          ║$(RESET)"
@@ -268,9 +293,7 @@ operator-manual-stop: ## Stop local manual QA servers started by operator-manual
 			|| echo "  API process already gone"; \
 		rm -f $(MANUAL_QA_API_PID); \
 	else \
-		lsof -ti tcp:$(MANUAL_QA_API_PORT) | xargs kill 2>/dev/null \
-			&& echo "  $(GREEN)✓ API port $(MANUAL_QA_API_PORT) cleared$(RESET)" \
-			|| echo "  Nothing on port $(MANUAL_QA_API_PORT)"; \
+		echo "  No API PID file; not killing unknown process on port $(MANUAL_QA_API_PORT)."; \
 	fi
 	@if [ -f $(MANUAL_QA_WEB_PID) ]; then \
 		kill $$(cat $(MANUAL_QA_WEB_PID)) 2>/dev/null \
@@ -278,8 +301,6 @@ operator-manual-stop: ## Stop local manual QA servers started by operator-manual
 			|| echo "  Web process already gone"; \
 		rm -f $(MANUAL_QA_WEB_PID); \
 	else \
-		lsof -ti tcp:$(MANUAL_QA_WEB_PORT) | xargs kill 2>/dev/null \
-			&& echo "  $(GREEN)✓ Web port $(MANUAL_QA_WEB_PORT) cleared$(RESET)" \
-			|| echo "  Nothing on port $(MANUAL_QA_WEB_PORT)"; \
+		echo "  No web PID file; not killing unknown process on port $(MANUAL_QA_WEB_PORT)."; \
 	fi
 	@echo "$(GREEN)✓ Manual QA servers stopped$(RESET)"
