@@ -1,11 +1,9 @@
 
-t-ops-010-local-operator-manual-qa
 .PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator e2e-operator-integration readiness-full logs clean launcher-check normal-status stop-normal-ports operator-manual operator-manual-stop operator-manual-check manual-status stop-manual-ports
 
 .PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator e2e-operator-integration readiness-full logs clean operator-manual operator-manual-stop
 
 .PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator logs clean
-main
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -223,7 +221,6 @@ e2e-operator-integration: ## Run real-backend integration e2e for operator dashb
 
 readiness-full: smoke e2e-operator e2e-operator-integration ## Full readiness: smoke + mock e2e + integration e2e
 
- t-ops-010-local-operator-manual-qa
 # ─── Normal launcher — ports 8000/3000, mode from .env ───────────────────────
 launcher-check: normal-status manual-status ## Show normal and manual launcher port/PID status without stopping anything
 
@@ -320,17 +317,13 @@ stop-normal-ports: ## Stop only project-owned stale listeners on normal ports 80
 	done
 
 
-main
 # ─── Manual QA — local real-backend in mock mode ──────────────────────────────
 MANUAL_QA_API_PORT ?= 8002
 MANUAL_QA_WEB_PORT ?= 3002
 MANUAL_QA_DB_PATH  ?= /tmp/t212_manual_qa.db
 MANUAL_QA_API_PID  ?= /tmp/t212_manual_api.pid
 MANUAL_QA_WEB_PID  ?= /tmp/t212_manual_web.pid
- t-ops-010-local-operator-manual-qa
 MANUAL_QA_PORTS    ?= 8001 8002 3001 3002 3100
-=======
- main
 
 operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MODE=mock, no broker creds needed)
 	@if lsof -ti tcp:$(MANUAL_QA_API_PORT) >/dev/null 2>&1; then \
@@ -353,7 +346,6 @@ operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MOD
 		ADMIN_PASSWORD=change-me \
 		PYTHONPATH=. python3.12 scripts/init_integration_db.py
 	@echo "$(YELLOW)→ Starting API on :$(MANUAL_QA_API_PORT) (APP_MODE=mock, background)...$(RESET)"
- t-ops-010-local-operator-manual-qa
 	@python3 -c 'import os, subprocess; env=os.environ.copy(); env.update({"DATABASE_URL":"sqlite+aiosqlite:///$(MANUAL_QA_DB_PATH)","REDIS_URL":"redis://localhost:6379/15","SECRET_KEY":"manual-qa-secret-key-32-chars-xxxxx","MASTER_KEY":"manual-qa-master-key-32-chars-xxxxx","APP_MODE":"mock","ADMIN_EMAIL":"admin@localhost","ADMIN_PASSWORD":"change-me","CORS_ORIGINS":"http://localhost:$(MANUAL_QA_WEB_PORT),http://127.0.0.1:$(MANUAL_QA_WEB_PORT)","PYTHONPATH":"."}); log=open("/tmp/t212_manual_api.log","ab",buffering=0); p=subprocess.Popen(["uvicorn","app.main:app","--host","127.0.0.1","--port","$(MANUAL_QA_API_PORT)","--no-access-log"], cwd="apps/api", env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True); open("$(MANUAL_QA_API_PID)","w").write(str(p.pid))'
 
 	@nohup bash -c 'cd apps/api && exec env \
@@ -368,7 +360,6 @@ operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MOD
 		PYTHONPATH=. \
 		uvicorn app.main:app --host 127.0.0.1 --port $(MANUAL_QA_API_PORT) --no-access-log \
 	' >> /tmp/t212_manual_api.log 2>&1 & echo $$! > $(MANUAL_QA_API_PID)
-main
 	@echo "$(YELLOW)  → Waiting for API to be ready on :$(MANUAL_QA_API_PORT)...$(RESET)"
 	@API_READY=0; \
 	for i in $$(seq 1 30); do \
@@ -387,7 +378,6 @@ main
 		exit 1; \
 	fi
 	@echo "$(YELLOW)→ Starting web app on :$(MANUAL_QA_WEB_PORT) (background)...$(RESET)"
- t-ops-010-local-operator-manual-qa
 	@python3 -c 'import os, subprocess; env=os.environ.copy(); env.update({"NEXT_PUBLIC_API_URL":"http://127.0.0.1:$(MANUAL_QA_API_PORT)","NEXT_PUBLIC_APP_MODE":"mock"}); log=open("/tmp/t212_manual_web.log","ab",buffering=0); p=subprocess.Popen(["npx","next","dev","-p","$(MANUAL_QA_WEB_PORT)"], cwd="apps/web", env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True); open("$(MANUAL_QA_WEB_PID)","w").write(str(p.pid))'
 
 	@nohup bash -c 'cd apps/web && exec env \
@@ -395,7 +385,6 @@ main
 		NEXT_PUBLIC_APP_MODE=mock \
 		npx next dev -p $(MANUAL_QA_WEB_PORT) \
 	' >> /tmp/t212_manual_web.log 2>&1 & echo $$! > $(MANUAL_QA_WEB_PID)
- main
 	@sleep 2
 	@if ! kill -0 $$(cat $(MANUAL_QA_WEB_PID)) 2>/dev/null; then \
 		echo "$(RED)Web process exited early. See /tmp/t212_manual_web.log.$(RESET)"; \
@@ -445,7 +434,6 @@ operator-manual-stop: ## Stop local manual QA servers started by operator-manual
 		echo "  No web PID file; not killing unknown process on port $(MANUAL_QA_WEB_PORT)."; \
 	fi
 	@echo "$(GREEN)✓ Manual QA servers stopped$(RESET)"
- t-ops-010-local-operator-manual-qa
 
 manual-status: ## Show listeners on manual/test ports without stopping anything
 	@echo "$(YELLOW)→ Manual/test port listeners$(RESET)"
@@ -508,4 +496,3 @@ operator-manual-check: ## Curl manual QA endpoints with auth against API :8002
 		test "$$code" = "200"; \
 	done
 	@echo "$(GREEN)✓ Manual QA API endpoints returned 200$(RESET)"
- main
