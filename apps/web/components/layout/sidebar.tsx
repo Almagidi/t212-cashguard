@@ -30,6 +30,7 @@ const NAV_GROUPS = [
   {
     label: 'Operations',
     items: [
+      { href: '/app/operator', icon: ShieldAlert, label: 'Operator' },
       { href: '/app/orders',    icon: ListOrdered, label: 'Orders',        badge: 'orders' as const },
       { href: '/app/positions', icon: Briefcase,   label: 'Positions',     badge: 'positions' as const },
       { href: '/app/risk',      icon: ShieldAlert, label: 'Risk Controls' },
