@@ -1,7 +1,5 @@
 
-.PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator e2e-operator-integration readiness-full logs clean operator-manual operator-manual-stop
-
-.PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator logs clean
+.PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator e2e-operator-integration readiness-full logs clean operator-manual operator-manual-stop operator-manual-check manual-status stop-manual-ports
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -198,6 +196,7 @@ MANUAL_QA_WEB_PORT ?= 3002
 MANUAL_QA_DB_PATH  ?= /tmp/t212_manual_qa.db
 MANUAL_QA_API_PID  ?= /tmp/t212_manual_api.pid
 MANUAL_QA_WEB_PID  ?= /tmp/t212_manual_web.pid
+MANUAL_QA_PORTS    ?= 8001 8002 3001 3002 3100
 
 operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MODE=mock, no broker creds needed)
 	@if lsof -ti tcp:$(MANUAL_QA_API_PORT) >/dev/null 2>&1; then \
@@ -220,18 +219,7 @@ operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MOD
 		ADMIN_PASSWORD=change-me \
 		PYTHONPATH=. python3.12 scripts/init_integration_db.py
 	@echo "$(YELLOW)→ Starting API on :$(MANUAL_QA_API_PORT) (APP_MODE=mock, background)...$(RESET)"
-	@nohup bash -c 'cd apps/api && exec env \
-		DATABASE_URL="sqlite+aiosqlite:///$(MANUAL_QA_DB_PATH)" \
-		REDIS_URL=redis://localhost:6379/15 \
-		SECRET_KEY=manual-qa-secret-key-32-chars-xxxxx \
-		MASTER_KEY=manual-qa-master-key-32-chars-xxxxx \
-		APP_MODE=mock \
-		ADMIN_EMAIL=admin@localhost \
-		ADMIN_PASSWORD=change-me \
-		CORS_ORIGINS="http://localhost:$(MANUAL_QA_WEB_PORT),http://127.0.0.1:$(MANUAL_QA_WEB_PORT)" \
-		PYTHONPATH=. \
-		uvicorn app.main:app --host 127.0.0.1 --port $(MANUAL_QA_API_PORT) --no-access-log \
-	' >> /tmp/t212_manual_api.log 2>&1 & echo $$! > $(MANUAL_QA_API_PID)
+	@python3 -c 'import os, subprocess; env=os.environ.copy(); env.update({"DATABASE_URL":"sqlite+aiosqlite:///$(MANUAL_QA_DB_PATH)","REDIS_URL":"redis://localhost:6379/15","SECRET_KEY":"manual-qa-secret-key-32-chars-xxxxx","MASTER_KEY":"manual-qa-master-key-32-chars-xxxxx","APP_MODE":"mock","ADMIN_EMAIL":"admin@localhost","ADMIN_PASSWORD":"change-me","CORS_ORIGINS":"http://localhost:$(MANUAL_QA_WEB_PORT),http://127.0.0.1:$(MANUAL_QA_WEB_PORT)","PYTHONPATH":"."}); log=open("/tmp/t212_manual_api.log","ab",buffering=0); p=subprocess.Popen(["uvicorn","app.main:app","--host","127.0.0.1","--port","$(MANUAL_QA_API_PORT)","--no-access-log"], cwd="apps/api", env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True); open("$(MANUAL_QA_API_PID)","w").write(str(p.pid))'
 	@echo "$(YELLOW)  → Waiting for API to be ready on :$(MANUAL_QA_API_PORT)...$(RESET)"
 	@API_READY=0; \
 	for i in $$(seq 1 30); do \
@@ -250,11 +238,7 @@ operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MOD
 		exit 1; \
 	fi
 	@echo "$(YELLOW)→ Starting web app on :$(MANUAL_QA_WEB_PORT) (background)...$(RESET)"
-	@nohup bash -c 'cd apps/web && exec env \
-		NEXT_PUBLIC_API_URL=http://127.0.0.1:$(MANUAL_QA_API_PORT) \
-		NEXT_PUBLIC_APP_MODE=mock \
-		npx next dev -p $(MANUAL_QA_WEB_PORT) \
-	' >> /tmp/t212_manual_web.log 2>&1 & echo $$! > $(MANUAL_QA_WEB_PID)
+	@python3 -c 'import os, subprocess; env=os.environ.copy(); env.update({"NEXT_PUBLIC_API_URL":"http://127.0.0.1:$(MANUAL_QA_API_PORT)","NEXT_PUBLIC_APP_MODE":"mock"}); log=open("/tmp/t212_manual_web.log","ab",buffering=0); p=subprocess.Popen(["npx","next","dev","-p","$(MANUAL_QA_WEB_PORT)"], cwd="apps/web", env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True); open("$(MANUAL_QA_WEB_PID)","w").write(str(p.pid))'
 	@sleep 2
 	@if ! kill -0 $$(cat $(MANUAL_QA_WEB_PID)) 2>/dev/null; then \
 		echo "$(RED)Web process exited early. See /tmp/t212_manual_web.log.$(RESET)"; \
@@ -304,3 +288,57 @@ operator-manual-stop: ## Stop local manual QA servers started by operator-manual
 		echo "  No web PID file; not killing unknown process on port $(MANUAL_QA_WEB_PORT)."; \
 	fi
 	@echo "$(GREEN)✓ Manual QA servers stopped$(RESET)"
+
+manual-status: ## Show listeners on manual/test ports without stopping anything
+	@echo "$(YELLOW)→ Manual/test port listeners$(RESET)"
+	@for port in $(MANUAL_QA_PORTS); do \
+		echo ""; \
+		echo "Port $$port"; \
+		lsof -nP -iTCP:$$port -sTCP:LISTEN 2>/dev/null || echo "  free"; \
+	done
+
+stop-manual-ports: ## Stop listeners on known manual/test ports only (8001/8002/3001/3002/3100)
+	@echo "$(YELLOW)→ Stopping listeners on manual/test ports only: $(MANUAL_QA_PORTS)$(RESET)"
+	@for port in $(MANUAL_QA_PORTS); do \
+		pids=$$(lsof -tiTCP:$$port -sTCP:LISTEN 2>/dev/null || true); \
+		if [ -z "$$pids" ]; then \
+			echo "  Port $$port: free"; \
+			continue; \
+		fi; \
+		echo "  Port $$port:"; \
+		lsof -nP -iTCP:$$port -sTCP:LISTEN 2>/dev/null | sed 's/^/    /' || true; \
+		for pid in $$pids; do \
+			kill $$pid 2>/dev/null || true; \
+		done; \
+		sleep 1; \
+		for pid in $$pids; do \
+			if kill -0 $$pid 2>/dev/null; then \
+				kill -9 $$pid 2>/dev/null || true; \
+			fi; \
+		done; \
+	done
+	@echo "$(GREEN)✓ Manual/test port cleanup complete$(RESET)"
+
+operator-manual-check: ## Curl manual QA endpoints with auth against API :8002
+	@echo "$(YELLOW)→ Checking manual QA API endpoints on :$(MANUAL_QA_API_PORT)...$(RESET)"
+	@TOKEN=$$(curl -fsS -X POST http://127.0.0.1:$(MANUAL_QA_API_PORT)/v1/auth/login \
+		-H 'Content-Type: application/json' \
+		-d '{"email":"admin@localhost","password":"change-me"}' \
+		| python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])'); \
+	for endpoint in \
+		/v1/health/live \
+		/v1/auth/me \
+		/v1/operator/status \
+		/v1/kraken/dca/status \
+		/v1/kraken/dca/activity \
+		/v1/kraken/dca/configs \
+		/v1/account/summary \
+		/v1/account/cash-guard \
+		/v1/positions; do \
+		code=$$(curl -fsS -o /tmp/t212_manual_check.json -w '%{http_code}' \
+			-H "Authorization: Bearer $$TOKEN" \
+			http://127.0.0.1:$(MANUAL_QA_API_PORT)$$endpoint); \
+		echo "  $$endpoint -> $$code"; \
+		test "$$code" = "200"; \
+	done
+	@echo "$(GREEN)✓ Manual QA API endpoints returned 200$(RESET)"

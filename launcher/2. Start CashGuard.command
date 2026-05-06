@@ -118,12 +118,24 @@ echo ""
 
 # - Check setup was run -------------------------------------------------------
 if [ ! -f "$PROJECT_ROOT/.setup_complete" ]; then
-    fail "Setup has not been run yet"
-    echo ""
-    echo "  Please run '1. Setup (Run First).command' first."
-    echo ""
-    read -p "  Press ENTER to close..."
-    exit 1
+    if [ -f "$PROJECT_ROOT/.env" ] \
+        && [ -f "$PROJECT_ROOT/venv/bin/python" ] \
+        && [ -d "$PROJECT_ROOT/apps/web/node_modules" ]; then
+        warn "Setup marker is missing, but local dependencies are present"
+        echo "    Continuing with the existing .env, Python venv, and frontend packages."
+        echo "    To recreate the marker later, rerun '1. Setup (Run First).command'."
+    else
+        fail "Setup marker is missing and local dependencies are incomplete"
+        echo ""
+        echo "  Run '1. Setup (Run First).command' first."
+        echo "  If you already ran setup, check that these exist:"
+        echo "    $PROJECT_ROOT/.env"
+        echo "    $PROJECT_ROOT/venv/bin/python"
+        echo "    $PROJECT_ROOT/apps/web/node_modules"
+        echo ""
+        read -p "  Press ENTER to close..."
+        exit 1
+    fi
 fi
 
 # - Find Python ---------------------------------------------------------------
