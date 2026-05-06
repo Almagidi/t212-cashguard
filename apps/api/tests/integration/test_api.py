@@ -126,6 +126,39 @@ class FakeRejectingTrading212Adapter(FakeTrading212Adapter):
         }
 
 
+class FakeNestedCashBroker:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def get_account_summary(self):
+        return {
+            "cash": {
+                "availableToTrade": 5125.25,
+                "blockedForPendingOrders": 74.75,
+                "inPies": 100.0,
+            },
+            "invested": 1200.0,
+            "result": 50.0,
+            "currencyCode": "GBP",
+        }
+
+
+class FakeRateLimitedBroker:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def get_positions(self):
+        from app.broker.trading212 import T212RateLimitError
+
+        raise T212RateLimitError(0.0)
+
+
 class FakePortfolioBar:
     def __init__(self, timestamp: datetime, close: Decimal) -> None:
         self.timestamp = timestamp
@@ -276,6 +309,26 @@ class TestAccountFlow:
         assert "cash" in data
         assert "free_funds" in data
         assert data["mode"] == "mock"
+
+    async def test_account_summary_accepts_trading212_nested_cash(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+    ):
+        from app.api.deps import get_broker
+        from app.main import app
+
+        app.dependency_overrides[get_broker] = lambda: FakeNestedCashBroker()
+        try:
+            resp = await client.get("/v1/account/summary", headers=auth_headers)
+        finally:
+            app.dependency_overrides.pop(get_broker, None)
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["cash"] == 5300.0
+        assert data["free_funds"] == 5125.25
+        assert data["currency"] == "GBP"
 
     async def test_cash_guard_status(self, client: AsyncClient, auth_headers: dict):
         resp = await client.get("/v1/account/cash-guard", headers=auth_headers)
@@ -1536,6 +1589,24 @@ class TestPositionsFlow:
             assert "ticker" in pos
             assert "quantity" in pos
             assert pos["quantity"] > 0
+
+    async def test_list_positions_returns_clear_broker_rate_limit(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+    ):
+        from app.api.deps import get_broker
+        from app.main import app
+
+        app.dependency_overrides[get_broker] = lambda: FakeRateLimitedBroker()
+        try:
+            resp = await client.get("/v1/positions", headers=auth_headers)
+        finally:
+            app.dependency_overrides.pop(get_broker, None)
+
+        assert resp.status_code == 429
+        assert resp.headers["Retry-After"] == "1"
+        assert resp.json()["detail"]["code"] == "broker_rate_limited"
 
 
 @pytest.mark.asyncio
