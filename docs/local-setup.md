@@ -13,6 +13,82 @@
 
 ## Step-by-Step Setup
 
+### Double-click launcher flow
+
+For the normal local app, use the files in `launcher/`:
+
+| Action | Command |
+| --- | --- |
+| First-time setup | `launcher/1. Setup (Run First).command` |
+| Start normal app | `launcher/2. Start CashGuard.command` |
+| Stop normal app | `launcher/3. Stop CashGuard.command` |
+| Check status | `launcher/5. Check Status.command` or `make launcher-check` |
+| Verify normal login | `launcher/8. Verify Login.command` |
+
+The normal launcher uses API port `8000`, web port `3000`, and `APP_MODE` from the root
+`.env` file. It will not overwrite an existing `.env`, and it will not enable live trading.
+If `.setup_complete` is missing but `.env`, `venv/bin/python`, and
+`apps/web/node_modules` already exist, the start command continues with a warning instead
+of forcing setup to run again.
+
+Manual operator QA is intentionally separate:
+
+```bash
+make operator-manual
+```
+
+That safe QA path uses API port `8002`, web port `3002`, `APP_MODE=mock`, seeded SQLite
+data, and no Trading 212 or Kraken credentials. Stop it with:
+
+```bash
+make operator-manual-stop
+```
+
+Inspect ports without stopping anything:
+
+```bash
+make launcher-check
+```
+
+If normal launcher ports are stale and the listeners belong to this repo:
+
+```bash
+make stop-normal-ports
+```
+
+If manual/test ports are stale and the listeners belong to this repo:
+
+```bash
+make stop-manual-ports
+```
+
+Both cleanup targets print process details and leave unrelated apps alone.
+
+### Understanding runtime diagnostics
+
+The dashboard includes a small diagnostics link, and `/app/operator` includes the full
+read-only runtime diagnostics panel. Use it when Kraken/DCA visibility is confusing. It
+shows the frontend mode, backend mode from `/v1/health/live`, the API URL used by the
+browser, auth status, operator route status, and Kraken DCA endpoint status.
+
+Normal launcher mode is usually `http://localhost:3000` calling
+`http://localhost:8000`, with `APP_MODE` loaded from root `.env`. On this machine that is
+`demo`, so Kraken/DCA mock seed visibility can differ from manual QA.
+
+Manual operator QA is `http://localhost:3002` calling `http://127.0.0.1:8002` in `mock`
+mode. In that path, Kraken/DCA readiness data should be visible, read-only, and should not
+require broker credentials.
+
+Diagnostics endpoint meanings:
+
+| Status | Meaning |
+| --- | --- |
+| `200` | Endpoint is reachable |
+| `401` | Log in again |
+| `404` | Route is not registered in the backend you started |
+| `500` | Route is registered but failing; check API logs |
+| Network error | Frontend cannot reach the configured API URL |
+
 ### 1. Configure environment
 
 ```bash

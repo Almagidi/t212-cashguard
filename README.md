@@ -86,6 +86,28 @@ make dev
 
 **Default login**: `admin@localhost` / `change-me` *(change on first run)*
 
+### Local launcher parity
+
+Normal double-click launch:
+
+```text
+launcher/2. Start CashGuard.command
+```
+
+This starts the normal app on `http://localhost:3000` with API
+`http://localhost:8000`, using `APP_MODE` from root `.env`.
+
+Safe manual operator QA is separate:
+
+```bash
+make operator-manual
+```
+
+That path runs `APP_MODE=mock` on web `3002` and API `8002`, uses seeded local data, and
+does not require Trading 212 or Kraken credentials. Stop normal launch with
+`launcher/3. Stop CashGuard.command`; stop manual QA with `make operator-manual-stop`.
+Use `make launcher-check` to inspect both flows without stopping anything.
+
 ---
 
 ## Operating Modes

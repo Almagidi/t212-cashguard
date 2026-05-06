@@ -67,23 +67,37 @@ POSTGRES_USER="${POSTGRES_USER:-cashguard}"
 REDIS_PASSWORD="${REDIS_PASSWORD:-cashguard_redis}"
 TELEGRAM_TUNNEL_PID_FILE="$PROJECT_ROOT/.telegram-control/tunnel.pid"
 TELEGRAM_TUNNEL_URL_FILE="$PROJECT_ROOT/.telegram-control/tunnel.url"
+LAUNCHER_PID_FILE="$PROJECT_ROOT/.launcher.pid"
+NORMAL_API_PORT=8000
+NORMAL_WEB_PORT=3000
+MANUAL_API_PORT=8002
+MANUAL_WEB_PORT=3002
+
+show_listener() {
+    local port="$1"
+    if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+        lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | sed 's/^/    /'
+    else
+        echo "    free"
+    fi
+}
 
 clear
 echo ""
 echo -e "${BOLD}${BLUE}  T212 CashGuard Trader - Status${RESET}   $(date '+%H:%M:%S')"
 echo ""
-echo "  Services:"
+echo "  Normal launcher services (ports $NORMAL_API_PORT/$NORMAL_WEB_PORT):"
 
-if curl -sf http://localhost:8000/v1/health/live >/dev/null 2>&1; then
-    ok "API server (port 8000)"
+if curl -sf "http://localhost:$NORMAL_API_PORT/v1/health/live" >/dev/null 2>&1; then
+    ok "Normal API server (port $NORMAL_API_PORT)"
 else
-    stop "API server (port 8000)"
+    stop "Normal API server (port $NORMAL_API_PORT)"
 fi
 
-if curl -sf http://localhost:3000/auth/login >/dev/null 2>&1; then
-    ok "Frontend (port 3000)"
+if curl -sf "http://localhost:$NORMAL_WEB_PORT/auth/login" >/dev/null 2>&1; then
+    ok "Normal frontend (port $NORMAL_WEB_PORT)"
 else
-    stop "Frontend (port 3000)"
+    stop "Normal frontend (port $NORMAL_WEB_PORT)"
 fi
 
 if [ -n "$COMPOSE_CMD" ] && compose -f "$PROJECT_ROOT/docker-compose.yml" exec -T postgres pg_isready -U "$POSTGRES_USER" >/dev/null 2>&1; then
@@ -98,7 +112,9 @@ else
     stop "Redis cache"
 fi
 
-if pgrep -f "$PROJECT_ROOT/launcher/2. Start CashGuard.command" >/dev/null 2>&1; then
+if [ -f "$LAUNCHER_PID_FILE" ] && kill -0 "$(cat "$LAUNCHER_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+    ok "Start launcher supervisor (saved PID $(cat "$LAUNCHER_PID_FILE" 2>/dev/null))"
+elif pgrep -f "$PROJECT_ROOT/launcher/2. Start CashGuard.command" >/dev/null 2>&1; then
     ok "Start launcher supervisor"
 else
     warn "Start launcher supervisor not detected"
@@ -123,6 +139,31 @@ if [ -f "$TELEGRAM_TUNNEL_PID_FILE" ]; then
         warn "Telegram control tunnel state exists but process is not running"
     fi
 fi
+
+echo ""
+echo "  Manual operator QA (separate safe mock flow, ports $MANUAL_API_PORT/$MANUAL_WEB_PORT):"
+if curl -sf "http://127.0.0.1:$MANUAL_API_PORT/v1/health/live" >/dev/null 2>&1; then
+    ok "Manual QA API (port $MANUAL_API_PORT, APP_MODE=mock)"
+else
+    stop "Manual QA API (port $MANUAL_API_PORT)"
+fi
+
+if curl -sf "http://localhost:$MANUAL_WEB_PORT/auth/login" >/dev/null 2>&1; then
+    ok "Manual QA frontend (port $MANUAL_WEB_PORT, NEXT_PUBLIC_APP_MODE=mock)"
+else
+    stop "Manual QA frontend (port $MANUAL_WEB_PORT)"
+fi
+
+echo ""
+echo "  Port listeners:"
+echo "  Normal API :$NORMAL_API_PORT"
+show_listener "$NORMAL_API_PORT"
+echo "  Normal Web :$NORMAL_WEB_PORT"
+show_listener "$NORMAL_WEB_PORT"
+echo "  Manual API :$MANUAL_API_PORT"
+show_listener "$MANUAL_API_PORT"
+echo "  Manual Web :$MANUAL_WEB_PORT"
+show_listener "$MANUAL_WEB_PORT"
 
 echo ""
 echo "  Configuration:"
@@ -150,7 +191,7 @@ fi
 
 echo ""
 echo "  Health check:"
-HEALTH=$(curl -sf http://localhost:8000/v1/health/deps 2>/dev/null || true)
+HEALTH=$(curl -sf "http://localhost:$NORMAL_API_PORT/v1/health/deps" 2>/dev/null || true)
 if [ -n "$HEALTH" ]; then
     echo "$HEALTH" | python3 -c "
 import json, sys
@@ -179,6 +220,9 @@ if [ -f "$PROJECT_ROOT/.pids" ]; then
 else
     echo "    (No .pids file found)"
 fi
+if [ -f "$LAUNCHER_PID_FILE" ]; then
+    echo "    Launcher: $(cat "$LAUNCHER_PID_FILE" 2>/dev/null)"
+fi
 
 if [ -f "$TELEGRAM_TUNNEL_URL_FILE" ]; then
     echo "    Telegram: $(cat "$TELEGRAM_TUNNEL_URL_FILE" 2>/dev/null)"
@@ -197,8 +241,10 @@ for log_name in api.log web.log celery.log; do
 done
 
 echo ""
-echo "  Dashboard: http://localhost:3000"
-echo "  API docs:  http://localhost:8000/docs"
+echo "  Normal dashboard:     http://localhost:$NORMAL_WEB_PORT"
+echo "  Normal API docs:      http://localhost:$NORMAL_API_PORT/docs"
+echo "  Manual operator QA:   http://localhost:$MANUAL_WEB_PORT/app/operator"
+echo "  Manual QA stop:       make operator-manual-stop"
 echo "  Logs:      $PROJECT_ROOT/logs/"
 echo ""
 read -p "  Press ENTER to close..." || true

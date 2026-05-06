@@ -24,6 +24,10 @@ WEB_PID=""
 CELERY_PID=""
 LOG_DIR="$PROJECT_ROOT/logs"
 SHUTDOWN_REQUESTED=0
+NORMAL_API_PORT=8000
+NORMAL_WEB_PORT=3000
+INFRA_STARTED=0
+LAUNCHER_PID_FILE="$PROJECT_ROOT/.launcher.pid"
 
 COMPOSE_CMD=""
 if docker compose version >/dev/null 2>&1; then
@@ -53,27 +57,45 @@ wait_for_url() {
     return 1
 }
 
-stop_port_processes() {
+describe_port_listener() {
     local port="$1"
     local pids
 
     pids=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
-    [ -z "$pids" ] && return 0
+    [ -z "$pids" ] && return 1
 
+    echo "    Port $port is in use by:"
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | sed 's/^/      /' || true
     echo "$pids" | while read -r pid; do
         [ -z "$pid" ] && continue
-        kill "$pid" 2>/dev/null || true
+        ps -p "$pid" -o pid=,ppid=,command= 2>/dev/null | sed 's/^/      /' || true
     done
+    return 0
+}
 
-    sleep 1
+fail_if_port_in_use() {
+    local port="$1"
+    local label="$2"
 
-    pids=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
-    [ -z "$pids" ] && return 0
+    if ! lsof -tiTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+        ok "$label port $port is free"
+        return 0
+    fi
 
-    echo "$pids" | while read -r pid; do
-        [ -z "$pid" ] && continue
-        kill -9 "$pid" 2>/dev/null || true
-    done
+    fail "$label port $port is already in use"
+    describe_port_listener "$port" || true
+    echo ""
+    echo "  Normal launcher uses API :$NORMAL_API_PORT and web :$NORMAL_WEB_PORT."
+    echo "  Manual operator QA is separate: API :8002 and web :3002 via 'make operator-manual'."
+    echo ""
+    echo "  Fix:"
+    echo "    1. Run launcher/3. Stop CashGuard.command to stop the normal launcher."
+    echo "    2. Run make normal-status to inspect normal ports."
+    echo "    3. If the listener is clearly from this repo and stale, run make stop-normal-ports."
+    echo "       Otherwise stop that process yourself; this launcher will not kill unrelated apps."
+    echo ""
+    read -p "  Press ENTER to close..."
+    exit 1
 }
 
 cleanup() {
@@ -81,6 +103,10 @@ cleanup() {
         return
     fi
     SHUTDOWN_REQUESTED=1
+
+    if [ -z "$API_PID" ] && [ -z "$WEB_PID" ] && [ -z "$CELERY_PID" ] && [ "$INFRA_STARTED" != "1" ]; then
+        return
+    fi
 
     echo ""
     echo -e "  ${YELLOW}Shutting down...${RESET}"
@@ -92,11 +118,11 @@ cleanup() {
         fi
     done
 
-    if [ -n "$COMPOSE_CMD" ]; then
+    if [ "$INFRA_STARTED" = "1" ] && [ -n "$COMPOSE_CMD" ]; then
         compose -f "$PROJECT_ROOT/docker-compose.yml" stop postgres redis >/dev/null 2>&1 || true
     fi
 
-    rm -f "$PROJECT_ROOT/.pids"
+    rm -f "$PROJECT_ROOT/.pids" "$LAUNCHER_PID_FILE"
 
     ok "All services stopped cleanly"
     echo "  (Database data is preserved for next time)"
@@ -115,15 +141,28 @@ clear
 echo ""
 echo -e "${BOLD}${BLUE}  T212 CashGuard Trader${RESET}   Starting up..."
 echo ""
+echo "$$" > "$LAUNCHER_PID_FILE"
 
 # - Check setup was run -------------------------------------------------------
 if [ ! -f "$PROJECT_ROOT/.setup_complete" ]; then
-    fail "Setup has not been run yet"
-    echo ""
-    echo "  Please run '1. Setup (Run First).command' first."
-    echo ""
-    read -p "  Press ENTER to close..."
-    exit 1
+    if [ -f "$PROJECT_ROOT/.env" ] \
+        && [ -f "$PROJECT_ROOT/venv/bin/python" ] \
+        && [ -d "$PROJECT_ROOT/apps/web/node_modules" ]; then
+        warn "Setup marker is missing, but local dependencies are present"
+        echo "    Continuing with the existing .env, Python venv, and frontend packages."
+        echo "    To recreate the marker later, rerun '1. Setup (Run First).command'."
+    else
+        fail "Setup marker is missing and local dependencies are incomplete"
+        echo ""
+        echo "  Run '1. Setup (Run First).command' first."
+        echo "  If you already ran setup, check that these exist:"
+        echo "    $PROJECT_ROOT/.env"
+        echo "    $PROJECT_ROOT/venv/bin/python"
+        echo "    $PROJECT_ROOT/apps/web/node_modules"
+        echo ""
+        read -p "  Press ENTER to close..."
+        exit 1
+    fi
 fi
 
 # - Find Python ---------------------------------------------------------------
@@ -184,6 +223,12 @@ APP_MODE_VALUE="${APP_MODE:-mock}"
 ADMIN_EMAIL_VALUE="${ADMIN_EMAIL:-admin@localhost}"
 T212_KEY_VALUE="${T212_API_KEY:-}"
 
+# - Refuse stale or unrelated listeners on normal ports -----------------------
+step "Checking normal launcher ports ($NORMAL_API_PORT and $NORMAL_WEB_PORT)..."
+fail_if_port_in_use "$NORMAL_API_PORT" "API"
+fail_if_port_in_use "$NORMAL_WEB_PORT" "Frontend"
+echo "    Manual operator QA uses ports 8002 and 3002 and is checked separately."
+
 # - Ensure Docker is running --------------------------------------------------
 step "Checking Docker..."
 if ! docker info >/dev/null 2>&1; then
@@ -211,6 +256,7 @@ if ! compose -f "$PROJECT_ROOT/docker-compose.yml" up -d postgres redis >/tmp/ca
     read -p "  Press ENTER to close..."
     exit 1
 fi
+INFRA_STARTED=1
 tail -5 /tmp/cashguard-start-compose.log | sed 's/^/    /'
 
 step "Waiting for PostgreSQL..."
@@ -280,23 +326,16 @@ if [ ! -d "$PROJECT_ROOT/apps/web/node_modules" ]; then
     ok "Frontend dependencies installed"
 fi
 
-# - Stop anything already on our ports ---------------------------------------
-step "Clearing old local processes on ports 8000 and 3000..."
-stop_port_processes 8000
-stop_port_processes 3000
-sleep 1
-ok "Ports 8000 and 3000 are free"
-
 mkdir -p "$LOG_DIR"
 
 # - Start API -----------------------------------------------------------------
 step "Starting API server..."
 cd "$PROJECT_ROOT/apps/api"
-"$PYTHON" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+"$PYTHON" -m uvicorn app.main:app --host 0.0.0.0 --port "$NORMAL_API_PORT" \
     > "$LOG_DIR/api.log" 2>&1 &
 API_PID=$!
 
-if ! wait_for_url "http://localhost:8000/v1/health/live" 30; then
+if ! wait_for_url "http://localhost:$NORMAL_API_PORT/v1/health/live" 30; then
     fail "API failed to start"
     tail -20 "$LOG_DIR/api.log" 2>/dev/null | sed 's/^/    /'
     read -p "  Press ENTER to close..."
@@ -310,14 +349,14 @@ cd "$PROJECT_ROOT/apps/web"
 "$NPM" run dev > "$LOG_DIR/web.log" 2>&1 &
 WEB_PID=$!
 
-if ! wait_for_url "http://localhost:3000/auth/login" 45; then
+if ! wait_for_url "http://localhost:$NORMAL_WEB_PORT/auth/login" 45; then
     fail "Frontend failed to start"
     tail -20 "$LOG_DIR/web.log" 2>/dev/null | sed 's/^/    /'
     read -p "  Press ENTER to close..."
     exit 1
 fi
 
-if ! curl -sf "http://localhost:3000/_next/static/chunks/webpack.js" >/dev/null 2>&1; then
+if ! curl -sf "http://localhost:$NORMAL_WEB_PORT/_next/static/chunks/webpack.js" >/dev/null 2>&1; then
     warn "Frontend is up, but the main webpack chunk is not reachable yet"
     echo "    If the browser looks blank, wait a few seconds and refresh once."
 fi
@@ -344,7 +383,7 @@ echo "$API_PID $WEB_PID $CELERY_PID" > "$PROJECT_ROOT/.pids"
 # - Open browser --------------------------------------------------------------
 if [ "${CASHGUARD_NO_OPEN:-0}" != "1" ]; then
     sleep 2
-    open "http://localhost:3000"
+    open "http://localhost:$NORMAL_WEB_PORT"
 fi
 
 clear
@@ -353,8 +392,8 @@ echo -e "${BOLD}${GREEN}╔═════════════════�
 echo -e "${BOLD}${GREEN}║              T212 CashGuard Trader - Running                 ║${RESET}"
 echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════════════════════════╝${RESET}"
 echo ""
-echo "  Browser:   http://localhost:3000"
-echo "  API docs:  http://localhost:8000/docs"
+echo "  Browser:   http://localhost:$NORMAL_WEB_PORT"
+echo "  API docs:  http://localhost:$NORMAL_API_PORT/docs"
 echo "  Logs:      $PROJECT_ROOT/logs/"
 echo ""
 
@@ -386,14 +425,12 @@ while true; do
 
     if ! kill -0 "$API_PID" 2>/dev/null; then
         echo -e "\n  ${RED}⚠  API server stopped unexpectedly - restarting...${RESET}"
-        # Clear any lingering socket on port 8000 (TIME_WAIT or orphan child)
-        # before respawning, otherwise uvicorn hits [Errno 48] in a hot loop.
-        stop_port_processes 8000
+        fail_if_port_in_use "$NORMAL_API_PORT" "API"
         cd "$PROJECT_ROOT/apps/api"
-        "$PYTHON" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+        "$PYTHON" -m uvicorn app.main:app --host 0.0.0.0 --port "$NORMAL_API_PORT" \
             >> "$LOG_DIR/api.log" 2>&1 &
         API_PID=$!
-        if wait_for_url "http://localhost:8000/v1/health/live" 30; then
+        if wait_for_url "http://localhost:$NORMAL_API_PORT/v1/health/live" 30; then
             ok "API server restarted"
         else
             fail "API restart failed - check $LOG_DIR/api.log"
@@ -402,12 +439,11 @@ while true; do
 
     if ! kill -0 "$WEB_PID" 2>/dev/null; then
         echo -e "\n  ${RED}⚠  Frontend stopped unexpectedly - restarting...${RESET}"
-        # Same precaution for port 3000 — next dev won't rebind over a stale socket.
-        stop_port_processes 3000
+        fail_if_port_in_use "$NORMAL_WEB_PORT" "Frontend"
         cd "$PROJECT_ROOT/apps/web"
         "$NPM" run dev >> "$LOG_DIR/web.log" 2>&1 &
         WEB_PID=$!
-        if wait_for_url "http://localhost:3000/auth/login" 45; then
+        if wait_for_url "http://localhost:$NORMAL_WEB_PORT/auth/login" 45; then
             ok "Frontend restarted"
         else
             fail "Frontend restart failed - check $LOG_DIR/web.log"

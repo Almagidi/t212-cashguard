@@ -1,4 +1,3 @@
-import type { DcaActivityResponse } from "@/types";
 import axios, { AxiosError, type AxiosInstance } from "axios";
 import type {
   AccountSummary,
@@ -16,6 +15,9 @@ import type {
   CreateStrategyPayload,
   CreateStrategyPresetPayload,
   DepsHealth,
+  DcaActivityResponse,
+  DcaConfig,
+  DcaOperatorStatus,
   EmergencyActionResult,
   ExecutionQualityReport,
   HealthStatus,
@@ -606,8 +608,11 @@ class ApiClient {
   }
 
   // ── Health ───────────────────────────────────────────────────────────────────
-  async getHealth(): Promise<HealthStatus> {
+  async getBackendHealth(): Promise<HealthStatus> {
     return (await this.client.get<HealthStatus>("/health/live")).data;
+  }
+  async getHealth(): Promise<HealthStatus> {
+    return this.getBackendHealth();
   }
   async getDepsHealth(): Promise<DepsHealth> {
     return (await this.client.get<DepsHealth>("/health/deps")).data;
@@ -619,13 +624,23 @@ class ApiClient {
 
   async getDcaActivity(): Promise<DcaActivityResponse> {
     const response = await this.client.get<DcaActivityResponse>(
-      "/v1/kraken/dca/activity",
+      "/kraken/dca/activity",
     );
     return response.data;
+  }
+  async getDcaStatus(): Promise<DcaOperatorStatus> {
+    return (await this.client.get<DcaOperatorStatus>("/kraken/dca/status"))
+      .data;
+  }
+  async getDcaConfigs(): Promise<DcaConfig[]> {
+    return (await this.client.get<DcaConfig[]>("/kraken/dca/configs")).data;
   }
 }
 
 export const api = new ApiClient();
 
+export const getBackendHealth = () => api.getBackendHealth();
 export const getDcaActivity = () => api.getDcaActivity();
+export const getDcaStatus = () => api.getDcaStatus();
+export const getDcaConfigs = () => api.getDcaConfigs();
 export default api;

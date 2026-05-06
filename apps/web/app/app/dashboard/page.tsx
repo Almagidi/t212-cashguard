@@ -18,7 +18,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useWebSocket } from '@/hooks/use-websocket'
 import { EquityCurve, Sparkline, type EquityPoint } from '@/components/charts/equity-curve'
 import { RegimeBadge } from '@/components/dashboard/regime-badge'
-import api from '@/services/api'
+import api, { API_URL } from '@/services/api'
 import { StrategyPresetGrid } from '@/components/strategies/strategy-preset-grid'
 import type { AllocatorDecision } from '@/types'
 
@@ -856,6 +856,21 @@ export default function DashboardPage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-500/20 bg-blue-500/5 px-4 py-3 text-xs text-blue-100/85">
+        <div className="min-w-0">
+          <p className="font-semibold text-blue-100">Need Kraken/DCA visibility details?</p>
+          <p className="mt-0.5 break-all text-blue-100/70">
+            Frontend {process.env.NEXT_PUBLIC_APP_MODE || 'mock'} is calling {API_URL}.
+          </p>
+        </div>
+        <a
+          href="/app/operator"
+          className="rounded-md border border-blue-400/30 bg-blue-500/10 px-3 py-1.5 font-medium text-blue-100 transition-colors hover:bg-blue-500/20"
+        >
+          Open diagnostics →
+        </a>
+      </div>
 
       {/* Header row */}
       <div className="flex items-center justify-between gap-4 flex-wrap">

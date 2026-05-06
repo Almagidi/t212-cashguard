@@ -126,6 +126,83 @@ const settings = {
   updated_at: '2026-05-05T09:00:00Z',
 }
 
+const dcaStatus = {
+  subsystem: 'kraken_dca',
+  mode: 'paper_only',
+  runnable: false,
+  live_enabled: false,
+  scheduler_registered: true,
+  scheduler_cadence: 'daily at 09:00 UTC',
+  config_count: 2,
+  enabled_config_count: 1,
+  configs: [],
+  recent_audit_entries: [],
+  safety_flags: {
+    dca_planner_runnable_is_false: true,
+    dca_planner_paper_only_is_true: true,
+    main_runner_registered: false,
+    order_creation_supported: false,
+  },
+}
+
+const dcaActivity = {
+  subsystem: 'kraken_dca',
+  mode: 'paper_only',
+  runnable: false,
+  live_enabled: false,
+  generated_at: '2026-05-05T09:30:00Z',
+  config_count: 2,
+  enabled_config_count: 1,
+  decision_count_total: 9,
+  decision_counts_by_code: { BUY_DUE: 2 },
+  buy_due_count: 2,
+  blocked_count: 5,
+  skipped_count: 2,
+  total_paper_allocated_usd: '125.50',
+  order_count_sanity: 0,
+  configs: [
+    {
+      id: 'config-1',
+      ticker: 'BTC/USD',
+      venue: 'kraken',
+      enabled: true,
+      paper_only: true,
+      cadence_days: 7,
+      fixed_cash_amount: '50.00',
+      max_position_percent: '10.00',
+    },
+  ],
+  per_ticker_activity: [],
+  recent_decisions: [],
+  safety_flags: {
+    dca_planner_runnable_is_false: true,
+    dca_planner_paper_only_is_true: true,
+    main_runner_registered: false,
+    order_creation_supported: false,
+    execution_called_by_report: false,
+    provider_called_by_report: false,
+    scheduler_triggered_by_report: false,
+  },
+}
+
+const dcaConfigs = [
+  {
+    id: 'config-1',
+    ticker: 'BTC/USD',
+    venue: 'kraken',
+    cadence_days: 7,
+    fixed_cash_amount: '50.00',
+    dip_buy_enabled: false,
+    dip_buy_multiplier: '1.00',
+    min_cash_reserve: '100.00',
+    max_position_percent: '10.00',
+    paper_only: true,
+    enabled: true,
+    created_at: '2026-05-05T09:00:00Z',
+    updated_at: '2026-05-05T09:00:00Z',
+  },
+]
+
 test.describe('Operator dashboard readiness', () => {
   test.skip(
     (process.env.NEXT_PUBLIC_APP_MODE ?? 'mock') !== 'mock',
@@ -182,6 +259,9 @@ test.describe('Operator dashboard readiness', () => {
           broker: 'mock',
           market_data: 'mock',
         },
+        '/v1/kraken/dca/status': dcaStatus,
+        '/v1/kraken/dca/activity': dcaActivity,
+        '/v1/kraken/dca/configs': dcaConfigs,
       }
 
       if (path in bodyForPath) {
@@ -205,6 +285,13 @@ test.describe('Operator dashboard readiness', () => {
     await page.goto('/app/operator')
 
     await expect(page.locator('.badge-mock').first()).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByRole('heading', { name: 'Runtime Diagnostics' })).toBeVisible()
+    await expect(page.getByText('Frontend mock')).toBeVisible()
+    await expect(page.getByText('Backend mock')).toBeVisible()
+    await expect(page.getByText('API URL')).toBeVisible()
+    await expect(page.getByText('Operator /v1/operator/status')).toBeVisible()
+    await expect(page.getByText('DCA /v1/kraken/dca/status')).toBeVisible()
+    await expect(page.getByText('Kraken/DCA readiness data is available.')).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Read-only Operator Dashboard' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Trading212 Summary' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Kraken Summary' })).toBeVisible()
