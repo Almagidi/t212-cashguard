@@ -326,14 +326,38 @@ MANUAL_QA_WEB_PID  ?= /tmp/t212_manual_web.pid
 MANUAL_QA_PORTS    ?= 8001 8002 3001 3002 3100
 
 operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MODE=mock, no broker creds needed)
-	@if lsof -ti tcp:$(MANUAL_QA_API_PORT) >/dev/null 2>&1; then \
-		echo "$(RED)API port $(MANUAL_QA_API_PORT) is already in use. Run make operator-manual-stop or choose MANUAL_QA_API_PORT=<port>.$(RESET)"; \
-		exit 1; \
-	fi
-	@if lsof -ti tcp:$(MANUAL_QA_WEB_PORT) >/dev/null 2>&1; then \
-		echo "$(RED)Web port $(MANUAL_QA_WEB_PORT) is already in use. Run make operator-manual-stop or choose MANUAL_QA_WEB_PORT=<port>.$(RESET)"; \
-		exit 1; \
-	fi
+	@set -e; \
+		for spec in "API:$(MANUAL_QA_API_PORT):$(MANUAL_QA_API_PID)" "Web:$(MANUAL_QA_WEB_PORT):$(MANUAL_QA_WEB_PID)"; do \
+			name=$${spec%%:*}; rest=$${spec#*:}; port=$${rest%%:*}; pidfile=$${rest#*:}; \
+			if [ -f "$$pidfile" ]; then \
+				pid=$$(cat "$$pidfile" 2>/dev/null || true); \
+				if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
+					cwd=$$(lsof -a -p "$$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1); \
+					case "$$cwd" in \
+						$(CURDIR)|$(CURDIR)/*) \
+							echo "$(RED)$$name appears to already be running from this repo via PID $$pid.$(RESET)"; \
+							ps -p "$$pid" -o pid=,command= 2>/dev/null | sed 's/^/    /' || true; \
+							echo "Run make operator-manual-stop first."; \
+							exit 1; \
+							;; \
+						*) \
+							echo "  Removing stale $$name PID file: $$pidfile pointed at PID $$pid outside this repo"; \
+							rm -f "$$pidfile"; \
+							;; \
+					esac; \
+				else \
+					echo "  Removing stale $$name PID file: $$pidfile"; \
+					rm -f "$$pidfile"; \
+				fi; \
+			fi; \
+			pids=$$(lsof -tiTCP:$$port -sTCP:LISTEN 2>/dev/null || true); \
+			if [ -n "$$pids" ]; then \
+				echo "$(RED)$$name port $$port already has a LISTENING process.$(RESET)"; \
+				lsof -nP -iTCP:$$port -sTCP:LISTEN 2>/dev/null | sed 's/^/    /' || true; \
+				echo "Run make manual-status to inspect, or choose MANUAL_QA_$${name}_PORT=<port>."; \
+				exit 1; \
+			fi; \
+		done
 	@echo "$(YELLOW)→ Initialising manual QA SQLite DB...$(RESET)"
 	@cd apps/api && \
 		INTEGRATION_DB_PATH=$(MANUAL_QA_DB_PATH) \
@@ -345,9 +369,8 @@ operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MOD
 		ADMIN_EMAIL=admin@localhost \
 		ADMIN_PASSWORD=change-me \
 		PYTHONPATH=. python3.12 scripts/init_integration_db.py
+	@rm -f /tmp/t212_manual_api.log /tmp/t212_manual_web.log
 	@echo "$(YELLOW)→ Starting API on :$(MANUAL_QA_API_PORT) (APP_MODE=mock, background)...$(RESET)"
-	@python3 -c 'import os, subprocess; env=os.environ.copy(); env.update({"DATABASE_URL":"sqlite+aiosqlite:///$(MANUAL_QA_DB_PATH)","REDIS_URL":"redis://localhost:6379/15","SECRET_KEY":"manual-qa-secret-key-32-chars-xxxxx","MASTER_KEY":"manual-qa-master-key-32-chars-xxxxx","APP_MODE":"mock","ADMIN_EMAIL":"admin@localhost","ADMIN_PASSWORD":"change-me","CORS_ORIGINS":"http://localhost:$(MANUAL_QA_WEB_PORT),http://127.0.0.1:$(MANUAL_QA_WEB_PORT)","PYTHONPATH":"."}); log=open("/tmp/t212_manual_api.log","ab",buffering=0); p=subprocess.Popen(["uvicorn","app.main:app","--host","127.0.0.1","--port","$(MANUAL_QA_API_PORT)","--no-access-log"], cwd="apps/api", env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True); open("$(MANUAL_QA_API_PID)","w").write(str(p.pid))'
-
 	@nohup bash -c 'cd apps/api && exec env \
 		DATABASE_URL="sqlite+aiosqlite:///$(MANUAL_QA_DB_PATH)" \
 		REDIS_URL=redis://localhost:6379/15 \
@@ -363,8 +386,10 @@ operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MOD
 	@echo "$(YELLOW)  → Waiting for API to be ready on :$(MANUAL_QA_API_PORT)...$(RESET)"
 	@API_READY=0; \
 	for i in $$(seq 1 30); do \
-		if ! kill -0 $$(cat $(MANUAL_QA_API_PID)) 2>/dev/null; then \
+		pid=$$(cat $(MANUAL_QA_API_PID) 2>/dev/null || true); \
+		if [ -z "$$pid" ] || ! kill -0 "$$pid" 2>/dev/null; then \
 			echo "$(RED)API process exited before becoming ready. See /tmp/t212_manual_api.log.$(RESET)"; \
+			tail -80 /tmp/t212_manual_api.log 2>/dev/null || true; \
 			exit 1; \
 		fi; \
 		if curl -sf http://127.0.0.1:$(MANUAL_QA_API_PORT)/v1/health/live >/dev/null 2>&1; then \
@@ -375,19 +400,32 @@ operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MOD
 	done; \
 	if [ "$$API_READY" != "1" ]; then \
 		echo "$(RED)API did not become ready on port $(MANUAL_QA_API_PORT). See /tmp/t212_manual_api.log.$(RESET)"; \
+		tail -80 /tmp/t212_manual_api.log 2>/dev/null || true; \
 		exit 1; \
 	fi
 	@echo "$(YELLOW)→ Starting web app on :$(MANUAL_QA_WEB_PORT) (background)...$(RESET)"
-	@python3 -c 'import os, subprocess; env=os.environ.copy(); env.update({"NEXT_PUBLIC_API_URL":"http://127.0.0.1:$(MANUAL_QA_API_PORT)","NEXT_PUBLIC_APP_MODE":"mock"}); log=open("/tmp/t212_manual_web.log","ab",buffering=0); p=subprocess.Popen(["npx","next","dev","-p","$(MANUAL_QA_WEB_PORT)"], cwd="apps/web", env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True); open("$(MANUAL_QA_WEB_PID)","w").write(str(p.pid))'
-
 	@nohup bash -c 'cd apps/web && exec env \
 		NEXT_PUBLIC_API_URL=http://127.0.0.1:$(MANUAL_QA_API_PORT) \
 		NEXT_PUBLIC_APP_MODE=mock \
 		npx next dev -p $(MANUAL_QA_WEB_PORT) \
 	' >> /tmp/t212_manual_web.log 2>&1 & echo $$! > $(MANUAL_QA_WEB_PID)
-	@sleep 2
-	@if ! kill -0 $$(cat $(MANUAL_QA_WEB_PID)) 2>/dev/null; then \
-		echo "$(RED)Web process exited early. See /tmp/t212_manual_web.log.$(RESET)"; \
+	@WEB_READY=0; \
+	for i in $$(seq 1 45); do \
+		pid=$$(cat $(MANUAL_QA_WEB_PID) 2>/dev/null || true); \
+		if [ -z "$$pid" ] || ! kill -0 "$$pid" 2>/dev/null; then \
+			echo "$(RED)Web process exited early. See /tmp/t212_manual_web.log.$(RESET)"; \
+			tail -80 /tmp/t212_manual_web.log 2>/dev/null || true; \
+			exit 1; \
+		fi; \
+		if curl -sf http://127.0.0.1:$(MANUAL_QA_WEB_PORT)/auth/login >/dev/null 2>&1; then \
+			WEB_READY=1; \
+			break; \
+		fi; \
+		sleep 1; \
+	done; \
+	if [ "$$WEB_READY" != "1" ]; then \
+		echo "$(RED)Web app did not become ready on port $(MANUAL_QA_WEB_PORT). See /tmp/t212_manual_web.log.$(RESET)"; \
+		tail -80 /tmp/t212_manual_web.log 2>/dev/null || true; \
 		exit 1; \
 	fi
 	@echo ""
@@ -409,7 +447,6 @@ operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MOD
 	@echo "    API  : tail -f /tmp/t212_manual_api.log"
 	@echo "    Web  : tail -f /tmp/t212_manual_web.log"
 	@echo ""
-	@echo "  $(YELLOW)Note: web app may take 15–30 s to compile on first load.$(RESET)"
 	@echo "  $(YELLOW)When finished run: make operator-manual-stop$(RESET)"
 	@echo ""
 	@echo "  See docs/operator-manual-qa.md for the full QA checklist."
@@ -417,25 +454,50 @@ operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MOD
 
 operator-manual-stop: ## Stop local manual QA servers started by operator-manual
 	@echo "$(YELLOW)→ Stopping manual QA servers...$(RESET)"
-	@if [ -f $(MANUAL_QA_API_PID) ]; then \
-		kill $$(cat $(MANUAL_QA_API_PID)) 2>/dev/null \
-			&& echo "  $(GREEN)✓ API stopped$(RESET)" \
-			|| echo "  API process already gone"; \
-		rm -f $(MANUAL_QA_API_PID); \
-	else \
-		echo "  No API PID file; not killing unknown process on port $(MANUAL_QA_API_PORT)."; \
-	fi
-	@if [ -f $(MANUAL_QA_WEB_PID) ]; then \
-		kill $$(cat $(MANUAL_QA_WEB_PID)) 2>/dev/null \
-			&& echo "  $(GREEN)✓ Web stopped$(RESET)" \
-			|| echo "  Web process already gone"; \
-		rm -f $(MANUAL_QA_WEB_PID); \
-	else \
-		echo "  No web PID file; not killing unknown process on port $(MANUAL_QA_WEB_PORT)."; \
-	fi
-	@echo "$(GREEN)✓ Manual QA servers stopped$(RESET)"
+	@set -e; \
+		for spec in "API:$(MANUAL_QA_API_PID):$(MANUAL_QA_API_PORT)" "Web:$(MANUAL_QA_WEB_PID):$(MANUAL_QA_WEB_PORT)"; do \
+			name=$${spec%%:*}; rest=$${spec#*:}; pidfile=$${rest%%:*}; port=$${rest#*:}; \
+			if [ ! -f "$$pidfile" ]; then \
+				echo "  No $$name PID file; not killing unknown process on port $$port."; \
+				continue; \
+			fi; \
+			pid=$$(cat "$$pidfile" 2>/dev/null || true); \
+			if [ -z "$$pid" ] || ! kill -0 "$$pid" 2>/dev/null; then \
+				echo "  $$name process already gone; removing stale PID file."; \
+				rm -f "$$pidfile"; \
+				continue; \
+			fi; \
+			cwd=$$(lsof -a -p "$$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1); \
+			case "$$cwd" in \
+				$(CURDIR)|$(CURDIR)/*) \
+					kill "$$pid" 2>/dev/null || true; \
+					sleep 1; \
+					if kill -0 "$$pid" 2>/dev/null; then kill -9 "$$pid" 2>/dev/null || true; fi; \
+					echo "  $(GREEN)✓ $$name stopped$(RESET)"; \
+					;; \
+				*) \
+					echo "  Leaving $$name PID $$pid alone; cwd is $${cwd:-unknown}, not $(CURDIR)."; \
+					;; \
+			esac; \
+			rm -f "$$pidfile"; \
+		done
+	@echo "$(GREEN)✓ Manual QA stop routine complete$(RESET)"
 
 manual-status: ## Show listeners on manual/test ports without stopping anything
+	@echo "$(YELLOW)→ Manual QA PID files$(RESET)"
+	@for file in $(MANUAL_QA_API_PID) $(MANUAL_QA_WEB_PID); do \
+		if [ -f "$$file" ]; then \
+			pid=$$(cat "$$file" 2>/dev/null || true); \
+			if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
+				echo "  $$file -> PID $$pid alive"; \
+				ps -p "$$pid" -o pid=,command= 2>/dev/null | sed 's/^/    /' || true; \
+			else \
+				echo "  $$file -> stale/dead PID"; \
+			fi; \
+		else \
+			echo "  $$file -> missing"; \
+		fi; \
+	done
 	@echo "$(YELLOW)→ Manual/test port listeners$(RESET)"
 	@for port in $(MANUAL_QA_PORTS); do \
 		echo ""; \
@@ -475,24 +537,37 @@ stop-manual-ports: ## Stop project-owned listeners on known manual/test ports on
 
 operator-manual-check: ## Curl manual QA endpoints with auth against API :8002
 	@echo "$(YELLOW)→ Checking manual QA API endpoints on :$(MANUAL_QA_API_PORT)...$(RESET)"
-	@TOKEN=$$(curl -fsS -X POST http://127.0.0.1:$(MANUAL_QA_API_PORT)/v1/auth/login \
-		-H 'Content-Type: application/json' \
-		-d '{"email":"admin@localhost","password":"change-me"}' \
-		| python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])'); \
-	for endpoint in \
-		/v1/health/live \
-		/v1/auth/me \
-		/v1/operator/status \
-		/v1/kraken/dca/status \
-		/v1/kraken/dca/activity \
-		/v1/kraken/dca/configs \
-		/v1/account/summary \
-		/v1/account/cash-guard \
-		/v1/positions; do \
-		code=$$(curl -fsS -o /tmp/t212_manual_check.json -w '%{http_code}' \
-			-H "Authorization: Bearer $$TOKEN" \
-			http://127.0.0.1:$(MANUAL_QA_API_PORT)$$endpoint); \
-		echo "  $$endpoint -> $$code"; \
-		test "$$code" = "200"; \
-	done
+	@set -e; \
+		tmp=/tmp/t212_manual_check.json; \
+		login_tmp=/tmp/t212_manual_login.json; \
+		code=$$(curl -sS -o "$$tmp" -w '%{http_code}' http://127.0.0.1:$(MANUAL_QA_API_PORT)/v1/health/live || true); \
+		echo "  /v1/health/live -> $$code"; \
+		if [ "$$code" != "200" ]; then \
+			echo "$(RED)Manual QA API is not reachable on http://127.0.0.1:$(MANUAL_QA_API_PORT).$(RESET)"; \
+			echo "Run make manual-status, then make operator-manual."; \
+			exit 1; \
+		fi; \
+		login_code=$$(curl -sS -o "$$login_tmp" -w '%{http_code}' -X POST http://127.0.0.1:$(MANUAL_QA_API_PORT)/v1/auth/login -H 'Content-Type: application/json' -d '{"email":"admin@localhost","password":"change-me"}' || true); \
+		echo "  /v1/auth/login -> $$login_code"; \
+		if [ "$$login_code" != "200" ]; then \
+			echo "$(RED)Manual QA login failed.$(RESET)"; \
+			cat "$$login_tmp" 2>/dev/null || true; \
+			exit 1; \
+		fi; \
+		TOKEN=$$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("access_token", ""))' "$$login_tmp" 2>/dev/null || true); \
+		if [ -z "$$TOKEN" ]; then \
+			echo "$(RED)Login response did not include an access_token.$(RESET)"; \
+			cat "$$login_tmp" 2>/dev/null || true; \
+			exit 1; \
+		fi; \
+		for endpoint in /v1/auth/me /v1/operator/status /v1/kraken/dca/status /v1/kraken/dca/activity /v1/kraken/dca/configs /v1/account/summary /v1/account/cash-guard /v1/positions; do \
+			code=$$(curl -sS -o "$$tmp" -w '%{http_code}' -H "Authorization: Bearer $$TOKEN" http://127.0.0.1:$(MANUAL_QA_API_PORT)$$endpoint || true); \
+			echo "  $$endpoint -> $$code"; \
+			if [ "$$code" != "200" ]; then \
+				echo "$(RED)Endpoint failed: $$endpoint$(RESET)"; \
+				cat "$$tmp" 2>/dev/null || true; \
+				exit 1; \
+			fi; \
+		done
 	@echo "$(GREEN)✓ Manual QA API endpoints returned 200$(RESET)"
+
