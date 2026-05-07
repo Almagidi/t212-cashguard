@@ -269,6 +269,10 @@ async def place_paper_order(
     try:
         order = await engine.execute(body, user=current_user)
     except PaperExecutionError as exc:
+        # PaperExecutionEngine records rejected/blocked paper attempts before
+        # raising. Commit those local audit rows before returning the 4xx so
+        # safety blocks remain visible in paper history and operator activity.
+        await db.commit()
         raise HTTPException(status_code=exc.status_code, detail=exc.reason) from exc
 
     hydrated = await repo.get_by_id(order.id)
