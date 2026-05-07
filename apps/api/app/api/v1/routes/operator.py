@@ -14,6 +14,7 @@ from app.api.schemas import (
     LiveReadinessStatus,
     OperatorDcaStatusOut,
     OperatorKrakenStatusOut,
+    OperatorPaperExecutionStatusOut,
     OperatorRecentActivityOut,
     OperatorSafetyFlagsOut,
     OperatorSchedulersStatusOut,
@@ -36,6 +37,7 @@ from app.db.models import (
 from app.db.repositories.venue_config_repo import VenueConfigRepository
 from app.db.repositories.worker_heartbeat_repo import WorkerHeartbeatRepository
 from app.db.session import get_db
+from app.execution.paper_engine import paper_execution_summary
 from app.services.live_readiness import LiveReadinessError, LiveReadinessService
 from app.strategies.kraken_dca_planner import KrakenDCAPlanner
 from app.workers.celery_app import celery_app
@@ -174,6 +176,7 @@ def _safe_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "broker",
         "environment",
         "test_ok",
+        "no_broker_order_sent",
     ):
         if key in payload:
             summary[key] = payload[key]
@@ -395,6 +398,9 @@ async def operator_status(
                 *(state.ticker for state in dca_states),
                 *audit_tickers,
             }),
+        ),
+        paper_execution=OperatorPaperExecutionStatusOut(
+            **(await paper_execution_summary(db))
         ),
         schedulers=OperatorSchedulersStatusOut(
             dca_paper_evaluate_registered=scheduler_registered,

@@ -16,12 +16,14 @@ from app.db.models import (
     DcaConfig,
     DcaPlanState,
     Order,
+    PositionSnapshot,
     Strategy,
     VenueConfig,
     WorkerHeartbeat,
 )
 from app.db.seed import seed_dca_configs
 from app.execution.engine import ExecutionEngine
+from app.execution.paper_engine import PAPER_EXECUTION_ENVIRONMENT
 from app.market_data.kraken_provider import KrakenMarketDataProvider
 from app.strategies.kraken_dca_planner import KrakenDCAPlanner
 from app.workers import tasks_dca, tasks_heartbeat
@@ -218,6 +220,19 @@ async def test_operator_status_returns_control_tower_summary(
     assert body["dca"]["live_enabled"] is False
     assert body["dca"]["paper_only"] is True
     assert body["dca"]["tickers"] == ["BTC/USD", "ETH/USD"]
+    assert body["paper_execution"] == {
+        "paper_only": True,
+        "enabled_in_mode": "mock",
+        "total_paper_orders": 0,
+        "latest_paper_order_timestamp": None,
+        "last_paper_execution_status": None,
+        "open_paper_positions_count": 0,
+        "safety_notes": [
+            "Paper execution is local/mock only.",
+            "No broker order sent.",
+            "Global kill switch blocks paper simulation in this endpoint.",
+        ],
+    }
 
     assert body["schedulers"] == {
         "dca_paper_evaluate_registered": True,
@@ -515,3 +530,56 @@ async def test_operator_status_recent_activity_limit_is_bounded(
     assert {"ticker": "BTC/USD"} in payload_summaries
     assert all("api_key" not in summary for summary in payload_summaries)
     assert too_large.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_operator_status_includes_paper_execution_summary(
+    client,
+    auth_headers,
+    db,
+):
+    from app.db.models import BrokerConnection, User
+
+    user = (await db.execute(select(User))).scalars().first()
+    assert user is not None
+    connection = BrokerConnection(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        broker="paper",
+        environment="mock",
+        api_key_encrypted="paper-only",
+        api_secret_encrypted="paper-only",
+        is_active=True,
+    )
+    order = _order(venue="paper", status="filled", created_at=BASE_TIME)
+    order.is_dry_run = True
+    order.execution_environment = PAPER_EXECUTION_ENVIRONMENT
+    db.add_all([
+        _venue("t212"),
+        _venue("kraken"),
+        connection,
+        order,
+        PositionSnapshot(
+            id=uuid.uuid4(),
+            connection_id=connection.id,
+            ticker="PAPERXYZ",
+            quantity=Decimal("2"),
+            avg_price=Decimal("10"),
+            current_price=Decimal("10"),
+            unrealized_pnl=Decimal("0"),
+            quantity_available=Decimal("2"),
+            raw={"paper_only": True},
+            snapshotted_at=BASE_TIME,
+        ),
+    ])
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+
+    assert response.status_code == 200
+    paper = response.json()["paper_execution"]
+    assert paper["paper_only"] is True
+    assert paper["total_paper_orders"] == 1
+    assert paper["last_paper_execution_status"] == "filled"
+    assert paper["open_paper_positions_count"] == 1
+    assert "No broker order sent." in paper["safety_notes"]

@@ -489,6 +489,50 @@ function DcaSummary({ status }: { status: OperatorStatus }) {
   );
 }
 
+function PaperExecutionSummary({ status }: { status: OperatorStatus }) {
+  const paper = status.paper_execution;
+
+  return (
+    <Card className="border-emerald-500/25 bg-emerald-500/5">
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle>Paper Execution</CardTitle>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            <TextBadge tone={paper.paper_only ? "success" : "destructive"}>
+              Paper only
+            </TextBadge>
+            <TextBadge tone="info">Mock execution</TextBadge>
+            <TextBadge tone="success">No broker order sent</TextBadge>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <dl>
+          <InfoRow label="Total paper orders" value={paper.total_paper_orders} />
+          <InfoRow
+            label="Open paper positions"
+            value={paper.open_paper_positions_count}
+          />
+          <InfoRow
+            label="Last paper status"
+            value={paper.last_paper_execution_status ?? "None"}
+          />
+          <InfoRow
+            label="Latest paper order"
+            value={formatDate(paper.latest_paper_order_timestamp)}
+          />
+          <InfoRow label="Enabled mode" value={paper.enabled_in_mode} />
+        </dl>
+        <ul className="space-y-1 text-xs text-muted-foreground">
+          {paper.safety_notes.map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
 function SchedulerWorkerHealth({ status }: { status: OperatorStatus }) {
   return (
     <Card>
@@ -751,6 +795,7 @@ export function OperatorDashboard({
         <SchedulerWorkerHealth status={status} />
       </section>
 
+      <PaperExecutionSummary status={status} />
       <SafetyFlags status={status} />
       <RecentActivity status={status} />
 

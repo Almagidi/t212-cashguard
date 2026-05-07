@@ -143,12 +143,15 @@ clean: ## Remove build artifacts and caches
 check-all: lint typecheck test ## Run lint, typecheck, and tests in sequence
 	@echo "$(GREEN)✓ All checks passed$(RESET)"
 
-.PHONY: smoke readiness e2e-operator-integration readiness-full
+.PHONY: smoke readiness paper-check e2e-operator-integration readiness-full
 
 smoke:
 	cd apps/api && DATABASE_URL=sqlite+aiosqlite:///:memory: REDIS_URL=redis://localhost:6379/15 SECRET_KEY=test-secret-key-32-chars-minimum-x MASTER_KEY=test-master-key-32-chars-minimum-x APP_MODE=mock python3.12 -m pytest tests/smoke/ -v --tb=short --no-cov
 
 readiness: smoke e2e-operator
+
+paper-check: ## Run targeted paper execution backend safety tests
+	cd apps/api && DATABASE_URL=sqlite+aiosqlite:///:memory: REDIS_URL=redis://localhost:6379/15 SECRET_KEY=test-secret-key-32-chars-minimum-x MASTER_KEY=test-master-key-32-chars-minimum-x APP_MODE=mock python3.12 -m pytest tests/integration/test_paper_execution.py tests/unit/test_operator_status_api.py -q --no-cov
 
 e2e-operator-integration: ## Run real-backend integration e2e for operator dashboard (SQLite, APP_MODE=mock, ports 8001/3001)
 	@if lsof -tiTCP:8001 -sTCP:LISTEN >/dev/null 2>&1; then \
@@ -570,4 +573,3 @@ operator-manual-check: ## Curl manual QA endpoints with auth against API :8002
 			fi; \
 		done
 	@echo "$(GREEN)✓ Manual QA API endpoints returned 200$(RESET)"
-

@@ -10,12 +10,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from app.api.deps import get_broker, get_current_admin, get_current_user
-from app.api.schemas import OrderCreate, OrderDetail, OrderOut
+from app.api.schemas import OrderCreate, OrderDetail, OrderOut, PaperOrderCreate
 from app.core.config import settings
 from app.db.models import AuditLog, Order, User
 from app.db.repositories import OrderRepository
 from app.db.session import get_db
 from app.execution.engine import ExecutionEngine
+from app.execution.paper_engine import PaperExecutionEngine, PaperExecutionError
 from app.risk.engine import RiskEngine, RiskViolation
 
 router = APIRouter(prefix="/orders", tags=["orders"])
@@ -110,6 +111,29 @@ async def place_order(
         occurred_at=datetime.now(UTC),
     ))
     await db.flush()
+    hydrated = await repo.get_by_id(order.id)
+    return hydrated or order
+
+
+@router.post("/paper", response_model=OrderOut, status_code=201)
+async def place_paper_order(
+    body: PaperOrderCreate,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Create and fill a local paper-only order.
+
+    This route is intentionally separate from broker-backed order placement and
+    does not depend on get_broker. It is available only in APP_MODE=mock.
+    """
+    repo = OrderRepository(db)
+    engine = PaperExecutionEngine(db)
+    try:
+        order = await engine.execute(body, user=current_user)
+    except PaperExecutionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.reason) from exc
+
     hydrated = await repo.get_by_id(order.id)
     return hydrated or order
 

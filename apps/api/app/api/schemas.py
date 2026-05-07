@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import uuid  # noqa: TC003
 from datetime import date, datetime  # noqa: TC003
-from decimal import Decimal  # noqa: TC003
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
@@ -339,6 +339,16 @@ class OperatorDcaStatusOut(BaseModel):
     tickers: list[str]
 
 
+class OperatorPaperExecutionStatusOut(BaseModel):
+    paper_only: Literal[True]
+    enabled_in_mode: Literal["mock"]
+    total_paper_orders: int
+    latest_paper_order_timestamp: datetime | None
+    last_paper_execution_status: str | None
+    open_paper_positions_count: int
+    safety_notes: list[str]
+
+
 class OperatorSchedulersStatusOut(BaseModel):
     dca_paper_evaluate_registered: bool
     dca_paper_evaluate_cadence: str | None
@@ -389,6 +399,7 @@ class OperatorStatusOut(BaseModel):
     trading212: OperatorTrading212StatusOut
     kraken: OperatorKrakenStatusOut
     dca: OperatorDcaStatusOut
+    paper_execution: OperatorPaperExecutionStatusOut
     schedulers: OperatorSchedulersStatusOut
     recent_activity: list[OperatorRecentActivityOut]
     safety_flags: OperatorSafetyFlagsOut
@@ -878,6 +889,29 @@ class OrderCreate(BaseModel):
         if info.data.get("order_type") in ("stop", "stop_limit") and v is None:
             raise ValueError("stop_price is required for stop and stop_limit orders")
         return v
+
+
+class PaperOrderCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: str = Field(min_length=1, max_length=50)
+    side: Literal["buy", "sell"]
+    quantity: Decimal | None = Field(default=None, gt=0)
+    notional: Decimal | None = Field(default=None, gt=0)
+    estimated_price: Decimal = Field(default=Decimal("100"), gt=0)
+    order_type: Literal["market"] = "market"
+    strategy: str | None = Field(default=None, max_length=100)
+    source: str = Field(default="manual_qa", min_length=1, max_length=100)
+    venue: Literal["paper", "mock"] = "paper"
+    paper_only: Literal[True] = True
+
+    @model_validator(mode="after")
+    def validate_quantity_or_notional(self) -> PaperOrderCreate:
+        if self.quantity is None and self.notional is None:
+            raise ValueError("quantity or notional is required")
+        if self.quantity is not None and self.notional is not None:
+            raise ValueError("provide quantity or notional, not both")
+        return self
 
 
 class OrderOut(BaseSchema):
