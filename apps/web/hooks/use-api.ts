@@ -116,8 +116,9 @@ export const useTestBroker = () => {
         toast.error(data.error || "Connection test failed");
       }
     },
-    onError: (e: any) =>
-      toast.error(extractErrorMessage(e, "Connection test failed")),
+    onError: (e: any) => {
+      toast.error(extractErrorMessage(e, "Connection test failed"));
+    },
   });
 };
 
