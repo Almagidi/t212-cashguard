@@ -1,15 +1,28 @@
 import "@testing-library/jest-dom";
 
-import { describe, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { render, screen } from "@testing-library/react";
 
-import type { OperatorStatus, OperatorWorkerHealth } from "@/types";
+import type {
+  OperatorStatus,
+  OperatorWorkerHealth,
+  PaperExecutionHistory,
+} from "@/types";
 
-const mockGet = jest.fn<() => Promise<{ data: OperatorStatus }>>();
+const mockGet = jest.fn<() => Promise<{ data: unknown }>>();
 const mockPost = jest.fn();
 const mockPatch = jest.fn();
 const mockPut = jest.fn();
 const mockDelete = jest.fn();
+let paperHistoryState: {
+  data: PaperExecutionHistory | undefined;
+  isLoading: boolean;
+  isError: boolean;
+} = {
+  data: undefined,
+  isLoading: false,
+  isError: false,
+};
 
 jest.mock("@/hooks/use-api", () => ({
   __esModule: true,
@@ -23,6 +36,7 @@ jest.mock("@/hooks/use-api", () => ({
     isLoading: false,
     error: null,
   }),
+  usePaperExecutionHistory: () => paperHistoryState,
 }));
 
 jest.mock("axios", () => ({
@@ -184,7 +198,55 @@ function withWorkerHealth(workerHealth: OperatorWorkerHealth): OperatorStatus {
   };
 }
 
+function paperHistory(
+  overrides: Partial<PaperExecutionHistory> = {},
+): PaperExecutionHistory {
+  return {
+    total: 1,
+    limit: 25,
+    items: [
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        order_id: "22222222-2222-4222-8222-222222222222",
+        created_at: "2026-05-01T09:26:00Z",
+        updated_at: "2026-05-01T09:26:02Z",
+        ticker: "PAPERXYZ",
+        side: "buy",
+        quantity: "2.00000000",
+        notional: "51.00000000",
+        venue: "paper",
+        source: "test_signal",
+        strategy: "paper-test",
+        status: "filled",
+        risk_result: "allowed",
+        fill_price: "25.50000000",
+        filled_quantity: "2.00000000",
+        paper_only: true,
+        live_order_sent: false,
+        no_broker_order_sent: true,
+        rejection_reason: null,
+        audit_count: 3,
+        latest_audit_at: "2026-05-01T09:26:03Z",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function setPaperHistory(state: Partial<typeof paperHistoryState>) {
+  paperHistoryState = {
+    data: paperHistory(),
+    isLoading: false,
+    isError: false,
+    ...state,
+  };
+}
+
 describe("OperatorDashboard", () => {
+  beforeEach(() => {
+    setPaperHistory({});
+  });
+
   it("renders loading state", () => {
     render(<OperatorDashboard isLoading />);
 
@@ -256,6 +318,44 @@ describe("OperatorDashboard", () => {
     expect(screen.queryByRole("button", { name: /sell/i })).toBeNull();
   });
 
+  it("renders Paper Execution History rows with safety wording", () => {
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    expect(
+      screen.getByRole("heading", { name: "Paper Execution History" }),
+    ).toBeTruthy();
+    expect(screen.getByText("PAPERXYZ")).toBeTruthy();
+    expect(screen.getByText("test_signal")).toBeTruthy();
+    expect(screen.getByText("paper-test")).toBeTruthy();
+    expect(screen.getAllByText("filled").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Paper only").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("No broker order sent").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Mock/local execution").length).toBeGreaterThan(0);
+  });
+
+  it("renders Paper Execution History empty state", () => {
+    setPaperHistory({ data: paperHistory({ total: 0, items: [] }) });
+
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    expect(
+      screen.getByText(
+        "Paper execution history will appear here after mock paper orders are created. No broker order is sent.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("renders Paper Execution History error state without hiding operator status", () => {
+    setPaperHistory({ data: undefined, isError: true });
+
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    expect(screen.getByRole("heading", { name: "Paper Execution History" }))
+      .toBeTruthy();
+    expect(screen.getByText("Paper execution history unavailable")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "DCA Summary" })).toBeTruthy();
+  });
+
   it("shows conservative failure wording", () => {
     render(<OperatorDashboard isError />);
 
@@ -294,6 +394,29 @@ describe("operator API client", () => {
     await expect(api.getOperatorStatus()).resolves.toEqual(status);
 
     expect(mockGet).toHaveBeenCalledWith("/operator/status");
+    expect(mockPost).not.toHaveBeenCalled();
+    expect(mockPatch).not.toHaveBeenCalled();
+    expect(mockPut).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it("uses GET only for paper execution history and audit", async () => {
+    const history = paperHistory();
+    mockGet
+      .mockResolvedValueOnce({ data: history })
+      .mockResolvedValueOnce({ data: { order_id: "order-1", items: [] } });
+    const api = (await import("@/services/api")).default;
+
+    await expect(api.getPaperExecutionHistory()).resolves.toEqual(history);
+    await expect(api.getPaperOrderAudit("order-1")).resolves.toEqual({
+      order_id: "order-1",
+      items: [],
+    });
+
+    expect(mockGet).toHaveBeenCalledWith("/orders/paper", {
+      params: undefined,
+    });
+    expect(mockGet).toHaveBeenCalledWith("/orders/paper/order-1/audit");
     expect(mockPost).not.toHaveBeenCalled();
     expect(mockPatch).not.toHaveBeenCalled();
     expect(mockPut).not.toHaveBeenCalled();

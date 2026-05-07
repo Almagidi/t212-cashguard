@@ -52,6 +52,8 @@ export const QK = {
   signals: (p?: object) => ["signals", p],
   orders: (p?: object) => ["orders", p],
   order: (id: string) => ["orders", id],
+  paperExecutionHistory: (p?: object) => ["orders", "paper", p],
+  paperOrderAudit: (id: string) => ["orders", "paper", id, "audit"],
   positions: ["positions"],
   riskProfile: ["risk", "profile"],
   riskEvents: (p?: object) => ["risk", "events", p],
@@ -338,6 +340,26 @@ export const useOrder = (id: string | null, options?: { enabled?: boolean }) =>
     queryFn: () => api.getOrder(id!),
     enabled: Boolean(id) && (options?.enabled ?? true),
     refetchInterval: 10_000,
+  });
+
+export const usePaperExecutionHistory = (
+  params?: Parameters<typeof api.getPaperExecutionHistory>[0],
+) =>
+  useQuery({
+    queryKey: QK.paperExecutionHistory(params),
+    queryFn: () => api.getPaperExecutionHistory(params),
+    refetchInterval: 30_000,
+  });
+
+export const usePaperOrderAudit = (
+  id: string | null,
+  options?: { enabled?: boolean },
+) =>
+  useQuery({
+    queryKey: QK.paperOrderAudit(id ?? "none"),
+    queryFn: () => api.getPaperOrderAudit(id!),
+    enabled: Boolean(id) && (options?.enabled ?? true),
+    refetchInterval: 30_000,
   });
 
 export const usePlaceOrder = () => {

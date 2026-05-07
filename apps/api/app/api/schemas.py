@@ -976,6 +976,55 @@ class OrderDetail(OrderOut):
     events: list[OrderEventOut] = Field(default_factory=list)
 
 
+class PaperExecutionHistoryItem(BaseModel):
+    id: uuid.UUID
+    order_id: uuid.UUID | None = None
+    created_at: datetime
+    updated_at: datetime | None = None
+    ticker: str
+    side: str | None = None
+    quantity: Decimal | None = None
+    notional: Decimal | None = None
+    venue: str | None = None
+    source: str | None = None
+    strategy: str | None = None
+    status: str
+    risk_result: Literal["allowed", "blocked", "unknown"]
+    fill_price: Decimal | None = None
+    filled_quantity: Decimal | None = None
+    paper_only: Literal[True]
+    live_order_sent: Literal[False]
+    no_broker_order_sent: Literal[True]
+    rejection_reason: str | None = None
+    audit_count: int
+    latest_audit_at: datetime | None = None
+
+
+class PaperExecutionHistoryList(BaseModel):
+    items: list[PaperExecutionHistoryItem]
+    total: int
+    limit: int
+
+
+class PaperExecutionAuditEntry(BaseModel):
+    id: uuid.UUID
+    occurred_at: datetime
+    action: str
+    entity_type: str | None = None
+    entity_id: str | None = None
+    actor: str
+    summary: str
+    metadata: dict[str, Any]
+
+
+class PaperExecutionAuditList(BaseModel):
+    order_id: uuid.UUID
+    paper_only: Literal[True]
+    live_order_sent: Literal[False]
+    no_broker_order_sent: Literal[True]
+    items: list[PaperExecutionAuditEntry]
+
+
 # ─── Positions ───────────────────────────────────────────────────────────────
 
 class PositionOut(BaseModel):

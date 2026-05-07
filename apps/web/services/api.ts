@@ -32,6 +32,8 @@ import type {
   OperatorStatus,
   Order,
   OrderDetail,
+  PaperExecutionAudit,
+  PaperExecutionHistory,
   PerformanceReport,
   Position,
   PortfolioStrategyAttribution,
@@ -402,6 +404,16 @@ class ApiClient {
   }
   async getOrder(id: string): Promise<OrderDetail> {
     return (await this.client.get<OrderDetail>(`/orders/${id}`)).data;
+  }
+  async getPaperExecutionHistory(params?: {
+    limit?: number;
+  }): Promise<PaperExecutionHistory> {
+    return (await this.client.get<PaperExecutionHistory>("/orders/paper", { params }))
+      .data;
+  }
+  async getPaperOrderAudit(id: string): Promise<PaperExecutionAudit> {
+    return (await this.client.get<PaperExecutionAudit>(`/orders/paper/${id}/audit`))
+      .data;
   }
   async cancelOrder(id: string): Promise<void> {
     await this.client.post(`/orders/${id}/cancel`);

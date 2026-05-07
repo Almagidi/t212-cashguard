@@ -216,6 +216,36 @@ const dcaConfigs = [
   },
 ]
 
+const paperExecutionHistory = {
+  total: 1,
+  limit: 25,
+  items: [
+    {
+      id: '11111111-1111-4111-8111-111111111111',
+      order_id: '22222222-2222-4222-8222-222222222222',
+      created_at: '2026-05-05T09:26:00Z',
+      updated_at: '2026-05-05T09:26:02Z',
+      ticker: 'PAPERXYZ',
+      side: 'buy',
+      quantity: '2.00000000',
+      notional: '51.00000000',
+      venue: 'paper',
+      source: 'test_signal',
+      strategy: 'paper-test',
+      status: 'filled',
+      risk_result: 'allowed',
+      fill_price: '25.50000000',
+      filled_quantity: '2.00000000',
+      paper_only: true,
+      live_order_sent: false,
+      no_broker_order_sent: true,
+      rejection_reason: null,
+      audit_count: 3,
+      latest_audit_at: '2026-05-05T09:26:03Z',
+    },
+  ],
+}
+
 test.describe('Operator dashboard readiness', () => {
   test.skip(
     (process.env.NEXT_PUBLIC_APP_MODE ?? 'mock') !== 'mock',
@@ -275,6 +305,7 @@ test.describe('Operator dashboard readiness', () => {
         '/v1/kraken/dca/status': dcaStatus,
         '/v1/kraken/dca/activity': dcaActivity,
         '/v1/kraken/dca/configs': dcaConfigs,
+        '/v1/orders/paper': paperExecutionHistory,
       }
 
       if (path in bodyForPath) {
@@ -309,7 +340,11 @@ test.describe('Operator dashboard readiness', () => {
     await expect(page.getByRole('heading', { name: 'Trading212 Summary' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Kraken Summary' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'DCA Summary' })).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Paper Execution' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Paper Execution', exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Paper Execution History' })).toBeVisible()
+    await expect(page.getByText('PAPERXYZ')).toBeVisible()
+    await expect(page.getByText('test_signal')).toBeVisible()
+    await expect(page.getByText('paper-test')).toBeVisible()
     await expect(page.getByText('Paper only').first()).toBeVisible()
     await expect(page.getByText('No broker order sent').first()).toBeVisible()
     await expect(page.getByText('Mock execution').first()).toBeVisible()
