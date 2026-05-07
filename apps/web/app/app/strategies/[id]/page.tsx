@@ -177,13 +177,13 @@ export default function StrategyDetailPage({ params }: { params: Promise<{ id: s
             <Badge variant={strategy.is_enabled ? 'success' : 'outline'}>
               {strategy.is_enabled ? 'Active' : 'Inactive'}
             </Badge>
-            {strategy.is_live ? <span className="badge-live">LIVE</span> : <span className="badge-mock">DRY RUN</span>}
+            {strategy.is_live ? <span className="badge-live">LIVE</span> : <span className="badge-mock">PAPER / MOCK</span>}
           </div>
           <p className="text-xs text-muted-foreground mt-0.5 capitalize">{strategy.type.replace(/_/g, ' ')} · Last signal: {strategy.last_signal_at ? formatDate(strategy.last_signal_at) : 'Never'}</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={runDry} loading={runningDry}>
-            <FlaskConical className="w-3.5 h-3.5" />Run Dry {isPortfolioStrategy ? 'Rebalance' : 'Check'}
+            <FlaskConical className="w-3.5 h-3.5" />Run Paper {isPortfolioStrategy ? 'Rebalance' : 'Check'}
           </Button>
           <Button
             variant="outline" size="sm"

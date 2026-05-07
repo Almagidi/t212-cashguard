@@ -280,7 +280,7 @@ function VenueCard({ venue }: { venue: OperatorVenueStatus }) {
             valueClassName={boolTone(venue.kill_switch_active, true)}
           />
           <InfoRow
-            label="Auto trading enabled"
+            label="Automation enabled"
             value={boolLabel(venue.auto_trading_enabled)}
             valueClassName={boolTone(venue.auto_trading_enabled, true)}
           />
@@ -510,7 +510,7 @@ function PaperExecutionSummary({ status }: { status: OperatorStatus }) {
       </CardHeader>
       <CardContent className="space-y-4">
         <dl>
-          <InfoRow label="Total paper orders" value={paper.total_paper_orders} />
+          <InfoRow label="Filled paper orders" value={paper.total_paper_orders} />
           <InfoRow
             label="Open paper positions"
             value={paper.open_paper_positions_count}
