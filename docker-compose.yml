@@ -114,6 +114,7 @@ services:
       args:
         NEXT_PUBLIC_API_URL: /api
         API_URL: http://api:8000
+        NEXT_PUBLIC_APP_MODE: ${APP_MODE:-mock}
     container_name: t212_web
     environment:
       - NEXT_PUBLIC_API_URL=/api
