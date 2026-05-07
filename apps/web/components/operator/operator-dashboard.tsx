@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Clock3,
   Eye,
+  FileText,
   ListChecks,
   Lock,
   ShieldAlert,
@@ -21,9 +22,10 @@ import {
 } from "@/components/ui";
 import { cn, formatCurrency, formatDate } from "@/lib/utils";
 import { BrokerStatusPanel } from "./broker-status-panel";
-import { useBrokerStatus } from "@/hooks/use-api";
+import { useBrokerStatus, usePaperExecutionHistory } from "@/hooks/use-api";
 import type {
   OperatorOverallStatus,
+  PaperExecutionHistoryItem,
   OperatorRecentActivity,
   OperatorStatus,
   OperatorVenueStatus,
@@ -621,6 +623,160 @@ function summaryValue(value: unknown) {
   return JSON.stringify(value).slice(0, 80);
 }
 
+function compactDecimal(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === "") return "—";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return String(value);
+  return numeric.toLocaleString(undefined, {
+    maximumFractionDigits: 8,
+  });
+}
+
+function paperStatusTone(
+  item: PaperExecutionHistoryItem,
+): "success" | "warning" | "destructive" | "info" {
+  if (item.risk_result === "blocked" || item.status === "rejected") {
+    return "destructive";
+  }
+  if (item.status === "filled") return "success";
+  if (item.status === "submitted" || item.status === "accepted") return "info";
+  return "warning";
+}
+
+function PaperExecutionHistoryPanel() {
+  const history = usePaperExecutionHistory({ limit: 25 });
+  const items = history.data?.items ?? [];
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <CardTitle>Paper Execution History</CardTitle>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Local mock paper orders, risk decisions, fills, positions, and audit review.
+            </p>
+          </div>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            <TextBadge tone="success">Paper only</TextBadge>
+            <TextBadge tone="success">No broker order sent</TextBadge>
+            <TextBadge tone="info">Mock/local execution</TextBadge>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {history.isLoading ? (
+          <div className="space-y-3" aria-label="Loading paper execution history">
+            <Skeleton className="h-4 w-48" />
+            <Skeleton className="h-24 w-full" />
+          </div>
+        ) : history.isError ? (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+            <p className="text-sm font-semibold text-amber-100">
+              Paper execution history unavailable
+            </p>
+            <p className="mt-1 text-xs text-amber-100/80">
+              Operator status remains visible. This read-only panel does not create,
+              execute, or send broker orders.
+            </p>
+          </div>
+        ) : items.length === 0 ? (
+          <EmptyState
+            title="No paper execution history"
+            description="Paper execution history will appear here after mock paper orders are created. No broker order is sent."
+            className="py-8"
+          />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-left text-xs">
+              <thead className="border-b border-border/70 text-muted-foreground">
+                <tr>
+                  <th className="py-2 pr-3 font-medium">Created</th>
+                  <th className="py-2 pr-3 font-medium">Ticker</th>
+                  <th className="py-2 pr-3 font-medium">Side</th>
+                  <th className="py-2 pr-3 font-medium">Source</th>
+                  <th className="py-2 pr-3 font-medium">Venue</th>
+                  <th className="py-2 pr-3 font-medium">Qty / notional</th>
+                  <th className="py-2 pr-3 font-medium">Fill</th>
+                  <th className="py-2 pr-3 font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/60">
+                {items.map((item) => (
+                  <tr key={item.id} className="align-top">
+                    <td className="py-3 pr-3 text-muted-foreground">
+                      {formatDate(item.created_at)}
+                    </td>
+                    <td className="py-3 pr-3 font-mono font-semibold text-foreground">
+                      {item.ticker}
+                    </td>
+                    <td className="py-3 pr-3 uppercase">{item.side ?? "—"}</td>
+                    <td className="py-3 pr-3">
+                      <div className="max-w-[160px] space-y-1">
+                        <p className="truncate text-foreground">
+                          {item.source ?? "unknown"}
+                        </p>
+                        <p className="truncate text-muted-foreground">
+                          {item.strategy ?? "no strategy"}
+                        </p>
+                      </div>
+                    </td>
+                    <td className="py-3 pr-3">{item.venue ?? "paper"}</td>
+                    <td className="py-3 pr-3">
+                      <div className="space-y-1">
+                        <p>{compactDecimal(item.quantity)}</p>
+                        <p className="text-muted-foreground">
+                          {item.notional ? formatCurrency(item.notional) : "—"}
+                        </p>
+                      </div>
+                    </td>
+                    <td className="py-3 pr-3">
+                      <div className="space-y-1">
+                        <p>{item.fill_price ? formatCurrency(item.fill_price) : "—"}</p>
+                        <p className="text-muted-foreground">
+                          filled {compactDecimal(item.filled_quantity)}
+                        </p>
+                      </div>
+                    </td>
+                    <td className="py-3 pr-3">
+                      <div className="space-y-2">
+                        <Badge variant={paperStatusTone(item)}>
+                          {item.status}
+                        </Badge>
+                        <div className="flex flex-wrap gap-1">
+                          <TextBadge tone="success">Paper only</TextBadge>
+                          <TextBadge tone="success">No broker order sent</TextBadge>
+                        </div>
+                        <details className="group rounded-md border border-border/60 bg-secondary/20 p-2">
+                          <summary className="flex cursor-pointer list-none items-center gap-1.5 text-muted-foreground">
+                            <FileText className="h-3.5 w-3.5" />
+                            Audit review
+                          </summary>
+                          <div className="mt-2 space-y-1 text-muted-foreground">
+                            <p>Risk: {item.risk_result}</p>
+                            <p>Audit events: {item.audit_count}</p>
+                            <p>Latest audit: {formatDate(item.latest_audit_at)}</p>
+                            <p>Live order sent: {String(item.live_order_sent)}</p>
+                            {item.rejection_reason && (
+                              <p className="text-amber-200">
+                                Rejection: {item.rejection_reason}
+                              </p>
+                            )}
+                          </div>
+                        </details>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function ActivitySummary({
   activity,
   compact = false,
@@ -796,6 +952,7 @@ export function OperatorDashboard({
       </section>
 
       <PaperExecutionSummary status={status} />
+      <PaperExecutionHistoryPanel />
       <SafetyFlags status={status} />
       <RecentActivity status={status} />
 

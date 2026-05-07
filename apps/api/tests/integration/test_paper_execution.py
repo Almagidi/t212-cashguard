@@ -40,6 +40,13 @@ async def test_paper_order_endpoint_requires_auth(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_paper_order_history_requires_auth(client: AsyncClient):
+    response = await client.get("/v1/orders/paper")
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_paper_order_creates_local_order_audits_and_position(
     client: AsyncClient,
     auth_headers: dict,
@@ -96,6 +103,161 @@ async def test_paper_order_creates_local_order_audits_and_position(
 
 
 @pytest.mark.asyncio
+async def test_paper_order_history_returns_newest_first_with_safety_fields(
+    client: AsyncClient,
+    auth_headers: dict,
+    db,
+):
+    first_response = await client.post(
+        "/v1/orders/paper",
+        headers=auth_headers,
+        json=_paper_payload(ticker="OLDER", quantity="1", estimated_price="10"),
+    )
+    second_response = await client.post(
+        "/v1/orders/paper",
+        headers=auth_headers,
+        json=_paper_payload(
+            ticker="NEWER",
+            quantity="3",
+            estimated_price="20",
+            source="watchlist_signal",
+            strategy="opening-fade",
+            venue="mock",
+        ),
+    )
+    assert first_response.status_code == 201, first_response.text
+    assert second_response.status_code == 201, second_response.text
+
+    history_response = await client.get(
+        "/v1/orders/paper",
+        headers=auth_headers,
+    )
+
+    assert history_response.status_code == 200, history_response.text
+    body = history_response.json()
+    assert body["limit"] == 25
+    assert body["total"] == 2
+    assert [item["ticker"] for item in body["items"]] == ["NEWER", "OLDER"]
+
+    newest = body["items"][0]
+    assert newest["order_id"] == second_response.json()["id"]
+    assert newest["side"] == "buy"
+    assert newest["quantity"] == "3.00000000"
+    assert newest["venue"] == "mock"
+    assert newest["source"] == "watchlist_signal"
+    assert newest["strategy"] == "opening-fade"
+    assert newest["status"] == "filled"
+    assert newest["fill_price"] == "20.00000000"
+    assert newest["filled_quantity"] == "3.00000000"
+    assert newest["paper_only"] is True
+    assert newest["live_order_sent"] is False
+    assert newest["no_broker_order_sent"] is True
+    assert newest["audit_count"] >= 2
+    assert newest["latest_audit_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_paper_order_history_respects_default_and_max_limit(
+    client: AsyncClient,
+    auth_headers: dict,
+):
+    for idx in range(3):
+        response = await client.post(
+            "/v1/orders/paper",
+            headers=auth_headers,
+            json=_paper_payload(ticker=f"LIMIT{idx}", quantity="1"),
+        )
+        assert response.status_code == 201, response.text
+
+    default_response = await client.get("/v1/orders/paper", headers=auth_headers)
+    explicit_response = await client.get(
+        "/v1/orders/paper?limit=2",
+        headers=auth_headers,
+    )
+    capped_response = await client.get(
+        "/v1/orders/paper?limit=500",
+        headers=auth_headers,
+    )
+
+    assert default_response.status_code == 200
+    assert default_response.json()["limit"] == 25
+    assert len(default_response.json()["items"]) == 3
+    assert explicit_response.status_code == 200
+    assert explicit_response.json()["limit"] == 2
+    assert len(explicit_response.json()["items"]) == 2
+    assert capped_response.status_code == 200
+    assert capped_response.json()["limit"] == 100
+    assert len(capped_response.json()["items"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_paper_order_history_includes_blocked_attempts_from_audit(
+    client: AsyncClient,
+    auth_headers: dict,
+    db,
+):
+    settings = (
+        await db.execute(select(AppSettings).where(AppSettings.id == 1))
+    ).scalar_one()
+    settings.kill_switch_active = True
+    await db.flush()
+
+    response = await client.post(
+        "/v1/orders/paper",
+        headers=auth_headers,
+        json=_paper_payload(ticker="BLOCKHIST"),
+    )
+    assert response.status_code == 422
+
+    history_response = await client.get("/v1/orders/paper", headers=auth_headers)
+
+    assert history_response.status_code == 200
+    body = history_response.json()
+    assert body["total"] == 1
+    item = body["items"][0]
+    assert item["order_id"] is None
+    assert item["ticker"] == "BLOCKHIST"
+    assert item["status"] == "rejected"
+    assert item["risk_result"] == "blocked"
+    assert "Kill switch is active" in item["rejection_reason"]
+    assert item["paper_only"] is True
+    assert item["live_order_sent"] is False
+    assert item["no_broker_order_sent"] is True
+
+
+@pytest.mark.asyncio
+async def test_paper_order_audit_endpoint_returns_relevant_safe_events(
+    client: AsyncClient,
+    auth_headers: dict,
+):
+    create_response = await client.post(
+        "/v1/orders/paper",
+        headers=auth_headers,
+        json=_paper_payload(ticker="AUDITME"),
+    )
+    assert create_response.status_code == 201, create_response.text
+    order_id = create_response.json()["id"]
+
+    audit_response = await client.get(
+        f"/v1/orders/paper/{order_id}/audit",
+        headers=auth_headers,
+    )
+
+    assert audit_response.status_code == 200, audit_response.text
+    body = audit_response.json()
+    assert body["order_id"] == order_id
+    assert body["paper_only"] is True
+    actions = [item["action"] for item in body["items"]]
+    assert actions == [
+        "paper_position_updated",
+        "paper_fill_simulated",
+        "paper_order_created",
+    ]
+    assert all("api_key" not in item["metadata"] for item in body["items"])
+    assert all(item["metadata"]["paper_only"] is True for item in body["items"])
+
+
+@pytest.mark.asyncio
 async def test_paper_order_does_not_call_live_broker_order_methods(
     client: AsyncClient,
     auth_headers: dict,
@@ -137,6 +299,23 @@ async def test_paper_order_does_not_call_live_broker_order_methods(
     )
 
     assert response.status_code == 201, response.text
+    for method in patched:
+        method.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_paper_order_history_does_not_call_live_broker_order_methods(
+    client: AsyncClient,
+    auth_headers: dict,
+    monkeypatch,
+):
+    patched = [AsyncMock(), AsyncMock()]
+    monkeypatch.setattr(Trading212Adapter, "place_market_order", patched[0])
+    monkeypatch.setattr(KrakenAdapter, "place_market_order", patched[1])
+
+    response = await client.get("/v1/orders/paper", headers=auth_headers)
+
+    assert response.status_code == 200, response.text
     for method in patched:
         method.assert_not_called()
 

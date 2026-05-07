@@ -527,6 +527,51 @@ export interface OrderDetail extends Order {
   signal_snapshot: Signal | null;
   events: OrderEvent[];
 }
+export interface PaperExecutionHistoryItem {
+  id: string;
+  order_id: string | null;
+  created_at: string;
+  updated_at: string | null;
+  ticker: string;
+  side: OrderSide | string | null;
+  quantity: string | null;
+  notional: string | null;
+  venue: string | null;
+  source: string | null;
+  strategy: string | null;
+  status: string;
+  risk_result: "allowed" | "blocked" | "unknown";
+  fill_price: string | null;
+  filled_quantity: string | null;
+  paper_only: true;
+  live_order_sent: false;
+  no_broker_order_sent: true;
+  rejection_reason: string | null;
+  audit_count: number;
+  latest_audit_at: string | null;
+}
+export interface PaperExecutionHistory {
+  items: PaperExecutionHistoryItem[];
+  total: number;
+  limit: number;
+}
+export interface PaperExecutionAuditEntry {
+  id: string;
+  occurred_at: string;
+  action: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  actor: string;
+  summary: string;
+  metadata: Record<string, unknown>;
+}
+export interface PaperExecutionAudit {
+  order_id: string;
+  paper_only: true;
+  live_order_sent: false;
+  no_broker_order_sent: true;
+  items: PaperExecutionAuditEntry[];
+}
 export interface CreateOrderPayload {
   ticker: string;
   side: OrderSide;
