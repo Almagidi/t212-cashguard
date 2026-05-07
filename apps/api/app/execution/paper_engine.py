@@ -214,6 +214,64 @@ class PaperExecutionEngine:
             },
         )
 
+    async def _check_sell_quantity_available(
+        self,
+        body: PaperOrderCreate,
+        quantity: Decimal,
+        *,
+        actor: str,
+        user: User,
+    ) -> None:
+        if body.side != "sell":
+            return
+
+        latest_positions = await self._latest_paper_positions(user)
+        available_quantity = Decimal("0")
+        current_position = latest_positions.get(body.ticker.upper())
+        if current_position is not None:
+            available_quantity = current_position.quantity_available or current_position.quantity
+
+        if quantity <= available_quantity:
+            return
+
+        reason = (
+            f"Paper sell quantity {quantity} exceeds available paper quantity "
+            f"{available_quantity} for {body.ticker.upper()}."
+        )
+        await self._audit(
+            "paper_signal_rejected",
+            actor=actor,
+            user_id=user.id,
+            payload={
+                "ticker": body.ticker.upper(),
+                "side": body.side,
+                "quantity": str(quantity),
+                "available_quantity": str(available_quantity),
+                "venue": body.venue,
+                "source": body.source,
+                "strategy": body.strategy,
+                "reason": reason,
+                "decision_code": "paper_oversell_block",
+                "no_broker_order_sent": True,
+            },
+        )
+        await self._audit(
+            "paper_risk_check_result",
+            actor=actor,
+            user_id=user.id,
+            payload={
+                "ticker": body.ticker.upper(),
+                "side": body.side,
+                "quantity": str(quantity),
+                "available_quantity": str(available_quantity),
+                "result": "blocked",
+                "reason": reason,
+                "decision_code": "paper_oversell_block",
+                "no_broker_order_sent": True,
+            },
+        )
+        raise PaperExecutionError(reason)
+
     async def _update_position(
         self,
         *,
@@ -299,7 +357,13 @@ class PaperExecutionEngine:
         if body.venue not in PAPER_SUPPORTED_VENUES:
             raise PaperExecutionError("Unsupported paper venue.")
 
-        quantity = body.quantity or (body.notional / body.estimated_price)
+        if body.quantity is not None:
+            quantity = body.quantity
+        else:
+            if body.notional is None:
+                raise PaperExecutionError("quantity or notional is required")
+            quantity = body.notional / body.estimated_price
+        await self._check_sell_quantity_available(body, quantity, actor=actor, user=user)
         await self._audit(
             "paper_signal_accepted",
             actor=actor,
