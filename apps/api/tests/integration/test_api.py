@@ -1811,6 +1811,57 @@ class TestLiveModeSafetyFlow:
         assert resp.status_code == 400
         assert "live auto-trading" in resp.json()["detail"].lower()
 
+    async def test_live_order_endpoint_requires_live_readiness_unlock(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        db,
+        monkeypatch,
+    ):
+        from sqlalchemy import select
+
+        from app.core.config import settings
+        from app.db.models import AppSettings, BrokerConnection, User
+
+        monkeypatch.setattr(settings, "APP_MODE", "live")
+        monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", True)
+        monkeypatch.setattr(settings, "T212_ENVIRONMENT", "live")
+        monkeypatch.setattr("app.broker.trading212.Trading212Adapter", FakeTrading212Adapter)
+
+        user = (await db.execute(select(User).where(User.email == "admin@test.com"))).scalar_one()
+        app_settings = (await db.execute(select(AppSettings).where(AppSettings.id == 1))).scalar_one()
+        app_settings.auto_trading_enabled = True
+        app_settings.live_trading_unlocked = False
+        db.add(
+            BrokerConnection(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                broker="trading212",
+                environment="live",
+                api_key_encrypted="live-key",
+                api_secret_encrypted="live-secret",
+                is_active=True,
+                last_test_ok=True,
+                account_id="LIVE-BLOCKED",
+                account_currency="USD",
+            )
+        )
+        await db.commit()
+
+        order_resp = await client.post(
+            "/v1/orders",
+            headers=auth_headers,
+            json={
+                "ticker": "MSFT",
+                "side": "buy",
+                "order_type": "market",
+                "quantity": "1",
+            },
+        )
+
+        assert order_resp.status_code == 403
+        assert "live readiness" in order_resp.json()["detail"].lower()
+
 
 @pytest.mark.asyncio
 class TestBrokerExecutionFlow:

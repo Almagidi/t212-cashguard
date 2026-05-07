@@ -150,6 +150,7 @@ export interface Strategy {
   description: string | null;
   is_enabled: boolean;
   is_live: boolean;
+  venue: string;
   risk_profile_id: string | null;
   risk_profile?: RiskProfile | null;
   params: Record<string, unknown>;

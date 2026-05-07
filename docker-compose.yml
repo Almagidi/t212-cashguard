@@ -80,7 +80,7 @@ services:
         condition: service_healthy
     volumes:
       - ./apps/api:/app
-    command: celery -A app.workers.celery_app worker --loglevel=info -Q default,orders,reconciliation --concurrency=4
+    command: celery -A app.workers.celery_app worker --loglevel=info -Q celery,default,orders,reconciliation --concurrency=4
 
   beat:
     build:
@@ -100,7 +100,12 @@ services:
       - worker
     volumes:
       - ./apps/api:/app
-    command: celery -A app.workers.celery_app beat --loglevel=info --scheduler celery.beat:PersistentScheduler
+    command: >
+      celery -A app.workers.celery_app beat
+      --loglevel=info
+      --scheduler celery.beat:PersistentScheduler
+      --schedule=/tmp/celerybeat-schedule
+      --pidfile=/tmp/celerybeat.pid
 
   web:
     build:
@@ -109,6 +114,7 @@ services:
       args:
         NEXT_PUBLIC_API_URL: /api
         API_URL: http://api:8000
+        NEXT_PUBLIC_APP_MODE: ${APP_MODE:-mock}
     container_name: t212_web
     environment:
       - NEXT_PUBLIC_API_URL=/api

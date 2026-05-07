@@ -8,6 +8,7 @@ const config = {
   setupFilesAfterEnv: ['<rootDir>/tests/unit/setup.ts'],
   moduleNameMapper: { '^@/(.*)$': '<rootDir>/$1' },
   testMatch: ['<rootDir>/tests/unit/**/*.test.{ts,tsx}'],
+  modulePathIgnorePatterns: ['<rootDir>/.next/', '<rootDir>/coverage/'],
   passWithNoTests: true,
 }
 

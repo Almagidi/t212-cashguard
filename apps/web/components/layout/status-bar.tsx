@@ -46,7 +46,7 @@ export function StatusBar() {
             settings?.auto_trading_enabled ? 'bg-emerald-400 animate-pulse-slow' : 'bg-muted-foreground/40'
           )}
         />
-        Auto {settings?.auto_trading_enabled ? 'ON' : 'OFF'}
+        {settings?.auto_trading_enabled ? 'Automation ready' : 'Automation off'}
       </span>
 
       {/* Mode badge */}

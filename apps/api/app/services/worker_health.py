@@ -29,7 +29,9 @@ async def record_worker_heartbeat(
     task_name: str,
     payload: dict[str, Any] | None = None,
 ) -> None:
-    result = await db.execute(select(AppSettings).where(AppSettings.id == 1))
+    result = await db.execute(
+        select(AppSettings).where(AppSettings.id == 1).with_for_update()
+    )
     app_settings = result.scalar_one_or_none()
     if not app_settings:
         return

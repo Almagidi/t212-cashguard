@@ -140,7 +140,7 @@ export function BrokerStatusPanel({
 
         <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
           <p className="text-xs uppercase tracking-wide text-slate-500">
-            Configured
+            Real broker configured
           </p>
           <p className="mt-2 text-xl font-semibold text-slate-100">
             {formatValue(status?.credential_state === "configured")}
@@ -149,7 +149,7 @@ export function BrokerStatusPanel({
 
         <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
           <p className="text-xs uppercase tracking-wide text-slate-500">
-            Active
+            Mock broker active
           </p>
           <p className="mt-2 text-xl font-semibold text-slate-100">
             {formatValue(status?.is_active)}

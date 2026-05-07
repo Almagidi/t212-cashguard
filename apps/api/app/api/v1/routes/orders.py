@@ -32,6 +32,7 @@ from app.execution.paper_engine import (
     PaperExecutionError,
 )
 from app.risk.engine import RiskEngine, RiskViolation
+from app.services.live_readiness import LiveReadinessService
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -159,6 +160,42 @@ def _audit_related_to_order(audit: AuditLog, order_id: uuid.UUID) -> bool:
     return _payload(audit).get("order_id") == order_id_text
 
 
+async def _ensure_live_order_ready(
+    *,
+    db: AsyncSession,
+    current_user: User,
+    body: OrderCreate,
+) -> None:
+    if settings.APP_MODE != "live":
+        return
+
+    readiness = await LiveReadinessService(db).evaluate()
+    if readiness["ready_for_live"]:
+        return
+
+    blockers = readiness.get("blockers") or ["Live readiness checklist is incomplete."]
+    reason = f"Live readiness incomplete. Real order blocked before broker submission: {blockers[0]}"
+    db.add(
+        AuditLog(
+            action="live_order_blocked",
+            entity_type="order",
+            actor=current_user.email,
+            payload={
+                "ticker": body.ticker.upper(),
+                "side": body.side,
+                "order_type": body.order_type,
+                "quantity": str(body.quantity),
+                "reason": reason,
+                "blockers": blockers,
+                "no_broker_order_sent": True,
+            },
+            occurred_at=datetime.now(UTC),
+        )
+    )
+    await db.flush()
+    raise HTTPException(status_code=403, detail=reason)
+
+
 @router.get("", response_model=list[OrderOut])
 async def list_orders(
     status: str | None = Query(None),
@@ -180,13 +217,15 @@ async def place_order(
     body: OrderCreate,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-    broker=Depends(get_broker),
 ):
     """
     Place an order with full pre-flight risk checks.
     Order flow: risk checks → intent created → submitted to broker → reconciled.
     """
     repo = OrderRepository(db)
+
+    await _ensure_live_order_ready(db=db, current_user=current_user, body=body)
+    broker = await get_broker(current_user=current_user, db=db)
 
     # Fetch live account state for risk calculations
     async with broker as b:

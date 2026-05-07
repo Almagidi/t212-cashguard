@@ -96,7 +96,7 @@ function StrategyCard({ strategy, perf }: { strategy: Strategy; perf?: StrategyP
               {strategy.is_live ? (
                 <span className="badge-live">LIVE</span>
               ) : (
-                <span className="badge-mock">DRY RUN</span>
+                <span className="badge-mock">PAPER / MOCK</span>
               )}
             </div>
 

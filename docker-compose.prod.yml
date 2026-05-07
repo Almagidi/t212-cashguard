@@ -87,7 +87,7 @@ services:
     command: >
       celery -A app.workers.celery_app worker
       --loglevel=info
-      -Q default,orders,reconciliation
+      -Q celery,default,orders,reconciliation
       --concurrency=2
       --max-tasks-per-child=100
     environment:

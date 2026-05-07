@@ -371,6 +371,45 @@ async def test_paper_order_kill_switch_blocks_and_audits(
 
 
 @pytest.mark.asyncio
+async def test_paper_sell_cannot_exceed_open_paper_quantity(
+    client: AsyncClient,
+    auth_headers: dict,
+    db,
+):
+    buy_response = await client.post(
+        "/v1/orders/paper",
+        headers=auth_headers,
+        json=_paper_payload(ticker="SELLSAFE", side="buy", quantity="2"),
+    )
+    assert buy_response.status_code == 201, buy_response.text
+
+    sell_response = await client.post(
+        "/v1/orders/paper",
+        headers=auth_headers,
+        json=_paper_payload(ticker="SELLSAFE", side="sell", quantity="3"),
+    )
+
+    assert sell_response.status_code == 422
+    assert "exceeds available paper quantity" in sell_response.json()["detail"]
+
+    orders = (
+        await db.execute(select(Order).where(Order.ticker == "SELLSAFE"))
+    ).scalars().all()
+    assert len(orders) == 1
+
+    audits = (await db.execute(select(AuditLog))).scalars().all()
+    rejected = [
+        audit
+        for audit in audits
+        if audit.action == "paper_signal_rejected"
+        and audit.payload.get("ticker") == "SELLSAFE"
+    ]
+    assert rejected
+    assert rejected[-1].payload["decision_code"] == "paper_oversell_block"
+    assert rejected[-1].payload["no_broker_order_sent"] is True
+
+
+@pytest.mark.asyncio
 async def test_paper_position_is_visible_in_positions_endpoint(
     client: AsyncClient,
     auth_headers: dict,
