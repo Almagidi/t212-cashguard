@@ -728,6 +728,16 @@ export interface OperatorDcaStatus {
   tickers: string[];
 }
 
+export interface OperatorPaperExecutionStatus {
+  paper_only: true;
+  enabled_in_mode: "mock";
+  total_paper_orders: number;
+  latest_paper_order_timestamp: string | null;
+  last_paper_execution_status: string | null;
+  open_paper_positions_count: number;
+  safety_notes: string[];
+}
+
 export interface OperatorSchedulersStatus {
   dca_paper_evaluate_registered: boolean;
   dca_paper_evaluate_cadence: string | null;
@@ -778,6 +788,7 @@ export interface OperatorStatus {
   trading212: OperatorTrading212Status;
   kraken: OperatorKrakenStatus;
   dca: OperatorDcaStatus;
+  paper_execution: OperatorPaperExecutionStatus;
   schedulers: OperatorSchedulersStatus;
   recent_activity: OperatorRecentActivity[];
   safety_flags: OperatorSafetyFlags;

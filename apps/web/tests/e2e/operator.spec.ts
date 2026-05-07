@@ -69,6 +69,19 @@ const operatorStatus = {
     paper_only: true,
     tickers: ['BTC/USD', 'ETH/USD'],
   },
+  paper_execution: {
+    paper_only: true,
+    enabled_in_mode: 'mock',
+    total_paper_orders: 3,
+    latest_paper_order_timestamp: '2026-05-05T09:25:00Z',
+    last_paper_execution_status: 'filled',
+    open_paper_positions_count: 1,
+    safety_notes: [
+      'Paper execution is local/mock only.',
+      'No broker order sent.',
+      'Global kill switch blocks paper simulation in this endpoint.',
+    ],
+  },
   schedulers: {
     dca_paper_evaluate_registered: true,
     dca_paper_evaluate_cadence: 'daily at 09:00',
@@ -296,6 +309,10 @@ test.describe('Operator dashboard readiness', () => {
     await expect(page.getByRole('heading', { name: 'Trading212 Summary' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Kraken Summary' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'DCA Summary' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Paper Execution' })).toBeVisible()
+    await expect(page.getByText('Paper only').first()).toBeVisible()
+    await expect(page.getByText('No broker order sent').first()).toBeVisible()
+    await expect(page.getByText('Mock execution').first()).toBeVisible()
     await expect(page.getByText('Paper-only').first()).toBeVisible()
     await expect(page.getByText('Live disabled').first()).toBeVisible()
     await expect(page.getByText('Worker heartbeat missing')).toBeVisible()

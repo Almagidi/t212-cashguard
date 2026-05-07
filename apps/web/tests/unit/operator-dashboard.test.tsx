@@ -110,6 +110,19 @@ function operatorStatus(
       paper_only: true,
       tickers: ["BTC/USD", "ETH/USD"],
     },
+    paper_execution: {
+      paper_only: true,
+      enabled_in_mode: "mock",
+      total_paper_orders: 3,
+      latest_paper_order_timestamp: "2026-05-01T09:25:00Z",
+      last_paper_execution_status: "filled",
+      open_paper_positions_count: 1,
+      safety_notes: [
+        "Paper execution is local/mock only.",
+        "No broker order sent.",
+        "Global kill switch blocks paper simulation in this endpoint.",
+      ],
+    },
     schedulers: {
       dca_paper_evaluate_registered: true,
       dca_paper_evaluate_cadence: "daily at 09:00",
