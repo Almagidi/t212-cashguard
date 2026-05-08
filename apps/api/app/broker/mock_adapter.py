@@ -6,7 +6,8 @@ All mock data is deterministic and based on realistic market values.
 from __future__ import annotations
 
 import random
-from datetime import UTC, datetime
+import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -55,7 +56,7 @@ class MockBrokerAdapter:
             },
         }
 
-    async def __aenter__(self) -> MockBrokerAdapter:
+    async def __aenter__(self) -> "MockBrokerAdapter":
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -171,7 +172,7 @@ class MockBrokerAdapter:
                     "fxPpl": 0.0,
                     "maxBuy": 100.0,
                     "maxSell": abs_qty,
-                    "initialFillDate": datetime.now(UTC).isoformat(),
+                    "initialFillDate": datetime.now(timezone.utc).isoformat(),
                     "frontend": "WC4",
                     "pieQuantity": 0.0,
                 }
@@ -195,8 +196,8 @@ class MockBrokerAdapter:
             "status": "FILLED",
             "filledQuantity": abs_qty,
             "filledPrice": fill_price,
-            "dateCreated": datetime.now(UTC).isoformat(),
-            "dateModified": datetime.now(UTC).isoformat(),
+            "dateCreated": datetime.now(timezone.utc).isoformat(),
+            "dateModified": datetime.now(timezone.utc).isoformat(),
         }
         self._orders[order_id] = order
         return order
@@ -220,8 +221,8 @@ class MockBrokerAdapter:
             "type": "LIMIT",
             "status": "WORKING",
             "filledQuantity": 0.0,
-            "dateCreated": datetime.now(UTC).isoformat(),
-            "dateModified": datetime.now(UTC).isoformat(),
+            "dateCreated": datetime.now(timezone.utc).isoformat(),
+            "dateModified": datetime.now(timezone.utc).isoformat(),
         }
         self._orders[order_id] = order
         return order
@@ -245,8 +246,8 @@ class MockBrokerAdapter:
             "type": "STOP",
             "status": "WORKING",
             "filledQuantity": 0.0,
-            "dateCreated": datetime.now(UTC).isoformat(),
-            "dateModified": datetime.now(UTC).isoformat(),
+            "dateCreated": datetime.now(timezone.utc).isoformat(),
+            "dateModified": datetime.now(timezone.utc).isoformat(),
         }
         self._orders[order_id] = order
         return order
@@ -272,8 +273,8 @@ class MockBrokerAdapter:
             "type": "STOP_LIMIT",
             "status": "WORKING",
             "filledQuantity": 0.0,
-            "dateCreated": datetime.now(UTC).isoformat(),
-            "dateModified": datetime.now(UTC).isoformat(),
+            "dateCreated": datetime.now(timezone.utc).isoformat(),
+            "dateModified": datetime.now(timezone.utc).isoformat(),
         }
         self._orders[order_id] = order
         return order
