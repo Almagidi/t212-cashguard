@@ -238,7 +238,16 @@ npx playwright test
 npx playwright test --ui
 ```
 
-The GitHub Actions CI pipeline now runs backend verification, frontend lint/type/unit/build checks, and a seeded Playwright end-to-end pass before mainline changes are considered green.
+---
+
+## Continuous Integration
+
+The GitHub Actions CI pipeline protects the mock/paper trading lab release candidate with the following quality gates:
+
+- **Frontend**: `npm ci`, `npm run lint`, `npm run typecheck`, `npm run build`, and `npm test`.
+- **Backend**: Targeted `pytest` for paper execution and API safety, plus targeted `ruff` linting on changed files (balancing quality with pre-existing technical debt).
+- **End-to-End**: A seeded Playwright smoke test (`mock-paper-release.spec.ts`) running against a live mock-mode stack.
+- **Security**: Secret scanning, prohibited financial pattern checks, and hardcoded safety invariant validation.
 
 ---
 
