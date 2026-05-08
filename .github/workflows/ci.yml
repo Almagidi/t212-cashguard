@@ -87,6 +87,7 @@ jobs:
       - name: Run migrations
         env:
           DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
+          PYTHONPATH: .
         run: alembic upgrade head
 
       - name: Run targeted tests
@@ -96,6 +97,7 @@ jobs:
           SECRET_KEY: "test-secret-key-32-chars-minimum-x"
           MASTER_KEY: "test-master-key-32-chars-minimum-x"
           APP_MODE: "mock"
+          PYTHONPATH: .
         run: |
           # We use --cov-fail-under=0 because targeted tests only cover a subset of the codebase.
           python -m pytest tests/integration/test_paper_execution.py tests/smoke/ -v --tb=short --cov-fail-under=0 --cov-report=xml
@@ -227,6 +229,7 @@ jobs:
           APP_MODE: mock
           ADMIN_EMAIL: admin@localhost
           ADMIN_PASSWORD: change-me
+          PYTHONPATH: .
         run: |
           alembic upgrade head
           python -m app.db.seed
