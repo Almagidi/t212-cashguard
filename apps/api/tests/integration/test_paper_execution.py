@@ -1,4 +1,5 @@
 """Paper execution API safety tests."""
+
 from __future__ import annotations
 
 import uuid
@@ -66,17 +67,15 @@ async def test_paper_order_creates_local_order_audits_and_position(
     assert body["execution_environment"] == "paper_mock"
     assert body["broker_order_id"] is None
 
-    order = (
-        await db.execute(select(Order).where(Order.id == uuid.UUID(body["id"])))
-    ).scalar_one()
+    order = (await db.execute(select(Order).where(Order.id == uuid.UUID(body["id"])))).scalar_one()
     assert order.broker_request["no_broker_order_sent"] is True
     assert order.broker_response["status"] == "PAPER_FILLED"
 
     audits = (
-        await db.execute(
-            select(AuditLog).where(AuditLog.entity_id == str(order.id))
-        )
-    ).scalars().all()
+        (await db.execute(select(AuditLog).where(AuditLog.entity_id == str(order.id))))
+        .scalars()
+        .all()
+    )
     assert {audit.action for audit in audits} >= {
         "paper_order_created",
         "paper_fill_simulated",
@@ -93,9 +92,7 @@ async def test_paper_order_creates_local_order_audits_and_position(
     assert all(audit.payload["paper_only"] is True for audit in paper_audits)
 
     position = (
-        await db.execute(
-            select(PositionSnapshot).where(PositionSnapshot.ticker == "PAPERXYZ")
-        )
+        await db.execute(select(PositionSnapshot).where(PositionSnapshot.ticker == "PAPERXYZ"))
     ).scalar_one()
     assert position.quantity == Decimal("2")
     assert position.avg_price == Decimal("25.5")
@@ -196,9 +193,7 @@ async def test_paper_order_history_includes_blocked_attempts_from_audit(
     auth_headers: dict,
     db,
 ):
-    settings = (
-        await db.execute(select(AppSettings).where(AppSettings.id == 1))
-    ).scalar_one()
+    settings = (await db.execute(select(AppSettings).where(AppSettings.id == 1))).scalar_one()
     settings.kill_switch_active = True
     await db.flush()
 
@@ -344,9 +339,7 @@ async def test_paper_order_kill_switch_blocks_and_audits(
     auth_headers: dict,
     db,
 ):
-    settings = (
-        await db.execute(select(AppSettings).where(AppSettings.id == 1))
-    ).scalar_one()
+    settings = (await db.execute(select(AppSettings).where(AppSettings.id == 1))).scalar_one()
     settings.kill_switch_active = True
     await db.flush()
 
@@ -363,9 +356,7 @@ async def test_paper_order_kill_switch_blocks_and_audits(
     actions = [audit.action for audit in audits]
     assert "paper_signal_rejected" in actions
     assert "paper_risk_check_result" in actions
-    risk_audit = next(
-        audit for audit in audits if audit.action == "paper_risk_check_result"
-    )
+    risk_audit = next(audit for audit in audits if audit.action == "paper_risk_check_result")
     assert risk_audit.payload["result"] == "blocked"
     assert risk_audit.payload["decision_code"] == "kill_switch_block"
 
@@ -392,17 +383,14 @@ async def test_paper_sell_cannot_exceed_open_paper_quantity(
     assert sell_response.status_code == 422
     assert "exceeds available paper quantity" in sell_response.json()["detail"]
 
-    orders = (
-        await db.execute(select(Order).where(Order.ticker == "SELLSAFE"))
-    ).scalars().all()
+    orders = (await db.execute(select(Order).where(Order.ticker == "SELLSAFE"))).scalars().all()
     assert len(orders) == 1
 
     audits = (await db.execute(select(AuditLog))).scalars().all()
     rejected = [
         audit
         for audit in audits
-        if audit.action == "paper_signal_rejected"
-        and audit.payload.get("ticker") == "SELLSAFE"
+        if audit.action == "paper_signal_rejected" and audit.payload.get("ticker") == "SELLSAFE"
     ]
     assert rejected
     assert rejected[-1].payload["decision_code"] == "paper_oversell_block"
