@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: read
+  pull-requests: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -15,6 +19,7 @@ jobs:
   backend:
     name: Backend Targeted
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         python-version: ["3.12"]
@@ -77,6 +82,7 @@ jobs:
 
       - name: Run targeted tests
         env:
+ t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
           DATABASE_URL: "sqlite+aiosqlite:///:memory:"
           REDIS_URL: "redis://localhost:6379/15"
           SECRET_KEY: "test-secret-key-32-chars-minimum-x"
@@ -86,10 +92,54 @@ jobs:
           # We use -p no:cov to ignore pytest.ini coverage settings and focus on core logic pass.
           python -m pytest tests/integration/test_paper_execution.py tests/smoke/ -v --tb=short -p no:cov
 
+          DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
+          REDIS_URL: redis://localhost:6379/15
+          SECRET_KEY: test-secret-key-32-chars-minimum-x
+          MASTER_KEY: test-master-key-32-chars-minimum-x
+          APP_MODE: mock
+        run: |
+          python -m pytest tests/unit/ -v --tb=short \
+            --cov=app --cov-report=xml --cov-report=term-missing \
+            --cov-fail-under=60
+
+      - name: Run integration tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
+          REDIS_URL: redis://localhost:6379/15
+          SECRET_KEY: test-secret-key-32-chars-minimum-x
+          MASTER_KEY: test-master-key-32-chars-minimum-x
+          APP_MODE: mock
+        run: python -m pytest tests/integration/ -v --tb=short
+
+      - name: Run property-based tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
+          SECRET_KEY: test-secret-key-32-chars-minimum-x
+          MASTER_KEY: test-master-key-32-chars-minimum-x
+          APP_MODE: mock
+        run: python -m pytest tests/unit/test_properties.py -v
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: apps/api/coverage.xml
+          flags: backend
+
+      - name: Migration smoke test (upgrade + downgrade + upgrade)
+        env:
+          DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
+        run: |
+          alembic downgrade base
+          alembic upgrade head
+          echo "Migration round-trip passed"
+ main
+
   # ── Frontend ──────────────────────────────────────────────────────────────────
   frontend:
     name: Frontend Quality
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         node-version: ["20"]
@@ -130,6 +180,7 @@ jobs:
   e2e:
     name: E2E Mock Smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: [backend, frontend]
     env:
       DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@127.0.0.1:5432/cashguard_e2e
@@ -213,6 +264,7 @@ jobs:
           ) &
           npm run dev > /tmp/cashguard-web.log 2>&1 &
 
+ t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
           echo "Waiting for API to be ready..."
           for attempt in {1..30}; do
             if curl -fsS http://127.0.0.1:8000/v1/health/live >/dev/null 2>&1; then
@@ -220,6 +272,10 @@ jobs:
               break
             fi
             echo "Waiting for API... ($attempt/30)"
+
+          for _ in {1..60}; do
+            curl -fsS http://127.0.0.1:8000/v1/health/live >/dev/null && break
+ main
             sleep 2
             if [ $attempt -eq 30 ]; then
               echo "Timeout waiting for API"
@@ -228,6 +284,7 @@ jobs:
             fi
           done
 
+ t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
           echo "Waiting for Web to be ready..."
           for attempt in {1..60}; do
             if curl -fsS http://127.0.0.1:3000 >/dev/null 2>&1; then
@@ -235,6 +292,10 @@ jobs:
               break
             fi
             echo "Waiting for Web... ($attempt/60)"
+
+          for _ in {1..60}; do
+            curl -fsS http://127.0.0.1:3000 >/dev/null && break
+ main
             sleep 2
             if [ $attempt -eq 60 ]; then
               echo "Timeout waiting for Web"
@@ -268,14 +329,15 @@ jobs:
   security:
     name: Safety Check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - name: Check for deposit/bank code
         run: |
           echo "Checking for prohibited financial code patterns..."
-          if grep -rni \
-            "open.banking\|plaid\|truelayer\|bank.account.number\|sort.code\|debit.card\|iban\|add.funds\|top.up" \
+          if grep -rniE \
+            "open[[:space:]._]?banking|plaid|truelayer|bank[._]?account[._]?number|sort[._]?code|debit[._]?card|iban|add[._]?funds|top[._]?up" \
             apps/api/app/ apps/web/app/ apps/web/components/ apps/web/services/ \
             --include="*.py" --include="*.ts" --include="*.tsx" 2>/dev/null; then
             echo "FAIL: Prohibited financial code found"
