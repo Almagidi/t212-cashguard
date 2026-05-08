@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from itertools import pairwise
 from statistics import pstdev
-from typing import Any
+from typing import Any, Final
 
 from app.market_data import get_live_provider
 from app.services.feed_health import get_feed_health_snapshot
+
+_CACHE_TTL_SECONDS: Final = 60
+_cached_regime: dict[str, Any] | None = None
+_last_evaluated_at: datetime | None = None
 
 
 @dataclass
@@ -23,6 +28,21 @@ class MarketRegimeService:
     BENCHMARKS = ("SPY", "QQQ", "IWM")
 
     async def evaluate(self) -> dict[str, Any]:
+        """
+        Evaluate current market regime.
+        Results are cached for 60 seconds to avoid redundant network I/O
+        to market data providers.
+        """
+        global _cached_regime, _last_evaluated_at
+
+        now = datetime.now(UTC)
+        if (
+            _cached_regime is not None
+            and _last_evaluated_at is not None
+            and (now - _last_evaluated_at).total_seconds() < _CACHE_TTL_SECONDS
+        ):
+            return _cached_regime
+
         feed = get_feed_health_snapshot()
         if feed["status"] in {"stale", "error"}:
             return self._build_payload(
@@ -102,7 +122,7 @@ class MarketRegimeService:
             f"SPY {last_close:.2f} vs EMA20 {medium_ema:.2f}; breadth {breadth * 100:.0f}%; "
             f"vol score {vol_percentile:.1f}."
         )
-        return self._build_payload(
+        payload = self._build_payload(
             regime=regime,
             label=label,
             color=color,
@@ -115,6 +135,13 @@ class MarketRegimeService:
             suppressed_strategies=suppressed,
             detail=detail,
         )
+
+        # Cache the successful evaluation
+        if regime != "unknown":
+            _cached_regime = payload
+            _last_evaluated_at = now
+
+        return payload
 
     async def _load_snapshots(self) -> list[_SeriesSnapshot]:
         provider = get_live_provider()
