@@ -77,9 +77,7 @@ jobs:
       - name: Dependency vulnerability scan
         run: |
           pip install pip-audit
-          # pytest 9.0.3 fixes CVE-2025-71176, but pytest-asyncio currently
-          # requires pytest <9. Keep async test coverage intact until compatible.
-          pip-audit -r requirements.txt --ignore-vuln CVE-2025-71176
+          pip-audit -r requirements.txt
 
       - name: Lint changed Python files
         run: |
