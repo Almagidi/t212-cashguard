@@ -5,20 +5,23 @@ None of these methods require a database — we use a sentinel AsyncSession
 that raises immediately if any DB call is attempted, so tests that accidentally
 try to hit the DB will fail loudly rather than silently.
 """
+
 from __future__ import annotations
 
 import inspect
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta, timezone
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.risk.engine import RiskViolation
+from app.services.signal_allocator import SignalAllocator
 from app.services.strategy_runner import StrategyRunner
 from app.strategies.indicators import Bar
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
+
 
 def _runner() -> StrategyRunner:
     """Return a StrategyRunner with a stub DB that errors on use."""
@@ -53,6 +56,7 @@ def _bars(closes: list[float]) -> list[Bar]:
 
 # ── _parse_session_open ───────────────────────────────────────────────────────
 
+
 class TestParseSessionOpen:
     def setup_method(self):
         self.r = _runner()
@@ -80,12 +84,12 @@ class TestParseSessionOpen:
 
 # ── _coerce_bar_time ──────────────────────────────────────────────────────────
 
+
 class TestCoerceBarTime:
     def setup_method(self):
         self.r = _runner()
 
     def test_datetime_with_tz_returned_as_utc(self):
-        from datetime import timezone, timedelta
         tz = timezone(timedelta(hours=5))
         dt = datetime(2024, 6, 1, 10, 0, 0, tzinfo=tz)
         result = self.r._coerce_bar_time(dt)
@@ -126,6 +130,7 @@ class TestCoerceBarTime:
 
 # ── _extract_session_context ──────────────────────────────────────────────────
 
+
 class TestExtractSessionContext:
     def setup_method(self):
         self.r = _runner()
@@ -133,8 +138,13 @@ class TestExtractSessionContext:
     def _bar_times(self, date_str: str, hours: list[int]) -> list[datetime]:
         return [
             datetime(
-                int(date_str[:4]), int(date_str[5:7]), int(date_str[8:]),
-                h, 0, 0, tzinfo=UTC,
+                int(date_str[:4]),
+                int(date_str[5:7]),
+                int(date_str[8:]),
+                h,
+                0,
+                0,
+                tzinfo=UTC,
             )
             for h in hours
         ]
@@ -156,7 +166,7 @@ class TestExtractSessionContext:
         assert bars_out is bars
 
     def test_session_bars_sliced_from_open(self):
-        # Pre-session bars at 08:00–09:00, session bars at 09:30+
+        # Pre-session bars at 08:00-09:00, session bars at 09:30+
         times = self._bar_times("2024-01-02", [8, 9, 9, 10, 11])
         times[2] = times[2].replace(minute=30)
         bars = _bars([99.0, 99.5, 100.0, 101.0, 102.0])
@@ -172,16 +182,14 @@ class TestExtractSessionContext:
 
     def test_prev_close_is_last_pre_session_bar(self):
         times = [
-            datetime(2024, 1, 2, 8, 0, tzinfo=UTC),   # pre-session
-            datetime(2024, 1, 2, 9, 0, tzinfo=UTC),   # pre-session
+            datetime(2024, 1, 2, 8, 0, tzinfo=UTC),  # pre-session
+            datetime(2024, 1, 2, 9, 0, tzinfo=UTC),  # pre-session
             datetime(2024, 1, 2, 9, 30, tzinfo=UTC),  # session open
             datetime(2024, 1, 2, 10, 0, tzinfo=UTC),  # session
         ]
         bars = _bars([98.0, 99.0, 100.0, 101.0])
 
-        _, _, prev = self.r._extract_session_context(
-            bars, times, session_open_utc="09:30"
-        )
+        _, _, prev = self.r._extract_session_context(bars, times, session_open_utc="09:30")
         assert prev == Decimal("99.0")
 
     def test_no_pre_session_bars_prev_close_is_none(self):
@@ -191,9 +199,7 @@ class TestExtractSessionContext:
         ]
         bars = _bars([100.0, 101.0])
 
-        _, _, prev = self.r._extract_session_context(
-            bars, times, session_open_utc="09:30"
-        )
+        _, _, prev = self.r._extract_session_context(bars, times, session_open_utc="09:30")
         assert prev is None
 
     def test_uses_most_recent_date_with_session_bars(self):
@@ -214,6 +220,7 @@ class TestExtractSessionContext:
 
 
 # ── _get_tickers ──────────────────────────────────────────────────────────────
+
 
 class TestGetTickers:
     def setup_method(self):
@@ -278,6 +285,7 @@ class TestGetTickers:
 
 # ── _watchlist_context ────────────────────────────────────────────────────────
 
+
 class TestWatchlistContext:
     def setup_method(self):
         self.r = _runner()
@@ -316,6 +324,7 @@ class TestWatchlistContext:
 
 # ── _apply_signal_intelligence_overlay ────────────────────────────────────────
 
+
 class TestApplySignalIntelligenceOverlay:
     def setup_method(self):
         self.r = _runner()
@@ -331,8 +340,11 @@ class TestApplySignalIntelligenceOverlay:
         s = _strategy(type_="orb")
         sig = MagicMock(spec=[])  # no params_snapshot attr
         self.r._apply_signal_intelligence_overlay(
-            strategy=s, ticker="AAPL", signal_obj=sig,
-            regime_payload={}, watchlist_context={},
+            strategy=s,
+            ticker="AAPL",
+            signal_obj=sig,
+            regime_payload={},
+            watchlist_context={},
         )
         # Should not raise
 
@@ -340,7 +352,9 @@ class TestApplySignalIntelligenceOverlay:
         s = _strategy(type_="orb")
         sig = self._signal(0.5)
         self.r._apply_signal_intelligence_overlay(
-            strategy=s, ticker="AAPL", signal_obj=sig,
+            strategy=s,
+            ticker="AAPL",
+            signal_obj=sig,
             regime_payload={"regime": "trending_up"},
             watchlist_context={},
         )
@@ -351,7 +365,9 @@ class TestApplySignalIntelligenceOverlay:
         s = _strategy(type_="opening_fade")
         sig = self._signal(0.5)
         self.r._apply_signal_intelligence_overlay(
-            strategy=s, ticker="AAPL", signal_obj=sig,
+            strategy=s,
+            ticker="AAPL",
+            signal_obj=sig,
             regime_payload={"regime": "ranging"},
             watchlist_context={},
         )
@@ -362,7 +378,9 @@ class TestApplySignalIntelligenceOverlay:
         s = _strategy(type_="orb")
         sig = self._signal(0.5)
         self.r._apply_signal_intelligence_overlay(
-            strategy=s, ticker="AAPL", signal_obj=sig,
+            strategy=s,
+            ticker="AAPL",
+            signal_obj=sig,
             regime_payload={},
             watchlist_context={"catalyst_score": 0.70},
         )
@@ -373,7 +391,9 @@ class TestApplySignalIntelligenceOverlay:
         s = _strategy(type_="opening_fade")
         sig = self._signal(0.5)
         self.r._apply_signal_intelligence_overlay(
-            strategy=s, ticker="AAPL", signal_obj=sig,
+            strategy=s,
+            ticker="AAPL",
+            signal_obj=sig,
             regime_payload={},
             watchlist_context={"catalyst_score": 0.55},
         )
@@ -384,7 +404,9 @@ class TestApplySignalIntelligenceOverlay:
         s = _strategy(type_="orb")
         sig = self._signal(0.97)
         self.r._apply_signal_intelligence_overlay(
-            strategy=s, ticker="AAPL", signal_obj=sig,
+            strategy=s,
+            ticker="AAPL",
+            signal_obj=sig,
             regime_payload={"regime": "trending_up"},
             watchlist_context={"catalyst_score": 0.80},
         )
@@ -396,7 +418,9 @@ class TestApplySignalIntelligenceOverlay:
         # Apply multiple dampening layers by patching internals
         # catalyst > 0.5 AND no other boosts
         self.r._apply_signal_intelligence_overlay(
-            strategy=s, ticker="AAPL", signal_obj=sig,
+            strategy=s,
+            ticker="AAPL",
+            signal_obj=sig,
             regime_payload={},
             watchlist_context={"catalyst_score": 0.55},
         )
@@ -407,7 +431,9 @@ class TestApplySignalIntelligenceOverlay:
         sig = self._signal(0.5)
         ctx = {"catalyst_score": 0.3, "gap_pct": 1.2}
         self.r._apply_signal_intelligence_overlay(
-            strategy=s, ticker="AAPL", signal_obj=sig,
+            strategy=s,
+            ticker="AAPL",
+            signal_obj=sig,
             regime_payload={},
             watchlist_context=ctx,
         )
@@ -417,7 +443,9 @@ class TestApplySignalIntelligenceOverlay:
         s = _strategy(type_="orb")
         sig = self._signal(0.5)
         self.r._apply_signal_intelligence_overlay(
-            strategy=s, ticker="AAPL", signal_obj=sig,
+            strategy=s,
+            ticker="AAPL",
+            signal_obj=sig,
             regime_payload={"regime": "unknown"},
             watchlist_context={},
         )
@@ -426,12 +454,14 @@ class TestApplySignalIntelligenceOverlay:
 
 # ── _make_engine ──────────────────────────────────────────────────────────────
 
+
 class TestMakeEngine:
     def setup_method(self):
         self.r = _runner()
 
     def test_orb_returns_orb_strategy(self):
         from app.strategies.orb_production import OpeningRangeBreakoutStrategy
+
         s = _strategy(type_="orb", params={})
         engine = self.r._make_engine(s)
         assert isinstance(engine, OpeningRangeBreakoutStrategy)
@@ -440,24 +470,28 @@ class TestMakeEngine:
         s = _strategy(type_="vwap_reclaim", params={})
         engine = self.r._make_engine(s)
         from app.strategies.vwap_reclaim import VWAPReclaimStrategy
+
         assert isinstance(engine, VWAPReclaimStrategy)
 
     def test_opening_fade_returns_correct_engine(self):
         s = _strategy(type_="opening_fade", params={})
         engine = self.r._make_engine(s)
         from app.strategies.opening_fade import OpeningFadeStrategy
+
         assert isinstance(engine, OpeningFadeStrategy)
 
     def test_closing_momentum_returns_correct_engine(self):
         s = _strategy(type_="closing_momentum", params={})
         engine = self.r._make_engine(s)
         from app.strategies.closing_momentum import ClosingMomentumStrategy
+
         assert isinstance(engine, ClosingMomentumStrategy)
 
     def test_intraday_periodicity_returns_correct_engine(self):
         s = _strategy(type_="intraday_periodicity", params={})
         engine = self.r._make_engine(s)
         from app.strategies.intraday_periodicity import IntradayPeriodicityStrategy
+
         assert isinstance(engine, IntradayPeriodicityStrategy)
 
     def test_unknown_type_returns_none(self):
@@ -468,6 +502,7 @@ class TestMakeEngine:
 
 # ── _build_signal_kwargs ──────────────────────────────────────────────────────
 
+
 class TestBuildSignalKwargs:
     def setup_method(self):
         self.r = _runner()
@@ -475,29 +510,31 @@ class TestBuildSignalKwargs:
     def _fake_engine(self, *extra_params: str) -> MagicMock:
         """Build a fake engine whose generate_signal accepts the given params."""
         base = ["ticker", "bars", "account_value", "available_cash", "current_time_utc"]
-        params = {name: inspect.Parameter(name, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-                  for name in base + list(extra_params)}
+        params = {
+            name: inspect.Parameter(name, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            for name in base + list(extra_params)
+        }
         sig = inspect.Signature(list(params.values()))
         engine = MagicMock()
         engine.generate_signal.__func__ = MagicMock()
         engine.generate_signal.__func__.__name__ = "generate_signal"
-        type(engine).generate_signal = property(lambda self: lambda: None)
+        type(engine).generate_signal = property(lambda _self: lambda: None)
         # Patch inspect.signature to return our custom sig
         engine._sig = sig
         return engine
 
     def _kwargs(self, engine, **overrides):
-        defaults = dict(
-            ticker="AAPL",
-            bars=_bars([100.0, 101.0]),
-            bar_times=[datetime(2024, 1, 1, 10, 0, tzinfo=UTC)],
-            history_bars=_bars([98.0, 99.0]),
-            history_bar_times=[datetime(2024, 1, 1, 9, 0, tzinfo=UTC)],
-            account_value=Decimal("10000"),
-            available_cash=Decimal("5000"),
-            current_time_utc="10:00",
-            prev_close=Decimal("99.0"),
-        )
+        defaults = {
+            "ticker": "AAPL",
+            "bars": _bars([100.0, 101.0]),
+            "bar_times": [datetime(2024, 1, 1, 10, 0, tzinfo=UTC)],
+            "history_bars": _bars([98.0, 99.0]),
+            "history_bar_times": [datetime(2024, 1, 1, 9, 0, tzinfo=UTC)],
+            "account_value": Decimal("10000"),
+            "available_cash": Decimal("5000"),
+            "current_time_utc": "10:00",
+            "prev_close": Decimal("99.0"),
+        }
         defaults.update(overrides)
         return self.r._build_signal_kwargs(engine, **defaults)
 
@@ -536,3 +573,51 @@ class TestBuildSignalKwargs:
         assert "session_open" in kwargs
         # session_open should be the first bar's open
         assert kwargs["session_open"] == Decimal("100.0")
+
+
+class TestProcessTickerSafetyOrder:
+    @pytest.mark.asyncio
+    async def test_existing_position_exit_runs_before_entry_regime_gate(self):
+        runner = _runner()
+        bars = _bars([100.0, 101.0, 102.0, 103.0])
+        bar_times = [datetime(2024, 1, 1, 14, 30 + idx, tzinfo=UTC) for idx in range(len(bars))]
+        runner._fetch_market_context = AsyncMock(
+            return_value=(bars, bar_times, bars, bar_times, Decimal("99.0"), "14:33")
+        )
+        runner._check_exit = AsyncMock(return_value=1)
+
+        strategy = _strategy(params={"session_open_utc": "14:30"})
+        strategy.id = "strategy-id"
+        strategy.is_live = True
+        strategy.venue = "t212"
+        engine = MagicMock()
+        engine.params = strategy.params
+        engine.required_bars = 4
+        engine.history_days = 5
+        engine.max_history_bars = 180
+        engine.generate_signal = MagicMock()
+
+        risk = MagicMock()
+        risk.check_market_conditions = AsyncMock(
+            side_effect=RiskViolation("Strategy entries blocked: unknown market regime.")
+        )
+
+        generated, submitted, blocks = await runner._process_ticker(
+            ticker="AAPL",
+            strategy=strategy,
+            engine=engine,
+            risk=risk,
+            broker=MagicMock(),
+            cash=Decimal("10000"),
+            total=Decimal("10000"),
+            n_open=1,
+            pos_map={"AAPL": {"quantity": "1", "averagePrice": "100", "maxSell": "1"}},
+            all_positions=[],
+            intelligence={"regime": {"regime": "unknown", "suppressed_strategies": []}},
+            allocator=SignalAllocator(),
+            allocation_state=SignalAllocator().new_state(),
+        )
+
+        assert (generated, submitted, blocks) == (1, 1, 0)
+        risk.check_market_conditions.assert_not_awaited()
+        engine.generate_signal.assert_not_called()

@@ -26,6 +26,7 @@ Quarantined (not constructible):
   "kraken_mean_reversion"  — APPROVED=False; no _make_engine arm
   "kraken_momentum"        — APPROVED=False; no _make_engine arm
 """
+
 from __future__ import annotations
 
 import inspect
@@ -77,6 +78,7 @@ class StrategyRunner:
     async def _get_broker(self) -> Any | None:
         if settings.APP_MODE == "mock":
             from app.broker.mock_adapter import MockBrokerAdapter
+
             return MockBrokerAdapter()
         r = await self.db.execute(
             select(BrokerConnection).where(BrokerConnection.is_active == True).limit(1)  # noqa: E712
@@ -86,6 +88,7 @@ class StrategyRunner:
             return None
         from app.broker.trading212 import Trading212Adapter
         from app.core.security import CredentialDecryptionError, decrypt_field
+
         try:
             api_key = decrypt_field(conn.api_key_encrypted)
             api_secret = decrypt_field(conn.api_secret_encrypted)
@@ -162,8 +165,10 @@ class StrategyRunner:
     ) -> tuple[list[Bar], list[datetime], list[Bar], list[datetime], Decimal | None, str]:
         """Fetch Kraken crypto bars. No session filtering — crypto is 24/7."""
         from datetime import timedelta
+
         try:
             from app.market_data.kraken_provider import KrakenMarketDataProvider
+
             from_date = date.today() - timedelta(days=max(history_days + 2, 5))
             async with KrakenMarketDataProvider() as md:
                 raw_bars = await md.get_bars(
@@ -176,15 +181,15 @@ class StrategyRunner:
             bar_times: list[datetime] = []
             for raw_bar in raw_bars:
                 ts = raw_bar.timestamp
-                if ts is None:
-                    continue
-                bars.append(Bar(
-                    Decimal(str(raw_bar.open)),
-                    Decimal(str(raw_bar.high)),
-                    Decimal(str(raw_bar.low)),
-                    Decimal(str(raw_bar.close)),
-                    Decimal(str(raw_bar.volume)),
-                ))
+                bars.append(
+                    Bar(
+                        Decimal(str(raw_bar.open)),
+                        Decimal(str(raw_bar.high)),
+                        Decimal(str(raw_bar.low)),
+                        Decimal(str(raw_bar.close)),
+                        Decimal(str(raw_bar.volume)),
+                    )
+                )
                 bar_times.append(ts)
             # Crypto is 24/7: all bars are "session" bars
             return bars, bar_times, bars, bar_times, None, now_utc
@@ -223,11 +228,12 @@ class StrategyRunner:
 
         try:
             from app.market_data import get_live_provider
+
             provider = get_live_provider()
             raw_bars: list[Any]
             latest_quote: Any | None = None
 
-            if hasattr(provider, '__aenter__'):
+            if hasattr(provider, "__aenter__"):
                 # Async context manager (Alpaca / Polygon)
                 async with provider as md:
                     from_date = date.today() - timedelta(days=max(history_days + 2, 5))
@@ -241,7 +247,11 @@ class StrategyRunner:
                     )
                     with suppress(Exception):
                         latest_quote = await md.get_quote(ticker)
-                    if hasattr(md, "is_trade_safe") and latest_quote is not None and not md.is_trade_safe(ticker):
+                    if (
+                        hasattr(md, "is_trade_safe")
+                        and latest_quote is not None
+                        and not md.is_trade_safe(ticker)
+                    ):
                         log.warning("runner.feed_unhealthy", ticker=ticker)
                         return [], [], [], [], None, now_utc
             else:
@@ -310,8 +320,8 @@ class StrategyRunner:
                 log.debug("runner.using_ranked_watchlist", strategy=strategy.name, n=len(ranked))
                 return ranked
             log.debug("runner.using_scanned_watchlist", strategy=strategy.name, n=len(todays))
-            return todays
-        return strategy.allowed_tickers
+            return [str(item).upper() for item in todays]
+        return [str(item) for item in strategy.allowed_tickers]
 
     def _watchlist_context(self, strategy: Strategy, ticker: str) -> dict[str, Any]:
         raw = (strategy.params or {}).get("watchlist_candidates")
@@ -368,21 +378,27 @@ class StrategyRunner:
             return OpeningRangeBreakoutStrategy(strategy.params)
         if strategy.type == "vwap_reclaim":
             from app.strategies.vwap_reclaim import VWAPReclaimStrategy
+
             return VWAPReclaimStrategy(strategy.params)
         if strategy.type == "opening_fade":
             from app.strategies.opening_fade import OpeningFadeStrategy
+
             return OpeningFadeStrategy(strategy.params)
         if strategy.type == "closing_momentum":
             from app.strategies.closing_momentum import ClosingMomentumStrategy
+
             return ClosingMomentumStrategy(strategy.params)
         if strategy.type == "intraday_periodicity":
             from app.strategies.intraday_periodicity import IntradayPeriodicityStrategy
+
             return IntradayPeriodicityStrategy(strategy.params)
         if strategy.type == "kraken_breakout_retest":
             from app.strategies.kraken_breakout_retest import KrakenBreakoutRetestStrategy
+
             return KrakenBreakoutRetestStrategy(strategy.params)
         if strategy.type == "kraken_trend_follow":
             from app.strategies.kraken_trend_follow import KrakenHTFBreakoutStrategy
+
             return KrakenHTFBreakoutStrategy(strategy.params)
         return None
 
@@ -424,8 +440,11 @@ class StrategyRunner:
 
     async def run_all_enabled(self) -> dict[str, Any]:
         summary: dict[str, Any] = {
-            "strategies_run": 0, "signals_generated": 0,
-            "orders_submitted": 0, "risk_blocks": 0, "errors": [],
+            "strategies_run": 0,
+            "signals_generated": 0,
+            "orders_submitted": 0,
+            "risk_blocks": 0,
+            "errors": [],
         }
 
         app_cfg = await self._get_settings()
@@ -436,10 +455,18 @@ class StrategyRunner:
         if not app_cfg.auto_trading_enabled:
             return {**summary, "skipped": "auto_trading_off"}
 
-        strategies = (await self.db.execute(
-            select(Strategy).where(Strategy.is_enabled == True)  # noqa: E712
-        )).scalars().all()
-        strategies = [strategy for strategy in strategies if not is_portfolio_strategy_type(strategy.type)]
+        strategies = (
+            (
+                await self.db.execute(
+                    select(Strategy).where(Strategy.is_enabled == True)  # noqa: E712
+                )
+            )
+            .scalars()
+            .all()
+        )
+        strategies = [
+            strategy for strategy in strategies if not is_portfolio_strategy_type(strategy.type)
+        ]
         if not strategies:
             return summary
 
@@ -463,9 +490,13 @@ class StrategyRunner:
         for strategy in strategies:
             try:
                 g, s, b_ = await self._run_strategy(
-                    strategy=strategy, broker=broker,
-                    cash=cash, total=total, n_open=n_open,
-                    pos_map=pos_map, all_positions=positions,
+                    strategy=strategy,
+                    broker=broker,
+                    cash=cash,
+                    total=total,
+                    n_open=n_open,
+                    pos_map=pos_map,
+                    all_positions=positions,
                     intelligence=intelligence,
                     allocator=allocator,
                     allocation_state=allocation_state,
@@ -481,6 +512,7 @@ class StrategyRunner:
         # Daily summary alert (fires after all strategies have run)
         try:
             from datetime import date
+
             await alert_daily_summary(
                 self.db,
                 date_str=date.today().isoformat(),
@@ -497,9 +529,15 @@ class StrategyRunner:
     # ── Per-strategy ──────────────────────────────────────────────────────────
 
     async def _run_strategy(
-        self, *, strategy: Strategy, broker: Any,
-        cash: Decimal, total: Decimal, n_open: int,
-        pos_map: dict, all_positions: list,
+        self,
+        *,
+        strategy: Strategy,
+        broker: Any,
+        cash: Decimal,
+        total: Decimal,
+        n_open: int,
+        pos_map: dict,
+        all_positions: list,
         intelligence: dict[str, Any],
         allocator: SignalAllocator,
         allocation_state: AllocationState,
@@ -553,14 +591,16 @@ class StrategyRunner:
             allowed, reason = await StrategyPromotionService(self.db).execution_gate(strategy)
             if not allowed:
                 log.info("runner.promotion_block", strategy=strategy.name, reason=reason)
-                self.db.add(AuditLog(
-                    action="strategy_execution_blocked_by_promotion",
-                    entity_type="strategy",
-                    entity_id=str(strategy.id),
-                    actor="strategy_runner",
-                    payload={"reason": reason, "mode": settings.APP_MODE},
-                    occurred_at=datetime.now(UTC),
-                ))
+                self.db.add(
+                    AuditLog(
+                        action="strategy_execution_blocked_by_promotion",
+                        entity_type="strategy",
+                        entity_id=str(strategy.id),
+                        actor="strategy_runner",
+                        payload={"reason": reason, "mode": settings.APP_MODE},
+                        occurred_at=datetime.now(UTC),
+                    )
+                )
                 return 0, 0, 0
 
         risk = RiskEngine(self.db)
@@ -572,9 +612,16 @@ class StrategyRunner:
         for ticker in tickers:
             try:
                 g, s, b = await self._process_ticker(
-                    ticker=ticker, strategy=strategy, engine=engine,
-                    risk=risk, broker=broker, cash=cash, total=total,
-                    n_open=n_open, pos_map=pos_map, all_positions=all_positions,
+                    ticker=ticker,
+                    strategy=strategy,
+                    engine=engine,
+                    risk=risk,
+                    broker=broker,
+                    cash=cash,
+                    total=total,
+                    n_open=n_open,
+                    pos_map=pos_map,
+                    all_positions=all_positions,
                     intelligence=intelligence,
                     allocator=allocator,
                     allocation_state=allocation_state,
@@ -583,16 +630,26 @@ class StrategyRunner:
                 sub += s
                 blocks += b
             except Exception as exc:
-                log.warning("runner.ticker_error",
-                            strategy=strategy.name, ticker=ticker, error=str(exc))
+                log.warning(
+                    "runner.ticker_error", strategy=strategy.name, ticker=ticker, error=str(exc)
+                )
         return gen, sub, blocks
 
     # ── Per-ticker ────────────────────────────────────────────────────────────
 
     async def _process_ticker(
-        self, *, ticker: str, strategy: Strategy, engine: Any,
-        risk: RiskEngine, broker: Any, cash: Decimal, total: Decimal,
-        n_open: int, pos_map: dict, all_positions: list,
+        self,
+        *,
+        ticker: str,
+        strategy: Strategy,
+        engine: Any,
+        risk: RiskEngine,
+        broker: Any,
+        cash: Decimal,
+        total: Decimal,
+        n_open: int,
+        pos_map: dict,
+        all_positions: list,
         intelligence: dict[str, Any],
         allocator: SignalAllocator,
         allocation_state: AllocationState,
@@ -602,7 +659,14 @@ class StrategyRunner:
         max_history_bars = int(getattr(engine, "max_history_bars", 180))
         data_provider_type = getattr(engine, "DATA_PROVIDER_TYPE", "equity")
         bar_interval_minutes = int(getattr(engine, "BAR_INTERVAL_MINUTES", 5))
-        session_bars, session_times, history_bars, history_bar_times, prev_close, now_utc = await self._fetch_market_context(
+        (
+            session_bars,
+            session_times,
+            history_bars,
+            history_bar_times,
+            prev_close,
+            now_utc,
+        ) = await self._fetch_market_context(
             ticker,
             session_open_utc=session_open_utc,
             history_days=history_days,
@@ -611,6 +675,25 @@ class StrategyRunner:
             bar_interval_minutes=bar_interval_minutes,
         )
         if len(session_bars) < max(4, int(getattr(engine, "required_bars", 4))):
+            return 0, 0, 0
+
+        # Exit check if position open
+        if ticker in pos_map:
+            pos = pos_map[ticker]
+            qty = Decimal(str(pos.get("quantity", 0)))
+            avg = Decimal(str(pos.get("averagePrice", pos.get("avg_price", 0))))
+            if qty > 0 and avg > 0:
+                submitted = await self._check_exit(
+                    ticker=ticker,
+                    strategy=strategy,
+                    bars=session_bars,
+                    pos_qty=qty,
+                    avg_price=avg,
+                    max_sell=Decimal(str(pos.get("maxSell", float(qty)))),
+                    broker=broker,
+                    risk=risk,
+                )
+                return (1 if submitted is not None else 0), (submitted or 0), 0
             return 0, 0, 0
 
         watchlist_context = self._watchlist_context(strategy, ticker)
@@ -622,37 +705,29 @@ class StrategyRunner:
                 watchlist_context=watchlist_context,
             )
         except RiskViolation as exc:
-            log.info("runner.intelligence_block", ticker=ticker, reason=exc.reason, strategy=strategy.name)
+            log.info(
+                "runner.intelligence_block",
+                ticker=ticker,
+                reason=exc.reason,
+                strategy=strategy.name,
+            )
             return 0, 0, 1
 
-        # Exit check if position open
-        if ticker in pos_map:
-            pos = pos_map[ticker]
-            qty = Decimal(str(pos.get("quantity", 0)))
-            avg = Decimal(str(pos.get("averagePrice", pos.get("avg_price", 0))))
-            if qty > 0 and avg > 0:
-                submitted = await self._check_exit(
-                    ticker=ticker, strategy=strategy, bars=session_bars,
-                    pos_qty=qty, avg_price=avg,
-                    max_sell=Decimal(str(pos.get("maxSell", float(qty)))),
-                    broker=broker, risk=risk,
-                )
-                return (1 if submitted is not None else 0), (submitted or 0), 0
-            return 0, 0, 0
-
         # Entry signal
-        signal_obj = engine.generate_signal(**self._build_signal_kwargs(
-            engine,
-            ticker=ticker,
-            bars=session_bars,
-            bar_times=session_times,
-            history_bars=history_bars,
-            history_bar_times=history_bar_times,
-            account_value=total,
-            available_cash=cash,
-            current_time_utc=now_utc,
-            prev_close=prev_close,
-        ))
+        signal_obj = engine.generate_signal(
+            **self._build_signal_kwargs(
+                engine,
+                ticker=ticker,
+                bars=session_bars,
+                bar_times=session_times,
+                history_bars=history_bars,
+                history_bar_times=history_bar_times,
+                account_value=total,
+                available_cash=cash,
+                current_time_utc=now_utc,
+                prev_close=prev_close,
+            )
+        )
         if signal_obj is None:
             return 0, 0, 0
 
@@ -669,13 +744,18 @@ class StrategyRunner:
 
         # Persist signal
         sig = Signal(
-            id=uuid.uuid4(), strategy_id=strategy.id,
-            ticker=ticker, side=signal_obj.side,
-            signal_type=signal_obj.signal_type, status="pending",
-            entry_price=price, stop_price=signal_obj.stop_price,
+            id=uuid.uuid4(),
+            strategy_id=strategy.id,
+            ticker=ticker,
+            side=signal_obj.side,
+            signal_type=signal_obj.signal_type,
+            status="pending",
+            entry_price=price,
+            stop_price=signal_obj.stop_price,
             take_profit_price=signal_obj.take_profit_price,
             suggested_quantity=signal_obj.suggested_quantity,
-            confidence=signal_obj.confidence, reason=signal_obj.reason,
+            confidence=signal_obj.confidence,
+            reason=signal_obj.reason,
             params_snapshot={**signal_obj.params_snapshot, "strategy_type": strategy.type},
             generated_at=datetime.now(UTC),
         )
@@ -712,14 +792,16 @@ class StrategyRunner:
             sig.status = "rejected"
             sig.risk_rejected = True
             sig.risk_rejection_reason = allocation.reason
-            self.db.add(AuditLog(
-                action="strategy_allocation_blocked",
-                entity_type="signal",
-                entity_id=str(sig.id),
-                actor="strategy_runner",
-                payload=allocation.to_payload(),
-                occurred_at=datetime.now(UTC),
-            ))
+            self.db.add(
+                AuditLog(
+                    action="strategy_allocation_blocked",
+                    entity_type="signal",
+                    entity_id=str(sig.id),
+                    actor="strategy_runner",
+                    payload=allocation.to_payload(),
+                    occurred_at=datetime.now(UTC),
+                )
+            )
             log.info(
                 "runner.allocation_block",
                 strategy=strategy.name,
@@ -732,8 +814,13 @@ class StrategyRunner:
         # Dry-run: log only
         if not strategy.is_live:
             sig.status = "approved"
-            log.info("runner.dry_run", strategy=strategy.name, ticker=ticker,
-                     side=signal_obj.side, conf=float(signal_obj.confidence))
+            log.info(
+                "runner.dry_run",
+                strategy=strategy.name,
+                ticker=ticker,
+                side=signal_obj.side,
+                conf=float(signal_obj.confidence),
+            )
             return 1, 0, 0
 
         # Risk checks
@@ -742,10 +829,16 @@ class StrategyRunner:
         is_cfd = bool(strategy.params.get("allow_short", False))
         try:
             await risk.run_all_checks(
-                ticker=ticker, side=signal_obj.side, quantity=qty,
-                estimated_price=price, available_cash=cash, account_value=total,
-                realized_pnl_today=Decimal("0"), current_open_positions=n_open,
-                signal_id=sig.id, skip_auto_trading_check=True,
+                ticker=ticker,
+                side=signal_obj.side,
+                quantity=qty,
+                estimated_price=price,
+                available_cash=cash,
+                account_value=total,
+                realized_pnl_today=Decimal("0"),
+                current_open_positions=n_open,
+                signal_id=sig.id,
+                skip_auto_trading_check=True,
                 # Portfolio heat check: pass stop price so the engine can
                 # compute new_risk = |entry - stop| * qty and cap total exposure.
                 stop_price=signal_obj.stop_price,
@@ -754,8 +847,11 @@ class StrategyRunner:
                 is_cfd=is_cfd,
             )
             await risk.check_sector_and_correlation(
-                ticker=ticker, estimated_value=qty * price,
-                account_value=total, current_positions=all_positions, signal_id=sig.id,
+                ticker=ticker,
+                estimated_value=qty * price,
+                account_value=total,
+                current_positions=all_positions,
+                signal_id=sig.id,
             )
         except RiskViolation as exc:
             sig.status = "rejected"
@@ -779,9 +875,13 @@ class StrategyRunner:
             async with broker as b:
                 exec_engine = ExecutionEngine(self.db, b)
                 order = await exec_engine.create_order_intent(
-                    ticker=ticker, side=signal_obj.side,
-                    order_type="limit", quantity=qty, signal_id=sig.id,
-                    available_cash=cash, estimated_price=price,
+                    ticker=ticker,
+                    side=signal_obj.side,
+                    order_type="limit",
+                    quantity=qty,
+                    signal_id=sig.id,
+                    available_cash=cash,
+                    estimated_price=price,
                     limit_price=limit_price,
                     venue=strategy.venue,
                 )
@@ -789,20 +889,37 @@ class StrategyRunner:
 
             sig.status = "executed"
             sig.executed_at = datetime.now(UTC)
-            self.db.add(AuditLog(
-                action="strategy_order_placed", entity_type="order",
-                entity_id=str(order.id), actor=f"strategy:{strategy.name}",
-                payload={"ticker": ticker, "side": signal_obj.side,
-                         "qty": float(qty), "reason": signal_obj.reason},
-                occurred_at=datetime.now(UTC),
-            ))
-            log.info("runner.order_submitted", strategy=strategy.name,
-                     ticker=ticker, side=signal_obj.side, order=str(order.id))
+            self.db.add(
+                AuditLog(
+                    action="strategy_order_placed",
+                    entity_type="order",
+                    entity_id=str(order.id),
+                    actor=f"strategy:{strategy.name}",
+                    payload={
+                        "ticker": ticker,
+                        "side": signal_obj.side,
+                        "qty": float(qty),
+                        "reason": signal_obj.reason,
+                    },
+                    occurred_at=datetime.now(UTC),
+                )
+            )
+            log.info(
+                "runner.order_submitted",
+                strategy=strategy.name,
+                ticker=ticker,
+                side=signal_obj.side,
+                order=str(order.id),
+            )
             # Alert on live trade submission
             with suppress(Exception):
                 await alert_trade_submitted(
-                    self.db, strategy_name=strategy.name, ticker=ticker,
-                    side=signal_obj.side, qty=float(qty), price=float(price),
+                    self.db,
+                    strategy_name=strategy.name,
+                    ticker=ticker,
+                    side=signal_obj.side,
+                    qty=float(qty),
+                    price=float(price),
                     order_type="limit",
                     confidence=float(signal_obj.confidence),
                     reason=signal_obj.reason or "",
@@ -819,20 +936,33 @@ class StrategyRunner:
     # ── Exit logic ────────────────────────────────────────────────────────────
 
     async def _check_exit(
-        self, *, ticker: str, strategy: Strategy, bars: list[Bar],
-        pos_qty: Decimal, avg_price: Decimal, max_sell: Decimal,
-        broker: Any, risk: RiskEngine,
+        self,
+        *,
+        ticker: str,
+        strategy: Strategy,
+        bars: list[Bar],
+        pos_qty: Decimal,
+        avg_price: Decimal,
+        max_sell: Decimal,
+        broker: Any,
+        risk: RiskEngine,
     ) -> int | None:
         current_price = bars[-1].close
         atr_val = atr(bars, 14) if len(bars) >= 15 else Decimal("0")
 
         # Find last entry signal
         r = await self.db.execute(
-            select(Signal).where(
-                Signal.strategy_id == strategy.id, Signal.ticker == ticker,
-                Signal.side == "buy", Signal.status == "executed",
-                Signal.stop_price.isnot(None), Signal.take_profit_price.isnot(None),
-            ).order_by(desc(Signal.generated_at)).limit(1)
+            select(Signal)
+            .where(
+                Signal.strategy_id == strategy.id,
+                Signal.ticker == ticker,
+                Signal.side == "buy",
+                Signal.status == "executed",
+                Signal.stop_price.isnot(None),
+                Signal.take_profit_price.isnot(None),
+            )
+            .order_by(desc(Signal.generated_at))
+            .limit(1)
         )
         last_sig = r.scalar_one_or_none()
         if not last_sig:
@@ -840,23 +970,32 @@ class StrategyRunner:
 
         # Check if partial exit done
         pr = await self.db.execute(
-            select(Signal).where(
-                Signal.ticker == ticker, Signal.signal_type == "partial_exit",
-                Signal.status == "executed", Signal.strategy_id == strategy.id,
-            ).order_by(desc(Signal.generated_at)).limit(1)
+            select(Signal)
+            .where(
+                Signal.ticker == ticker,
+                Signal.signal_type == "partial_exit",
+                Signal.status == "executed",
+                Signal.strategy_id == strategy.id,
+            )
+            .order_by(desc(Signal.generated_at))
+            .limit(1)
         )
         partial_done = pr.scalar_one_or_none() is not None
 
         risk_at_entry = avg_price - (last_sig.stop_price or avg_price * Decimal("0.98"))
         state = ORBState(
-            ticker=ticker, strategy_id=str(strategy.id), side="buy",
-            entry_price=avg_price, quantity=pos_qty,
+            ticker=ticker,
+            strategy_id=str(strategy.id),
+            side="buy",
+            entry_price=avg_price,
+            quantity=pos_qty,
             remaining_quantity=min(max_sell, pos_qty),
             initial_stop=last_sig.stop_price or avg_price * Decimal("0.98"),
             current_stop=last_sig.stop_price or avg_price * Decimal("0.98"),
             take_profit_1r=avg_price + risk_at_entry,
             take_profit_2r=last_sig.take_profit_price or avg_price * Decimal("1.04"),
-            partial_exit_done=partial_done, atr_at_entry=atr_val,
+            partial_exit_done=partial_done,
+            atr_at_entry=atr_val,
         )
 
         exit_engine = OpeningRangeBreakoutStrategy(strategy.params)
@@ -880,46 +1019,78 @@ class StrategyRunner:
         async with broker as b:
             exec_engine = ExecutionEngine(self.db, b)
             order = await exec_engine.create_order_intent(
-                ticker=ticker, side="sell", order_type="market",
-                quantity=sell_qty, signal_id=last_sig.id,
+                ticker=ticker,
+                side="sell",
+                order_type="market",
+                quantity=sell_qty,
+                signal_id=last_sig.id,
                 estimated_price=current_price,
                 venue=strategy.venue,
             )
             order = await exec_engine.submit_order(order)
 
-        self.db.add(Signal(
-            id=uuid.uuid4(), strategy_id=strategy.id, ticker=ticker,
-            side="sell", signal_type=exit_sig.signal_type, status="executed",
-            entry_price=current_price, stop_price=exit_sig.stop_price,
-            take_profit_price=exit_sig.take_profit_price,
-            suggested_quantity=-sell_qty, confidence=exit_sig.confidence,
-            reason=exit_sig.reason, generated_at=datetime.now(UTC),
-            executed_at=datetime.now(UTC),
-        ))
-        self.db.add(AuditLog(
-            action="strategy_exit_placed", entity_type="order",
-            entity_id=str(order.id), actor=f"strategy:{strategy.name}",
-            payload={"ticker": ticker, "exit_type": exit_sig.signal_type,
-                     "price": float(current_price), "qty": float(sell_qty)},
-            occurred_at=datetime.now(UTC),
-        ))
-        log.info("runner.exit_submitted", strategy=strategy.name,
-                 ticker=ticker, exit_type=exit_sig.signal_type, qty=float(sell_qty))
+        self.db.add(
+            Signal(
+                id=uuid.uuid4(),
+                strategy_id=strategy.id,
+                ticker=ticker,
+                side="sell",
+                signal_type=exit_sig.signal_type,
+                status="executed",
+                entry_price=current_price,
+                stop_price=exit_sig.stop_price,
+                take_profit_price=exit_sig.take_profit_price,
+                suggested_quantity=-sell_qty,
+                confidence=exit_sig.confidence,
+                reason=exit_sig.reason,
+                generated_at=datetime.now(UTC),
+                executed_at=datetime.now(UTC),
+            )
+        )
+        self.db.add(
+            AuditLog(
+                action="strategy_exit_placed",
+                entity_type="order",
+                entity_id=str(order.id),
+                actor=f"strategy:{strategy.name}",
+                payload={
+                    "ticker": ticker,
+                    "exit_type": exit_sig.signal_type,
+                    "price": float(current_price),
+                    "qty": float(sell_qty),
+                },
+                occurred_at=datetime.now(UTC),
+            )
+        )
+        log.info(
+            "runner.exit_submitted",
+            strategy=strategy.name,
+            ticker=ticker,
+            exit_type=exit_sig.signal_type,
+            qty=float(sell_qty),
+        )
 
         # Alerts for exits
         try:
             pnl_est = float((current_price - avg_price) * sell_qty)
             if exit_sig.signal_type == "stop":
                 await alert_stop_out(
-                    self.db, strategy_name=strategy.name, ticker=ticker,
-                    exit_price=float(current_price), entry_price=float(avg_price),
+                    self.db,
+                    strategy_name=strategy.name,
+                    ticker=ticker,
+                    exit_price=float(current_price),
+                    entry_price=float(avg_price),
                     pnl=pnl_est,
                 )
             elif exit_sig.signal_type in ("take_profit", "partial_exit"):
                 await alert_take_profit(
-                    self.db, strategy_name=strategy.name, ticker=ticker,
-                    exit_price=float(current_price), entry_price=float(avg_price),
-                    pnl=pnl_est, signal_type=exit_sig.signal_type,
+                    self.db,
+                    strategy_name=strategy.name,
+                    ticker=ticker,
+                    exit_price=float(current_price),
+                    entry_price=float(avg_price),
+                    pnl=pnl_est,
+                    signal_type=exit_sig.signal_type,
                 )
         except Exception:
             pass
