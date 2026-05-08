@@ -622,7 +622,6 @@ class TestProcessTickerSafetyOrder:
         risk.check_market_conditions.assert_not_awaited()
         engine.generate_signal.assert_not_called()
 
-
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("regime_payload", "reason"),
