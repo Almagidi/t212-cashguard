@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: read
+  pull-requests: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -15,6 +19,7 @@ jobs:
   backend:
     name: Backend (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         python-version: ["3.12"]
@@ -78,7 +83,7 @@ jobs:
 
       - name: Run unit tests
         env:
-          DATABASE_URL: sqlite+aiosqlite:///:memory:
+          DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
           REDIS_URL: redis://localhost:6379/15
           SECRET_KEY: test-secret-key-32-chars-minimum-x
           MASTER_KEY: test-master-key-32-chars-minimum-x
@@ -90,7 +95,7 @@ jobs:
 
       - name: Run integration tests
         env:
-          DATABASE_URL: sqlite+aiosqlite:///:memory:
+          DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
           REDIS_URL: redis://localhost:6379/15
           SECRET_KEY: test-secret-key-32-chars-minimum-x
           MASTER_KEY: test-master-key-32-chars-minimum-x
@@ -99,7 +104,7 @@ jobs:
 
       - name: Run property-based tests
         env:
-          DATABASE_URL: sqlite+aiosqlite:///:memory:
+          DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
           SECRET_KEY: test-secret-key-32-chars-minimum-x
           MASTER_KEY: test-master-key-32-chars-minimum-x
           APP_MODE: mock
@@ -124,6 +129,7 @@ jobs:
   frontend:
     name: Frontend (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         node-version: ["20"]
@@ -167,6 +173,7 @@ jobs:
   e2e:
     name: End-to-end (Playwright)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: [backend, frontend]
 
     services:
@@ -255,12 +262,12 @@ jobs:
           ) &
           npm run dev > /tmp/cashguard-web.log 2>&1 &
 
-          for attempt in {1..60}; do
+          for _ in {1..60}; do
             curl -fsS http://127.0.0.1:8000/v1/health/live >/dev/null && break
             sleep 2
           done
 
-          for attempt in {1..60}; do
+          for _ in {1..60}; do
             curl -fsS http://127.0.0.1:3000 >/dev/null && break
             sleep 2
           done
@@ -292,6 +299,7 @@ jobs:
   security:
     name: Security scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -304,8 +312,8 @@ jobs:
       - name: Check for deposit/bank code
         run: |
           echo "Checking for prohibited financial code patterns..."
-          if grep -rni \
-            "open.banking\|plaid\|truelayer\|bank.account.number\|sort.code\|debit.card\|iban\|add.funds\|top.up" \
+          if grep -rniE \
+            "open[[:space:]._]?banking|plaid|truelayer|bank[._]?account[._]?number|sort[._]?code|debit[._]?card|iban|add[._]?funds|top[._]?up" \
             apps/api/app/ apps/web/app/ apps/web/components/ apps/web/services/ \
             --include="*.py" --include="*.ts" --include="*.tsx" 2>/dev/null; then
             echo "FAIL: Prohibited financial code found"
