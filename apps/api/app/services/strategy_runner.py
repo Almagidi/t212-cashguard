@@ -181,8 +181,6 @@ class StrategyRunner:
             bar_times: list[datetime] = []
             for raw_bar in raw_bars:
                 ts = raw_bar.timestamp
-                if ts is None:
-                    continue
                 bars.append(
                     Bar(
                         Decimal(str(raw_bar.open)),
@@ -322,8 +320,8 @@ class StrategyRunner:
                 log.debug("runner.using_ranked_watchlist", strategy=strategy.name, n=len(ranked))
                 return ranked
             log.debug("runner.using_scanned_watchlist", strategy=strategy.name, n=len(todays))
-            return todays
-        return strategy.allowed_tickers
+            return [str(item).upper() for item in todays]
+        return [str(item) for item in strategy.allowed_tickers]
 
     def _watchlist_context(self, strategy: Strategy, ticker: str) -> dict[str, Any]:
         raw = (strategy.params or {}).get("watchlist_candidates")

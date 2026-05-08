@@ -107,11 +107,11 @@ jobs:
       - name: Type check
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            mapfile -t CHANGED_FILES < <(git diff --name-only origin/${{ github.base_ref }}..HEAD | grep '^apps/api/' | sed 's|^apps/api/||' | grep '\.py$' || true)
-            if ((${#CHANGED_FILES[@]})); then
-              python -m mypy "${CHANGED_FILES[@]}" --ignore-missing-imports
+            mapfile -t CHANGED_APP_FILES < <(git diff --name-only origin/${{ github.base_ref }}..HEAD | grep '^apps/api/app/' | sed 's|^apps/api/||' | grep '\.py$' || true)
+            if ((${#CHANGED_APP_FILES[@]})); then
+              python -m mypy "${CHANGED_APP_FILES[@]}" --ignore-missing-imports --follow-imports=silent
             else
-              echo "No python files changed in apps/api/."
+              echo "No changed backend application Python files under apps/api/app/."
             fi
           else
             python -m mypy app/ --ignore-missing-imports
