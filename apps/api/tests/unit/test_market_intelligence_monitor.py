@@ -11,24 +11,33 @@ from app.services.feed_health import record_feed_health, reset_feed_health
 from app.services.market_intelligence_monitor import MarketIntelligenceMonitor
 
 
+@pytest.fixture(autouse=True)
+def reset_feed_health_state():
+    reset_feed_health()
+    yield
+    reset_feed_health()
+
+
 @pytest.mark.asyncio
 async def test_market_intelligence_monitor_alerts_once_per_state(db, monkeypatch):
     from app.services import market_intelligence_monitor as monitor_module
 
     db.add(AppSettings(id=1))
-    db.add(RiskProfile(
-        id=uuid.uuid4(),
-        name="Default",
-        max_risk_per_trade_pct=Decimal("1.0"),
-        max_daily_loss_pct=Decimal("3.0"),
-        max_open_positions=5,
-        max_position_size_pct=Decimal("10.0"),
-        max_trades_per_day=10,
-        stop_after_consecutive_losses=3,
-        symbol_cooldown_seconds=300,
-        force_flat_eod=True,
-        is_default=True,
-    ))
+    db.add(
+        RiskProfile(
+            id=uuid.uuid4(),
+            name="Default",
+            max_risk_per_trade_pct=Decimal("1.0"),
+            max_daily_loss_pct=Decimal("3.0"),
+            max_open_positions=5,
+            max_position_size_pct=Decimal("10.0"),
+            max_trades_per_day=10,
+            stop_after_consecutive_losses=3,
+            symbol_cooldown_seconds=300,
+            force_flat_eod=True,
+            is_default=True,
+        )
+    )
     await db.commit()
 
     alerts: list[tuple[str, dict]] = []
@@ -93,6 +102,31 @@ async def test_risk_engine_blocks_unsafe_market_conditions(db):
                 "regime": "unsafe",
                 "suppressed_strategies": ["orb", "opening_fade"],
             },
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("market_regime", "expected"),
+    [
+        (None, "unknown market regime"),
+        ({}, "unknown market regime"),
+        ({"regime": "unknown", "suppressed_strategies": []}, "unknown market regime"),
+        ({"regime": "high_volatility", "suppressed_strategies": []}, "high_volatility regime"),
+        ({"regime": "mystery", "suppressed_strategies": []}, "invalid market regime"),
+    ],
+)
+async def test_risk_engine_blocks_untrusted_market_regime_states(db, market_regime, expected):
+    db.add(AppSettings(id=1))
+    await db.commit()
+
+    engine = RiskEngine(db)
+
+    with pytest.raises(RiskViolation, match=expected):
+        await engine.check_market_conditions(
+            ticker="AAPL",
+            strategy_type="orb",
+            market_regime=market_regime,
         )
 
 

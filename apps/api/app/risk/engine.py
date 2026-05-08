@@ -3,6 +3,7 @@ Hard risk engine.
 Enforces all safety rules before any order is placed.
 Every check is logged to risk_events for full auditability.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -55,15 +56,17 @@ class RiskEngine:
         order_id: UUID | None = None,
         payload: dict[str, Any] | None = None,
     ) -> None:
-        self.db.add(RiskEvent(
-            event_type=event_type,
-            ticker=ticker,
-            signal_id=signal_id,
-            order_id=order_id,
-            message=message,
-            payload=payload,
-            occurred_at=datetime.now(UTC),
-        ))
+        self.db.add(
+            RiskEvent(
+                event_type=event_type,
+                ticker=ticker,
+                signal_id=signal_id,
+                order_id=order_id,
+                message=message,
+                payload=payload,
+                occurred_at=datetime.now(UTC),
+            )
+        )
         await self.db.flush()
 
     # ── Individual checks ─────────────────────────────────────────────────────
@@ -104,7 +107,10 @@ class RiskEngine:
                 f"exceeds available cash {available_cash:.2f} for {ticker}"
             )
             await self._log(
-                "cash_guard_block", msg, ticker=ticker, signal_id=signal_id,
+                "cash_guard_block",
+                msg,
+                ticker=ticker,
+                signal_id=signal_id,
                 payload={"cost": float(estimated_cost), "available": float(available_cash)},
             )
             raise RiskViolation(msg, "cash_guard_block")
@@ -114,17 +120,22 @@ class RiskEngine:
     ) -> None:
         """Block if an active order for this ticker+side already exists."""
         result = await self.db.execute(
-            select(Order).where(
+            select(Order)
+            .where(
                 Order.ticker == ticker,
                 Order.side == side,
                 Order.status.in_(["pending_intent", "submitted", "accepted"]),
-            ).limit(1)
+            )
+            .limit(1)
         )
         existing = result.scalar_one_or_none()
         if existing:
             msg = f"Duplicate order blocked: active {side} for {ticker} (id={existing.id})"
             await self._log(
-                "duplicate_order_block", msg, ticker=ticker, signal_id=signal_id,
+                "duplicate_order_block",
+                msg,
+                ticker=ticker,
+                signal_id=signal_id,
                 payload={"existing_order_id": str(existing.id)},
             )
             raise RiskViolation(msg, "duplicate_order_block")
@@ -176,14 +187,13 @@ class RiskEngine:
             await self._log("position_size_block", msg, ticker=ticker, signal_id=signal_id)
             raise RiskViolation(msg, "position_size_block")
 
-    async def check_max_trades_today(
-        self, risk_profile: RiskProfile | None = None
-    ) -> None:
+    async def check_max_trades_today(self, risk_profile: RiskProfile | None = None) -> None:
         rp = risk_profile or await self._get_default_risk_profile()
         if not rp:
             return
         today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         from sqlalchemy import func
+
         result = await self.db.execute(
             select(func.count(Order.id)).where(
                 Order.created_at >= today,
@@ -197,9 +207,7 @@ class RiskEngine:
             await self._log("max_trades_block", msg)
             raise RiskViolation(msg, "max_trades_block")
 
-    async def check_consecutive_losses(
-        self, risk_profile: RiskProfile | None = None
-    ) -> None:
+    async def check_consecutive_losses(self, risk_profile: RiskProfile | None = None) -> None:
         """
         Stop trading after N consecutive losing trades.
         Uses the trades table to look at the last N closed trades.
@@ -225,13 +233,12 @@ class RiskEngine:
             return  # Not enough history yet
 
         # All N must be losses
-        all_losses = all(
-            (t.realized_pnl or Decimal("0")) < 0 for t in recent_trades
-        )
+        all_losses = all((t.realized_pnl or Decimal("0")) < 0 for t in recent_trades)
         if all_losses:
             msg = f"Stopped: {max_losses} consecutive losing trades"
-            await self._log("consecutive_loss_stop", msg,
-                            payload={"consecutive_losses": max_losses})
+            await self._log(
+                "consecutive_loss_stop", msg, payload={"consecutive_losses": max_losses}
+            )
             raise RiskViolation(msg, "consecutive_loss_stop")
 
     async def check_symbol_cooldown(
@@ -256,11 +263,13 @@ class RiskEngine:
         )
         recent = result.scalar_one_or_none()
         if recent:
-            wait_s = int((recent + timedelta(seconds=rp.symbol_cooldown_seconds)
-                         - datetime.now(UTC)).total_seconds())
+            wait_s = int(
+                (
+                    recent + timedelta(seconds=rp.symbol_cooldown_seconds) - datetime.now(UTC)
+                ).total_seconds()
+            )
             msg = f"{ticker} is in cooldown for {wait_s}s more"
-            await self._log("cooldown_block", msg, ticker=ticker,
-                            payload={"wait_seconds": wait_s})
+            await self._log("cooldown_block", msg, ticker=ticker, payload={"wait_seconds": wait_s})
             raise RiskViolation(msg, "cooldown_block")
 
     async def check_portfolio_heat(
@@ -318,7 +327,10 @@ class RiskEngine:
                 f"account={float(account_value):.2f}) for {ticker}"
             )
             await self._log(
-                "portfolio_heat_block", msg, ticker=ticker, signal_id=signal_id,
+                "portfolio_heat_block",
+                msg,
+                ticker=ticker,
+                signal_id=signal_id,
                 payload={
                     "heat_pct": round(heat_pct, 4),
                     "max_heat_pct": max_heat_pct,
@@ -364,7 +376,9 @@ class RiskEngine:
             msgs = "; ".join(v.message for v in violations)
             await self._log("correlation_block", msgs, ticker=ticker, signal_id=signal_id)
             raise RiskViolation(
-                f"Correlation limit: {violations[0].message}" if violations else "Correlation check failed",
+                f"Correlation limit: {violations[0].message}"
+                if violations
+                else "Correlation check failed",
                 "correlation_block",
             )
 
@@ -379,27 +393,6 @@ class RiskEngine:
     ) -> None:
         regime_payload = market_regime or {}
         regime_name = str(regime_payload.get("regime") or "unknown")
-        suppressed = {
-            str(item)
-            for item in regime_payload.get("suppressed_strategies", [])
-            if item
-        }
-        if strategy_type in suppressed:
-            msg = (
-                f"Strategy {strategy_type} blocked in {regime_name} regime."
-            )
-            await self._log(
-                "regime_block",
-                msg,
-                ticker=ticker,
-                signal_id=signal_id,
-                payload={
-                    "regime": regime_name,
-                    "strategy_type": strategy_type,
-                    "suppressed_strategies": sorted(suppressed),
-                },
-            )
-            raise RiskViolation(msg, "regime_block")
 
         feed_snapshot = get_feed_health_snapshot()
         feed_status = str(feed_snapshot.get("status") or "unknown")
@@ -412,9 +405,7 @@ class RiskEngine:
                 break
 
         if feed_status in {"stale", "error"}:
-            msg = (
-                f"Primary market data is {feed_status}; new entries are blocked until feed health recovers."
-            )
+            msg = f"Primary market data is {feed_status}; new entries are blocked until feed health recovers."
             await self._log(
                 "feed_health_block",
                 msg,
@@ -441,6 +432,61 @@ class RiskEngine:
                 },
             )
             raise RiskViolation(msg, "feed_symbol_block")
+
+        trusted_regimes = {
+            "trending_up",
+            "trending_down",
+            "ranging",
+            "risk_off",
+            "unsafe",
+            "high_volatility",
+        }
+        if regime_name == "unknown":
+            msg = "Strategy entries blocked: unknown market regime."
+            await self._log(
+                "regime_block",
+                msg,
+                ticker=ticker,
+                signal_id=signal_id,
+                payload={"regime": regime_name, "strategy_type": strategy_type},
+            )
+            raise RiskViolation(msg, "regime_block")
+        if regime_name not in trusted_regimes:
+            msg = f"Strategy entries blocked: invalid market regime {regime_name}."
+            await self._log(
+                "regime_block",
+                msg,
+                ticker=ticker,
+                signal_id=signal_id,
+                payload={"regime": regime_name, "strategy_type": strategy_type},
+            )
+            raise RiskViolation(msg, "regime_block")
+        if regime_name == "high_volatility":
+            msg = "Strategy entries blocked in high_volatility regime."
+            await self._log(
+                "regime_block",
+                msg,
+                ticker=ticker,
+                signal_id=signal_id,
+                payload={"regime": regime_name, "strategy_type": strategy_type},
+            )
+            raise RiskViolation(msg, "regime_block")
+
+        suppressed = {str(item) for item in regime_payload.get("suppressed_strategies", []) if item}
+        if strategy_type in suppressed:
+            msg = f"Strategy {strategy_type} blocked in {regime_name} regime."
+            await self._log(
+                "regime_block",
+                msg,
+                ticker=ticker,
+                signal_id=signal_id,
+                payload={
+                    "regime": regime_name,
+                    "strategy_type": strategy_type,
+                    "suppressed_strategies": sorted(suppressed),
+                },
+            )
+            raise RiskViolation(msg, "regime_block")
 
         context = watchlist_context or {}
         catalyst_score = float(context.get("catalyst_score", 0.0) or 0.0)
@@ -501,7 +547,9 @@ class RiskEngine:
         notional = quantity * estimated_price
 
         # 1. Stricter per-trade risk (uses CFD override if set)
-        effective_risk_pct = rp.cfd_max_risk_per_trade_pct or (rp.max_risk_per_trade_pct * Decimal("0.5"))
+        effective_risk_pct = rp.cfd_max_risk_per_trade_pct or (
+            rp.max_risk_per_trade_pct * Decimal("0.5")
+        )
         if account_value > 0:
             risk_pct = notional / account_value * 100
             if risk_pct > effective_risk_pct:
@@ -513,13 +561,13 @@ class RiskEngine:
                 raise RiskViolation(msg, "cfd_size_block")
 
         # 2. Stricter daily loss limit for CFDs
-        effective_daily_loss = rp.cfd_max_daily_loss_pct or (rp.max_daily_loss_pct * Decimal("0.67"))
+        effective_daily_loss = rp.cfd_max_daily_loss_pct or (
+            rp.max_daily_loss_pct * Decimal("0.67")
+        )
         if account_value > 0 and realized_pnl_today < 0:
             loss_pct = abs(realized_pnl_today) / account_value * 100
             if loss_pct >= float(effective_daily_loss):
-                msg = (
-                    f"CFD daily loss {loss_pct:.2f}% ≥ CFD limit {effective_daily_loss:.2f}%"
-                )
+                msg = f"CFD daily loss {loss_pct:.2f}% ≥ CFD limit {effective_daily_loss:.2f}%"
                 await self._log("cfd_daily_loss_block", msg, signal_id=signal_id)
                 raise RiskViolation(msg, "cfd_daily_loss_block")
 
@@ -699,18 +747,21 @@ class RiskEngine:
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
 
+
 async def activate_kill_switch(db: AsyncSession, actor: str = "system") -> None:
     result = await db.execute(select(AppSettings).where(AppSettings.id == 1))
     s = result.scalar_one_or_none()
     if s:
         s.kill_switch_active = True
         s.auto_trading_enabled = False
-    db.add(RiskEvent(
-        event_type="kill_switch_on",
-        message=f"Kill switch activated by {actor}",
-        payload={"actor": actor},
-        occurred_at=datetime.now(UTC),
-    ))
+    db.add(
+        RiskEvent(
+            event_type="kill_switch_on",
+            message=f"Kill switch activated by {actor}",
+            payload={"actor": actor},
+            occurred_at=datetime.now(UTC),
+        )
+    )
     await db.commit()
 
 
@@ -719,10 +770,12 @@ async def deactivate_kill_switch(db: AsyncSession, actor: str = "system") -> Non
     s = result.scalar_one_or_none()
     if s:
         s.kill_switch_active = False
-    db.add(RiskEvent(
-        event_type="kill_switch_off",
-        message=f"Kill switch deactivated by {actor}",
-        payload={"actor": actor},
-        occurred_at=datetime.now(UTC),
-    ))
+    db.add(
+        RiskEvent(
+            event_type="kill_switch_off",
+            message=f"Kill switch deactivated by {actor}",
+            payload={"actor": actor},
+            occurred_at=datetime.now(UTC),
+        )
+    )
     await db.commit()
