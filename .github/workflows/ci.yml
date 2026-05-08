@@ -68,7 +68,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
- bolt/optimize-market-regime-evaluation-6534295466724500805
       - name: Dependency vulnerability scan (pip-audit)
         run: pip install pip-audit && pip-audit -r requirements.txt
 
@@ -113,8 +112,6 @@ jobs:
             app/api/v1/routes/orders.py \
             app/api/v1/routes/operator.py \
             app/services/live_readiness.py
- main
-
       - name: Run migrations
         env:
           DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
@@ -122,19 +119,6 @@ jobs:
 
       - name: Run targeted tests
         env:
-bolt/optimize-market-regime-evaluation-6534295466724500805
-
- t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
-          DATABASE_URL: "sqlite+aiosqlite:///:memory:"
-          REDIS_URL: "redis://localhost:6379/15"
-          SECRET_KEY: "test-secret-key-32-chars-minimum-x"
-          MASTER_KEY: "test-master-key-32-chars-minimum-x"
-          APP_MODE: "mock"
-        run: |
-          # We use -p no:cov to ignore pytest.ini coverage settings and focus on core logic pass.
-          python -m pytest tests/integration/test_paper_execution.py tests/smoke/ -v --tb=short -p no:cov
-
-main
           DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
           REDIS_URL: redis://localhost:6379/15
           SECRET_KEY: test-secret-key-32-chars-minimum-x
@@ -176,8 +160,6 @@ main
           alembic downgrade base
           alembic upgrade head
           echo "Migration round-trip passed"
- main
-
   # ── Frontend ──────────────────────────────────────────────────────────────────
   frontend:
     name: Frontend Quality
@@ -207,13 +189,8 @@ main
       - name: Lint
         run: npm run lint
 
- bolt/optimize-market-regime-evaluation-6534295466724500805
-      - name: Unit tests
-        run: npm test -- --watchAll=false
-
       - name: Type check
         run: npm run typecheck
- main
 
       - name: Build
         env:
@@ -312,9 +289,6 @@ main
           ) &
           npm run dev > /tmp/cashguard-web.log 2>&1 &
 
- bolt/optimize-market-regime-evaluation-6534295466724500805
-
- t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
           echo "Waiting for API to be ready..."
           for attempt in {1..30}; do
             if curl -fsS http://127.0.0.1:8000/v1/health/live >/dev/null 2>&1; then
@@ -322,22 +296,14 @@ main
               break
             fi
             echo "Waiting for API... ($attempt/30)"
-
- main
-          for _ in {1..60}; do
-            curl -fsS http://127.0.0.1:8000/v1/health/live >/dev/null && break
- main
             sleep 2
-            if [ $attempt -eq 30 ]; then
+            if [ "$attempt" -eq 30 ]; then
               echo "Timeout waiting for API"
               cat /tmp/cashguard-api.log
               exit 1
             fi
           done
 
- bolt/optimize-market-regime-evaluation-6534295466724500805
-
- t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
           echo "Waiting for Web to be ready..."
           for attempt in {1..60}; do
             if curl -fsS http://127.0.0.1:3000 >/dev/null 2>&1; then
@@ -345,13 +311,8 @@ main
               break
             fi
             echo "Waiting for Web... ($attempt/60)"
-
- main
-          for _ in {1..60}; do
-            curl -fsS http://127.0.0.1:3000 >/dev/null && break
- main
             sleep 2
-            if [ $attempt -eq 60 ]; then
+            if [ "$attempt" -eq 60 ]; then
               echo "Timeout waiting for Web"
               cat /tmp/cashguard-web.log
               exit 1
