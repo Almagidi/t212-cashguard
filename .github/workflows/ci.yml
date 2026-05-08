@@ -140,7 +140,7 @@ jobs:
             --cov-fail-under=$COVERAGE_THRESHOLD
 
       - name: Run integration tests
-        run: python -m pytest tests/integration/ -v --tb=short
+        run: python -m pytest tests/integration/ -v --tb=short -o "addopts=-v --tb=short"
 
       - name: Run property tests
         run: python -m pytest tests/unit/test_properties.py -v
