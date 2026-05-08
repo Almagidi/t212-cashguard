@@ -621,3 +621,67 @@ class TestProcessTickerSafetyOrder:
         assert (generated, submitted, blocks) == (1, 1, 0)
         risk.check_market_conditions.assert_not_awaited()
         engine.generate_signal.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("regime_payload", "reason"),
+        [
+            ({"regime": "unknown", "suppressed_strategies": []}, "unknown market regime"),
+            ({"regime": "invalid", "suppressed_strategies": []}, "invalid market regime"),
+            ({"regime": "high_volatility", "suppressed_strategies": []}, "high-volatility regime"),
+            (
+                {"regime": "trending_up", "feed_health": {"status": "stale"}},
+                "stale market data",
+            ),
+            (
+                {"regime": "trending_up", "feed_health": {"status": "error"}},
+                "market data feed error",
+            ),
+        ],
+    )
+    async def test_unsafe_regime_blocks_entry_before_signal_generation(
+        self,
+        regime_payload,
+        reason,
+    ):
+        runner = _runner()
+        bars = _bars([100.0, 101.0, 102.0, 103.0])
+        bar_times = [datetime(2024, 1, 1, 14, 30 + idx, tzinfo=UTC) for idx in range(len(bars))]
+        runner._fetch_market_context = AsyncMock(
+            return_value=(bars, bar_times, bars, bar_times, Decimal("99.0"), "14:33")
+        )
+
+        strategy = _strategy(params={"session_open_utc": "14:30"})
+        strategy.id = "strategy-id"
+        strategy.is_live = True
+        strategy.venue = "t212"
+
+        engine = MagicMock()
+        engine.params = strategy.params
+        engine.required_bars = 4
+        engine.history_days = 5
+        engine.max_history_bars = 180
+        engine.generate_signal = MagicMock()
+
+        risk = MagicMock()
+        risk.check_market_conditions = AsyncMock(side_effect=RiskViolation(reason))
+
+        generated, submitted, blocks = await runner._process_ticker(
+            ticker="AAPL",
+            strategy=strategy,
+            engine=engine,
+            risk=risk,
+            broker=MagicMock(),
+            cash=Decimal("10000"),
+            total=Decimal("10000"),
+            n_open=0,
+            pos_map={},
+            all_positions=[],
+            intelligence={"regime": regime_payload},
+            allocator=SignalAllocator(),
+            allocation_state=SignalAllocator().new_state(),
+        )
+
+        assert (generated, submitted, blocks) == (0, 0, 1)
+        risk.check_market_conditions.assert_awaited_once()
+        engine.generate_signal.assert_not_called()

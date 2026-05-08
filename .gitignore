@@ -87,3 +87,4 @@ celerybeat-schedule
 *.key
 *.p12
 *.pfx
+.aider*
