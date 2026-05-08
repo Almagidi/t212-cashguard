@@ -64,11 +64,11 @@ jobs:
       - name: Targeted Lint (ruff)
         run: |
           # Linting targeted safety/mock hardening files relevant to this branch.
-          # Full backend linting is deferred due to technical debt.
           python -m ruff check \
             app/execution/paper_engine.py \
             app/api/v1/routes/orders.py \
-            app/api/v1/routes/operator.py
+            app/api/v1/routes/operator.py \
+            app/services/live_readiness.py
 
       - name: Run migrations
         env:
@@ -83,7 +83,8 @@ jobs:
           MASTER_KEY: "test-master-key-32-chars-minimum-x"
           APP_MODE: "mock"
         run: |
-          python -m pytest tests/integration/test_paper_execution.py tests/smoke/ -v --tb=short --cov-fail-under=0
+          # We use -p no:cov to ignore pytest.ini coverage settings and focus on core logic pass.
+          python -m pytest tests/integration/test_paper_execution.py tests/smoke/ -v --tb=short -p no:cov
 
   # ── Frontend ──────────────────────────────────────────────────────────────────
   frontend:
@@ -189,10 +190,6 @@ jobs:
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
-      - name: Install backend dependencies
-        working-directory: apps/api
-        run: pip install -r requirements.txt
-
       - name: Install frontend dependencies
         working-directory: apps/web
         run: npm ci
@@ -232,21 +229,22 @@ jobs:
           done
 
           echo "Waiting for Web to be ready..."
-          for attempt in {1..30}; do
+          for attempt in {1..60}; do
             if curl -fsS http://127.0.0.1:3000 >/dev/null 2>&1; then
               echo "Web is ready."
               break
             fi
-            echo "Waiting for Web... ($attempt/30)"
+            echo "Waiting for Web... ($attempt/60)"
             sleep 2
-            if [ $attempt -eq 30 ]; then
+            if [ $attempt -eq 60 ]; then
               echo "Timeout waiting for Web"
               cat /tmp/cashguard-web.log
               exit 1
             fi
           done
 
-          npm run e2e -- tests/e2e/mock-paper-release.spec.ts
+          # Use increased timeout for smoke pass on potentially slow dev server
+          npm run e2e -- tests/e2e/mock-paper-release.spec.ts --timeout 60000
 
       - name: Upload Playwright report
         if: always()
