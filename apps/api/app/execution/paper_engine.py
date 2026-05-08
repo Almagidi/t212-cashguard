@@ -4,6 +4,7 @@ This module deliberately has no dependency on broker adapters. It persists a
 local paper order, simulates a fill, updates a local paper position snapshot,
 and writes audit entries. The global kill switch is still enforced.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -475,7 +476,10 @@ async def paper_execution_summary(db: AsyncSession) -> dict[str, Any]:
     latest_order = (
         await db.execute(
             select(Order)
-            .where(Order.is_dry_run == True, Order.execution_environment == PAPER_EXECUTION_ENVIRONMENT)  # noqa: E712
+            .where(
+                Order.is_dry_run.is_(True),
+                Order.execution_environment == PAPER_EXECUTION_ENVIRONMENT,
+            )
             .order_by(desc(Order.created_at))
             .limit(1)
         )
@@ -493,13 +497,17 @@ async def paper_execution_summary(db: AsyncSession) -> dict[str, Any]:
         ).scalar_one()
     )
     latest_position_rows = (
-        await db.execute(
-            select(PositionSnapshot)
-            .join(BrokerConnection, PositionSnapshot.connection_id == BrokerConnection.id)
-            .where(BrokerConnection.broker == PAPER_BROKER)
-            .order_by(desc(PositionSnapshot.snapshotted_at))
+        (
+            await db.execute(
+                select(PositionSnapshot)
+                .join(BrokerConnection, PositionSnapshot.connection_id == BrokerConnection.id)
+                .where(BrokerConnection.broker == PAPER_BROKER)
+                .order_by(desc(PositionSnapshot.snapshotted_at))
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     latest_positions: dict[str, PositionSnapshot] = {}
     for row in latest_position_rows:
         latest_positions.setdefault(row.ticker.upper(), row)

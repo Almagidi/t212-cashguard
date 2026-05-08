@@ -1,4 +1,5 @@
 """Orders routes — CRUD, placement, cancellation."""
+
 from __future__ import annotations
 
 import uuid
@@ -174,7 +175,9 @@ async def _ensure_live_order_ready(
         return
 
     blockers = readiness.get("blockers") or ["Live readiness checklist is incomplete."]
-    reason = f"Live readiness incomplete. Real order blocked before broker submission: {blockers[0]}"
+    reason = (
+        f"Live readiness incomplete. Real order blocked before broker submission: {blockers[0]}"
+    )
     db.add(
         AuditLog(
             action="live_order_blocked",
@@ -237,9 +240,7 @@ async def place_order(
 
     # Count currently open positions
     open_result = await db.execute(
-        select(func.count(Order.id)).where(
-            Order.status.in_(["accepted", "filled"])
-        )
+        select(func.count(Order.id)).where(Order.status.in_(["accepted", "filled"]))
     )
     open_count: int = open_result.scalar_one()
 
@@ -278,14 +279,16 @@ async def place_order(
         )
         order = await engine.submit_order(order)
 
-    db.add(AuditLog(
-        action="order_placed",
-        entity_type="order",
-        entity_id=str(order.id),
-        actor=current_user.email,
-        payload={"ticker": body.ticker, "side": body.side, "qty": str(body.quantity)},
-        occurred_at=datetime.now(UTC),
-    ))
+    db.add(
+        AuditLog(
+            action="order_placed",
+            entity_type="order",
+            entity_id=str(order.id),
+            actor=current_user.email,
+            payload={"ticker": body.ticker, "side": body.side, "qty": str(body.quantity)},
+            occurred_at=datetime.now(UTC),
+        )
+    )
     await db.flush()
     hydrated = await repo.get_by_id(order.id)
     return hydrated or order
@@ -332,22 +335,20 @@ async def list_paper_orders(
     rejected_query = select(AuditLog).where(AuditLog.action == "paper_signal_rejected")
 
     paper_orders = list(
-        (
-            await db.execute(
-                paper_order_query.order_by(desc(Order.created_at)).limit(capped_limit)
-            )
-        ).scalars().all()
+        (await db.execute(paper_order_query.order_by(desc(Order.created_at)).limit(capped_limit)))
+        .scalars()
+        .all()
     )
     rejected_audits = list(
-        (
-            await db.execute(
-                rejected_query.order_by(desc(AuditLog.occurred_at)).limit(capped_limit)
-            )
-        ).scalars().all()
+        (await db.execute(rejected_query.order_by(desc(AuditLog.occurred_at)).limit(capped_limit)))
+        .scalars()
+        .all()
     )
 
     total_orders = int(
-        (await db.execute(select(func.count()).select_from(paper_order_query.subquery()))).scalar_one()
+        (
+            await db.execute(select(func.count()).select_from(paper_order_query.subquery()))
+        ).scalar_one()
     )
     total_rejected = int(
         (await db.execute(select(func.count()).select_from(rejected_query.subquery()))).scalar_one()
@@ -362,7 +363,9 @@ async def list_paper_orders(
                 .order_by(desc(AuditLog.occurred_at))
                 .limit(max(capped_limit * 10, 50))
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     audits_by_order: dict[uuid.UUID, list[AuditLog]] = {order.id: [] for order in paper_orders}
     for audit in paper_audits:
@@ -374,8 +377,7 @@ async def list_paper_orders(
             audits_by_order[uuid.UUID(payload_order_id)].append(audit)
 
     items: list[PaperExecutionHistoryItem] = [
-        _paper_order_item(order, audits_by_order.get(order.id, []))
-        for order in paper_orders
+        _paper_order_item(order, audits_by_order.get(order.id, [])) for order in paper_orders
     ]
     items.extend(_rejected_audit_item(audit) for audit in rejected_audits)
     items.sort(key=lambda item: item.created_at, reverse=True)
@@ -413,7 +415,9 @@ async def get_paper_order_audit(
                 .order_by(desc(AuditLog.occurred_at))
                 .limit(200)
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     related = [audit for audit in paper_audits if _audit_related_to_order(audit, order_id)]
 
@@ -470,13 +474,15 @@ async def cancel_order(
         engine = ExecutionEngine(db, b)
         order = await engine.cancel_order(order)
 
-    db.add(AuditLog(
-        action="order_cancelled",
-        entity_type="order",
-        entity_id=str(order_id),
-        actor=current_user.email,
-        occurred_at=datetime.now(UTC),
-    ))
+    db.add(
+        AuditLog(
+            action="order_cancelled",
+            entity_type="order",
+            entity_id=str(order_id),
+            actor=current_user.email,
+            occurred_at=datetime.now(UTC),
+        )
+    )
     return {"cancelled": True, "order_id": str(order_id)}
 
 
@@ -493,10 +499,12 @@ async def cancel_all_pending(
         for order in orders:
             await engine.cancel_order(order)
 
-    db.add(AuditLog(
-        action="cancel_all_pending",
-        actor=current_user.email,
-        payload={"count": len(orders)},
-        occurred_at=datetime.now(UTC),
-    ))
+    db.add(
+        AuditLog(
+            action="cancel_all_pending",
+            actor=current_user.email,
+            payload={"count": len(orders)},
+            occurred_at=datetime.now(UTC),
+        )
+    )
     return {"cancelled": len(orders)}
