@@ -22,7 +22,7 @@ import { RegimeBadge } from '@/components/dashboard/regime-badge'
 
 const PORTFOLIO_STRATEGY_COPY: Record<string, string> = {
   buy_hold_core: 'Low-turnover diversified equity sleeve. Best for demo automation when you want a stable baseline instead of frequent trading.',
-  equal_weight_rebalance: 'Periodic equal-weight rebalance across a curated stock or ETF basket. Good when you want concentration control and systematic top-up/sell-down rules.',
+  equal_weight_rebalance: 'Periodic equal-weight rebalance across a curated stock or ETF basket. Good when you want concentration control and systematic replenishment/sell-down rules.',
   cross_sectional_momentum: 'Monthly long-only winner rotation. Higher regime risk and turnover than the core sleeve, but stronger tactical behavior when trends persist.',
   low_volatility_tilt: 'Favors calmer names within the configured universe. Useful when you want smoother demo automation and lower swing intensity.',
   trend_following_tactical: 'Moving-average timing overlay that can hold partial cash. Best when drawdown control matters more than always being fully invested.',
