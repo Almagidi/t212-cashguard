@@ -143,7 +143,7 @@ jobs:
         run: python -m pytest tests/integration/ -v --tb=short -o "addopts=-v --tb=short"
 
       - name: Run property tests
-        run: python -m pytest tests/unit/test_properties.py -v
+        run: python -m pytest tests/unit/test_properties.py -v -o "addopts=-v"
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
