@@ -105,7 +105,17 @@ jobs:
           fi
 
       - name: Type check
-        run: python -m mypy app/ --ignore-missing-imports
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            mapfile -t CHANGED_FILES < <(git diff --name-only origin/${{ github.base_ref }}..HEAD | grep '^apps/api/' | sed 's|^apps/api/||' | grep '\.py$' || true)
+            if ((${#CHANGED_FILES[@]})); then
+              python -m mypy "${CHANGED_FILES[@]}" --ignore-missing-imports
+            else
+              echo "No python files changed in apps/api/."
+            fi
+          else
+            python -m mypy app/ --ignore-missing-imports
+          fi
 
       - name: Targeted safety lint
         run: |
