@@ -1,14 +1,20 @@
 """Market regime classification from live market data."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from itertools import pairwise
 from statistics import pstdev
-from typing import Any
+from typing import Any, Final
 
 from app.market_data import get_live_provider
 from app.services.feed_health import get_feed_health_snapshot
+
+_CACHE_TTL_SECONDS: Final = 60
+_cached_regime: dict[str, Any] | None = None
+_last_evaluated_at: datetime | None = None
 
 
 @dataclass
@@ -23,8 +29,18 @@ class MarketRegimeService:
     BENCHMARKS = ("SPY", "QQQ", "IWM")
 
     async def evaluate(self) -> dict[str, Any]:
+        """
+        Evaluate current market regime.
+        Results are cached for 60 seconds to avoid redundant network I/O
+        to market data providers.
+        """
+        global _cached_regime, _last_evaluated_at
+
+        now = datetime.now(UTC)
         feed = get_feed_health_snapshot()
         if feed["status"] in {"stale", "error"}:
+            _cached_regime = None
+            _last_evaluated_at = None
             return self._build_payload(
                 regime="unsafe",
                 label="Unsafe / Feed Risk",
@@ -44,6 +60,13 @@ class MarketRegimeService:
                 ],
                 detail="Primary market-data feed is stale or errored; new entries should remain paused.",
             )
+
+        if (
+            _cached_regime is not None
+            and _last_evaluated_at is not None
+            and (now - _last_evaluated_at).total_seconds() < _CACHE_TTL_SECONDS
+        ):
+            return _cached_regime
 
         snapshots = await self._load_snapshots()
         if not snapshots:
@@ -72,7 +95,9 @@ class MarketRegimeService:
         vol_percentile = max(5.0, min(99.0, realized_vol * 4.0))
         trend_strength = min(
             50.0,
-            float(abs((short_ema - medium_ema) / max(last_close, Decimal("0.01"))) * Decimal("1200"))
+            float(
+                abs((short_ema - medium_ema) / max(last_close, Decimal("0.01"))) * Decimal("1200")
+            )
             + abs(breadth - 0.5) * 35.0,
         )
 
@@ -87,7 +112,12 @@ class MarketRegimeService:
                 regime, label, color = "risk_off", "Risk-Off", "red"
             else:
                 regime, label, color = "trending_down", "Trending Down", "red"
-        elif breadth >= 0.67 and last_close > medium_ema and short_ema > medium_ema and last_close >= intraday_vwap:
+        elif (
+            breadth >= 0.67
+            and last_close > medium_ema
+            and short_ema > medium_ema
+            and last_close >= intraday_vwap
+        ):
             primary_trend = "up"
             regime, label, color = "trending_up", "Trending Up", "emerald"
         elif vol_percentile >= 78:
@@ -102,7 +132,7 @@ class MarketRegimeService:
             f"SPY {last_close:.2f} vs EMA20 {medium_ema:.2f}; breadth {breadth * 100:.0f}%; "
             f"vol score {vol_percentile:.1f}."
         )
-        return self._build_payload(
+        payload = self._build_payload(
             regime=regime,
             label=label,
             color=color,
@@ -116,6 +146,13 @@ class MarketRegimeService:
             detail=detail,
         )
 
+        # Cache the successful evaluation
+        if regime != "unknown":
+            _cached_regime = payload
+            _last_evaluated_at = now
+
+        return payload
+
     async def _load_snapshots(self) -> list[_SeriesSnapshot]:
         provider = get_live_provider()
         snapshots: list[_SeriesSnapshot] = []
@@ -124,11 +161,25 @@ class MarketRegimeService:
                 for ticker in self.BENCHMARKS:
                     daily = await md.get_bars(ticker, multiplier=1, timespan="day", limit=90)
                     intraday = await md.get_bars(ticker, multiplier=5, timespan="minute", limit=78)
-                    closes = [Decimal(str(bar.close)) for bar in daily if getattr(bar, "close", None) is not None]
-                    intraday_closes = [Decimal(str(bar.close)) for bar in intraday if getattr(bar, "close", None) is not None]
-                    intraday_volumes = [Decimal(str(bar.volume)) for bar in intraday if getattr(bar, "volume", None) is not None]
+                    closes = [
+                        Decimal(str(bar.close))
+                        for bar in daily
+                        if getattr(bar, "close", None) is not None
+                    ]
+                    intraday_closes = [
+                        Decimal(str(bar.close))
+                        for bar in intraday
+                        if getattr(bar, "close", None) is not None
+                    ]
+                    intraday_volumes = [
+                        Decimal(str(bar.volume))
+                        for bar in intraday
+                        if getattr(bar, "volume", None) is not None
+                    ]
                     if len(closes) >= 20 and intraday_closes:
-                        snapshots.append(_SeriesSnapshot(ticker, closes, intraday_closes, intraday_volumes))
+                        snapshots.append(
+                            _SeriesSnapshot(ticker, closes, intraday_closes, intraday_volumes)
+                        )
         return snapshots
 
     def _ema(self, values: list[Decimal], period: int) -> Decimal:
@@ -159,7 +210,7 @@ class MarketRegimeService:
             returns.append(float((curr - prev) / prev))
         if len(returns) < 2:
             return 0.0
-        return pstdev(returns) * 100 * (252 ** 0.5)
+        return pstdev(returns) * 100 * (252**0.5)
 
     def _breadth_pct(self, snapshots: list[_SeriesSnapshot]) -> float:
         votes = 0

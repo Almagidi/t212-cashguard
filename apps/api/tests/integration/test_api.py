@@ -1,6 +1,7 @@
 """
 Integration tests: full API flows via HTTP client.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -176,7 +177,9 @@ class FakePortfolioQuote:
 
 
 class FakePortfolioProvider:
-    async def get_bars(self, ticker: str, *, multiplier: int = 1, timespan: str = "day", limit: int = 50):
+    async def get_bars(
+        self, ticker: str, *, multiplier: int = 1, timespan: str = "day", limit: int = 50
+    ):
         del multiplier, timespan
         base_map = {
             "SPY": Decimal("500"),
@@ -192,7 +195,9 @@ class FakePortfolioProvider:
         start = now - timedelta(days=240)
         all_bars = []
         for idx in range(240):
-            close = base_map.get(ticker, Decimal("100")) + slope_map.get(ticker, Decimal("0.2")) * Decimal(str(idx))
+            close = base_map.get(ticker, Decimal("100")) + slope_map.get(
+                ticker, Decimal("0.2")
+            ) * Decimal(str(idx))
             all_bars.append(FakePortfolioBar(start + timedelta(days=idx), close))
         return all_bars[-limit:]
 
@@ -212,7 +217,9 @@ class FakeRegimeProvider(FakePortfolioProvider):
     async def __aexit__(self, exc_type, exc, tb):
         return None
 
-    async def get_bars(self, ticker: str, *, multiplier: int = 1, timespan: str = "day", limit: int = 50):
+    async def get_bars(
+        self, ticker: str, *, multiplier: int = 1, timespan: str = "day", limit: int = 50
+    ):
         del ticker
         now = datetime(2026, 4, 10, tzinfo=UTC)
         bars = []
@@ -234,29 +241,37 @@ class TestAuthFlow:
         assert len(admin_token) > 20
 
     async def test_login_wrong_password(self, client: AsyncClient, admin_token: str):
-        resp = await client.post("/v1/auth/login", json={
-            "email": "admin@test.com",
-            "password": "wrongpassword",
-        })
+        resp = await client.post(
+            "/v1/auth/login",
+            json={
+                "email": "admin@test.com",
+                "password": "wrongpassword",
+            },
+        )
         assert resp.status_code == 401
 
     async def test_login_accepts_localhost_admin_identifier(self, client: AsyncClient, db):
         from app.core.security import hash_password
         from app.db.models import User
 
-        db.add(User(
-            id=uuid.uuid4(),
-            email="admin@localhost",
-            hashed_password=hash_password("change-me"),
-            is_active=True,
-            is_admin=True,
-        ))
+        db.add(
+            User(
+                id=uuid.uuid4(),
+                email="admin@localhost",
+                hashed_password=hash_password("change-me"),
+                is_active=True,
+                is_admin=True,
+            )
+        )
         await db.commit()
 
-        resp = await client.post("/v1/auth/login", json={
-            "email": "admin@localhost",
-            "password": "change-me",
-        })
+        resp = await client.post(
+            "/v1/auth/login",
+            json={
+                "email": "admin@localhost",
+                "password": "change-me",
+            },
+        )
         assert resp.status_code == 200
         assert resp.json()["email"] == "admin@localhost"
 
@@ -264,26 +279,34 @@ class TestAuthFlow:
         from app.core.security import hash_password
         from app.db.models import User
 
-        db.add(User(
-            id=uuid.uuid4(),
-            email="admin@localhost",
-            hashed_password=hash_password("change-me"),
-            is_active=True,
-            is_admin=True,
-        ))
+        db.add(
+            User(
+                id=uuid.uuid4(),
+                email="admin@localhost",
+                hashed_password=hash_password("change-me"),
+                is_active=True,
+                is_admin=True,
+            )
+        )
         await db.commit()
 
         for _ in range(5):
-            resp = await client.post("/v1/auth/login", json={
-                "email": "admin@localhost",
-                "password": "wrong-password",
-            })
+            resp = await client.post(
+                "/v1/auth/login",
+                json={
+                    "email": "admin@localhost",
+                    "password": "wrong-password",
+                },
+            )
             assert resp.status_code == 401
 
-        resp = await client.post("/v1/auth/login", json={
-            "email": "admin@localhost",
-            "password": "wrong-password",
-        })
+        resp = await client.post(
+            "/v1/auth/login",
+            json={
+                "email": "admin@localhost",
+                "password": "wrong-password",
+            },
+        )
         assert resp.status_code == 429
         assert resp.headers["Retry-After"].isdigit()
 
@@ -337,7 +360,9 @@ class TestAccountFlow:
         assert data["cash_only_mode"] is True  # Always true
         assert "available_to_trade" in data
 
-    async def test_cash_guard_cash_only_mode_is_always_true(self, client: AsyncClient, auth_headers: dict):
+    async def test_cash_guard_cash_only_mode_is_always_true(
+        self, client: AsyncClient, auth_headers: dict
+    ):
         """Critical safety test: cash_only_mode must always be True."""
         resp = await client.get("/v1/account/cash-guard", headers=auth_headers)
         assert resp.status_code == 200
@@ -369,7 +394,9 @@ class TestHealthFlow:
         assert data["status"] == "unknown"
         assert any(task["task_name"] == "run_strategy_signals" for task in data["tasks"])
 
-    async def test_health_deps_includes_startup_and_workers(self, client: AsyncClient, auth_headers: dict):
+    async def test_health_deps_includes_startup_and_workers(
+        self, client: AsyncClient, auth_headers: dict
+    ):
         resp = await client.get("/v1/health/deps", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
@@ -396,7 +423,9 @@ class TestHealthFlow:
         assert data["symbols"][0]["ticker"] == "AAPL"
         assert data["symbols"][0]["used_source"] == "alpaca"
 
-    async def test_health_workers_reports_recent_heartbeat(self, client: AsyncClient, auth_headers: dict, db):
+    async def test_health_workers_reports_recent_heartbeat(
+        self, client: AsyncClient, auth_headers: dict, db
+    ):
         from app.db.models import AppSettings
 
         settings_row = await db.get(AppSettings, 1)
@@ -460,7 +489,9 @@ class TestHealthFlow:
 
 @pytest.mark.asyncio
 class TestIntelligenceFlow:
-    async def test_regime_endpoint_returns_live_classification(self, client: AsyncClient, auth_headers: dict, monkeypatch):
+    async def test_regime_endpoint_returns_live_classification(
+        self, client: AsyncClient, auth_headers: dict, monkeypatch
+    ):
         from app.services import market_regime as regime_module
 
         monkeypatch.setattr(regime_module, "get_live_provider", lambda: FakeRegimeProvider())
@@ -471,41 +502,49 @@ class TestIntelligenceFlow:
         assert data["regime"] == "trending_up"
         assert "orb" in data["active_strategies"]
 
-    async def test_watchlist_intelligence_endpoint_returns_news(self, client: AsyncClient, auth_headers: dict, db, monkeypatch):
+    async def test_watchlist_intelligence_endpoint_returns_news(
+        self, client: AsyncClient, auth_headers: dict, db, monkeypatch
+    ):
         from app.db.models import Strategy
         from app.services import news_intelligence as news_module
 
-        db.add(Strategy(
-            id=uuid.uuid4(),
-            name="Watchlist ORB",
-            type="orb",
-            is_enabled=True,
-            is_live=False,
-            params={"todays_watchlist": ["AAPL", "MSFT"]},
-            allowed_tickers=["AAPL", "MSFT"],
-            session_start="09:30",
-            session_end="16:00",
-        ))
+        db.add(
+            Strategy(
+                id=uuid.uuid4(),
+                name="Watchlist ORB",
+                type="orb",
+                is_enabled=True,
+                is_live=False,
+                params={"todays_watchlist": ["AAPL", "MSFT"]},
+                allowed_tickers=["AAPL", "MSFT"],
+                session_start="09:30",
+                session_end="16:00",
+            )
+        )
         await db.commit()
 
         async def fake_watchlist_news(self, tickers, *, limit=8):
-            return [{
-                "id": "n1",
-                "source": "benzinga",
-                "title": "Apple beats earnings",
-                "summary": "Positive catalyst.",
-                "url": None,
-                "published_at": datetime.now(UTC).isoformat(),
-                "tickers": ["AAPL"],
-                "event_type": "earnings",
-                "sentiment_score": 0.6,
-                "urgency_score": 0.9,
-                "credibility_score": 0.85,
-                "impact_horizon": "multi_day",
-                "catalyst_score": 0.78,
-            }][:limit]
+            return [
+                {
+                    "id": "n1",
+                    "source": "benzinga",
+                    "title": "Apple beats earnings",
+                    "summary": "Positive catalyst.",
+                    "url": None,
+                    "published_at": datetime.now(UTC).isoformat(),
+                    "tickers": ["AAPL"],
+                    "event_type": "earnings",
+                    "sentiment_score": 0.6,
+                    "urgency_score": 0.9,
+                    "credibility_score": 0.85,
+                    "impact_horizon": "multi_day",
+                    "catalyst_score": 0.78,
+                }
+            ][:limit]
 
-        monkeypatch.setattr(news_module.NewsIntelligenceService, "get_watchlist_intelligence", fake_watchlist_news)
+        monkeypatch.setattr(
+            news_module.NewsIntelligenceService, "get_watchlist_intelligence", fake_watchlist_news
+        )
 
         resp = await client.get("/v1/intelligence/watchlist", headers=auth_headers)
         assert resp.status_code == 200
@@ -629,13 +668,17 @@ class TestStrategiesFlow:
         assert all(item["risk_template_name"] for item in data)
 
     async def test_create_strategy(self, client: AsyncClient, auth_headers: dict):
-        resp = await client.post("/v1/strategies", headers=auth_headers, json={
-            "name": "Test ORB",
-            "type": "orb",
-            "description": "Test strategy",
-            "params": {"orb_minutes": 15},
-            "allowed_tickers": ["AAPL", "MSFT"],
-        })
+        resp = await client.post(
+            "/v1/strategies",
+            headers=auth_headers,
+            json={
+                "name": "Test ORB",
+                "type": "orb",
+                "description": "Test strategy",
+                "params": {"orb_minutes": 15},
+                "allowed_tickers": ["AAPL", "MSFT"],
+            },
+        )
         assert resp.status_code == 201
         data = resp.json()
         assert data["name"] == "Test ORB"
@@ -644,7 +687,9 @@ class TestStrategiesFlow:
         return data["id"]
 
     async def test_create_strategy_from_preset(self, client: AsyncClient, auth_headers: dict):
-        resp = await client.post("/v1/strategies/presets/closing_momentum", headers=auth_headers, json={})
+        resp = await client.post(
+            "/v1/strategies/presets/closing_momentum", headers=auth_headers, json={}
+        )
         assert resp.status_code == 201
         data = resp.json()
         assert data["type"] == "closing_momentum"
@@ -655,11 +700,15 @@ class TestStrategiesFlow:
         assert data["is_live"] is False
         assert data["params"]["risk_per_trade_pct"] == 0.35
         assert data["params"]["preset_metadata"]["preset_key"] == "closing_momentum"
-        assert data["params"]["preset_metadata"]["risk_template_name"] == data["risk_profile"]["name"]
+        assert (
+            data["params"]["preset_metadata"]["risk_template_name"] == data["risk_profile"]["name"]
+        )
         assert data["params"]["execution_metadata"]["created_from_preset_by"] == "admin@test.com"
         assert data["params"]["execution_metadata"]["created_from_preset_at"]
 
-    async def test_get_strategy_detail_returns_attached_risk_profile(self, client: AsyncClient, auth_headers: dict):
+    async def test_get_strategy_detail_returns_attached_risk_profile(
+        self, client: AsyncClient, auth_headers: dict
+    ):
         create_resp = await client.post("/v1/strategies/presets/orb", headers=auth_headers, json={})
         assert create_resp.status_code == 201
         strategy_id = create_resp.json()["id"]
@@ -672,51 +721,69 @@ class TestStrategiesFlow:
         assert data["risk_profile"]["id"] == data["risk_profile_id"]
         assert data["params"]["preset_metadata"]["preset_label"] == "Opening Range Breakout"
 
-    async def test_create_strategy_is_disabled_by_default(self, client: AsyncClient, auth_headers: dict):
-        resp = await client.post("/v1/strategies", headers=auth_headers, json={
-            "name": "Another ORB",
-            "type": "orb",
-            "params": {},
-        })
+    async def test_create_strategy_is_disabled_by_default(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        resp = await client.post(
+            "/v1/strategies",
+            headers=auth_headers,
+            json={
+                "name": "Another ORB",
+                "type": "orb",
+                "params": {},
+            },
+        )
         assert resp.status_code == 201
         data = resp.json()
         assert data["is_enabled"] is False
         assert data["is_live"] is False
 
     async def test_create_portfolio_strategy(self, client: AsyncClient, auth_headers: dict):
-        resp = await client.post("/v1/strategies", headers=auth_headers, json={
-            "name": "Portfolio Core",
-            "type": "buy_hold_core",
-            "description": "Long-horizon rebalance sleeve",
-            "params": {"capital_fraction": 0.4},
-            "allowed_tickers": ["SPY", "QQQ", "IWM"],
-            "eod_flatten": False,
-        })
+        resp = await client.post(
+            "/v1/strategies",
+            headers=auth_headers,
+            json={
+                "name": "Portfolio Core",
+                "type": "buy_hold_core",
+                "description": "Long-horizon rebalance sleeve",
+                "params": {"capital_fraction": 0.4},
+                "allowed_tickers": ["SPY", "QQQ", "IWM"],
+                "eod_flatten": False,
+            },
+        )
         assert resp.status_code == 201
         data = resp.json()
         assert data["type"] == "buy_hold_core"
         assert data["is_live"] is False
 
     async def test_create_intraday_strategy_variant(self, client: AsyncClient, auth_headers: dict):
-        resp = await client.post("/v1/strategies", headers=auth_headers, json={
-            "name": "Late Momentum",
-            "type": "closing_momentum",
-            "description": "Late-session continuation strategy",
-            "params": {"min_opening_return_pct": 0.4},
-            "allowed_tickers": ["AAPL", "MSFT"],
-        })
+        resp = await client.post(
+            "/v1/strategies",
+            headers=auth_headers,
+            json={
+                "name": "Late Momentum",
+                "type": "closing_momentum",
+                "description": "Late-session continuation strategy",
+                "params": {"min_opening_return_pct": 0.4},
+                "allowed_tickers": ["AAPL", "MSFT"],
+            },
+        )
         assert resp.status_code == 201
         data = resp.json()
         assert data["type"] == "closing_momentum"
         assert data["params"]["min_opening_return_pct"] == 0.4
 
     async def test_update_strategy_execution_mode(self, client: AsyncClient, auth_headers: dict):
-        create_resp = await client.post("/v1/strategies", headers=auth_headers, json={
-            "name": "Portfolio Toggle",
-            "type": "buy_hold_core",
-            "allowed_tickers": ["SPY", "QQQ", "IWM"],
-            "eod_flatten": False,
-        })
+        create_resp = await client.post(
+            "/v1/strategies",
+            headers=auth_headers,
+            json={
+                "name": "Portfolio Toggle",
+                "type": "buy_hold_core",
+                "allowed_tickers": ["SPY", "QQQ", "IWM"],
+                "eod_flatten": False,
+            },
+        )
         strategy_id = create_resp.json()["id"]
 
         update_resp = await client.patch(
@@ -737,16 +804,24 @@ class TestStrategiesFlow:
         assert data["is_live"] is False
         assert data["params"]["capital_fraction"] == 0.35
 
-    async def test_get_strategy_promotion_status_defaults_to_dry_run(self, client: AsyncClient, auth_headers: dict):
-        create_resp = await client.post("/v1/strategies", headers=auth_headers, json={
-            "name": "Promotion Status",
-            "type": "orb",
-            "allowed_tickers": ["AAPL"],
-            "params": {"orb_minutes": 15},
-        })
+    async def test_get_strategy_promotion_status_defaults_to_dry_run(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        create_resp = await client.post(
+            "/v1/strategies",
+            headers=auth_headers,
+            json={
+                "name": "Promotion Status",
+                "type": "orb",
+                "allowed_tickers": ["AAPL"],
+                "params": {"orb_minutes": 15},
+            },
+        )
         strategy_id = create_resp.json()["id"]
 
-        status_resp = await client.get(f"/v1/strategies/{strategy_id}/promotion-status", headers=auth_headers)
+        status_resp = await client.get(
+            f"/v1/strategies/{strategy_id}/promotion-status", headers=auth_headers
+        )
         assert status_resp.status_code == 200
         data = status_resp.json()
         assert data["current_stage"] == "dry_run"
@@ -768,47 +843,49 @@ class TestStrategiesFlow:
 
         strategy = await db.get(Strategy, strategy_id)
         now = datetime.now(UTC)
-        db.add_all([
-            Signal(
-                id=uuid.uuid4(),
-                strategy_id=strategy_id,
-                ticker="AAPL",
-                side="buy",
-                signal_type="entry",
-                status="approved",
-                entry_price=Decimal("100"),
-                suggested_quantity=Decimal("1"),
-                confidence=Decimal("0.55"),
-                reason="dry-run sample",
-                generated_at=now - timedelta(minutes=15),
-            ),
-            Signal(
-                id=uuid.uuid4(),
-                strategy_id=strategy_id,
-                ticker="AAPL",
-                side="buy",
-                signal_type="entry",
-                status="approved",
-                entry_price=Decimal("101"),
-                suggested_quantity=Decimal("1"),
-                confidence=Decimal("0.58"),
-                reason="dry-run sample",
-                generated_at=now - timedelta(minutes=10),
-            ),
-            Signal(
-                id=uuid.uuid4(),
-                strategy_id=strategy_id,
-                ticker="AAPL",
-                side="buy",
-                signal_type="entry",
-                status="approved",
-                entry_price=Decimal("102"),
-                suggested_quantity=Decimal("1"),
-                confidence=Decimal("0.61"),
-                reason="dry-run sample",
-                generated_at=now - timedelta(minutes=5),
-            ),
-        ])
+        db.add_all(
+            [
+                Signal(
+                    id=uuid.uuid4(),
+                    strategy_id=strategy_id,
+                    ticker="AAPL",
+                    side="buy",
+                    signal_type="entry",
+                    status="approved",
+                    entry_price=Decimal("100"),
+                    suggested_quantity=Decimal("1"),
+                    confidence=Decimal("0.55"),
+                    reason="dry-run sample",
+                    generated_at=now - timedelta(minutes=15),
+                ),
+                Signal(
+                    id=uuid.uuid4(),
+                    strategy_id=strategy_id,
+                    ticker="AAPL",
+                    side="buy",
+                    signal_type="entry",
+                    status="approved",
+                    entry_price=Decimal("101"),
+                    suggested_quantity=Decimal("1"),
+                    confidence=Decimal("0.58"),
+                    reason="dry-run sample",
+                    generated_at=now - timedelta(minutes=10),
+                ),
+                Signal(
+                    id=uuid.uuid4(),
+                    strategy_id=strategy_id,
+                    ticker="AAPL",
+                    side="buy",
+                    signal_type="entry",
+                    status="approved",
+                    entry_price=Decimal("102"),
+                    suggested_quantity=Decimal("1"),
+                    confidence=Decimal("0.61"),
+                    reason="dry-run sample",
+                    generated_at=now - timedelta(minutes=5),
+                ),
+            ]
+        )
         await db.commit()
 
         review_resp = await client.post(
@@ -854,7 +931,9 @@ class TestStrategiesFlow:
             }
 
         monkeypatch.setattr(settings, "STRATEGY_PROMOTION_MIN_DEMO_DAYS", 1)
-        monkeypatch.setattr("app.services.strategy_promotion.LiveReadinessService.evaluate", fake_live_readiness)
+        monkeypatch.setattr(
+            "app.services.strategy_promotion.LiveReadinessService.evaluate", fake_live_readiness
+        )
 
         create_resp = await client.post("/v1/strategies/presets/orb", headers=auth_headers, json={})
         assert create_resp.status_code == 201
@@ -967,21 +1046,35 @@ class TestStrategiesFlow:
         assert data["live_execution_approved"] is True
         assert data["eligible_for_live"] is True
 
-    async def test_run_portfolio_strategy_dry(self, client: AsyncClient, auth_headers: dict, monkeypatch):
+    async def test_run_portfolio_strategy_dry(
+        self, client: AsyncClient, auth_headers: dict, monkeypatch
+    ):
         from app.services import portfolio_execution_service as portfolio_service_module
 
-        monkeypatch.setattr(portfolio_service_module, "get_live_provider", lambda: FakePortfolioProvider())
+        monkeypatch.setattr(
+            portfolio_service_module, "get_live_provider", lambda: FakePortfolioProvider()
+        )
 
-        create_resp = await client.post("/v1/strategies", headers=auth_headers, json={
-            "name": "Portfolio Dry Run",
-            "type": "buy_hold_core",
-            "allowed_tickers": ["SPY", "QQQ", "IWM"],
-            "params": {"capital_fraction": 0.24, "min_trade_value": 25, "min_weight_delta_pct": 0.5},
-            "eod_flatten": False,
-        })
+        create_resp = await client.post(
+            "/v1/strategies",
+            headers=auth_headers,
+            json={
+                "name": "Portfolio Dry Run",
+                "type": "buy_hold_core",
+                "allowed_tickers": ["SPY", "QQQ", "IWM"],
+                "params": {
+                    "capital_fraction": 0.24,
+                    "min_trade_value": 25,
+                    "min_weight_delta_pct": 0.5,
+                },
+                "eod_flatten": False,
+            },
+        )
         strategy_id = create_resp.json()["id"]
 
-        enable_resp = await client.post(f"/v1/strategies/{strategy_id}/enable", headers=auth_headers)
+        enable_resp = await client.post(
+            f"/v1/strategies/{strategy_id}/enable", headers=auth_headers
+        )
         assert enable_resp.status_code == 200
 
         dry_resp = await client.post(f"/v1/strategies/{strategy_id}/run-dry", headers=auth_headers)
@@ -990,13 +1083,19 @@ class TestStrategiesFlow:
         assert data["is_live"] is False
         assert data["summary"]["dry_run_orders"] > 0
 
-    async def test_run_strategy_dry_records_execution_metadata(self, client: AsyncClient, auth_headers: dict):
-        create_resp = await client.post("/v1/strategies", headers=auth_headers, json={
-            "name": "Dry Metadata",
-            "type": "orb",
-            "allowed_tickers": ["AAPL"],
-            "params": {"orb_minutes": 15},
-        })
+    async def test_run_strategy_dry_records_execution_metadata(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        create_resp = await client.post(
+            "/v1/strategies",
+            headers=auth_headers,
+            json={
+                "name": "Dry Metadata",
+                "type": "orb",
+                "allowed_tickers": ["AAPL"],
+                "params": {"orb_minutes": 15},
+            },
+        )
         assert create_resp.status_code == 201
         strategy_id = create_resp.json()["id"]
 
@@ -1006,21 +1105,35 @@ class TestStrategiesFlow:
         detail_resp = await client.get(f"/v1/strategies/{strategy_id}", headers=auth_headers)
         assert detail_resp.status_code == 200
         detail = detail_resp.json()
-        assert detail["params"]["execution_metadata"]["last_dry_run_requested_by"] == "admin@test.com"
+        assert (
+            detail["params"]["execution_metadata"]["last_dry_run_requested_by"] == "admin@test.com"
+        )
         assert detail["params"]["execution_metadata"]["last_dry_run_requested_at"]
 
-    async def test_list_portfolio_monitoring(self, client: AsyncClient, auth_headers: dict, monkeypatch):
+    async def test_list_portfolio_monitoring(
+        self, client: AsyncClient, auth_headers: dict, monkeypatch
+    ):
         from app.services import portfolio_execution_service as portfolio_service_module
 
-        monkeypatch.setattr(portfolio_service_module, "get_live_provider", lambda: FakePortfolioProvider())
+        monkeypatch.setattr(
+            portfolio_service_module, "get_live_provider", lambda: FakePortfolioProvider()
+        )
 
-        create_resp = await client.post("/v1/strategies", headers=auth_headers, json={
-            "name": "Portfolio Monitor",
-            "type": "buy_hold_core",
-            "allowed_tickers": ["SPY", "QQQ", "IWM"],
-            "params": {"capital_fraction": 0.24, "min_trade_value": 25, "min_weight_delta_pct": 0.5},
-            "eod_flatten": False,
-        })
+        create_resp = await client.post(
+            "/v1/strategies",
+            headers=auth_headers,
+            json={
+                "name": "Portfolio Monitor",
+                "type": "buy_hold_core",
+                "allowed_tickers": ["SPY", "QQQ", "IWM"],
+                "params": {
+                    "capital_fraction": 0.24,
+                    "min_trade_value": 25,
+                    "min_weight_delta_pct": 0.5,
+                },
+                "eod_flatten": False,
+            },
+        )
         strategy_id = create_resp.json()["id"]
         await client.post(f"/v1/strategies/{strategy_id}/enable", headers=auth_headers)
         await client.post(f"/v1/strategies/{strategy_id}/run-dry", headers=auth_headers)
@@ -1034,23 +1147,37 @@ class TestStrategiesFlow:
         assert len(data[0]["weights"]) > 0
         assert len(data[0]["recent_orders"]) > 0
 
-    async def test_get_portfolio_strategy_monitoring_detail(self, client: AsyncClient, auth_headers: dict, monkeypatch):
+    async def test_get_portfolio_strategy_monitoring_detail(
+        self, client: AsyncClient, auth_headers: dict, monkeypatch
+    ):
         from app.services import portfolio_execution_service as portfolio_service_module
 
-        monkeypatch.setattr(portfolio_service_module, "get_live_provider", lambda: FakePortfolioProvider())
+        monkeypatch.setattr(
+            portfolio_service_module, "get_live_provider", lambda: FakePortfolioProvider()
+        )
 
-        create_resp = await client.post("/v1/strategies", headers=auth_headers, json={
-            "name": "Portfolio Detail",
-            "type": "buy_hold_core",
-            "allowed_tickers": ["SPY", "QQQ", "IWM"],
-            "params": {"capital_fraction": 0.24, "min_trade_value": 25, "min_weight_delta_pct": 0.5},
-            "eod_flatten": False,
-        })
+        create_resp = await client.post(
+            "/v1/strategies",
+            headers=auth_headers,
+            json={
+                "name": "Portfolio Detail",
+                "type": "buy_hold_core",
+                "allowed_tickers": ["SPY", "QQQ", "IWM"],
+                "params": {
+                    "capital_fraction": 0.24,
+                    "min_trade_value": 25,
+                    "min_weight_delta_pct": 0.5,
+                },
+                "eod_flatten": False,
+            },
+        )
         strategy_id = create_resp.json()["id"]
         await client.post(f"/v1/strategies/{strategy_id}/enable", headers=auth_headers)
         await client.post(f"/v1/strategies/{strategy_id}/run-dry", headers=auth_headers)
 
-        resp = await client.get(f"/v1/strategies/{strategy_id}/portfolio-monitoring", headers=auth_headers)
+        resp = await client.get(
+            f"/v1/strategies/{strategy_id}/portfolio-monitoring", headers=auth_headers
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["strategy_id"] == strategy_id
@@ -1058,19 +1185,27 @@ class TestStrategiesFlow:
         assert any(weight["ticker"] == "SPY" for weight in data["weights"])
         assert data["recent_orders"][0]["is_dry_run"] is True
 
-    async def test_get_portfolio_strategy_attribution_detail(self, client: AsyncClient, auth_headers: dict, db, monkeypatch):
+    async def test_get_portfolio_strategy_attribution_detail(
+        self, client: AsyncClient, auth_headers: dict, db, monkeypatch
+    ):
         from app.db.models import Order, Signal
         from app.services import portfolio_attribution_service as attribution_service_module
 
-        monkeypatch.setattr(attribution_service_module, "get_live_provider", lambda: FakePortfolioProvider())
+        monkeypatch.setattr(
+            attribution_service_module, "get_live_provider", lambda: FakePortfolioProvider()
+        )
 
-        create_resp = await client.post("/v1/strategies", headers=auth_headers, json={
-            "name": "Portfolio Attribution",
-            "type": "buy_hold_core",
-            "allowed_tickers": ["SPY", "QQQ", "IWM"],
-            "params": {"capital_fraction": 0.24},
-            "eod_flatten": False,
-        })
+        create_resp = await client.post(
+            "/v1/strategies",
+            headers=auth_headers,
+            json={
+                "name": "Portfolio Attribution",
+                "type": "buy_hold_core",
+                "allowed_tickers": ["SPY", "QQQ", "IWM"],
+                "params": {"capital_fraction": 0.24},
+                "eod_flatten": False,
+            },
+        )
         strategy_id = create_resp.json()["id"]
 
         base_day = datetime(2026, 4, 7, 15, 0, tzinfo=UTC)
@@ -1133,7 +1268,9 @@ class TestStrategiesFlow:
         )
         await db.commit()
 
-        resp = await client.get(f"/v1/strategies/{strategy_id}/portfolio-attribution", headers=auth_headers)
+        resp = await client.get(
+            f"/v1/strategies/{strategy_id}/portfolio-attribution", headers=auth_headers
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["strategy_id"] == strategy_id
@@ -1147,19 +1284,27 @@ class TestStrategiesFlow:
         assert "before_weight" in data["rebalance_events"][0]["weights"][0]
         assert data["ticker_attribution"][0]["ticker"] == "SPY"
 
-    async def test_list_portfolio_attribution(self, client: AsyncClient, auth_headers: dict, db, monkeypatch):
+    async def test_list_portfolio_attribution(
+        self, client: AsyncClient, auth_headers: dict, db, monkeypatch
+    ):
         from app.db.models import Order, Signal
         from app.services import portfolio_attribution_service as attribution_service_module
 
-        monkeypatch.setattr(attribution_service_module, "get_live_provider", lambda: FakePortfolioProvider())
+        monkeypatch.setattr(
+            attribution_service_module, "get_live_provider", lambda: FakePortfolioProvider()
+        )
 
-        create_resp = await client.post("/v1/strategies", headers=auth_headers, json={
-            "name": "Portfolio Attribution List",
-            "type": "buy_hold_core",
-            "allowed_tickers": ["SPY", "QQQ"],
-            "params": {"capital_fraction": 0.24},
-            "eod_flatten": False,
-        })
+        create_resp = await client.post(
+            "/v1/strategies",
+            headers=auth_headers,
+            json={
+                "name": "Portfolio Attribution List",
+                "type": "buy_hold_core",
+                "allowed_tickers": ["SPY", "QQQ"],
+                "params": {"capital_fraction": 0.24},
+                "eod_flatten": False,
+            },
+        )
         strategy_id = create_resp.json()["id"]
 
         fill_time = datetime(2026, 4, 8, 15, 0, tzinfo=UTC)
@@ -1202,10 +1347,14 @@ class TestStrategiesFlow:
         assert len(data[0]["recent_timeline"]) >= 1
 
     async def test_enable_disable_strategy(self, client: AsyncClient, auth_headers: dict):
-        create_resp = await client.post("/v1/strategies", headers=auth_headers, json={
-            "name": "Enable Test ORB",
-            "type": "orb",
-        })
+        create_resp = await client.post(
+            "/v1/strategies",
+            headers=auth_headers,
+            json={
+                "name": "Enable Test ORB",
+                "type": "orb",
+            },
+        )
         sid = create_resp.json()["id"]
 
         enable_resp = await client.post(f"/v1/strategies/{sid}/enable", headers=auth_headers)
@@ -1232,14 +1381,14 @@ class TestBacktestFlow:
             "intraday_periodicity",
         }
 
-    async def test_list_portfolio_backtest_strategies(self, client: AsyncClient, auth_headers: dict):
+    async def test_list_portfolio_backtest_strategies(
+        self, client: AsyncClient, auth_headers: dict
+    ):
         resp = await client.get("/v1/backtest/portfolio/strategies", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
-        assert {
-            item["type"] for item in data
-        } >= {
+        assert {item["type"] for item in data} >= {
             "buy_hold_core",
             "equal_weight_rebalance",
             "cross_sectional_momentum",
@@ -1258,10 +1407,14 @@ class TestRiskFlow:
         assert float(data["max_daily_loss_pct"]) <= 20.0
 
     async def test_update_risk_profile(self, client: AsyncClient, auth_headers: dict):
-        resp = await client.patch("/v1/risk/profile", headers=auth_headers, json={
-            "max_daily_loss_pct": "2.5",
-            "max_open_positions": 3,
-        })
+        resp = await client.patch(
+            "/v1/risk/profile",
+            headers=auth_headers,
+            json={
+                "max_daily_loss_pct": "2.5",
+                "max_open_positions": 3,
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert float(data["max_daily_loss_pct"]) == 2.5
@@ -1292,35 +1445,51 @@ class TestOrderFlow:
         await client.post("/v1/risk/kill-switch/disable", headers=auth_headers)
         await client.post("/v1/emergency/auto-trading/on", headers=auth_headers)
 
-        resp = await client.post("/v1/orders", headers=auth_headers, json={
-            "ticker": "AAPL",
-            "side": "buy",
-            "order_type": "market",
-            "quantity": "1",
-        })
+        resp = await client.post(
+            "/v1/orders",
+            headers=auth_headers,
+            json={
+                "ticker": "AAPL",
+                "side": "buy",
+                "order_type": "market",
+                "quantity": "1",
+            },
+        )
         # May return 201 (placed) or 422 (risk violation)
         assert resp.status_code in (201, 422)
 
-    async def test_order_validation_missing_limit_price(self, client: AsyncClient, auth_headers: dict):
-        resp = await client.post("/v1/orders", headers=auth_headers, json={
-            "ticker": "AAPL",
-            "side": "buy",
-            "order_type": "limit",
-            "quantity": "1",
-            # Missing limit_price
-        })
+    async def test_order_validation_missing_limit_price(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        resp = await client.post(
+            "/v1/orders",
+            headers=auth_headers,
+            json={
+                "ticker": "AAPL",
+                "side": "buy",
+                "order_type": "limit",
+                "quantity": "1",
+                # Missing limit_price
+            },
+        )
         assert resp.status_code == 422
 
     async def test_order_quantity_must_be_positive(self, client: AsyncClient, auth_headers: dict):
-        resp = await client.post("/v1/orders", headers=auth_headers, json={
-            "ticker": "AAPL",
-            "side": "buy",
-            "order_type": "market",
-            "quantity": "-1",  # Must be positive from API (engine handles sign)
-        })
+        resp = await client.post(
+            "/v1/orders",
+            headers=auth_headers,
+            json={
+                "ticker": "AAPL",
+                "side": "buy",
+                "order_type": "market",
+                "quantity": "-1",  # Must be positive from API (engine handles sign)
+            },
+        )
         assert resp.status_code == 422
 
-    async def test_list_signals_includes_strategy_context(self, client: AsyncClient, auth_headers: dict, db):
+    async def test_list_signals_includes_strategy_context(
+        self, client: AsyncClient, auth_headers: dict, db
+    ):
         from app.db.models import Signal, Strategy
 
         strategy = Strategy(
@@ -1354,7 +1523,9 @@ class TestOrderFlow:
         assert matching["strategy_type_name"] == "orb"
         assert matching["risk_rejection_reason"] == "Feed health degraded for AAPL."
 
-    async def test_list_orders_includes_signal_explainability(self, client: AsyncClient, auth_headers: dict, db):
+    async def test_list_orders_includes_signal_explainability(
+        self, client: AsyncClient, auth_headers: dict, db
+    ):
         from app.db.models import Order, Signal, Strategy
 
         strategy = Strategy(
@@ -1402,7 +1573,9 @@ class TestOrderFlow:
         assert Decimal(str(matching["signal_confidence"])) == Decimal("0.81")
         assert matching["signal_risk_rejected"] is False
 
-    async def test_get_order_detail_includes_signal_context_and_events(self, client: AsyncClient, auth_headers: dict, db):
+    async def test_get_order_detail_includes_signal_context_and_events(
+        self, client: AsyncClient, auth_headers: dict, db
+    ):
         from app.db.models import Order, OrderEvent, Signal, Strategy
 
         strategy = Strategy(
@@ -1544,7 +1717,10 @@ class TestOrderFlow:
         assert data["summary"]["avg_slippage_pct"] == 1.0
         assert data["summary"]["total_slippage_value"] == 5.0
         assert data["by_symbol_order_type"][0]["ticker"] in {"AAPL", "MSFT"}
-        assert any(row["ticker"] == "AAPL" and row["avg_score"] == 82.0 for row in data["by_symbol_order_type"])
+        assert any(
+            row["ticker"] == "AAPL" and row["avg_score"] == 82.0
+            for row in data["by_symbol_order_type"]
+        )
         assert data["reject_cancel_patterns"][0]["reason"].startswith("Broker rejected")
         assert data["worst_orders"][0]["ticker"] in {"AAPL", "MSFT"}
 
@@ -1563,7 +1739,9 @@ class TestEmergencyFlow:
         assert resp.status_code == 200
         assert resp.json()["success"] is True
 
-    async def test_cannot_enable_auto_trading_with_kill_switch(self, client: AsyncClient, auth_headers: dict):
+    async def test_cannot_enable_auto_trading_with_kill_switch(
+        self, client: AsyncClient, auth_headers: dict
+    ):
         # Activate kill switch
         await client.post("/v1/risk/kill-switch/enable", headers=auth_headers)
 
@@ -1693,19 +1871,21 @@ class TestSettingsFlow:
         monkeypatch.setattr(settings, "TELEGRAM_CHAT_ID", "12345")
 
         user = (await db.execute(select(User).where(User.email == "admin@test.com"))).scalar_one()
-        db.add(BrokerConnection(
-            id=uuid.uuid4(),
-            user_id=user.id,
-            broker="trading212",
-            environment="live",
-            api_key_encrypted="enc-key",
-            api_secret_encrypted="enc-secret",
-            is_active=True,
-            last_test_at=datetime.now(UTC),
-            last_test_ok=True,
-            account_id="LIVE-123",
-            account_currency="USD",
-        ))
+        db.add(
+            BrokerConnection(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                broker="trading212",
+                environment="live",
+                api_key_encrypted="enc-key",
+                api_secret_encrypted="enc-secret",
+                is_active=True,
+                last_test_at=datetime.now(UTC),
+                last_test_ok=True,
+                account_id="LIVE-123",
+                account_currency="USD",
+            )
+        )
         await db.commit()
 
         for action in (
@@ -1741,16 +1921,21 @@ class TestTelegramFlow:
         assert "/status" in data["supported_commands"]
 
     async def test_telegram_webhook_requires_secret(self, client: AsyncClient):
-        resp = await client.post("/v1/telegram/webhook", json={
-            "message": {
-                "text": "/status",
-                "chat": {"id": 12345},
-                "from": {"id": 777},
-            }
-        })
+        resp = await client.post(
+            "/v1/telegram/webhook",
+            json={
+                "message": {
+                    "text": "/status",
+                    "chat": {"id": 12345},
+                    "from": {"id": 777},
+                }
+            },
+        )
         assert resp.status_code == 401
 
-    async def test_telegram_pause_confirmation_flow(self, client: AsyncClient, auth_headers: dict, monkeypatch):
+    async def test_telegram_pause_confirmation_flow(
+        self, client: AsyncClient, auth_headers: dict, monkeypatch
+    ):
         sent_messages: list[tuple[str, str]] = []
 
         async def fake_send_message(self, chat_id: str, text: str) -> None:
@@ -1764,25 +1949,33 @@ class TestTelegramFlow:
         await client.post("/v1/emergency/auto-trading/on", headers=auth_headers)
 
         request_headers = {"X-Telegram-Bot-Api-Secret-Token": "test-telegram-secret"}
-        pause_resp = await client.post("/v1/telegram/webhook", headers=request_headers, json={
-            "message": {
-                "text": "/pause",
-                "chat": {"id": 12345},
-                "from": {"id": 777},
-            }
-        })
+        pause_resp = await client.post(
+            "/v1/telegram/webhook",
+            headers=request_headers,
+            json={
+                "message": {
+                    "text": "/pause",
+                    "chat": {"id": 12345},
+                    "from": {"id": 777},
+                }
+            },
+        )
         assert pause_resp.status_code == 200
         pause_data = pause_resp.json()
         assert pause_data["requires_confirmation"] is True
 
         confirmation_code = pause_data["reply_text"].split("/confirm ", 1)[1].split(" ", 1)[0]
-        confirm_resp = await client.post("/v1/telegram/webhook", headers=request_headers, json={
-            "message": {
-                "text": f"/confirm {confirmation_code}",
-                "chat": {"id": 12345},
-                "from": {"id": 777},
-            }
-        })
+        confirm_resp = await client.post(
+            "/v1/telegram/webhook",
+            headers=request_headers,
+            json={
+                "message": {
+                    "text": f"/confirm {confirmation_code}",
+                    "chat": {"id": 12345},
+                    "from": {"id": 777},
+                }
+            },
+        )
         assert confirm_resp.status_code == 200
         confirm_data = confirm_resp.json()
         assert confirm_data["executed"] is True
@@ -1829,7 +2022,9 @@ class TestLiveModeSafetyFlow:
         monkeypatch.setattr("app.broker.trading212.Trading212Adapter", FakeTrading212Adapter)
 
         user = (await db.execute(select(User).where(User.email == "admin@test.com"))).scalar_one()
-        app_settings = (await db.execute(select(AppSettings).where(AppSettings.id == 1))).scalar_one()
+        app_settings = (
+            await db.execute(select(AppSettings).where(AppSettings.id == 1))
+        ).scalar_one()
         app_settings.auto_trading_enabled = True
         app_settings.live_trading_unlocked = False
         db.add(
@@ -1912,7 +2107,9 @@ class TestBrokerExecutionFlow:
 
         monkeypatch.setattr(settings, "APP_MODE", "demo")
         monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
-        monkeypatch.setattr("app.broker.trading212.Trading212Adapter", FakeRejectingTrading212Adapter)
+        monkeypatch.setattr(
+            "app.broker.trading212.Trading212Adapter", FakeRejectingTrading212Adapter
+        )
 
         resp = await client.post(
             "/v1/broker/trading212/connect",

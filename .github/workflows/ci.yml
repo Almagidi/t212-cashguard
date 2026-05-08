@@ -50,6 +50,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -61,7 +63,82 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
       - name: Targeted Lint (ruff)
+
+ bolt/optimize-market-regime-evaluation-6534295466724500805
+      - name: Dependency vulnerability scan (pip-audit)
+        run: pip install pip-audit && pip-audit -r requirements.txt
+
+      - name: Lint (ruff)
+        run: |
+          # Only check changed files against the target branch to avoid pre-existing debt.
+          # If it's a push to main/develop, we check the whole app/tests.
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # Get files relative to apps/api/
+            # Use two dots to avoid merge-base dependency on shallow/missing history
+            mapfile -t CHANGED_FILES < <(git diff --name-only origin/${{ github.base_ref }}..HEAD | grep '^apps/api/' | sed 's|^apps/api/||' | grep '\.py$' || true)
+            if ((${#CHANGED_FILES[@]})); then
+              python -m ruff check "${CHANGED_FILES[@]}"
+            else
+              echo "No python files changed in apps/api/."
+            fi
+          else
+            python -m ruff check app/ tests/
+          fi
+
+      - name: Format check (ruff)
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            mapfile -t CHANGED_FILES < <(git diff --name-only origin/${{ github.base_ref }}..HEAD | grep '^apps/api/' | sed 's|^apps/api/||' | grep '\.py$' || true)
+            if ((${#CHANGED_FILES[@]})); then
+              python -m ruff format --check "${CHANGED_FILES[@]}"
+            else
+              echo "No python files changed in apps/api/."
+            fi
+          else
+            python -m ruff format --check app/ tests/
+          fi
+
+      - name: Type check (mypy)
+        run: python -m mypy app/ --ignore-missing-imports
+
+      - name: Targeted Lint (ruff)
+        run: |
+          # Linting targeted safety/mock hardening files relevant to this branch.
+          python -m ruff check \
+            app/execution/paper_engine.py \
+            app/api/v1/routes/orders.py \
+            app/api/v1/routes/operator.py \
+            app/services/live_readiness.py
+ main
+
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
+        run: python -m alembic upgrade head
+
+      - name: Run targeted tests
+        env:
+bolt/optimize-market-regime-evaluation-6534295466724500805
+
+ t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
+          DATABASE_URL: "sqlite+aiosqlite:///:memory:"
+          REDIS_URL: "redis://localhost:6379/15"
+          SECRET_KEY: "test-secret-key-32-chars-minimum-x"
+          MASTER_KEY: "test-master-key-32-chars-minimum-x"
+          APP_MODE: "mock"
+        run: |
+          # We use -p no:cov to ignore pytest.ini coverage settings and focus on core logic pass.
+          python -m pytest tests/integration/test_paper_execution.py tests/smoke/ -v --tb=short -p no:cov
+
+main
+          DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
+          REDIS_URL: redis://localhost:6379/15
+          SECRET_KEY: test-secret-key-32-chars-minimum-x
+          MASTER_KEY: test-master-key-32-chars-minimum-x
+          APP_MODE: mock
+ main
         run: |
           # Linting targeted safety/mock hardening files relevant to this branch.
           python -m ruff check \
@@ -83,8 +160,15 @@ jobs:
           MASTER_KEY: "test-master-key-32-chars-minimum-x"
           APP_MODE: "mock"
         run: |
+t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
           # Override addopts to ignore coverage and focus on logic pass.
           python -m pytest tests/integration/test_paper_execution.py tests/smoke/ -v --tb=short -o "addopts=-v --tb=short"
+
+          alembic downgrade base
+          alembic upgrade head
+          echo "Migration round-trip passed"
+ main
+ main
 
   # ── Frontend ──────────────────────────────────────────────────────────────────
   frontend:
@@ -114,8 +198,18 @@ jobs:
       - name: Lint
         run: npm run lint
 
+ t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
       - name: Type check
         run: npm run typecheck
+
+ bolt/optimize-market-regime-evaluation-6534295466724500805
+      - name: Unit tests
+        run: npm test -- --watchAll=false
+
+      - name: Type check
+        run: npm run typecheck
+ main
+ main
 
       - name: Build
         env:
@@ -214,6 +308,12 @@ jobs:
 
           npm run dev > /tmp/cashguard-web.log 2>&1 &
 
+ t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
+
+ bolt/optimize-market-regime-evaluation-6534295466724500805
+
+ t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
+ main
           echo "Waiting for API to be ready..."
           for attempt in {1..30}; do
             if curl -fsS http://127.0.0.1:8000/v1/health/live >/dev/null 2>&1; then
@@ -221,6 +321,14 @@ jobs:
               break
             fi
             echo "Waiting for API... ($attempt/30)"
+ t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
+
+
+ main
+          for _ in {1..60}; do
+            curl -fsS http://127.0.0.1:8000/v1/health/live >/dev/null && break
+ main
+ main
             sleep 2
             if [ $attempt -eq 30 ]; then
               echo "Timeout waiting for API"
@@ -229,6 +337,12 @@ jobs:
             fi
           done
 
+ t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
+
+ bolt/optimize-market-regime-evaluation-6534295466724500805
+
+ t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
+ main
           echo "Waiting for Web to be ready..."
           for attempt in {1..60}; do
             if curl -fsS http://127.0.0.1:3000 >/dev/null 2>&1; then
@@ -236,6 +350,14 @@ jobs:
               break
             fi
             echo "Waiting for Web... ($attempt/60)"
+ t-ops-019-mock-paper-trading-lab-ci-protection-12245188786902933841
+
+
+ main
+          for _ in {1..60}; do
+            curl -fsS http://127.0.0.1:3000 >/dev/null && break
+ main
+ main
             sleep 2
             if [ $attempt -eq 60 ]; then
               echo "Timeout waiting for Web"
