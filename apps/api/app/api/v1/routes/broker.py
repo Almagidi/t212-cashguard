@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -20,6 +20,11 @@ from app.services.broker_connection_recovery import (
 )
 
 router = APIRouter(prefix="/broker/trading212", tags=["broker"])
+
+MOCK_CREDENTIALS_IGNORED_HINT = (
+    "APP_MODE=mock is synthetic: submitted broker credentials are ignored and not stored. "
+    "Switch to APP_MODE=demo or APP_MODE=live to test Trading 212 credentials."
+)
 
 
 async def _audit(db, action, user_id=None, payload=None):
@@ -57,6 +62,26 @@ def _serialize_status(
     )
 
 
+def _mock_connect_status() -> BrokerStatusOut:
+    now = datetime.now(UTC)
+    return BrokerStatusOut.model_validate(
+        {
+            "id": uuid.uuid4(),
+            "broker": "trading212",
+            "environment": "mock",
+            "is_active": True,
+            "credential_state": "mock",
+            "recovery_hint": MOCK_CREDENTIALS_IGNORED_HINT,
+            "last_test_at": now,
+            "last_test_ok": True,
+            "last_sync_at": now,
+            "account_id": "MOCK-CREDENTIALS-IGNORED",
+            "account_currency": "USD",
+            "created_at": now,
+        }
+    )
+
+
 @router.post("/connect", response_model=BrokerStatusOut)
 async def connect_broker(
     body: BrokerConnectRequest,
@@ -68,15 +93,23 @@ async def connect_broker(
     if body.environment == "live" and settings.APP_MODE != "live":
         raise HTTPException(status_code=400, detail="Live trading requires APP_MODE=live")
 
-    # Test the submitted credentials before replacing a working connection.
     if settings.APP_MODE == "mock":
-        from app.broker.mock_adapter import MockBrokerAdapter
-        async with MockBrokerAdapter() as broker:
-            test = await broker.test_connection()
-    else:
-        from app.broker.trading212 import Trading212Adapter
-        async with Trading212Adapter(body.api_key, body.api_secret, body.environment) as broker:
-            test = await broker.test_connection()
+        await _audit(
+            db,
+            "broker_mock_connect_ignored_credentials",
+            user_id=current_user.id,
+            payload={
+                "requested_environment": body.environment,
+                "credentials_ignored": True,
+                "credentials_stored": False,
+            },
+        )
+        return _mock_connect_status()
+
+    # Test the submitted credentials before replacing a working connection.
+    from app.broker.trading212 import Trading212Adapter
+    async with Trading212Adapter(body.api_key, body.api_secret, body.environment) as broker:
+        test = await broker.test_connection()
 
     if not test["is_ok"]:
         detail = test["error"] or "Broker connection test failed"

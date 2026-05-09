@@ -2060,6 +2060,68 @@ class TestLiveModeSafetyFlow:
 
 @pytest.mark.asyncio
 class TestBrokerExecutionFlow:
+    async def test_mock_connect_ignores_credentials_and_does_not_persist_them(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        db,
+        monkeypatch,
+    ):
+        from sqlalchemy import select
+
+        from app.core.config import settings
+        from app.db.models import BrokerConnection
+
+        monkeypatch.setattr(settings, "APP_MODE", "mock")
+
+        resp = await client.post(
+            "/v1/broker/trading212/connect",
+            headers=auth_headers,
+            json={
+                "api_key": "should-not-be-stored",
+                "api_secret": "should-not-be-stored-secret",
+                "environment": "demo",
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["environment"] == "mock"
+        assert data["credential_state"] == "mock"
+        assert data["is_active"] is True
+        assert data["account_id"] == "MOCK-CREDENTIALS-IGNORED"
+        assert data["recovery_hint"] is not None
+        assert "credentials are ignored" in data["recovery_hint"].lower()
+        assert "not stored" in data["recovery_hint"].lower()
+
+        saved = (await db.execute(select(BrokerConnection))).scalars().all()
+        assert saved == []
+
+    async def test_mock_connect_does_not_call_broker_adapters(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        monkeypatch,
+    ):
+        from app.core.config import settings
+
+        class ExplodingAdapter:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("mock connect must not instantiate broker adapters")
+
+        monkeypatch.setattr(settings, "APP_MODE", "mock")
+        monkeypatch.setattr("app.broker.mock_adapter.MockBrokerAdapter", ExplodingAdapter)
+        monkeypatch.setattr("app.broker.trading212.Trading212Adapter", ExplodingAdapter)
+
+        resp = await client.post(
+            "/v1/broker/trading212/connect",
+            headers=auth_headers,
+            json={"api_key": "ignored-key", "api_secret": "ignored-secret", "environment": "demo"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["credential_state"] == "mock"
+
     async def test_broker_status_surfaces_reconnect_required_state(
         self,
         client: AsyncClient,
