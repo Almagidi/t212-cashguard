@@ -1,14 +1,18 @@
 """Broker connection management routes."""
+
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_admin, get_current_user
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.schemas import BrokerConnectRequest, BrokerStatusOut, BrokerTestResult
 from app.core.config import settings
 from app.core.security import CredentialDecryptionError, decrypt_field, encrypt_field
@@ -28,13 +32,15 @@ MOCK_CREDENTIALS_IGNORED_HINT = (
 
 
 async def _audit(db, action, user_id=None, payload=None):
-    db.add(AuditLog(
-        action=action,
-        entity_type="broker_connection",
-        actor=str(user_id) if user_id else "system",
-        payload=payload,
-        occurred_at=datetime.now(timezone.utc),
-    ))
+    db.add(
+        AuditLog(
+            action=action,
+            entity_type="broker_connection",
+            actor=str(user_id) if user_id else "system",
+            payload=payload,
+            occurred_at=datetime.now(UTC),
+        )
+    )
     await db.flush()
 
 
@@ -108,6 +114,7 @@ async def connect_broker(
 
     # Test the submitted credentials before replacing a working connection.
     from app.broker.trading212 import Trading212Adapter
+
     async with Trading212Adapter(body.api_key, body.api_secret, body.environment) as broker:
         test = await broker.test_connection()
 
@@ -146,13 +153,17 @@ async def connect_broker(
 
     await db.flush()
 
-    conn.last_test_at = datetime.now(timezone.utc)
+    conn.last_test_at = datetime.now(UTC)
     conn.last_test_ok = test["is_ok"]
     conn.account_id = test.get("account_id")
     conn.account_currency = test.get("currency")
 
-    await _audit(db, "broker_connected", user_id=current_user.id,
-                 payload={"environment": body.environment, "test_ok": test["is_ok"]})
+    await _audit(
+        db,
+        "broker_connected",
+        user_id=current_user.id,
+        payload={"environment": body.environment, "test_ok": test["is_ok"]},
+    )
     await db.refresh(conn)
     return _serialize_status(conn, credential_state="configured")
 
@@ -165,19 +176,24 @@ async def test_connection(
     """Test the active broker connection."""
     if settings.APP_MODE == "mock":
         from app.broker.mock_adapter import MockBrokerAdapter
+
         async with MockBrokerAdapter() as broker:
             result = await broker.test_connection()
         return BrokerTestResult(**result)
 
     result_q = await db.execute(
-        select(BrokerConnection).where(
+        select(BrokerConnection)
+        .where(
             BrokerConnection.user_id == current_user.id,
-            BrokerConnection.is_active == True,
-        ).limit(1)
+            BrokerConnection.is_active.is_(True),
+        )
+        .limit(1)
     )
     conn = result_q.scalar_one_or_none()
     if not conn:
-        return BrokerTestResult(is_ok=False, account_id=None, currency=None, error="No active connection")
+        return BrokerTestResult(
+            is_ok=False, account_id=None, currency=None, error="No active connection"
+        )
 
     try:
         api_key = decrypt_field(conn.api_key_encrypted)
@@ -193,10 +209,11 @@ async def test_connection(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     from app.broker.trading212 import Trading212Adapter
+
     async with Trading212Adapter(api_key, api_secret, conn.environment) as broker:
         test = await broker.test_connection()
 
-    conn.last_test_at = datetime.now(timezone.utc)
+    conn.last_test_at = datetime.now(UTC)
     conn.last_test_ok = test["is_ok"]
     return BrokerTestResult(**test)
 
@@ -209,7 +226,7 @@ async def disconnect_broker(
     result = await db.execute(
         select(BrokerConnection).where(
             BrokerConnection.user_id == current_user.id,
-            BrokerConnection.is_active == True,
+            BrokerConnection.is_active.is_(True),
         )
     )
     connections = result.scalars().all()
@@ -227,7 +244,6 @@ async def broker_status(
 ):
     if settings.APP_MODE == "mock":
         # Return a synthetic mock status
-        from datetime import timezone
         return {
             "id": uuid.uuid4(),
             "broker": "trading212",
@@ -235,18 +251,21 @@ async def broker_status(
             "is_active": True,
             "credential_state": "mock",
             "recovery_hint": None,
-            "last_test_at": datetime.now(timezone.utc),
+            "last_test_at": datetime.now(UTC),
             "last_test_ok": True,
-            "last_sync_at": datetime.now(timezone.utc),
+            "last_sync_at": datetime.now(UTC),
             "account_id": "MOCK-001",
             "account_currency": "USD",
-            "created_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(UTC),
         }
 
     result = await db.execute(
-        select(BrokerConnection).where(
+        select(BrokerConnection)
+        .where(
             BrokerConnection.user_id == current_user.id,
-        ).order_by(BrokerConnection.created_at.desc()).limit(1)
+        )
+        .order_by(BrokerConnection.created_at.desc())
+        .limit(1)
     )
     conn = result.scalar_one_or_none()
     if not conn:
