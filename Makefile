@@ -1,5 +1,5 @@
 
-.PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator e2e-operator-integration readiness-full logs clean launcher-check normal-status stop-normal-ports operator-manual operator-manual-stop operator-manual-check manual-status stop-manual-ports
+.PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator e2e-operator-integration readiness-full logs clean launcher-check normal-status stop-normal-ports demo-mock demo-mock-stop operator-manual operator-manual-stop operator-manual-check manual-status stop-manual-ports
 
 .PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator e2e-operator-integration readiness-full logs clean operator-manual operator-manual-stop
 
@@ -328,6 +328,10 @@ MANUAL_QA_API_PID  ?= /tmp/t212_manual_api.pid
 MANUAL_QA_WEB_PID  ?= /tmp/t212_manual_web.pid
 MANUAL_QA_PORTS    ?= 8001 8002 3001 3002 3100
 
+demo-mock: operator-manual ## Start demo-ready mock stack with seeded local data
+
+demo-mock-stop: operator-manual-stop ## Stop the demo-ready mock stack
+
 operator-manual: ## Start local manual QA servers (API :8002, web :3002, APP_MODE=mock, no broker creds needed)
 	@set -e; \
 		for spec in "API:$(MANUAL_QA_API_PORT):$(MANUAL_QA_API_PID)" "Web:$(MANUAL_QA_WEB_PORT):$(MANUAL_QA_WEB_PID)"; do \
@@ -573,4 +577,3 @@ operator-manual-check: ## Curl manual QA endpoints with auth against API :8002
 			fi; \
 		done
 	@echo "$(GREEN)✓ Manual QA API endpoints returned 200$(RESET)"
-

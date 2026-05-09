@@ -74,6 +74,9 @@ make migrate   # Runs Alembic migrations
 make seed      # Seeds admin user, instruments, default strategy
 ```
 
+On a fresh local database, run migrations and seed before signing in. `make up`
+starts the containers; it does not automatically migrate or seed the database.
+
 ### 4. Start development servers
 
 ```bash
@@ -84,7 +87,9 @@ make dev
 - **Backend API**: http://localhost:8000
 - **API Docs**: http://localhost:8000/docs
 
-**Default login**: `admin@localhost` / `change-me` *(change on first run)*
+**Default login**: `admin@localhost` / the `ADMIN_PASSWORD` value in `.env`.
+The checked-in example uses `change-me-on-first-run`; the manual QA launcher
+uses `change-me`.
 
 ### Local launcher parity
 
@@ -100,13 +105,24 @@ This starts the normal app on `http://localhost:3000` with API
 Safe manual operator QA is separate:
 
 ```bash
-make operator-manual
+make demo-mock
 ```
 
 That path runs `APP_MODE=mock` on web `3002` and API `8002`, uses seeded local data, and
 does not require Trading 212 or Kraken credentials. Stop normal launch with
-`launcher/3. Stop CashGuard.command`; stop manual QA with `make operator-manual-stop`.
+`launcher/3. Stop CashGuard.command`; stop mock demo QA with `make demo-mock-stop`.
 Use `make launcher-check` to inspect both flows without stopping anything.
+
+For a demo-ready mock/paper walkthrough, prefer:
+
+```bash
+make demo-mock
+```
+
+Open `http://localhost:3002/app/operator`, sign in with
+`admin@localhost` / `change-me`, and confirm the page shows Paper-only, Mock
+execution, No broker order sent, and Live disabled. This flow is separate from
+normal demo/live Trading 212 credential setup.
 
 ---
 
@@ -118,7 +134,7 @@ Use `make launcher-check` to inspect both flows without stopping anything.
 APP_MODE=mock
 ```
 
-All broker calls return realistic fake data. Safe for UI development and testing. Orders are simulated as dry-runs.
+All broker calls return realistic fake data. Safe for UI development and testing. Orders are simulated locally as dry-runs. Mock broker status is synthetic and does not mean a real Trading 212 account is connected.
 
 ### Demo Mode (real API, no real money)
 
