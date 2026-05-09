@@ -68,7 +68,11 @@ export function TopBar() {
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   const mode = (process.env.NEXT_PUBLIC_APP_MODE || health?.mode || 'mock') as string
+  const isMockMode = mode === 'mock'
   const meta = Object.entries(PAGE_META).find(([p]) => pathname.startsWith(p))?.[1] ?? { title: 'CashGuard' }
+  const connectionLabel = health?.status === 'ok'
+    ? isMockMode ? 'Mock API' : 'Connected'
+    : 'Offline'
 
   return (
     <>
@@ -140,7 +144,7 @@ export function TopBar() {
               : <WifiOff className="w-3 h-3" />
             }
             <span className="hidden sm:inline">
-              {health?.status === 'ok' ? 'Connected' : 'Offline'}
+              {connectionLabel}
             </span>
           </div>
         </div>

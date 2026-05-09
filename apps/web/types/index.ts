@@ -583,6 +583,18 @@ export interface CreateOrderPayload {
   time_validity?: "DAY" | "GTC";
   signal_id?: string;
 }
+export interface CreatePaperOrderPayload {
+  ticker: string;
+  side: OrderSide;
+  quantity?: string;
+  notional?: string;
+  estimated_price?: string;
+  order_type?: "market";
+  strategy?: string;
+  source?: string;
+  venue?: "paper" | "mock";
+  paper_only: true;
+}
 
 // ── Positions ─────────────────────────────────────────────────────────────────
 export interface Position {

@@ -4,6 +4,7 @@ import toast from "react-hot-toast";
 import api from "@/services/api";
 import type {
   CreateOrderPayload,
+  CreatePaperOrderPayload,
   CreateStrategyPayload,
   CreateStrategyPresetPayload,
   StrategyPresetKey,
@@ -373,6 +374,21 @@ export const usePlaceOrder = () => {
       toast.success("Order placed");
     },
     onError: (e: any) => toast.error(extractErrorMessage(e, "Order failed")),
+  });
+};
+
+export const usePlacePaperOrder = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (p: CreatePaperOrderPayload) => api.placePaperOrder(p),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      qc.invalidateQueries({ queryKey: ["positions"] });
+      qc.invalidateQueries({ queryKey: ["orders", "paper"] });
+      toast.success("Paper order recorded");
+    },
+    onError: (e: any) =>
+      toast.error(extractErrorMessage(e, "Paper order blocked")),
   });
 };
 

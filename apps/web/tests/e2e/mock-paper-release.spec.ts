@@ -1,7 +1,24 @@
 import { test, expect } from '@playwright/test'
-import { ensureAppPage, expectTopbarTitle } from './helpers'
+import { adminEmail, adminPassword, ensureAppPage, expectTopbarTitle } from './helpers'
+
+const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
+
+async function adminToken(request: import('@playwright/test').APIRequestContext): Promise<string> {
+  const res = await request.post(`${API_URL}/v1/auth/login`, {
+    data: { email: adminEmail, password: adminPassword },
+  })
+  expect(res.ok(), `login failed with status ${res.status()}: ${await res.text()}`).toBe(true)
+  const body = await res.json() as { access_token?: string }
+  expect(body.access_token).toBeTruthy()
+  return body.access_token!
+}
 
 test.describe('Mock/Paper Release Candidate Smoke', () => {
+  test.skip(
+    (process.env.NEXT_PUBLIC_APP_MODE ?? 'mock') !== 'mock',
+    'Mock/paper release journey is mock-mode only.',
+  )
+
   test('operator page shows safe mock/paper runtime state', async ({ page }) => {
     await ensureAppPage(page, '/app/operator', 'Operator')
     await expectTopbarTitle(page, 'Operator')
@@ -67,5 +84,75 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
     await expect(page.getByRole('heading', { name: /Activate Kill Switch/i })).toBeVisible({
       timeout: 5_000,
     })
+  })
+
+  test('orders page supports safe paper order and kill-switch blocked demo journey', async ({ page, request }) => {
+    const token = await adminToken(request)
+    const headers = { Authorization: `Bearer ${token}` }
+    await request.post(`${API_URL}/v1/risk/kill-switch/disable`, { headers })
+    await request.patch(`${API_URL}/v1/risk/profile`, {
+      headers,
+      data: { max_open_positions: 50, max_trades_per_day: 200 },
+    })
+
+    const forbiddenPaperFlowCalls: string[] = []
+    await page.route('**/*', async (route) => {
+      const req = route.request()
+      const url = req.url()
+      const method = req.method()
+      const pathname = new URL(url).pathname.replace(/^\/api/, '')
+
+      if (
+        method !== 'GET' &&
+        (
+          pathname === '/v1/orders' ||
+          pathname.startsWith('/v1/broker/')
+        )
+      ) {
+        forbiddenPaperFlowCalls.push(`${method} ${pathname}`)
+        await route.abort('failed')
+        return
+      }
+
+      await route.continue()
+    })
+
+    await page.goto('/auth/login')
+    await page.evaluate((accessToken) => {
+      localStorage.setItem('cg_token', accessToken)
+    }, token)
+    await page.goto('/app/orders')
+    await expectTopbarTitle(page, 'Orders')
+    await expect(page.getByText('Mock API')).toBeVisible()
+    await expect(page.getByText('Connected')).toHaveCount(0)
+
+    await expect(page.getByRole('heading', { name: 'Paper / Mock Order' })).toBeVisible()
+    await expect(page.getByText('Mock mode only').first()).toBeVisible()
+    await expect(page.getByText('No real broker order will be placed')).toBeVisible()
+    await expect(page.getByText('No funds are moved')).toBeVisible()
+
+    await page.getByLabel('Ticker').fill(`MOCK${Date.now().toString().slice(-5)}`)
+    await page.getByLabel('Quantity').fill('1')
+    await page.getByRole('button', { name: 'Submit Paper Order' }).click()
+
+    await expect(page.getByText(/Paper order filled/i)).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByText(/No broker order sent/i).first()).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Paper Order History' })).toBeVisible()
+    await expect(page.getByText(/filled/i).first()).toBeVisible()
+
+    await page.getByRole('button', { name: 'Enable Kill Switch' }).click()
+    await expect(page.getByText(/Kill switch is active/i).first()).toBeVisible({ timeout: 10_000 })
+
+    await page.getByLabel('Ticker').fill(`BLOCK${Date.now().toString().slice(-5)}`)
+    await page.getByLabel('Quantity').fill('1')
+    await page.getByRole('button', { name: 'Submit Paper Order' }).click()
+
+    await expect(page.getByText(/Paper order blocked by safety controls/i)).toBeVisible({
+      timeout: 10_000,
+    })
+    await expect(page.getByText(/No broker order was sent/i).first()).toBeVisible()
+    expect(forbiddenPaperFlowCalls, `Paper flow touched broker/live order endpoints: ${forbiddenPaperFlowCalls.join(', ')}`).toEqual([])
+
+    await request.post(`${API_URL}/v1/risk/kill-switch/disable`, { headers })
   })
 })

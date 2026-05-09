@@ -12,6 +12,7 @@ import type {
   BrokerTestResult,
   CashGuardStatus,
   CreateOrderPayload,
+  CreatePaperOrderPayload,
   CreateStrategyPayload,
   CreateStrategyPresetPayload,
   DepsHealth,
@@ -401,6 +402,9 @@ class ApiClient {
   }
   async placeOrder(payload: CreateOrderPayload): Promise<Order> {
     return (await this.client.post<Order>("/orders", payload)).data;
+  }
+  async placePaperOrder(payload: CreatePaperOrderPayload): Promise<Order> {
+    return (await this.client.post<Order>("/orders/paper", payload)).data;
   }
   async getOrder(id: string): Promise<OrderDetail> {
     return (await this.client.get<OrderDetail>(`/orders/${id}`)).data;
