@@ -82,27 +82,35 @@ jobs:
       - name: Lint changed Python files
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            mapfile -t CHANGED_FILES < <(git diff --name-only origin/${{ github.base_ref }}..HEAD | grep '^apps/api/' | sed 's|^apps/api/||' | grep '\.py$' || true)
-            if ((${#CHANGED_FILES[@]})); then
-              python -m ruff check "${CHANGED_FILES[@]}"
-            else
-              echo "No python files changed in apps/api/."
-            fi
+            DIFF_RANGE="origin/${{ github.base_ref }}..HEAD"
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            DIFF_RANGE="${{ github.event.before }}..HEAD"
           else
-            python -m ruff check app/ tests/
+            DIFF_RANGE="HEAD~1..HEAD"
+          fi
+
+          mapfile -t CHANGED_FILES < <(git diff --name-only "$DIFF_RANGE" | grep '^apps/api/' | sed 's|^apps/api/||' | grep '\.py$' || true)
+          if ((${#CHANGED_FILES[@]})); then
+            python -m ruff check "${CHANGED_FILES[@]}"
+          else
+            echo "No python files changed in apps/api/."
           fi
 
       - name: Format changed Python files
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            mapfile -t CHANGED_FILES < <(git diff --name-only origin/${{ github.base_ref }}..HEAD | grep '^apps/api/' | sed 's|^apps/api/||' | grep '\.py$' || true)
-            if ((${#CHANGED_FILES[@]})); then
-              python -m ruff format --check "${CHANGED_FILES[@]}"
-            else
-              echo "No python files changed in apps/api/."
-            fi
+            DIFF_RANGE="origin/${{ github.base_ref }}..HEAD"
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            DIFF_RANGE="${{ github.event.before }}..HEAD"
           else
-            python -m ruff format --check app/ tests/
+            DIFF_RANGE="HEAD~1..HEAD"
+          fi
+
+          mapfile -t CHANGED_FILES < <(git diff --name-only "$DIFF_RANGE" | grep '^apps/api/' | sed 's|^apps/api/||' | grep '\.py$' || true)
+          if ((${#CHANGED_FILES[@]})); then
+            python -m ruff format --check "${CHANGED_FILES[@]}"
+          else
+            echo "No python files changed in apps/api/."
           fi
 
       - name: Type check
