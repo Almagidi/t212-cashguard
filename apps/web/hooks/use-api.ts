@@ -555,6 +555,20 @@ export const useEmergencyKillSwitch = () => {
     },
   });
 };
+export const useEmergencyDisableKillSwitch = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.disableKillSwitch.bind(api),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: QK.settings });
+      toast.success(
+        "Kill switch disabled. Auto-trading remains OFF until manually re-enabled.",
+      );
+    },
+    onError: (e: any) =>
+      toast.error(extractErrorMessage(e, "Failed to disable kill switch")),
+  });
+};
 export const useEmergencyAutoTradingOff = () => {
   const qc = useQueryClient();
   return useMutation({

@@ -1,8 +1,8 @@
 'use client'
 import { useState } from 'react'
-import { AlertOctagon, XCircle, TrendingDown, Power, PowerOff } from 'lucide-react'
+import { AlertOctagon, CheckCircle2, ShieldCheck, XCircle, TrendingDown, Power, PowerOff } from 'lucide-react'
 import {
-  useSettings, useEmergencyKillSwitch, useEmergencyAutoTradingOff,
+  useSettings, useEmergencyKillSwitch, useEmergencyDisableKillSwitch, useEmergencyAutoTradingOff,
   useEmergencyAutoTradingOn, useEmergencyCancelAll, useEmergencyFlattenAll,
 } from '@/hooks/use-api'
 import { Button, Card, CardContent, Spinner, PageHeader } from '@/components/ui'
@@ -21,16 +21,6 @@ interface EmergencyAction {
 }
 
 const ACTIONS: EmergencyAction[] = [
-  {
-    id: 'kill_switch',
-    label: 'Kill Switch',
-    description: 'Immediately halt ALL automated trading. No new orders will be placed. Existing positions are kept.',
-    confirmTitle: '⛔ Activate Kill Switch?',
-    confirmDesc: 'All automated trading will halt immediately. No new orders will be placed until you manually deactivate the kill switch.',
-    confirmLabel: 'Activate Kill Switch',
-    icon: AlertOctagon,
-    variant: 'danger',
-  },
   {
     id: 'auto_trading_off',
     label: 'Disable Auto Trading',
@@ -66,9 +56,12 @@ const ACTIONS: EmergencyAction[] = [
 export default function EmergencyPage() {
   const { data: settings, isLoading } = useSettings()
   const [pending, setPending] = useState<string | null>(null)
+  const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null)
+  const [recoveryError, setRecoveryError] = useState<string | null>(null)
   const isMockRuntime = (process.env.NEXT_PUBLIC_APP_MODE || 'mock') === 'mock'
 
   const killSwitch = useEmergencyKillSwitch()
+  const disableKillSwitch = useEmergencyDisableKillSwitch()
   const autoOff = useEmergencyAutoTradingOff()
   const autoOn = useEmergencyAutoTradingOn()
   const cancelAll = useEmergencyCancelAll()
@@ -76,13 +69,27 @@ export default function EmergencyPage() {
 
   const execute = async (id: string) => {
     setPending(null)
-    if (id === 'kill_switch') await killSwitch.mutateAsync()
+    setRecoveryError(null)
+    if (id === 'kill_switch') {
+      setRecoveryMessage(null)
+      await killSwitch.mutateAsync()
+    }
+    if (id === 'disable_kill_switch') {
+      try {
+        await disableKillSwitch.mutateAsync()
+        setRecoveryMessage('Kill switch disabled. Auto-trading remains OFF until manually re-enabled.')
+      } catch {
+        setRecoveryMessage(null)
+        setRecoveryError('Failed to disable kill switch. Check backend connectivity and try again.')
+      }
+    }
     if (id === 'auto_trading_off') await autoOff.mutateAsync()
     if (id === 'cancel_all') await cancelAll.mutateAsync()
     if (id === 'flatten_all') await flattenAll.mutateAsync()
   }
 
-  const isBusy = killSwitch.isPending || autoOff.isPending || cancelAll.isPending || flattenAll.isPending
+  const isBusy = killSwitch.isPending || disableKillSwitch.isPending || autoOff.isPending || autoOn.isPending || cancelAll.isPending || flattenAll.isPending
+  const killSwitchActive = Boolean(settings?.kill_switch_active)
 
   if (isLoading) return <div className="flex items-center gap-2 text-muted-foreground text-sm"><Spinner className="w-4 h-4" />Loading...</div>
 
@@ -103,7 +110,7 @@ export default function EmergencyPage() {
           <div>
             <p className="text-sm font-semibold text-red-300">Immediate and irreversible</p>
             <p className="text-xs text-red-300/70 mt-1 leading-relaxed">
-              These actions execute immediately and most cannot be undone. In mock mode they operate on local simulated broker state; in demo/live modes broker-backed actions may contact the configured broker. All actions are logged to the audit trail.
+              These actions execute immediately and most cannot be undone. {isMockRuntime ? 'In mock mode they affect local simulated state only: no real broker order is placed and no real funds are moved.' : 'In demo/live modes broker-backed actions may contact the configured broker.'} All actions are logged to the audit trail.
             </p>
           </div>
         </div>
@@ -146,6 +153,21 @@ export default function EmergencyPage() {
         </div>
       </div>
 
+      {recoveryMessage && (
+        <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+          <div className="flex items-start gap-2">
+            <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0" />
+            <p>{recoveryMessage}</p>
+          </div>
+        </div>
+      )}
+
+      {recoveryError && (
+        <div className="rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          {recoveryError}
+        </div>
+      )}
+
       {/* Re-enable auto trading */}
       {!settings?.auto_trading_enabled && !settings?.kill_switch_active && (
         <Card className="border-emerald-500/20 bg-emerald-500/[0.03]">
@@ -166,6 +188,63 @@ export default function EmergencyPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Kill switch activation / recovery */}
+      <Card className={cn(
+        'transition-all',
+        killSwitchActive
+          ? 'border-blue-500/25 bg-blue-500/[0.04]'
+          : 'hover:border-red-500/40 hover:shadow-[var(--elev-2)]',
+      )}>
+        <CardContent className="p-4 flex items-start justify-between gap-4">
+          <div className="flex items-start gap-3 min-w-0">
+            <div className={cn(
+              'w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 border',
+              killSwitchActive
+                ? 'bg-blue-500/10 border-blue-500/25 text-blue-300'
+                : 'bg-red-500/10 border-red-500/25 text-red-400',
+            )}>
+              {killSwitchActive ? <ShieldCheck className="w-4 h-4" /> : <AlertOctagon className="w-4 h-4" />}
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold">{killSwitchActive ? 'Kill Switch Recovery' : 'Kill Switch'}</p>
+              <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                {killSwitchActive
+                  ? 'Disable the kill switch separately from auto-trading. This clears the emergency block but auto-trading remains OFF until a separate manual re-enable.'
+                  : 'Immediately halt ALL automated trading. No new orders will be placed. Existing positions are kept.'}
+              </p>
+              {isMockRuntime && (
+                <p className="mt-2 text-xs text-blue-200/80">
+                  Mock mode: this changes local simulated state only. No real broker order is placed and no real funds are moved.
+                </p>
+              )}
+            </div>
+          </div>
+          <Button
+            variant={killSwitchActive ? 'outline' : 'danger'}
+            size="sm"
+            className={cn('flex-shrink-0', killSwitchActive && 'border-blue-500/35 text-blue-200 hover:bg-blue-500/10')}
+            onClick={() => setPending(killSwitchActive ? 'disable_kill_switch' : 'kill_switch')}
+            disabled={isBusy}
+            loading={killSwitchActive ? disableKillSwitch.isPending : killSwitch.isPending}
+          >
+            {killSwitchActive ? 'Disable Kill Switch' : 'Activate Kill Switch'}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="border-amber-500/20 bg-amber-500/[0.03]">
+        <CardContent className="p-4">
+          <p className="text-sm font-semibold text-amber-200">Operator recovery sequence</p>
+          <ol className="mt-3 space-y-2 text-xs leading-relaxed text-muted-foreground">
+            <li>1. Disable kill switch.</li>
+            <li>2. Confirm mock/broker status.</li>
+            <li>3. Confirm market data health.</li>
+            <li>4. Confirm risk system health.</li>
+            <li>5. Re-enable auto-trading separately only if appropriate.</li>
+          </ol>
+        </CardContent>
+      </Card>
 
       {/* Action cards */}
       <div className="space-y-3">
@@ -197,7 +276,7 @@ export default function EmergencyPage() {
                 onClick={() => setPending(action.id)}
                 disabled={isBusy}
               >
-                Execute
+                {action.confirmLabel}
               </Button>
             </CardContent>
           </Card>
@@ -218,6 +297,25 @@ export default function EmergencyPage() {
           loading={isBusy}
         />
       ))}
+      <ConfirmDialog
+        open={pending === 'kill_switch'}
+        onClose={() => setPending(null)}
+        onConfirm={() => execute('kill_switch')}
+        title="⛔ Activate Kill Switch?"
+        description="All automated trading will halt immediately. No new orders will be placed until you manually disable the kill switch. Auto-trading will remain off after recovery."
+        confirmLabel="Activate Kill Switch"
+        dangerous
+        loading={isBusy}
+      />
+      <ConfirmDialog
+        open={pending === 'disable_kill_switch'}
+        onClose={() => setPending(null)}
+        onConfirm={() => execute('disable_kill_switch')}
+        title="Disable Kill Switch?"
+        description="This clears the emergency kill switch only. Auto-trading remains OFF until manually re-enabled through the separate auto-trading control."
+        confirmLabel="Disable Kill Switch"
+        loading={isBusy}
+      />
     </div>
   )
 }

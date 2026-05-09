@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { adminEmail, adminPassword, ensureAppPage, expectTopbarTitle } from './helpers'
+import { adminEmail, adminPassword, ensureAppPage, expectTopbarTitle, installAuthMeStub } from './helpers'
 
 const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
 
@@ -78,12 +78,59 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
     await expect(page.locator('text=Cancel All Pending Orders')).toBeVisible()
     await expect(page.locator('text=Flatten All Positions')).toBeVisible()
 
-    const executeButtons = page.locator('button:has-text("Execute")')
-    await executeButtons.first().click()
+    await page.getByRole('button', { name: 'Activate Kill Switch' }).click()
 
     await expect(page.getByRole('heading', { name: /Activate Kill Switch/i })).toBeVisible({
       timeout: 5_000,
     })
+  })
+
+  test('emergency page supports explicit kill-switch recovery without resuming auto-trading', async ({ page, request }) => {
+    const token = await adminToken(request)
+    const headers = { Authorization: `Bearer ${token}` }
+    const reset = await request.post(`${API_URL}/v1/risk/kill-switch/disable`, { headers })
+    expect(reset.ok(), `kill-switch reset failed with status ${reset.status()}: ${await reset.text()}`).toBe(true)
+
+    const forbiddenRecoveryCalls: string[] = []
+    await page.route('**/*', async (route) => {
+      const req = route.request()
+      const url = req.url()
+      const method = req.method()
+      const pathname = new URL(url).pathname.replace(/^\/api/, '')
+
+      if (method !== 'GET' && pathname.startsWith('/v1/broker/')) {
+        forbiddenRecoveryCalls.push(`${method} ${pathname}`)
+        await route.abort('failed')
+        return
+      }
+
+      await route.continue()
+    })
+
+    await installAuthMeStub(page)
+    await page.goto('/auth/login')
+    await page.evaluate((accessToken) => {
+      localStorage.setItem('cg_token', accessToken)
+    }, token)
+    await page.goto('/app/emergency')
+    await expectTopbarTitle(page, 'Emergency Controls')
+
+    await expect(page.getByText('Kill Switch').first()).toBeVisible()
+    await expect(page.getByText(/^Inactive$/).first()).toBeVisible()
+    await page.getByRole('button', { name: 'Activate Kill Switch' }).click()
+    await expect(page.getByRole('heading', { name: /Activate Kill Switch/i })).toBeVisible()
+    await page.getByRole('button', { name: 'Activate Kill Switch' }).last().click()
+
+    await expect(page.getByText(/^ACTIVE$/).first()).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByText(/Disable the kill switch separately from auto-trading/i)).toBeVisible()
+    await page.getByRole('button', { name: 'Disable Kill Switch' }).click()
+    await expect(page.getByRole('heading', { name: /Disable Kill Switch/i })).toBeVisible()
+    await page.getByRole('button', { name: 'Disable Kill Switch' }).last().click()
+
+    await expect(page.getByText(/^Inactive$/).first()).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByText('Kill switch disabled. Auto-trading remains OFF until manually re-enabled.')).toBeVisible()
+    await expect(page.getByText(/Auto Trading/i).locator('..').getByText(/Disabled/i)).toBeVisible()
+    expect(forbiddenRecoveryCalls, `Recovery flow touched broker endpoints: ${forbiddenRecoveryCalls.join(', ')}`).toEqual([])
   })
 
   test('orders page supports safe paper order and kill-switch blocked demo journey', async ({ page, request }) => {
