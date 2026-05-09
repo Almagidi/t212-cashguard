@@ -31,7 +31,9 @@ MOCK_CREDENTIALS_IGNORED_HINT = (
 )
 
 
-async def _audit(db, action, user_id=None, payload=None):
+async def _audit(
+    db: AsyncSession, action: str, user_id: object | None = None, payload: dict | None = None
+) -> None:
     db.add(
         AuditLog(
             action=action,
@@ -93,7 +95,7 @@ async def connect_broker(
     body: BrokerConnectRequest,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> BrokerStatusOut:
     """Test and then store encrypted broker credentials."""
     # Block live connections unless live mode is explicitly supported
     if body.environment == "live" and settings.APP_MODE != "live":
@@ -172,7 +174,7 @@ async def connect_broker(
 async def test_connection(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> BrokerTestResult:
     """Test the active broker connection."""
     if settings.APP_MODE == "mock":
         from app.broker.mock_adapter import MockBrokerAdapter
@@ -222,7 +224,7 @@ async def test_connection(
 async def disconnect_broker(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, int | str]:
     result = await db.execute(
         select(BrokerConnection).where(
             BrokerConnection.user_id == current_user.id,
@@ -241,23 +243,10 @@ async def disconnect_broker(
 async def broker_status(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> BrokerStatusOut | None:
     if settings.APP_MODE == "mock":
-        # Return a synthetic mock status
-        return {
-            "id": uuid.uuid4(),
-            "broker": "trading212",
-            "environment": "mock",
-            "is_active": True,
-            "credential_state": "mock",
-            "recovery_hint": None,
-            "last_test_at": datetime.now(UTC),
-            "last_test_ok": True,
-            "last_sync_at": datetime.now(UTC),
-            "account_id": "MOCK-001",
-            "account_currency": "USD",
-            "created_at": datetime.now(UTC),
-        }
+        # Return a synthetic mock status.
+        return _mock_connect_status()
 
     result = await db.execute(
         select(BrokerConnection)
