@@ -66,6 +66,7 @@ const ACTIONS: EmergencyAction[] = [
 export default function EmergencyPage() {
   const { data: settings, isLoading } = useSettings()
   const [pending, setPending] = useState<string | null>(null)
+  const isMockRuntime = (process.env.NEXT_PUBLIC_APP_MODE || 'mock') === 'mock'
 
   const killSwitch = useEmergencyKillSwitch()
   const autoOff = useEmergencyAutoTradingOff()
@@ -90,7 +91,7 @@ export default function EmergencyPage() {
       <PageHeader
         icon={<AlertOctagon className="h-5 w-5" />}
         label="Emergency Controls"
-        sub="Kill switch and rapid unwind · All actions are audit-logged"
+        sub={isMockRuntime ? 'Mock-mode kill switch and simulated unwind · All actions are audit-logged' : 'Kill switch and rapid unwind · All actions are audit-logged'}
       />
 
       {/* Warning header */}
@@ -102,7 +103,7 @@ export default function EmergencyPage() {
           <div>
             <p className="text-sm font-semibold text-red-300">Immediate and irreversible</p>
             <p className="text-xs text-red-300/70 mt-1 leading-relaxed">
-              These actions execute immediately and most cannot be undone. Use only in emergencies. All actions are logged to the audit trail.
+              These actions execute immediately and most cannot be undone. In mock mode they operate on local simulated broker state; in demo/live modes broker-backed actions may contact the configured broker. All actions are logged to the audit trail.
             </p>
           </div>
         </div>

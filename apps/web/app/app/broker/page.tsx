@@ -116,6 +116,7 @@ export default function BrokerPage() {
 
   const env = watch('environment')
   const testResult = testMutation.data as BrokerTestResult | undefined
+  const isMockRuntime = (process.env.NEXT_PUBLIC_APP_MODE || 'mock') === 'mock' || status?.environment === 'mock'
 
   const onSubmit = async (data: FormData) => {
     const sanitized = {
@@ -145,7 +146,7 @@ export default function BrokerPage() {
       <PageHeader
         icon={<PlugZap className="h-5 w-5" />}
         label="Broker Account"
-        sub="Trading 212 connection and account details"
+        sub={isMockRuntime ? 'Mock broker status and Trading 212 credential setup boundary' : 'Trading 212 connection and account details'}
       />
 
       {/* Cash-only enforcement notice */}
@@ -175,6 +176,20 @@ export default function BrokerPage() {
 
       {diagnosticsToShow && <BrokerDiagnosticsPanel diagnostics={diagnosticsToShow} />}
 
+      {isMockRuntime && (
+        <div className="flex items-start gap-3 p-4 bg-sky-500/8 border border-sky-500/25 rounded-xl text-sky-800 dark:text-sky-200">
+          <div className="w-8 h-8 rounded-lg bg-sky-500/15 border border-sky-500/25 flex items-center justify-center flex-shrink-0">
+            <ShieldAlert className="w-4 h-4" />
+          </div>
+          <div className="text-sm">
+            <p className="font-semibold">Mock broker runtime active</p>
+            <p className="text-sky-700 dark:text-sky-200/80 mt-1 leading-relaxed">
+              Broker status is synthetic in mock mode. Testing or connecting here does not validate with Trading 212 or prove a real broker account is connected.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Current status */}
       {isLoading ? (
         <div className="flex items-center gap-2 text-muted-foreground text-sm"><Spinner className="w-4 h-4" /> Loading...</div>
@@ -182,7 +197,7 @@ export default function BrokerPage() {
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
-              <CardTitle>Active Connection</CardTitle>
+              <CardTitle>{isMockRuntime ? 'Mock Broker Status' : 'Active Connection'}</CardTitle>
               <div className="flex items-center gap-2">
                 <span className={cn(
                   'text-xs px-2 py-0.5 rounded-full font-medium',
@@ -194,8 +209,10 @@ export default function BrokerPage() {
                 )}>
                   {status.credential_state === 'reconnect_required'
                     ? '● Reconnect Required'
-                    : status.is_active && status.last_test_ok
-                      ? '● Connected'
+                    : isMockRuntime
+                      ? '● Mock Adapter'
+                      : status.is_active && status.last_test_ok
+                        ? '● Connected'
                       : '● Disconnected'}
                 </span>
                 <span className={cn('text-xs', status.environment === 'mock' ? 'badge-mock' : status.environment === 'demo' ? 'badge-demo' : 'badge-live')}>
@@ -235,7 +252,7 @@ export default function BrokerPage() {
             <div className="flex gap-2 pt-2">
               <Button variant="outline" size="sm" onClick={() => testMutation.mutate()} loading={testMutation.isPending}>
                 <PlugZap className="w-3.5 h-3.5" />
-                Test Connection
+                {isMockRuntime ? 'Test Mock Adapter' : 'Test Connection'}
               </Button>
               <Button variant="outline" size="sm" className="text-red-400 hover:text-red-300" onClick={() => setShowDisconnect(true)}>
                 <Unplug className="w-3.5 h-3.5" />
@@ -259,6 +276,11 @@ export default function BrokerPage() {
           <CardTitle>{status?.credential_state === 'reconnect_required' ? 'Reconnect Trading 212' : 'Connect Trading 212'}</CardTitle>
           </CardHeader>
         <CardContent>
+          {isMockRuntime && (
+            <p className="mb-4 rounded-lg border border-sky-500/20 bg-sky-500/5 px-3 py-2 text-xs text-sky-800 dark:text-sky-200">
+              In mock mode this form is not part of the paper-trading demo path. Switch the backend to APP_MODE=demo before using real Trading 212 demo credentials.
+            </p>
+          )}
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
             <div className="space-y-1.5">
               <Label>Environment</Label>
