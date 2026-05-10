@@ -142,14 +142,14 @@ export default function OrdersPage() {
         }
       />
 
-      <Card className="border-emerald-500/20 bg-emerald-500/[0.03]">
+      <Card className="border-emerald-500/20 bg-emerald-500/[0.03]" data-testid="paper-order-panel">
         <CardContent className="pt-5">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
             <div className="space-y-4 lg:max-w-xl">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-sm font-semibold text-foreground">Paper / Mock Order</h2>
                 <Badge variant={isMockMode ? 'success' : 'warning'}>{isMockMode ? 'Mock mode only' : `${appMode} mode`}</Badge>
-                {settings?.kill_switch_active && <Badge variant="destructive">Kill switch is active</Badge>}
+                {settings?.kill_switch_active && <Badge variant="destructive" data-testid="paper-kill-switch-active-badge">Kill switch is active</Badge>}
               </div>
               <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
                 <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/40 px-3 py-2">
@@ -214,7 +214,7 @@ export default function OrdersPage() {
                     <option value="mock">mock</option>
                   </select>
                 </div>
-                <Button type="submit" size="sm" loading={placePaperOrder.isPending}>
+                <Button type="submit" size="sm" loading={placePaperOrder.isPending} data-testid="paper-order-submit-button">
                   <Send className="h-3.5 w-3.5" />
                   Submit Paper Order
                 </Button>
@@ -226,7 +226,7 @@ export default function OrdersPage() {
                   paperResult.tone === 'success'
                     ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
                     : 'border-amber-500/30 bg-amber-500/10 text-amber-200',
-                )}>
+                )} data-testid="paper-order-status-message">
                   <p className="font-semibold">{paperResult.title}</p>
                   <p className="mt-0.5 text-xs opacity-85">{paperResult.detail}</p>
                   {paperResult.orderId && (
@@ -257,6 +257,7 @@ export default function OrdersPage() {
                     onClick={enableKillSwitch}
                     loading={killSwitch.isPending}
                     disabled={settings?.kill_switch_active}
+                    data-testid="enable-kill-switch-button"
                   >
                     <AlertTriangle className="h-3.5 w-3.5" />
                     Enable Kill Switch
@@ -278,7 +279,7 @@ export default function OrdersPage() {
                     Refresh
                   </Button>
                 </div>
-                <div className="max-h-72 overflow-auto rounded-lg border border-border/70 bg-background/40">
+                <div className="max-h-72 overflow-auto rounded-lg border border-border/70 bg-background/40" data-testid="paper-order-history">
                   {loadingPaperHistory ? (
                     <div className="flex items-center justify-center gap-2 px-3 py-8 text-xs text-muted-foreground">
                       <Spinner className="h-3.5 w-3.5" />
