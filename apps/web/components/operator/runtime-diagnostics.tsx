@@ -253,6 +253,7 @@ export function RuntimeDiagnostics({ compact = false }: { compact?: boolean }) {
         compact && "rounded-lg",
       )}
       aria-label="Runtime diagnostics"
+      data-testid="mock-runtime-status"
     >
       <CardHeader className={compact ? "px-4 pt-4 pb-2" : undefined}>
         <div className="flex flex-wrap items-center justify-between gap-3">

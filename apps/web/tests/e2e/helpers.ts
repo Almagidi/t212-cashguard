@@ -64,23 +64,64 @@ export async function installAuthMeStub(page: Page) {
   })
 }
 
+export async function installApiProxy(
+  page: Page,
+  options: {
+    onBlockedRequest?: (request: { method: string; pathname: string }) => void
+    shouldBlockRequest?: (request: { method: string; pathname: string }) => boolean
+  } = {},
+) {
+  await page.route(`${apiUrl}/**`, async (route) => {
+    const request = route.request()
+    const method = request.method()
+    const url = request.url()
+    const pathname = new URL(url).pathname.replace(/^\/api/, '')
+    const origin = request.headers().origin ?? page.url().match(/^https?:\/\/[^/]+/)?.[0] ?? '*'
+
+    if (method === 'OPTIONS') {
+      await route.fulfill({
+        status: 204,
+        headers: {
+          'access-control-allow-origin': origin,
+          'access-control-allow-credentials': 'true',
+          'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+          'access-control-allow-headers': 'authorization, content-type',
+        },
+        body: '',
+      })
+      return
+    }
+
+    if (options.shouldBlockRequest?.({ method, pathname })) {
+      options.onBlockedRequest?.({ method, pathname })
+      await route.abort('failed')
+      return
+    }
+
+    const response = await page.request.fetch(request)
+    const headers = response.headers()
+    await route.fulfill({
+      response,
+      headers: {
+        ...headers,
+        'access-control-allow-origin': origin,
+        'access-control-allow-credentials': 'true',
+      },
+    })
+  })
+}
+
 export async function ensureLoggedIn(page: Page) {
   await installAuthMeStub(page)
   await page.goto('/auth/login')
 
   if (!cachedToken) {
-    const loginResult = await page.evaluate(async ({ email, password, apiUrl }) => {
-      const response = await fetch(`${apiUrl}/v1/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      })
-      const data = await response.json().catch(() => null)
-      return { ok: response.ok, status: response.status, data }
-    }, { email: adminEmail, password: adminPassword, apiUrl })
-
-    expect(loginResult.ok, `login bootstrap failed with status ${loginResult.status}`).toBe(true)
-    cachedToken = loginResult.data?.access_token as string | undefined
+    const response = await page.request.post(`${apiUrl}/v1/auth/login`, {
+      data: { email: adminEmail, password: adminPassword },
+    })
+    expect(response.ok(), `login bootstrap failed with status ${response.status()}: ${await response.text()}`).toBe(true)
+    const data = await response.json() as { access_token?: string }
+    cachedToken = data.access_token
     expect(cachedToken).toBeTruthy()
   }
 

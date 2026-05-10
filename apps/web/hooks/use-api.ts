@@ -381,10 +381,12 @@ export const usePlacePaperOrder = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (p: CreatePaperOrderPayload) => api.placePaperOrder(p),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["orders"] });
-      qc.invalidateQueries({ queryKey: ["positions"] });
-      qc.invalidateQueries({ queryKey: ["orders", "paper"] });
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["orders"] }),
+        qc.invalidateQueries({ queryKey: ["positions"] }),
+        qc.invalidateQueries({ queryKey: ["orders", "paper"] }),
+      ]);
       toast.success("Paper order recorded");
     },
     onError: (e: any) =>
@@ -459,8 +461,8 @@ export const useKillSwitch = () => {
   return useMutation({
     mutationFn: ({ active }: { active: boolean }) =>
       active ? api.enableKillSwitch() : api.disableKillSwitch(),
-    onSuccess: (_d, v) => {
-      qc.invalidateQueries({ queryKey: ["settings"] });
+    onSuccess: async (_d, v) => {
+      await qc.invalidateQueries({ queryKey: QK.settings });
       toast.success(
         v.active ? "⛔ Kill switch activated" : "✅ Kill switch deactivated",
       );
@@ -549,8 +551,8 @@ export const useEmergencyKillSwitch = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.emergencyKillSwitch.bind(api),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["settings"] });
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: QK.settings });
       toast.error("⛔ KILL SWITCH ACTIVATED");
     },
   });

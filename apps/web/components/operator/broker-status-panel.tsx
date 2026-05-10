@@ -81,7 +81,7 @@ export function BrokerStatusPanel({
     status?.credential_state ?? (status ? "configured" : "unknown");
 
   return (
-    <section className="space-y-5 rounded-2xl border border-slate-800 bg-slate-950/60 p-5 shadow-sm">
+    <section className="space-y-5 rounded-2xl border border-slate-800 bg-slate-950/60 p-5 shadow-sm" data-testid="broker-runtime-status">
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div>
           <h2 className="text-lg font-semibold text-slate-100">
@@ -138,7 +138,7 @@ export function BrokerStatusPanel({
           </p>
         </div>
 
-        <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+        <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4" data-testid="broker-real-configured">
           <p className="text-xs uppercase tracking-wide text-slate-500">
             Real broker configured
           </p>
@@ -147,7 +147,7 @@ export function BrokerStatusPanel({
           </p>
         </div>
 
-        <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+        <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4" data-testid="broker-mock-active">
           <p className="text-xs uppercase tracking-wide text-slate-500">
             Mock broker active
           </p>

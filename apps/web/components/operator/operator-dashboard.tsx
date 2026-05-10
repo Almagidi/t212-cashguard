@@ -187,6 +187,7 @@ function TopSafetySummary({ status }: { status: OperatorStatus }) {
           status.overall_status === "blocked" && "border-red-500/40",
           status.overall_status === "degraded" && "border-amber-500/40",
         )}
+        data-testid="live-readiness-status"
       >
         <CardContent className="space-y-4 pt-5">
           <div className="flex flex-wrap items-center gap-2">

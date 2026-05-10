@@ -14,12 +14,13 @@ interface ConfirmDialogProps {
   cancelLabel?: string
   dangerous?: boolean
   loading?: boolean
+  confirmButtonTestId?: string
 }
 
 export function ConfirmDialog({
   open, onClose, onConfirm, title, description,
   confirmLabel = 'Confirm', cancelLabel = 'Cancel',
-  dangerous = false, loading = false,
+  dangerous = false, loading = false, confirmButtonTestId,
 }: ConfirmDialogProps) {
   React.useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -53,6 +54,7 @@ export function ConfirmDialog({
             size="sm"
             onClick={onConfirm}
             loading={loading}
+            data-testid={confirmButtonTestId}
           >
             {confirmLabel}
           </Button>

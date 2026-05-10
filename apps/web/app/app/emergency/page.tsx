@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 
 interface EmergencyAction {
   id: string
+  testId: string
   label: string
   description: string
   confirmTitle: string
@@ -23,6 +24,7 @@ interface EmergencyAction {
 const ACTIONS: EmergencyAction[] = [
   {
     id: 'auto_trading_off',
+    testId: 'emergency-action-disable-auto-trading',
     label: 'Disable Auto Trading',
     description: 'Turn off automatic strategy execution. Manual orders are still allowed.',
     confirmTitle: 'Disable auto trading?',
@@ -33,6 +35,7 @@ const ACTIONS: EmergencyAction[] = [
   },
   {
     id: 'cancel_all',
+    testId: 'emergency-action-cancel-orders',
     label: 'Cancel All Pending Orders',
     description: 'Cancel all pending, submitted, and working orders at the broker.',
     confirmTitle: 'Cancel all pending orders?',
@@ -43,6 +46,7 @@ const ACTIONS: EmergencyAction[] = [
   },
   {
     id: 'flatten_all',
+    testId: 'emergency-action-flatten-positions',
     label: 'Flatten All Positions',
     description: 'Close ALL open positions via market sell orders. This will realise any unrealised P&L.',
     confirmTitle: '⚠️ Flatten all positions?',
@@ -121,7 +125,7 @@ export default function EmergencyPage() {
         <div className={cn(
           'stat-card',
           settings?.kill_switch_active && 'border-red-500/30 bg-red-500/5'
-        )}>
+        )} data-testid="kill-switch-status">
           <p className="stat-label">Kill Switch</p>
           <div className="flex items-center gap-2 mt-2">
             <span className={cn(
@@ -136,7 +140,7 @@ export default function EmergencyPage() {
             </p>
           </div>
         </div>
-        <div className="stat-card">
+        <div className="stat-card" data-testid="auto-trading-status">
           <p className="stat-label">Auto Trading</p>
           <div className="flex items-center gap-2 mt-2">
             <span className={cn(
@@ -154,7 +158,7 @@ export default function EmergencyPage() {
       </div>
 
       {recoveryMessage && (
-        <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+        <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200" data-testid="kill-switch-recovery-message">
           <div className="flex items-start gap-2">
             <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0" />
             <p>{recoveryMessage}</p>
@@ -227,6 +231,7 @@ export default function EmergencyPage() {
             onClick={() => setPending(killSwitchActive ? 'disable_kill_switch' : 'kill_switch')}
             disabled={isBusy}
             loading={killSwitchActive ? disableKillSwitch.isPending : killSwitch.isPending}
+            data-testid={killSwitchActive ? 'disable-kill-switch-button' : 'activate-kill-switch-button'}
           >
             {killSwitchActive ? 'Disable Kill Switch' : 'Activate Kill Switch'}
           </Button>
@@ -275,6 +280,7 @@ export default function EmergencyPage() {
                 className="flex-shrink-0"
                 onClick={() => setPending(action.id)}
                 disabled={isBusy}
+                data-testid={action.testId}
               >
                 {action.confirmLabel}
               </Button>
@@ -306,6 +312,7 @@ export default function EmergencyPage() {
         confirmLabel="Activate Kill Switch"
         dangerous
         loading={isBusy}
+        confirmButtonTestId="confirm-activate-kill-switch-button"
       />
       <ConfirmDialog
         open={pending === 'disable_kill_switch'}
@@ -315,6 +322,7 @@ export default function EmergencyPage() {
         description="This clears the emergency kill switch only. Auto-trading remains OFF until manually re-enabled through the separate auto-trading control."
         confirmLabel="Disable Kill Switch"
         loading={isBusy}
+        confirmButtonTestId="confirm-disable-kill-switch-button"
       />
     </div>
   )

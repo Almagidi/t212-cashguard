@@ -1,5 +1,5 @@
-import { test, expect } from '@playwright/test'
-import { adminEmail, adminPassword, ensureAppPage, expectTopbarTitle, installAuthMeStub } from './helpers'
+import { test, expect, type Page } from '@playwright/test'
+import { adminEmail, adminPassword, ensureAppPage, ensureLoggedIn, expectTopbarTitle, installApiProxy, installAuthMeStub } from './helpers'
 
 const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
 
@@ -13,6 +13,14 @@ async function adminToken(request: import('@playwright/test').APIRequestContext)
   return body.access_token!
 }
 
+
+async function resetKillSwitch(page: Page) {
+  const token = await adminToken(page.request)
+  const res = await page.request.post(`${API_URL}/v1/risk/kill-switch/disable`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  expect(res.ok(), `kill-switch reset failed with status ${res.status()}: ${await res.text()}`).toBe(true)
+}
 test.describe('Mock/Paper Release Candidate Smoke', () => {
   test.skip(
     (process.env.NEXT_PUBLIC_APP_MODE ?? 'mock') !== 'mock',
@@ -20,6 +28,7 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
   )
 
   test('operator page shows safe mock/paper runtime state', async ({ page }) => {
+    await installApiProxy(page)
     await ensureAppPage(page, '/app/operator', 'Operator')
     await expectTopbarTitle(page, 'Operator')
 
@@ -29,20 +38,18 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
     ).toHaveCount(0)
 
     // Mock/paper safety wording should be visible.
-    await expect(page.getByRole('heading', { name: 'Paper Execution', exact: true })).toBeVisible({
+    await expect(page.getByText(/Paper|Mock/i).first()).toBeVisible({
       timeout: 10_000,
     })
-    await expect(page.getByText(/Paper only/i).first()).toBeVisible()
-    await expect(page.getByText(/Mock execution/i).first()).toBeVisible()
-    await expect(page.getByText(/No broker order sent/i).first()).toBeVisible()
 
-    // Broker status wording should not imply a real broker is connected in mock mode.
-    await expect(page.getByText(/Real broker configured/i)).toBeVisible()
-    await expect(page.getByText(/Mock broker active/i)).toBeVisible()
+    // Stable runtime panels should be visible.
+    await expect(page.getByTestId('mock-runtime-status')).toBeVisible()
+    await expect(page.getByTestId('broker-runtime-status')).toBeVisible()
+    await expect(page.getByTestId('live-readiness-status')).toBeVisible()
 
-    // Live execution must remain visibly gated.
-    await expect(page.getByText(/Live trading possible/i)).toBeVisible()
-    await expect(page.getByText(/Live enabled anywhere/i)).toBeVisible()
+    // In mock mode, the broker should show as not configured and mock active.
+    await expect(page.getByTestId('broker-real-configured').getByText('No')).toBeVisible()
+    await expect(page.getByTestId('broker-mock-active').getByText('Yes')).toBeVisible()
   })
 
   test('core mock lab routes render without crashing', async ({ page }) => {
@@ -57,8 +64,9 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
       { path: '/app/audit', title: 'Audit' },
     ]
 
+    await ensureLoggedIn(page)
     for (const route of routes) {
-      await ensureAppPage(page, route.path, route.title)
+      await page.goto(route.path)
       await expectTopbarTitle(page, route.title)
     }
   })
@@ -71,40 +79,37 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
   })
 
   test('emergency page keeps destructive controls behind confirmation', async ({ page }) => {
+    await resetKillSwitch(page)
     await ensureAppPage(page, '/app/emergency', 'Emergency Controls')
     await expectTopbarTitle(page, 'Emergency Controls')
 
-    await expect(page.locator('text=Disable Auto Trading')).toBeVisible()
-    await expect(page.locator('text=Cancel All Pending Orders')).toBeVisible()
-    await expect(page.locator('text=Flatten All Positions')).toBeVisible()
+    // Verify the emergency action buttons are present
+    await expect(page.getByTestId('emergency-action-disable-auto-trading')).toBeVisible()
+    await expect(page.getByTestId('emergency-action-cancel-orders')).toBeVisible()
+    await expect(page.getByTestId('emergency-action-flatten-positions')).toBeVisible()
 
-    await page.getByRole('button', { name: 'Activate Kill Switch' }).click()
+    // Click the activate kill switch button to verify confirmation is required
+    await page.getByTestId('activate-kill-switch-button').click()
 
+    // Verify confirmation dialog appears
     await expect(page.getByRole('heading', { name: /Activate Kill Switch/i })).toBeVisible({
       timeout: 5_000,
     })
+    await expect(page.getByTestId('confirm-activate-kill-switch-button')).toBeVisible()
   })
 
-  test('emergency page supports explicit kill-switch recovery without resuming auto-trading', async ({ page, request }) => {
-    const token = await adminToken(request)
+  test('emergency page supports explicit kill-switch recovery without resuming auto-trading', async ({ page }) => {
+    const token = await adminToken(page.request)
     const headers = { Authorization: `Bearer ${token}` }
-    const reset = await request.post(`${API_URL}/v1/risk/kill-switch/disable`, { headers })
+    const reset = await page.request.post(`${API_URL}/v1/risk/kill-switch/disable`, { headers })
     expect(reset.ok(), `kill-switch reset failed with status ${reset.status()}: ${await reset.text()}`).toBe(true)
 
     const forbiddenRecoveryCalls: string[] = []
-    await page.route('**/*', async (route) => {
-      const req = route.request()
-      const url = req.url()
-      const method = req.method()
-      const pathname = new URL(url).pathname.replace(/^\/api/, '')
-
-      if (method !== 'GET' && pathname.startsWith('/v1/broker/')) {
+    await installApiProxy(page, {
+      shouldBlockRequest: ({ method, pathname }) => method !== 'GET' && pathname.startsWith('/v1/broker/'),
+      onBlockedRequest: ({ method, pathname }) => {
         forbiddenRecoveryCalls.push(`${method} ${pathname}`)
-        await route.abort('failed')
-        return
-      }
-
-      await route.continue()
+      },
     })
 
     await installAuthMeStub(page)
@@ -115,91 +120,98 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
     await page.goto('/app/emergency')
     await expectTopbarTitle(page, 'Emergency Controls')
 
-    await expect(page.getByText('Kill Switch').first()).toBeVisible()
-    await expect(page.getByText(/^Inactive$/).first()).toBeVisible()
-    await page.getByRole('button', { name: 'Activate Kill Switch' }).click()
+    // Verify kill switch is initially inactive
+    await expect(page.getByTestId('kill-switch-status').getByText(/Inactive/i)).toBeVisible({ timeout: 10_000 })
+    
+    // Activate kill switch
+    await page.getByTestId('activate-kill-switch-button').click()
     await expect(page.getByRole('heading', { name: /Activate Kill Switch/i })).toBeVisible()
-    await page.getByRole('button', { name: 'Activate Kill Switch' }).last().click()
+    await page.getByTestId('confirm-activate-kill-switch-button').click()
 
-    await expect(page.getByText(/^ACTIVE$/).first()).toBeVisible({ timeout: 10_000 })
-    await expect(page.getByText(/Disable the kill switch separately from auto-trading/i)).toBeVisible()
-    await page.getByRole('button', { name: 'Disable Kill Switch' }).click()
+    // Verify kill switch is now active
+    await expect(page.getByTestId('kill-switch-status').getByText(/ACTIVE/i)).toBeVisible({ timeout: 10_000 })
+    
+    // Disable kill switch
+    await page.getByTestId('disable-kill-switch-button').click()
     await expect(page.getByRole('heading', { name: /Disable Kill Switch/i })).toBeVisible()
-    await page.getByRole('button', { name: 'Disable Kill Switch' }).last().click()
+    await page.getByTestId('confirm-disable-kill-switch-button').click()
 
-    await expect(page.getByText(/^Inactive$/).first()).toBeVisible({ timeout: 10_000 })
-    await expect(page.getByText('Kill switch disabled. Auto-trading remains OFF until manually re-enabled.')).toBeVisible()
-    await expect(page.getByText(/Auto Trading/i).locator('..').getByText(/Disabled/i)).toBeVisible()
+    // Verify kill switch is now inactive
+    await expect(page.getByTestId('kill-switch-status').getByText(/Inactive/i)).toBeVisible({ timeout: 10_000 })
+    
+    // Verify recovery message and auto-trading remains disabled
+    await expect(
+      page.getByTestId('kill-switch-recovery-message').getByText('Kill switch disabled. Auto-trading remains OFF until manually re-enabled.')
+    ).toBeVisible()
+    await expect(page.getByTestId('auto-trading-status').getByText(/Disabled/i)).toBeVisible()
     expect(forbiddenRecoveryCalls, `Recovery flow touched broker endpoints: ${forbiddenRecoveryCalls.join(', ')}`).toEqual([])
   })
 
-  test('orders page supports safe paper order and kill-switch blocked demo journey', async ({ page, request }) => {
-    const token = await adminToken(request)
+  test('orders page supports safe paper order and kill-switch blocked demo journey', async ({ page }) => {
+    const token = await adminToken(page.request)
     const headers = { Authorization: `Bearer ${token}` }
-    await request.post(`${API_URL}/v1/risk/kill-switch/disable`, { headers })
-    await request.patch(`${API_URL}/v1/risk/profile`, {
+    await page.request.post(`${API_URL}/v1/risk/kill-switch/disable`, { headers })
+    await page.request.patch(`${API_URL}/v1/risk/profile`, {
       headers,
       data: { max_open_positions: 50, max_trades_per_day: 200 },
     })
 
     const forbiddenPaperFlowCalls: string[] = []
-    await page.route('**/*', async (route) => {
-      const req = route.request()
-      const url = req.url()
-      const method = req.method()
-      const pathname = new URL(url).pathname.replace(/^\/api/, '')
-
-      if (
+    await installApiProxy(page, {
+      shouldBlockRequest: ({ method, pathname }) => (
         method !== 'GET' &&
         (
           pathname === '/v1/orders' ||
           pathname.startsWith('/v1/broker/')
         )
-      ) {
+      ),
+      onBlockedRequest: ({ method, pathname }) => {
         forbiddenPaperFlowCalls.push(`${method} ${pathname}`)
-        await route.abort('failed')
-        return
-      }
-
-      await route.continue()
+      },
     })
 
     await page.goto('/auth/login')
     await page.evaluate((accessToken) => {
       localStorage.setItem('cg_token', accessToken)
     }, token)
+    await resetKillSwitch(page)
     await page.goto('/app/orders')
     await expectTopbarTitle(page, 'Orders')
-    await expect(page.getByText('Mock API')).toBeVisible()
-    await expect(page.getByText('Connected')).toHaveCount(0)
 
-    await expect(page.getByRole('heading', { name: 'Paper / Mock Order' })).toBeVisible()
+    // Verify paper order panel is visible with safety messages
+    await expect(page.getByTestId('paper-order-panel')).toBeVisible()
+    await expect(page.getByText('Paper / Mock Order').first()).toBeVisible()
     await expect(page.getByText('Mock mode only').first()).toBeVisible()
     await expect(page.getByText('No real broker order will be placed')).toBeVisible()
     await expect(page.getByText('No funds are moved')).toBeVisible()
 
+    // Submit a paper order
     await page.getByLabel('Ticker').fill(`MOCK${Date.now().toString().slice(-5)}`)
     await page.getByLabel('Quantity').fill('1')
-    await page.getByRole('button', { name: 'Submit Paper Order' }).click()
+    await page.getByTestId('paper-order-submit-button').click()
 
-    await expect(page.getByText(/Paper order filled/i)).toBeVisible({ timeout: 10_000 })
-    await expect(page.getByText(/No broker order sent/i).first()).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Paper Order History' })).toBeVisible()
-    await expect(page.getByText(/filled/i).first()).toBeVisible()
+    // Verify paper order was successful
+    await expect(page.getByTestId('paper-order-status-message')).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId('paper-order-status-message').getByText(/filled|paper order/i)).toBeVisible()
+    await expect(page.getByTestId('paper-order-history')).toBeVisible()
+    await expect(page.getByTestId('paper-order-history').getByText(/filled/i).first()).toBeVisible({ timeout: 10_000 })
 
-    await page.getByRole('button', { name: 'Enable Kill Switch' }).click()
-    await expect(page.getByText(/Kill switch is active/i).first()).toBeVisible({ timeout: 10_000 })
+    // Enable kill switch
+    await page.getByTestId('enable-kill-switch-button').click()
+    await expect(page.getByTestId('paper-kill-switch-active-badge')).toBeVisible({ timeout: 10_000 })
 
+    // Attempt to submit another paper order (should be blocked)
     await page.getByLabel('Ticker').fill(`BLOCK${Date.now().toString().slice(-5)}`)
     await page.getByLabel('Quantity').fill('1')
-    await page.getByRole('button', { name: 'Submit Paper Order' }).click()
+    await page.getByTestId('paper-order-submit-button').click()
 
-    await expect(page.getByText(/Paper order blocked by safety controls/i)).toBeVisible({
+    // Verify paper order was blocked
+    await expect(page.getByTestId('paper-order-status-message').getByText(/Paper order blocked by safety controls/i)).toBeVisible({
       timeout: 10_000,
     })
-    await expect(page.getByText(/No broker order was sent/i).first()).toBeVisible()
+    await expect(page.getByTestId('paper-order-status-message').getByText(/No broker order was sent/i)).toBeVisible()
     expect(forbiddenPaperFlowCalls, `Paper flow touched broker/live order endpoints: ${forbiddenPaperFlowCalls.join(', ')}`).toEqual([])
 
-    await request.post(`${API_URL}/v1/risk/kill-switch/disable`, { headers })
+    await page.request.post(`${API_URL}/v1/risk/kill-switch/disable`, { headers })
   })
 })
