@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
@@ -153,7 +153,7 @@ class Trading212Adapter:
         *,
         json: Any = None,
         params: dict[str, Any] | None = None,
-    ) -> Any:
+    ) -> object:
         """Execute an HTTP request with rate-limit and error handling."""
         await self._check_rate_limit()
 
@@ -177,25 +177,32 @@ class Trading212Adapter:
         if response.status_code == 204:
             return None
 
-        return response.json()
+        data: object = response.json()
+        return data
 
     # ──────────────────────────────────────────────────────────────────────────
     # Account
     # ──────────────────────────────────────────────────────────────────────────
+
+    async def _request_dict(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        result = await self._request(method, path, **kwargs)
+        if not isinstance(result, dict):
+            raise ValueError("Trading 212 returned an unexpected response shape")
+        return cast(dict[str, Any], result)
 
     async def get_account_summary(self) -> dict[str, Any]:
         """
         GET /api/v0/equity/account/summary
         Returns account cash, invested, result, total, etc.
         """
-        return await self._request("GET", "/api/v0/equity/account/summary")
+        return await self._request_dict("GET", "/api/v0/equity/account/summary")
 
     async def get_account_metadata(self) -> dict[str, Any]:
         """
         GET /api/v0/equity/account/info
         Returns account currency, ID, etc.
         """
-        return await self._request("GET", "/api/v0/equity/account/info")
+        return await self._request_dict("GET", "/api/v0/equity/account/info")
 
     # ──────────────────────────────────────────────────────────────────────────
     # Instruments & Exchanges
@@ -237,7 +244,7 @@ class Trading212Adapter:
         Returns a single position or None if not held.
         """
         try:
-            return await self._request("GET", f"/api/v0/equity/portfolio/{ticker}")
+            return await self._request_dict("GET", f"/api/v0/equity/portfolio/{ticker}")
         except T212APIError as e:
             if e.status_code == 404:
                 return None
@@ -259,7 +266,7 @@ class Trading212Adapter:
         """
         GET /api/v0/equity/orders/{id}
         """
-        return await self._request("GET", f"/api/v0/equity/orders/{order_id}")
+        return await self._request_dict("GET", f"/api/v0/equity/orders/{order_id}")
 
     # ──────────────────────────────────────────────────────────────────────────
     # Orders — Placement
@@ -282,7 +289,7 @@ class Trading212Adapter:
             "quantity": float(quantity),
             "timeValidity": time_validity,
         }
-        return await self._request("POST", "/api/v0/equity/orders/market", json=payload)
+        return await self._request_dict("POST", "/api/v0/equity/orders/market", json=payload)
 
     async def place_limit_order(
         self,
@@ -301,7 +308,7 @@ class Trading212Adapter:
             "limitPrice": float(limit_price),
             "timeValidity": time_validity,
         }
-        return await self._request("POST", "/api/v0/equity/orders/limit", json=payload)
+        return await self._request_dict("POST", "/api/v0/equity/orders/limit", json=payload)
 
     async def place_stop_order(
         self,
@@ -320,7 +327,7 @@ class Trading212Adapter:
             "stopPrice": float(stop_price),
             "timeValidity": time_validity,
         }
-        return await self._request("POST", "/api/v0/equity/orders/stop", json=payload)
+        return await self._request_dict("POST", "/api/v0/equity/orders/stop", json=payload)
 
     async def place_stop_limit_order(
         self,
@@ -341,7 +348,7 @@ class Trading212Adapter:
             "limitPrice": float(limit_price),
             "timeValidity": time_validity,
         }
-        return await self._request("POST", "/api/v0/equity/orders/stop_limit", json=payload)
+        return await self._request_dict("POST", "/api/v0/equity/orders/stop_limit", json=payload)
 
     async def cancel_order(self, order_id: str) -> None:
         """
@@ -369,7 +376,7 @@ class Trading212Adapter:
             params["cursor"] = cursor
         if ticker:
             params["ticker"] = ticker
-        return await self._request("GET", "/api/v0/equity/history/orders", params=params)
+        return await self._request_dict("GET", "/api/v0/equity/history/orders", params=params)
 
     async def get_historical_transactions(
         self,
@@ -383,7 +390,7 @@ class Trading212Adapter:
         params: dict[str, Any] = {"limit": limit}
         if cursor is not None:
             params["cursor"] = cursor
-        return await self._request("GET", "/api/v0/equity/history/transactions", params=params)
+        return await self._request_dict("GET", "/api/v0/equity/history/transactions", params=params)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Utility

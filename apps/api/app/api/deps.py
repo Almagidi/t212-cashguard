@@ -8,7 +8,7 @@ FastAPI dependency injection.
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import Cookie, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -78,7 +78,7 @@ async def get_current_admin(user: User = Depends(get_current_user)) -> User:
 async def get_broker(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> Any:
     if settings.APP_MODE == "mock":
         from app.broker.mock_adapter import MockBrokerAdapter
 
