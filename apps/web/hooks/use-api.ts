@@ -82,6 +82,7 @@ export const QK = {
   operatorStatus: ["operator", "status"],
   health: ["health"],
   depsHealth: ["health", "deps"],
+  startupHealth: ["health", "startup"],
   marketDataHealth: ["health", "market-data"],
   regime: ["intelligence", "regime"],
   watchlistIntelligence: (limit = 8) => ["intelligence", "watchlist", limit],
@@ -705,6 +706,13 @@ export const useDepsHealth = () =>
   useQuery({
     queryKey: QK.depsHealth,
     queryFn: api.getDepsHealth.bind(api),
+    refetchInterval: 30_000,
+  });
+
+export const useStartupHealth = () =>
+  useQuery({
+    queryKey: QK.startupHealth,
+    queryFn: api.getStartupHealth.bind(api),
     refetchInterval: 30_000,
   });
 

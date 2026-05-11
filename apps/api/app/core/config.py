@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # Application
     APP_NAME: str = "T212 CashGuard Trader"
     APP_VERSION: str = "1.0.0"
-    APP_MODE: Literal["mock", "demo", "live"] = "mock"
+    APP_MODE: Literal["mock", "paper", "demo", "live"] = "mock"
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
 

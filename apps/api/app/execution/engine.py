@@ -26,6 +26,7 @@ from app.services.execution_quality import (
 from app.services.safety_policy import (
     audit_broker_request_attempt,
     audit_safety_decision,
+    current_runtime_mode,
     require_order_submission_allowed,
 )
 
@@ -33,6 +34,15 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 log = structlog.get_logger()
+
+
+def _safe_broker_error_reason(exc: Exception) -> str:
+    """Keep broker failures auditable without echoing potentially sensitive response text."""
+    message = str(exc)
+    sensitive_markers = ("secret", "token", "password", "api_key", "api secret", "authorization")
+    if not message or any(marker in message.lower() for marker in sensitive_markers):
+        return f"Broker request failed with {type(exc).__name__}."
+    return message
 
 
 class ExecutionEngine:
@@ -361,6 +371,20 @@ class ExecutionEngine:
 
             apply_order_execution_quality(order)
             await self._maybe_alert_abnormal_slippage(order)
+            if current_runtime_mode() == "demo" and broker_environment == "demo":
+                await audit_safety_decision(
+                    self.db,
+                    action="demo_broker_order_success",
+                    actor="execution_engine",
+                    decision="allowed",
+                    reason="Demo broker accepted the order request.",
+                    order=order,
+                    metadata={
+                        "broker_environment": "demo",
+                        "broker_order_id": order.broker_order_id,
+                        "no_broker_order_sent": False,
+                    },
+                )
             await self._log_order_event(
                 order.id, "broker_accepted",
                 from_status="submitted", to_status=order.status,
@@ -378,7 +402,8 @@ class ExecutionEngine:
             # and emit a structured log with traceback so operators can debug
             # broker integration failures (connectivity, schema drift, auth).
             order.status = "error"
-            order.error_message = str(e)
+            order.error_message = _safe_broker_error_reason(e)
+            order.rejected_at = datetime.now(UTC)
             apply_order_execution_quality(order)
             log.exception(
                 "execution.broker_submit_error",
@@ -393,12 +418,19 @@ class ExecutionEngine:
             )
             await audit_safety_decision(
                 self.db,
-                action="broker_request_failed",
+                action=(
+                    "demo_broker_order_failure"
+                    if current_runtime_mode() == "demo" and broker_environment == "demo"
+                    else "broker_request_failed"
+                ),
                 actor="execution_engine",
                 decision="failed",
-                reason=str(e),
+                reason=_safe_broker_error_reason(e),
                 order=order,
-                metadata={"error_type": type(e).__name__},
+                metadata={
+                    "error_type": type(e).__name__,
+                    "broker_environment": broker_environment,
+                },
             )
 
         await self.db.flush()

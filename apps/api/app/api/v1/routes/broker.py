@@ -30,6 +30,10 @@ MOCK_CREDENTIALS_IGNORED_HINT = (
     "APP_MODE=mock is synthetic: submitted broker credentials are ignored and not stored. "
     "Switch to APP_MODE=demo or APP_MODE=live to test Trading 212 credentials."
 )
+DEMO_CREDENTIALS_MISSING_HINT = (
+    "APP_MODE=demo requires Trading 212 demo credentials or an active demo broker connection. "
+    "Live credentials are ignored in demo mode."
+)
 
 
 async def _audit(
@@ -86,6 +90,26 @@ def _mock_connect_status() -> BrokerStatusOut:
             "last_sync_at": now,
             "account_id": "MOCK-CREDENTIALS-IGNORED",
             "account_currency": "USD",
+            "created_at": now,
+        }
+    )
+
+
+def _demo_missing_credentials_status() -> BrokerStatusOut:
+    now = datetime.now(UTC)
+    return BrokerStatusOut.model_validate(
+        {
+            "id": uuid.uuid4(),
+            "broker": "trading212",
+            "environment": "demo",
+            "is_active": False,
+            "credential_state": "not_connected",
+            "recovery_hint": DEMO_CREDENTIALS_MISSING_HINT,
+            "last_test_at": None,
+            "last_test_ok": False,
+            "last_sync_at": None,
+            "account_id": None,
+            "account_currency": None,
             "created_at": now,
         }
     )
@@ -267,6 +291,8 @@ async def broker_status(
     )
     conn = result.scalar_one_or_none()
     if not conn:
+        if settings.APP_MODE == "demo":
+            return _demo_missing_credentials_status()
         return None
 
     if conn.is_active:

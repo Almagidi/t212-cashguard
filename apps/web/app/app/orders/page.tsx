@@ -77,6 +77,7 @@ export default function OrdersPage() {
   const pendingCount = allOrders.filter(o => ['pending_intent', 'submitted', 'accepted'].includes(o.status)).length
   const appMode = process.env.NEXT_PUBLIC_APP_MODE || 'mock'
   const isMockMode = appMode === 'mock'
+  const isDemoMode = appMode === 'demo'
 
   const submitPaperOrder = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -141,6 +142,30 @@ export default function OrdersPage() {
           </div>
         }
       />
+
+      {isDemoMode && (
+        <Card className="border-cyan-500/20 bg-cyan-500/[0.03]" data-testid="demo-order-panel">
+          <CardContent className="pt-5">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-sm font-semibold text-foreground">Demo Broker Order Boundary</h2>
+                  <Badge variant="info">Trading 212 demo only</Badge>
+                  <Badge variant="success" data-testid="live-endpoint-blocked-badge">Live endpoint blocked</Badge>
+                  {settings?.kill_switch_active && <Badge variant="destructive" data-testid="demo-order-blocked-reason">Kill switch active</Badge>}
+                </div>
+                <p className="text-xs text-muted-foreground" data-testid="demo-order-status-message">
+                  Demo broker execution is backend-gated, audited, and blocked when credentials, risk checks, or the kill switch are not safe.
+                </p>
+              </div>
+              <Button type="button" size="sm" disabled data-testid="demo-order-submit-button">
+                <Send className="h-3.5 w-3.5" />
+                Submit Demo Broker Order
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="border-emerald-500/20 bg-emerald-500/[0.03]" data-testid="paper-order-panel">
         <CardContent className="pt-5">

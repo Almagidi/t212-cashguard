@@ -80,9 +80,10 @@ export function BrokerStatusPanel({
   const connectionStatus =
     status?.credential_state ?? (status ? "configured" : "unknown");
   const mockBrokerActive = status?.environment === "mock" && status?.is_active === true;
+  const demoBroker = status?.environment === "demo";
 
   return (
-    <section className="space-y-5 rounded-2xl border border-slate-800 bg-slate-950/60 p-5 shadow-sm" data-testid="broker-runtime-status">
+    <section className="space-y-5 rounded-2xl border border-slate-800 bg-slate-950/60 p-5 shadow-sm" data-testid={demoBroker ? "demo-broker-status" : "broker-runtime-status"}>
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div>
           <h2 className="text-lg font-semibold text-slate-100">
@@ -105,10 +106,20 @@ export function BrokerStatusPanel({
             className={`rounded-full border px-3 py-1 text-xs font-medium ${statusBadgeClass(
               connectionStatus,
             )}`}
-            data-testid="broker-credentials-status"
+            data-testid={demoBroker ? "demo-credentials-status" : "broker-credentials-status"}
           >
             {formatValue(connectionStatus)}
           </span>
+          {demoBroker ? (
+            <span className="rounded-full border border-cyan-700/60 bg-cyan-950/50 px-3 py-1 text-xs font-medium text-cyan-200" data-testid="demo-endpoint-status">
+              Demo endpoint only
+            </span>
+          ) : null}
+          {demoBroker ? (
+            <span className="rounded-full border border-emerald-700/60 bg-emerald-950/50 px-3 py-1 text-xs font-medium text-emerald-200" data-testid="live-endpoint-blocked-badge">
+              Live endpoint blocked
+            </span>
+          ) : null}
         </div>
       </div>
 

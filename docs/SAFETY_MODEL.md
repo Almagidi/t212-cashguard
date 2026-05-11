@@ -6,12 +6,14 @@ T212 CashGuard Trader is local-first and cash-only. The backend is the safety bo
 
 - **Mock mode** is the default. It uses local/mock data and must not call Trading 212 demo or live endpoints.
 - **Paper mode** is local paper execution inside mock mode through `/v1/orders/paper`. It records local orders, simulates fills, and always marks `no_broker_order_sent=true`.
-- **Demo mode** may use Trading 212 demo endpoints only when `APP_MODE=demo`, demo credentials are configured, and the user explicitly selects demo mode.
+- **Demo mode** may use Trading 212 demo endpoints only when `APP_MODE=demo`, demo credentials or an encrypted demo broker connection are configured, and the user explicitly selects demo mode. Demo mode must never fall through to live credentials or the live base URL.
 - **Live mode** is guarded for future use. It requires `APP_MODE=live`, `LIVE_TRADING_ENABLED=true`, a live broker connection, recent broker test, Telegram supervision, demo validation, kill-switch drill evidence, kill switch clear, and final admin unlock.
 
 ## Broker Boundary
 
 Broker access is centralized through the backend safety policy. Mock mode blocks real broker environments. Demo mode blocks live environments. Live mode blocks broker calls unless the live flag is enabled and live readiness passes before order submission.
+
+Direct `Trading212Adapter` construction is also policy-gated. It rejects mock/paper runtime modes, unknown app modes, unknown broker environments, blank environment credentials, demo-to-live attempts, and live adapter construction while `LIVE_TRADING_ENABLED=false`.
 
 Demo and live credentials are separated:
 
@@ -30,9 +32,13 @@ Disabling or recovering from the kill switch never re-enables auto-trading. Auto
 
 High-value events are recorded in `audit_logs` and/or `order_events`, including paper order decisions, blocked orders, broker request attempts, broker failures, kill-switch actions, auto-trading changes, live-readiness actions, and daily reset manual-recovery requirements. Payloads must contain safe metadata only and never raw credentials, tokens, cookies, or auth headers.
 
+Demo broker events use distinct action names (`demo_broker_order_attempt`, `demo_broker_order_success`, `demo_broker_order_failure`, `demo_order_blocked_by_kill_switch`) so operators can separate demo broker execution from mock/paper simulation.
+
 ## Impossible By Design
 
 - Mock and paper flows cannot place real broker orders.
+- Demo mode cannot use the live Trading 212 base URL.
+- Live credentials do not make demo mode live-capable.
 - Live broker calls are not enabled by default.
 - Frontend broker secrets are not supported.
 - Deposits and withdrawals are out of scope.
@@ -42,5 +48,5 @@ High-value events are recorded in `audit_logs` and/or `order_events`, including 
 
 - Move all remaining read-only broker workers through one broker factory.
 - Add DB-level audit event categories/correlation IDs.
-- Add full demo execution RC coverage before enabling demo broker order placement.
+- Add request/correlation IDs consistently across all broker/audit paths.
 - Add live-mode manual runbook drills before any live milestone.

@@ -80,6 +80,24 @@ cd apps/web
 npx playwright test tests/e2e/mock-paper-release.spec.ts --timeout 60000
 ```
 
+## Demo RC Tests
+
+Demo RC broker-boundary proof is backend-first and uses mocked HTTP transports. It must not call Trading 212, Alpaca, Polygon, or any external broker/market-data endpoint.
+
+```bash
+PYTHONPATH=apps/api python3.12 -m pytest apps/api/tests/unit/test_demo_rc_boundary.py -q --no-cov
+```
+
+The demo boundary test suite verifies that demo mode uses `https://demo.trading212.com`, rejects live URL selection, ignores live credentials, fails safely when demo credentials are missing, and audits demo broker attempts distinctly from paper/mock simulation.
+
+For a demo-labelled frontend smoke, run the web app with:
+
+```bash
+NEXT_PUBLIC_APP_MODE=demo NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 npm run dev
+```
+
+Use backend mocks or the backend unit/integration tests for broker execution proof. Do not run automated E2E against real Trading 212 demo or live endpoints.
+
 Inspect failures:
 
 ```bash

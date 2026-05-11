@@ -59,6 +59,7 @@ jobs:
       MASTER_KEY: test-master-key-32-chars-minimum-x
       APP_MODE: mock
       MARKET_DATA_PROVIDER: mock
+      LIVE_TRADING_ENABLED: "false"
 
     steps:
       - uses: actions/checkout@v4
@@ -134,10 +135,15 @@ jobs:
       - name: Targeted safety lint
         run: |
           python -m ruff check \
+            app/broker/trading212.py \
             app/execution/paper_engine.py \
             app/api/v1/routes/orders.py \
             app/api/v1/routes/operator.py \
+            app/services/safety_policy.py \
             app/services/live_readiness.py
+
+      - name: Demo RC broker-boundary tests
+        run: python -m pytest tests/unit/test_demo_rc_boundary.py -v --tb=short -o "addopts=-v --tb=short"
 
       - name: Run migrations
         run: python -m alembic upgrade head

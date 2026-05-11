@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from app.services.safety_policy import broker_base_url_for
+from app.services.safety_policy import broker_base_url_for, require_adapter_credentials
 
 if TYPE_CHECKING:
     from decimal import Decimal
@@ -54,6 +54,11 @@ class Trading212Adapter:
     """
 
     def __init__(self, api_key: str, api_secret: str, environment: str = "demo"):
+        require_adapter_credentials(
+            api_key=api_key,
+            api_secret=api_secret,
+            environment=environment,
+        )
         self.api_key = api_key
         self.api_secret = api_secret
         self.environment = environment

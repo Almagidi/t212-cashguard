@@ -46,6 +46,7 @@ import type {
   RiskEvent,
   RiskProfile,
   Signal,
+  StartupHealth,
   Strategy,
   StrategyIntelligence,
   StrategyPresetInfo,
@@ -632,6 +633,9 @@ class ApiClient {
   }
   async getDepsHealth(): Promise<DepsHealth> {
     return (await this.client.get<DepsHealth>("/health/deps")).data;
+  }
+  async getStartupHealth(): Promise<StartupHealth> {
+    return (await this.client.get<StartupHealth>("/health/startup")).data;
   }
   async getMarketDataHealth(): Promise<MarketDataHealth> {
     return (await this.client.get<MarketDataHealth>("/health/market-data"))

@@ -96,6 +96,23 @@ async def get_broker(
     )
     conn = result.scalar_one_or_none()
     if not conn:
+        if settings.APP_MODE == "demo":
+            if settings.T212_DEMO_API_KEY and settings.T212_DEMO_API_SECRET:
+                from app.broker.trading212 import Trading212Adapter
+
+                return Trading212Adapter(
+                    settings.T212_DEMO_API_KEY,
+                    settings.T212_DEMO_API_SECRET,
+                    "demo",
+                )
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Demo credentials are not configured. Configure Trading 212 demo "
+                    "credentials or connect a demo broker account before broker-backed "
+                    "demo execution."
+                ),
+            )
         raise HTTPException(
             status_code=400,
             detail="No active broker connection. Connect your Trading 212 account first.",

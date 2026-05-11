@@ -1172,6 +1172,19 @@ export interface DepsHealth {
   workers?: string | null;
   startup?: string | null;
 }
+export interface StartupCheck {
+  key: string;
+  label: string;
+  status: "pass" | "warn" | "fail";
+  detail: string;
+}
+export interface StartupHealth {
+  status: "pass" | "warn" | "fail";
+  mode: string;
+  failures: number;
+  warnings: number;
+  checks: StartupCheck[];
+}
 export interface MarketDataSymbolHealth {
   ticker: string;
   status: string;

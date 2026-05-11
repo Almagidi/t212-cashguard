@@ -2237,6 +2237,30 @@ class TestBrokerExecutionFlow:
         assert detail["diagnostics"]["http_status"] == 401
         assert detail["diagnostics"]["causes"][0]["key"] == "wrong_environment"
 
+    async def test_demo_broker_status_reports_missing_demo_credentials_safely(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        monkeypatch,
+    ):
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "APP_MODE", "demo")
+        monkeypatch.setattr(settings, "T212_DEMO_API_KEY", "")
+        monkeypatch.setattr(settings, "T212_DEMO_API_SECRET", "")
+        monkeypatch.setattr(settings, "T212_LIVE_API_KEY", "live-key")
+        monkeypatch.setattr(settings, "T212_LIVE_API_SECRET", "live-secret")
+
+        resp = await client.get("/v1/broker/trading212/status", headers=auth_headers)
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["environment"] == "demo"
+        assert data["credential_state"] == "not_connected"
+        assert data["is_active"] is False
+        assert "demo credentials" in data["recovery_hint"].lower()
+        assert "live-key" not in str(data)
+
     async def test_demo_broker_execution_end_to_end(
         self,
         client: AsyncClient,

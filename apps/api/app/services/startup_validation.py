@@ -92,7 +92,12 @@ def build_startup_report() -> dict[str, Any]:
     checks.append(_check(
         key="t212_demo_credentials",
         label="Trading 212 demo credentials configured",
-        status="pass" if settings.APP_MODE != "demo" or settings.T212_DEMO_API_KEY else "warn",
+        status=(
+            "pass"
+            if settings.APP_MODE != "demo"
+            or (settings.T212_DEMO_API_KEY and settings.T212_DEMO_API_SECRET)
+            else "fail"
+        ),
         detail=f"TRADING212_DEMO_API_KEY: {credential_status['T212_DEMO_API_KEY']}",
     ))
     checks.append(_check(

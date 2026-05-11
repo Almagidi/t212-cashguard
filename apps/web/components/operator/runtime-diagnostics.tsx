@@ -192,6 +192,12 @@ export function RuntimeDiagnostics({ compact = false }: { compact?: boolean }) {
     retry: false,
     refetchInterval: 30_000,
   });
+  const startup = useQuery({
+    queryKey: ["runtime-diagnostics", "startup"],
+    queryFn: api.getStartupHealth.bind(api),
+    retry: false,
+    refetchInterval: 30_000,
+  });
   const dcaStatus = useQuery({
     queryKey: ["runtime-diagnostics", "dca-status"],
     queryFn: api.getDcaStatus.bind(api),
@@ -232,6 +238,8 @@ export function RuntimeDiagnostics({ compact = false }: { compact?: boolean }) {
   }, []);
 
   const backendMode = health.data?.mode ?? null;
+  const effectiveMode = backendMode ?? frontendMode;
+  const demoCredentialCheck = startup.data?.checks.find((check) => check.key === "t212_demo_credentials");
   const states = [
     probeState("Backend health /v1/health/live", health),
     hasToken
@@ -266,6 +274,16 @@ export function RuntimeDiagnostics({ compact = false }: { compact?: boolean }) {
             <Badge variant={backendMode ? "info" : "outline"}>
               Backend {backendMode ?? "checking"}
             </Badge>
+            {effectiveMode === "demo" && (
+              <>
+                <Badge variant="info" data-testid="demo-endpoint-status">
+                  Demo endpoint only
+                </Badge>
+                <Badge variant="success" data-testid="live-endpoint-blocked-badge">
+                  Live endpoint blocked
+                </Badge>
+              </>
+            )}
           </div>
         </div>
       </CardHeader>
@@ -296,6 +314,19 @@ export function RuntimeDiagnostics({ compact = false }: { compact?: boolean }) {
         <div className="space-y-2 rounded-lg border border-border/60 bg-background/35 p-3">
           <p className="text-sm font-semibold text-foreground">{message}</p>
           <p className="text-xs leading-relaxed text-muted-foreground">{action}</p>
+          {effectiveMode === "demo" && (
+            <div className="flex flex-wrap gap-2 text-xs">
+              <Badge
+                variant={demoCredentialCheck?.status === "pass" ? "success" : "warning"}
+                data-testid="demo-credentials-status"
+              >
+                Demo credentials {demoCredentialCheck?.status === "pass" ? "configured" : "not configured"}
+              </Badge>
+              <span className="text-muted-foreground">
+                Demo mode uses Trading 212 demo only; live remains disabled.
+              </span>
+            </div>
+          )}
           {!compact && (
             <ul className="space-y-1 text-xs text-muted-foreground">
               {states

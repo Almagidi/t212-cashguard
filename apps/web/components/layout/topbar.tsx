@@ -121,7 +121,7 @@ export function TopBar() {
           )}
 
           <span className={cn(modeBadgeClass(mode), 'hidden sm:inline-flex')} data-testid="runtime-mode-badge">
-            {mode}
+            <span data-testid={mode === 'demo' ? 'demo-mode-badge' : undefined}>{mode}</span>
           </span>
 
           {/* Theme toggle */}

@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.db.models import AppSettings, AuditLog, Order
 
-RuntimeMode = Literal["mock", "demo", "live"]
+RuntimeMode = Literal["mock", "paper", "demo", "live"]
 BrokerEnvironment = Literal["demo", "live"]
 
 BROKER_BASE_URLS: dict[BrokerEnvironment, str] = {
@@ -45,6 +45,32 @@ def credentials_configured_status() -> dict[str, str]:
     }
 
 
+def _runtime_mode() -> str:
+    mode = str(settings.APP_MODE)
+    if mode not in {"mock", "paper", "demo", "live"}:
+        raise SafetyPolicyViolation(
+            f"broker access blocked: APP_MODE is not recognized ({mode!r}).",
+            decision_code="app_mode_invalid",
+        )
+    return mode
+
+
+def require_adapter_credentials(
+    *,
+    api_key: str,
+    api_secret: str,
+    environment: str | None,
+) -> None:
+    """Ensure raw adapter construction cannot silently run with wrong/blank secrets."""
+    require_broker_environment(environment, action="broker adapter construction")
+    env_label = str(environment)
+    if not api_key.strip() or not api_secret.strip():
+        raise SafetyPolicyViolation(
+            f"broker adapter construction blocked: {env_label} credentials are not configured.",
+            decision_code=f"{env_label}_credentials_missing",
+        )
+
+
 def broker_calls_allowed(environment: str | None) -> bool:
     try:
         require_broker_environment(environment, action="broker_call")
@@ -64,11 +90,11 @@ def require_broker_environment(
     action: str,
 ) -> None:
     """Ensure a broker adapter cannot cross mock/demo/live boundaries."""
-    mode = current_runtime_mode()
-    if mode == "mock":
+    mode = _runtime_mode()
+    if mode in {"mock", "paper"}:
         raise SafetyPolicyViolation(
-            f"{action} blocked: APP_MODE=mock must not call real broker endpoints.",
-            decision_code="mock_broker_block",
+            f"{action} blocked: APP_MODE={mode} must not call real broker endpoints.",
+            decision_code=f"{mode}_broker_block",
         )
 
     if environment not in BROKER_BASE_URLS:
@@ -163,7 +189,11 @@ async def require_order_submission_allowed(
         reason = "Kill switch is active. Order submission is blocked."
         await audit_safety_decision(
             db,
-            action="order_blocked_by_kill_switch",
+            action=(
+                "demo_order_blocked_by_kill_switch"
+                if current_runtime_mode() == "demo"
+                else "order_blocked_by_kill_switch"
+            ),
             actor=actor,
             decision="blocked",
             reason=reason,
@@ -216,7 +246,11 @@ async def audit_broker_request_attempt(
 ) -> None:
     await audit_safety_decision(
         db,
-        action="broker_request_attempted",
+        action=(
+            "demo_broker_order_attempt"
+            if current_runtime_mode() == "demo" and broker_environment == "demo"
+            else "broker_request_attempted"
+        ),
         actor=actor,
         decision="allowed",
         reason="Broker request allowed by runtime safety policy.",
