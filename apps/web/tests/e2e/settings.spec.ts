@@ -25,7 +25,7 @@ test.describe('Settings', () => {
   })
 
   test('theme toggle works', async ({ page }) => {
-    const lightBtn = page.locator('button:has-text("Light")')
+    const lightBtn = page.locator('form').getByRole('button', { name: 'Light' })
     await expect(lightBtn).toBeVisible({ timeout: 10_000 })
     await lightBtn.click()
     await page.waitForTimeout(300)
