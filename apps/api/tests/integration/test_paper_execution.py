@@ -90,6 +90,7 @@ async def test_paper_order_creates_local_order_audits_and_position(
     }
     paper_audits = [audit for audit in all_audits if audit.action.startswith("paper_")]
     assert all(audit.payload["paper_only"] is True for audit in paper_audits)
+    assert all(audit.payload["no_broker_order_sent"] is True for audit in paper_audits)
 
     position = (
         await db.execute(select(PositionSnapshot).where(PositionSnapshot.ticker == "PAPERXYZ"))
@@ -97,6 +98,7 @@ async def test_paper_order_creates_local_order_audits_and_position(
     assert position.quantity == Decimal("2")
     assert position.avg_price == Decimal("25.5")
     assert position.raw["paper_only"] is True
+    assert position.raw["no_broker_order_sent"] is True
 
 
 @pytest.mark.asyncio
@@ -250,6 +252,7 @@ async def test_paper_order_audit_endpoint_returns_relevant_safe_events(
     ]
     assert all("api_key" not in item["metadata"] for item in body["items"])
     assert all(item["metadata"]["paper_only"] is True for item in body["items"])
+    assert all(item["metadata"]["no_broker_order_sent"] is True for item in body["items"])
 
 
 @pytest.mark.asyncio

@@ -68,6 +68,7 @@ class PaperExecutionEngine:
                 actor=actor,
                 payload={
                     "paper_only": True,
+                    "no_broker_order_sent": True,
                     "mode": settings.APP_MODE,
                     **(payload or {}),
                 },
@@ -92,7 +93,11 @@ class PaperExecutionEngine:
                 event_type=event_type,
                 from_status=from_status,
                 to_status=to_status,
-                payload={"paper_only": True, **(payload or {})},
+                payload={
+                    "paper_only": True,
+                    "no_broker_order_sent": True,
+                    **(payload or {}),
+                },
                 occurred_at=datetime.now(UTC),
             )
         )
@@ -309,6 +314,7 @@ class PaperExecutionEngine:
             quantity_available=new_quantity,
             raw={
                 "paper_only": True,
+                "no_broker_order_sent": True,
                 "source_order_id": str(order.id),
                 "side": order.side,
                 "simulated_fill_price": str(price),
@@ -514,6 +520,7 @@ async def paper_execution_summary(db: AsyncSession) -> dict[str, Any]:
 
     return {
         "paper_only": True,
+        "no_broker_order_sent": True,
         "enabled_in_mode": PAPER_ENVIRONMENT,
         "total_paper_orders": total_orders,
         "latest_paper_order_timestamp": latest_order.created_at if latest_order else None,

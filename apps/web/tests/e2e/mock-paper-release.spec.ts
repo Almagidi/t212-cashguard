@@ -210,6 +210,9 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
     await expect(page.getByTestId('paper-order-status-message').getByText(/filled|paper order/i)).toBeVisible()
     await expect(page.getByTestId('paper-order-history')).toBeVisible()
     await expect(page.getByTestId('paper-order-history')).not.toBeEmpty({ timeout: 10_000 })
+    await expect(page.getByTestId('paper-order-history').getByText(/No broker order sent/i).first()).toBeVisible({
+      timeout: 10_000,
+    })
 
     // Enable kill switch
     await page.getByTestId('enable-kill-switch-button').click()
