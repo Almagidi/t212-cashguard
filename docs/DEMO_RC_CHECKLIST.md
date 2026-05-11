@@ -37,3 +37,18 @@ Before any manually supervised real demo order test:
 - Confirm `/v1/health/startup` reports demo credentials as configured and live trading disabled.
 - Confirm the UI shows demo mode, demo endpoint only, and live endpoint blocked.
 - Keep the order size deliberately tiny and supervise the broker account directly.
+
+## Manual supervised demo test
+
+Before any real Trading 212 demo endpoint test, follow:
+
+- [Manual Demo RC Runbook](./MANUAL_DEMO_RC_RUNBOOK.md)
+
+The manual demo test must remain:
+
+- supervised
+- demo-only
+- live-disabled
+- kill-switch controlled
+- auto-trading disabled
+- auditable
