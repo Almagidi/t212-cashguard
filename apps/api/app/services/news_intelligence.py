@@ -1,4 +1,5 @@
 """Optional structured watchlist news and catalyst scoring."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -66,7 +67,11 @@ class NewsIntelligenceService:
         return [self._normalize_polygon(item) for item in payload.get("results", []) if item]
 
     def _normalize_benzinga(self, article: dict[str, Any]) -> dict[str, Any]:
-        tickers = [str(item.get("name", "")).upper() for item in article.get("stocks", []) if item.get("name")]
+        tickers = [
+            str(item.get("name", "")).upper()
+            for item in article.get("stocks", [])
+            if item.get("name")
+        ]
         published = self._parse_datetime(article.get("created"))
         title = str(article.get("title") or "").strip()
         summary = str(article.get("teaser") or article.get("body") or "").strip()
@@ -87,7 +92,9 @@ class NewsIntelligenceService:
             "urgency_score": urgency,
             "credibility_score": credibility,
             "impact_horizon": self._impact_horizon(event_type),
-            "catalyst_score": round((urgency * 0.35) + (credibility * 0.30) + (abs(sentiment) * 0.35), 2),
+            "catalyst_score": round(
+                (urgency * 0.35) + (credibility * 0.30) + (abs(sentiment) * 0.35), 2
+            ),
         }
 
     def _normalize_polygon(self, article: dict[str, Any]) -> dict[str, Any]:
@@ -111,7 +118,9 @@ class NewsIntelligenceService:
             "urgency_score": urgency,
             "credibility_score": credibility,
             "impact_horizon": self._impact_horizon(event_type),
-            "catalyst_score": round((urgency * 0.35) + (credibility * 0.30) + (abs(sentiment) * 0.35), 2),
+            "catalyst_score": round(
+                (urgency * 0.35) + (credibility * 0.30) + (abs(sentiment) * 0.35), 2
+            ),
         }
 
     def _parse_datetime(self, value: Any) -> str | None:
