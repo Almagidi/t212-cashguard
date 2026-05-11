@@ -97,11 +97,11 @@ Backend tests:
 
 PYTHONPATH=apps/api python3.12 -m pytest apps/api/tests/ -q --no-cov
 
-Backend Ruff checks:
+Backend Ruff checks, using the current CI-equivalent critical backend files:
 
 cd apps/api
-python3.12 -m ruff check app tests
-python3.12 -m ruff format --check app tests
+python3.12 -m ruff check app/api/deps.py app/broker/trading212.py app/core/config.py app/execution/engine.py app/services/startup_validation.py tests/integration/test_api.py
+python3.12 -m ruff format --check app/api/deps.py app/broker/trading212.py app/core/config.py app/execution/engine.py app/services/startup_validation.py tests/integration/test_api.py
 cd ../..
 
 Backend mypy changed-file equivalent:
@@ -112,9 +112,11 @@ cd ../..
 
 Frontend checks:
 
+cd apps/web
 npm run lint
 npm run typecheck
 npm test -- --watchAll=false
+cd ../..
 
 Mock/Paper E2E smoke suite:
 
