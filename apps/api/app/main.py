@@ -3,6 +3,7 @@ T212 CashGuard Trader — FastAPI Application.
 All routes properly separated into focused modules.
 # reload-trigger: 2026-04-08
 """
+# ruff: noqa: E402, I001
 from __future__ import annotations
 
 import asyncio
@@ -50,7 +51,7 @@ if settings.SENTRY_DSN and sentry_sdk is not None:
         # Never send PII: user emails, passwords, or raw request bodies
         send_default_pii=False,
         # Strip auth headers before sending to Sentry
-        before_send=lambda event, hint: _scrub_sentry_event(event),
+        before_send=lambda event, _hint: _scrub_sentry_event(event),
     )
     log.info("sentry.initialised", environment=settings.APP_MODE)
 elif settings.SENTRY_DSN:
