@@ -37,7 +37,7 @@ A **cash-only, local-first** intraday trading automation platform for [Trading 2
 ### Requirements
 
 - Docker + Docker Compose
-- Python 3.11+
+- Python 3.12+ available as `python3.12`
 - Node.js 20+
 
 ### 1. Clone and configure
@@ -228,6 +228,41 @@ make e2e          # Run Playwright e2e tests
 make logs         # Tail Docker logs
 make clean        # Remove build artifacts
 ```
+
+---
+
+## Local Validation
+
+Before pushing changes, run the full local validation baseline:
+
+```bash
+make validate
+```
+
+This runs the complete safety and quality gate:
+
+- backend `pytest` suite with the coverage gate
+- frontend typecheck, lint, Jest unit tests, and production build
+- Playwright E2E suite in mock mode
+- operator dashboard real-backend integration E2E on isolated local ports
+
+Requirements before running:
+
+- Docker Desktop is running
+- Python 3.12 is available as `python3.12`
+- Node.js/npm dependencies are installed
+- ports `8000`, `3000`, `8001`, and `3001` are free
+
+For quicker checks, run individual targets:
+
+```bash
+make validate-api
+make validate-web
+make validate-e2e
+make e2e-operator-integration
+```
+
+The normal E2E validation is forced into `APP_MODE=mock` and `MARKET_DATA_PROVIDER=mock`, so it must not call external Trading 212 or broker APIs.
 
 ---
 
