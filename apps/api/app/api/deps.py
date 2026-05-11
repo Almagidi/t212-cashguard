@@ -4,6 +4,7 @@ FastAPI dependency injection.
 - Broker adapter factory
 - Common DB session
 """
+
 from __future__ import annotations
 
 import uuid
@@ -80,6 +81,7 @@ async def get_broker(
 ):
     if settings.APP_MODE == "mock":
         from app.broker.mock_adapter import MockBrokerAdapter
+
         return MockBrokerAdapter()
 
     try:
@@ -120,6 +122,7 @@ async def get_broker(
 
     from app.broker.trading212 import Trading212Adapter
     from app.core.security import decrypt_field
+
     try:
         api_key = decrypt_field(conn.api_key_encrypted)
         api_secret = decrypt_field(conn.api_secret_encrypted)

@@ -2,6 +2,7 @@
 Core application configuration.
 All settings from environment variables / .env file.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -46,9 +47,9 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
 
     # Cookie settings (httpOnly auth)
-    COOKIE_SECURE: bool = True   # False in local dev (no HTTPS)
+    COOKIE_SECURE: bool = True  # False in local dev (no HTTPS)
     COOKIE_SAMESITE: str = "lax"
-    COOKIE_DOMAIN: str = ""       # empty = current domain
+    COOKIE_DOMAIN: str = ""  # empty = current domain
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard"
@@ -83,7 +84,7 @@ class Settings(BaseSettings):
         return "https://demo.trading212.com"
 
     # Market data
-    POLYGON_API_KEY: str = ""     # Get free key at polygon.io
+    POLYGON_API_KEY: str = ""  # Get free key at polygon.io
     MARKET_DATA_PROVIDER: str = "mock"  # mock | auto | alpaca | polygon | validated
     BENZINGA_API_KEY: str = ""
     BENZINGA_BASE_URL: str = "https://api.benzinga.com"
@@ -98,12 +99,12 @@ class Settings(BaseSettings):
     CELERY_RESULT_BACKEND: str = ""
 
     # Data retention (days)
-    AUDIT_LOG_RETENTION_DAYS: int = 90   # Audit logs kept for 90 days
+    AUDIT_LOG_RETENTION_DAYS: int = 90  # Audit logs kept for 90 days
     RISK_EVENT_RETENTION_DAYS: int = 30  # Risk events kept for 30 days
 
     # Observability
-    SENTRY_DSN: str = ""                   # Leave empty to disable Sentry
-    SENTRY_TRACES_SAMPLE_RATE: float = 0.1 # 10 % of transactions traced
+    SENTRY_DSN: str = ""  # Leave empty to disable Sentry
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.1  # 10 % of transactions traced
     SENTRY_PROFILES_SAMPLE_RATE: float = 0.1
 
     @property
@@ -131,8 +132,8 @@ class Settings(BaseSettings):
     TELEGRAM_ALLOWED_USER_IDS: str = ""
     TELEGRAM_WEBHOOK_SECRET: str = ""
     TELEGRAM_CONFIRM_WINDOW_SECONDS: int = 120
-    DISCORD_WEBHOOK_URL: str = ""     # Discord channel webhook URL
-    SLACK_WEBHOOK_URL: str = ""       # Slack incoming webhook URL
+    DISCORD_WEBHOOK_URL: str = ""  # Discord channel webhook URL
+    SLACK_WEBHOOK_URL: str = ""  # Slack incoming webhook URL
 
     @property
     def telegram_allowed_chat_ids(self) -> set[str]:
@@ -151,9 +152,9 @@ class Settings(BaseSettings):
         }
 
     # Drawdown-adaptive sizing thresholds
-    DRAWDOWN_TIER1_PCT: float = 0.5   # at this daily loss%, size scales to 75%
-    DRAWDOWN_TIER2_PCT: float = 1.0   # at this daily loss%, size scales to 50%
-    DRAWDOWN_TIER3_PCT: float = 1.5   # at this daily loss%, size scales to 25%
+    DRAWDOWN_TIER1_PCT: float = 0.5  # at this daily loss%, size scales to 75%
+    DRAWDOWN_TIER2_PCT: float = 1.0  # at this daily loss%, size scales to 50%
+    DRAWDOWN_TIER3_PCT: float = 1.5  # at this daily loss%, size scales to 25%
 
     # Strategy promotion pipeline thresholds
     STRATEGY_PROMOTION_MIN_DRY_RUN_SIGNALS: int = 3

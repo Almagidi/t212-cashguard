@@ -1500,10 +1500,14 @@ class TestOrderFlow:
         assert CountingBroker.account_summary_calls == 0
 
         audits = (
-            await db.execute(
-                select(AuditLog).where(AuditLog.action == "order_blocked_by_kill_switch")
+            (
+                await db.execute(
+                    select(AuditLog).where(AuditLog.action == "order_blocked_by_kill_switch")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert audits
         assert audits[-1].payload["source"] == "manual_order_route"
         assert audits[-1].payload["no_broker_order_sent"] is True

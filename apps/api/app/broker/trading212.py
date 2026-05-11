@@ -9,6 +9,7 @@ Base URLs:
 
 Auth: HTTP Basic (api_key:api_secret)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 
 class T212RateLimitError(Exception):
     """Raised when Trading 212 returns 429."""
+
     def __init__(self, retry_after: float = 60.0):
         self.retry_after = retry_after
         super().__init__(f"Rate limited. Retry after {retry_after}s")
@@ -41,6 +43,7 @@ class T212AuthError(Exception):
 
 class T212APIError(Exception):
     """Raised on unexpected Trading 212 API errors."""
+
     def __init__(self, status_code: int, body: Any):
         self.status_code = status_code
         self.body = body
@@ -415,9 +418,21 @@ class Trading212Adapter:
                 "diagnostics": self._build_auth_diagnostics(e.status_code),
             }
         except T212APIError as e:
-            return {"is_ok": False, "account_id": None, "currency": None, "error": str(e), "diagnostics": None}
+            return {
+                "is_ok": False,
+                "account_id": None,
+                "currency": None,
+                "error": str(e),
+                "diagnostics": None,
+            }
         except Exception as e:
-            return {"is_ok": False, "account_id": None, "currency": None, "error": str(e), "diagnostics": None}
+            return {
+                "is_ok": False,
+                "account_id": None,
+                "currency": None,
+                "error": str(e),
+                "diagnostics": None,
+            }
 
 
 def make_sell_quantity(quantity: Decimal) -> Decimal:

@@ -3,6 +3,7 @@ Execution engine.
 Handles order intent creation, dedup, broker submission, and reconciliation.
 Trading 212 order placement is NOT idempotent — app-level dedup is mandatory.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -108,9 +109,7 @@ class ExecutionEngine:
         )
 
         # Dedup check
-        result = await self.db.execute(
-            select(Order).where(Order.client_order_key == client_key)
-        )
+        result = await self.db.execute(select(Order).where(Order.client_order_key == client_key))
         existing = result.scalar_one_or_none()
         if existing:
             return existing
@@ -172,7 +171,12 @@ class ExecutionEngine:
             order.id,
             "intent_created",
             to_status="pending_intent",
-            payload={"ticker": ticker, "side": side, "quantity": float(quantity), "is_dry_run": is_dry_run},
+            payload={
+                "ticker": ticker,
+                "side": side,
+                "quantity": float(quantity),
+                "is_dry_run": is_dry_run,
+            },
         )
         return order
 
@@ -262,7 +266,9 @@ class ExecutionEngine:
             now = datetime.now(UTC)
             order.status = "filled"
             order.filled_quantity = order.quantity
-            order.avg_fill_price = order.expected_fill_price or order.limit_price or Decimal("100.00")
+            order.avg_fill_price = (
+                order.expected_fill_price or order.limit_price or Decimal("100.00")
+            )
             order.submitted_at = now
             order.first_ack_at = now
             order.filled_at = now
@@ -271,7 +277,9 @@ class ExecutionEngine:
             order.reconciliation_latency_ms = 0
             order.broker_response = {"dry_run": True, "simulated": True}
             apply_order_execution_quality(order)
-            await self._log_order_event(order.id, "dry_run_fill", from_status="pending_intent", to_status="filled")
+            await self._log_order_event(
+                order.id, "dry_run_fill", from_status="pending_intent", to_status="filled"
+            )
             await audit_safety_decision(
                 self.db,
                 action="order_submitted",
@@ -337,8 +345,11 @@ class ExecutionEngine:
                 )
             elif order.order_type == "stop_limit":
                 response = await self.broker.place_stop_limit_order(
-                    order.ticker, submit_qty, order.stop_price, order.limit_price,
-                    time_validity=order.time_validity
+                    order.ticker,
+                    submit_qty,
+                    order.stop_price,
+                    order.limit_price,
+                    time_validity=order.time_validity,
                 )
             else:
                 raise ValueError(f"Unknown order type: {order.order_type}")
@@ -353,7 +364,9 @@ class ExecutionEngine:
             broker_status = response.get("status", "")
             if broker_status in ("FILLED",):
                 order.status = "filled"
-                order.filled_quantity = Decimal(str(response.get("filledQuantity", float(abs(order.quantity)))))
+                order.filled_quantity = Decimal(
+                    str(response.get("filledQuantity", float(abs(order.quantity))))
+                )
                 order.avg_fill_price = Decimal(str(response.get("filledPrice", 0) or 0))
                 order.filled_at = first_ack_at
                 order.fill_latency_ms = milliseconds_between(order.submitted_at, first_ack_at)
@@ -386,15 +399,21 @@ class ExecutionEngine:
                     },
                 )
             await self._log_order_event(
-                order.id, "broker_accepted",
-                from_status="submitted", to_status=order.status,
+                order.id,
+                "broker_accepted",
+                from_status="submitted",
+                to_status=order.status,
                 payload={
                     "broker_status": broker_status,
                     "broker_order_id": order.broker_order_id,
                     "broker_latency_ms": order.broker_latency_ms,
-                    "execution_quality_score": float(order.execution_quality_score) if order.execution_quality_score is not None else None,
-                    "slippage_pct": float(order.slippage_pct) if order.slippage_pct is not None else None,
-                }
+                    "execution_quality_score": float(order.execution_quality_score)
+                    if order.execution_quality_score is not None
+                    else None,
+                    "slippage_pct": float(order.slippage_pct)
+                    if order.slippage_pct is not None
+                    else None,
+                },
             )
 
         except Exception as e:
@@ -412,9 +431,11 @@ class ExecutionEngine:
                 side=order.side,
             )
             await self._log_order_event(
-                order.id, "broker_error",
-                from_status="submitted", to_status="error",
-                payload={"error": str(e), "error_type": type(e).__name__}
+                order.id,
+                "broker_error",
+                from_status="submitted",
+                to_status="error",
+                payload={"error": str(e), "error_type": type(e).__name__},
             )
             await audit_safety_decision(
                 self.db,
@@ -451,8 +472,10 @@ class ExecutionEngine:
         order.reconciliation_latency_ms = milliseconds_between(order.submitted_at, now)
         apply_order_execution_quality(order)
         await self._log_order_event(
-            order.id, "cancelled",
-            from_status=old_status, to_status="cancelled",
+            order.id,
+            "cancelled",
+            from_status=old_status,
+            to_status="cancelled",
             payload={"reconciliation_latency_ms": order.reconciliation_latency_ms},
         )
         await self.db.flush()
@@ -483,19 +506,27 @@ class ExecutionEngine:
                 order.broker_response = response
                 order.filled_at = order.filled_at or reconciled_at
                 order.fill_latency_ms = milliseconds_between(order.submitted_at, order.filled_at)
-                order.reconciliation_latency_ms = milliseconds_between(order.submitted_at, reconciled_at)
+                order.reconciliation_latency_ms = milliseconds_between(
+                    order.submitted_at, reconciled_at
+                )
                 order.last_reconciled_at = reconciled_at
                 apply_order_execution_quality(order)
                 await self._maybe_alert_abnormal_slippage(order)
                 await self._log_order_event(
-                    order.id, "reconciled_fill",
-                    from_status=old_status, to_status="filled",
+                    order.id,
+                    "reconciled_fill",
+                    from_status=old_status,
+                    to_status="filled",
                     payload={
                         "broker_status": broker_status,
                         "fill_latency_ms": order.fill_latency_ms,
                         "reconciliation_latency_ms": order.reconciliation_latency_ms,
-                        "execution_quality_score": float(order.execution_quality_score) if order.execution_quality_score is not None else None,
-                        "slippage_pct": float(order.slippage_pct) if order.slippage_pct is not None else None,
+                        "execution_quality_score": float(order.execution_quality_score)
+                        if order.execution_quality_score is not None
+                        else None,
+                        "slippage_pct": float(order.slippage_pct)
+                        if order.slippage_pct is not None
+                        else None,
                     },
                 )
             elif broker_status in ("CANCELLED", "REJECTED"):
@@ -506,18 +537,24 @@ class ExecutionEngine:
                     order.cancelled_at = order.cancelled_at or reconciled_at
                 else:
                     order.rejected_at = order.rejected_at or reconciled_at
-                order.reconciliation_latency_ms = milliseconds_between(order.submitted_at, reconciled_at)
+                order.reconciliation_latency_ms = milliseconds_between(
+                    order.submitted_at, reconciled_at
+                )
                 order.last_reconciled_at = reconciled_at
                 order.broker_response = response
                 apply_order_execution_quality(order)
                 await self._log_order_event(
-                    order.id, "reconciled_status",
-                    from_status=old_status, to_status=order.status,
+                    order.id,
+                    "reconciled_status",
+                    from_status=old_status,
+                    to_status=order.status,
                     payload={
                         "broker_status": broker_status,
                         "reconciliation_latency_ms": order.reconciliation_latency_ms,
-                        "execution_quality_score": float(order.execution_quality_score) if order.execution_quality_score is not None else None,
-                    }
+                        "execution_quality_score": float(order.execution_quality_score)
+                        if order.execution_quality_score is not None
+                        else None,
+                    },
                 )
             else:
                 order.last_reconciled_at = datetime.now(UTC)
