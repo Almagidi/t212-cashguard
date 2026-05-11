@@ -98,7 +98,17 @@ export async function installApiProxy(
       return
     }
 
-    const response = await page.request.fetch(request)
+    let response
+    try {
+      response = await page.request.fetch(request)
+    } catch (error) {
+      await page.waitForTimeout(250)
+      response = await page.request.fetch(request).catch((retryError) => {
+        throw new Error(
+          `API proxy failed for ${method} ${pathname}: ${String(retryError)}; first error: ${String(error)}`,
+        )
+      })
+    }
     const headers = response.headers()
     await route.fulfill({
       response,
@@ -108,6 +118,26 @@ export async function installApiProxy(
         'access-control-allow-credentials': 'true',
       },
     })
+  })
+}
+
+export async function installExternalMarketDataGuard(page: Page, hits: string[]) {
+  const blockedHosts = [
+    'api.polygon.io',
+    'data.alpaca.markets',
+    'api.alpaca.markets',
+    'paper-api.alpaca.markets',
+  ]
+
+  await page.route('**/*', async (route) => {
+    const url = new URL(route.request().url())
+    if (blockedHosts.some((host) => url.hostname === host || url.hostname.endsWith(`.${host}`))) {
+      hits.push(route.request().url())
+      await route.abort('blockedbyclient')
+      return
+    }
+
+    await route.fallback()
   })
 }
 

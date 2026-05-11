@@ -1169,6 +1169,8 @@ export interface DepsHealth {
   redis: string;
   broker: string;
   market_data: string;
+  workers?: string | null;
+  startup?: string | null;
 }
 export interface MarketDataSymbolHealth {
   ticker: string;

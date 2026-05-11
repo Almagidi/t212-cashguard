@@ -23,6 +23,11 @@ from app.services.execution_quality import (
     milliseconds_between,
     should_alert_abnormal_slippage,
 )
+from app.services.safety_policy import (
+    audit_broker_request_attempt,
+    audit_safety_decision,
+    require_order_submission_allowed,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -235,6 +240,13 @@ class ExecutionEngine:
         if order.status != "pending_intent":
             raise ValueError(f"Cannot submit order in status {order.status!r}")
 
+        broker_environment = getattr(self.broker, "environment", None)
+        await require_order_submission_allowed(
+            self.db,
+            order=order,
+            broker_environment=broker_environment,
+        )
+
         # Dry-run: simulate fill
         if order.is_dry_run:
             now = datetime.now(UTC)
@@ -250,6 +262,14 @@ class ExecutionEngine:
             order.broker_response = {"dry_run": True, "simulated": True}
             apply_order_execution_quality(order)
             await self._log_order_event(order.id, "dry_run_fill", from_status="pending_intent", to_status="filled")
+            await audit_safety_decision(
+                self.db,
+                action="order_submitted",
+                actor="execution_engine",
+                decision="simulated",
+                reason="Dry-run order simulated locally. No broker order sent.",
+                order=order,
+            )
             await self.db.flush()
             return order
 
@@ -285,6 +305,12 @@ class ExecutionEngine:
                 request_payload["stopPrice"] = float(order.stop_price)
 
             order.broker_request = request_payload
+            await audit_broker_request_attempt(
+                self.db,
+                order=order,
+                actor="execution_engine",
+                broker_environment=broker_environment,
+            )
 
             # Call the correct endpoint
             if order.order_type == "market":
@@ -364,6 +390,15 @@ class ExecutionEngine:
                 order.id, "broker_error",
                 from_status="submitted", to_status="error",
                 payload={"error": str(e), "error_type": type(e).__name__}
+            )
+            await audit_safety_decision(
+                self.db,
+                action="broker_request_failed",
+                actor="execution_engine",
+                decision="failed",
+                reason=str(e),
+                order=order,
+                metadata={"error_type": type(e).__name__},
             )
 
         await self.db.flush()

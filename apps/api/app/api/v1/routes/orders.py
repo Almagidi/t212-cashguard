@@ -23,7 +23,7 @@ from app.api.schemas import (
     PaperOrderCreate,
 )
 from app.core.config import settings
-from app.db.models import AuditLog, Order, User
+from app.db.models import AppSettings, AuditLog, Order, User
 from app.db.repositories import OrderRepository
 from app.db.session import get_db
 from app.execution.engine import ExecutionEngine
@@ -34,6 +34,7 @@ from app.execution.paper_engine import (
 )
 from app.risk.engine import RiskEngine, RiskViolation
 from app.services.live_readiness import LiveReadinessService
+from app.services.safety_policy import SafetyPolicyViolation, audit_safety_decision
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -199,6 +200,38 @@ async def _ensure_live_order_ready(
     raise HTTPException(status_code=403, detail=reason)
 
 
+async def _ensure_manual_order_not_halted(
+    *,
+    db: AsyncSession,
+    current_user: User,
+    body: OrderCreate,
+) -> None:
+    app_settings = (
+        await db.execute(select(AppSettings).where(AppSettings.id == 1))
+    ).scalar_one_or_none()
+    if app_settings is None or not app_settings.kill_switch_active:
+        return
+
+    reason = "Kill switch is active. Manual order placement is blocked before broker reads."
+    await audit_safety_decision(
+        db,
+        action="order_blocked_by_kill_switch",
+        actor=current_user.email,
+        decision="blocked",
+        reason=reason,
+        metadata={
+            "ticker": body.ticker.upper(),
+            "side": body.side,
+            "order_type": body.order_type,
+            "quantity": str(body.quantity),
+            "source": "manual_order_route",
+            "decision_code": "kill_switch_block",
+        },
+    )
+    await db.commit()
+    raise HTTPException(status_code=403, detail=reason)
+
+
 @router.get("", response_model=list[OrderOut])
 async def list_orders(
     status: str | None = Query(None),
@@ -227,6 +260,7 @@ async def place_order(
     """
     repo = OrderRepository(db)
 
+    await _ensure_manual_order_not_halted(db=db, current_user=current_user, body=body)
     await _ensure_live_order_ready(db=db, current_user=current_user, body=body)
     broker = await get_broker(current_user=current_user, db=db)
 
@@ -277,7 +311,10 @@ async def place_order(
             available_cash=available_cash,
             estimated_price=estimated_price,
         )
-        order = await engine.submit_order(order)
+        try:
+            order = await engine.submit_order(order)
+        except SafetyPolicyViolation as exc:
+            raise HTTPException(status_code=403, detail=exc.reason) from exc
 
     db.add(
         AuditLog(

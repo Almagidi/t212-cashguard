@@ -22,6 +22,24 @@ def get_live_provider() -> Any:
     Return the best available live market-data provider.
     Alpaca is the primary live source; Polygon validates and falls back when available.
     """
+    provider = settings.MARKET_DATA_PROVIDER.strip().lower()
+
+    if provider == "mock":
+        from app.market_data.mock_provider import MockMarketDataProvider
+        return MockMarketDataProvider()
+
+    if provider == "polygon":
+        from app.market_data.polygon_provider import PolygonMarketDataProvider
+        return PolygonMarketDataProvider()
+
+    if provider == "alpaca":
+        from app.market_data.alpaca_provider import AlpacaMarketDataProvider
+        return AlpacaMarketDataProvider()
+
+    if provider in {"validated", "alpaca_primary_polygon_validator"}:
+        from app.market_data.validated_provider import ValidatedMarketDataProvider
+        return ValidatedMarketDataProvider()
+
     if settings.ALPACA_API_KEY and settings.ALPACA_API_SECRET and settings.POLYGON_API_KEY:
         from app.market_data.validated_provider import ValidatedMarketDataProvider
         return ValidatedMarketDataProvider()
@@ -76,6 +94,15 @@ def get_kraken_provider() -> Any:
 
 def get_provider_name() -> str:
     """Return name of active live data provider for display in UI."""
+    provider = settings.MARKET_DATA_PROVIDER.strip().lower()
+    if provider == "mock":
+        return "mock"
+    if provider == "polygon":
+        return "polygon_only"
+    if provider == "alpaca":
+        return "alpaca_realtime"
+    if provider in {"validated", "alpaca_primary_polygon_validator"}:
+        return "alpaca_primary_polygon_validator"
     if settings.ALPACA_API_KEY and settings.ALPACA_API_SECRET and settings.POLYGON_API_KEY:
         return "alpaca_primary_polygon_validator"
     if settings.ALPACA_API_KEY and settings.ALPACA_API_SECRET:

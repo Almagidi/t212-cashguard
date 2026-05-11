@@ -260,7 +260,7 @@ export function RuntimeDiagnostics({ compact = false }: { compact?: boolean }) {
           <CardTitle>Runtime Diagnostics</CardTitle>
           <div className="flex flex-wrap gap-1.5">
             <Badge variant="info">{profile}</Badge>
-            <Badge variant={frontendMode === backendMode ? "success" : "warning"}>
+            <Badge variant={frontendMode === backendMode ? "success" : "warning"} data-testid="safety-policy-status">
               Frontend {frontendMode}
             </Badge>
             <Badge variant={backendMode ? "info" : "outline"}>

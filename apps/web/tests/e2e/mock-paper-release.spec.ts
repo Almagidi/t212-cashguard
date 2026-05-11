@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { adminEmail, adminPassword, ensureAppPage, ensureLoggedIn, expectTopbarTitle, installApiProxy, installAuthMeStub } from './helpers'
+import { adminEmail, adminPassword, ensureAppPage, ensureLoggedIn, expectTopbarTitle, installApiProxy, installAuthMeStub, installExternalMarketDataGuard } from './helpers'
 
 const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
 
@@ -27,6 +27,17 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
     'Mock/paper release journey is mock-mode only.',
   )
 
+  test.afterEach(async ({ page }) => {
+    await page.unrouteAll({ behavior: 'ignoreErrors' })
+  })
+
+  test('backend is pinned to mock market data for mock/paper smoke', async ({ request }) => {
+    const res = await request.get(`${API_URL}/v1/health/deps`)
+    expect(res.ok(), `health deps failed with status ${res.status()}: ${await res.text()}`).toBe(true)
+    const body = await res.json() as { market_data?: string }
+    expect(body.market_data).toBe('mock')
+  })
+
   test('operator page shows safe mock/paper runtime state', async ({ page }) => {
     await installApiProxy(page)
     await ensureAppPage(page, '/app/operator', 'Operator')
@@ -46,6 +57,10 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
     await expect(page.getByTestId('mock-runtime-status')).toBeVisible()
     await expect(page.getByTestId('broker-runtime-status')).toBeVisible()
     await expect(page.getByTestId('live-readiness-status')).toBeVisible()
+    await expect(page.getByTestId('runtime-mode-badge')).toContainText(/mock/i)
+    await expect(page.getByTestId('live-trading-disabled-badge')).toBeVisible()
+    await expect(page.getByTestId('broker-credentials-status')).toBeVisible()
+    await expect(page.getByTestId('safety-policy-status')).toBeVisible()
 
     // In mock mode, the broker should show as not configured and mock active.
     await expect(page.getByTestId('broker-real-configured').getByText('No')).toBeVisible()
@@ -53,6 +68,9 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
   })
 
   test('core mock lab routes render without crashing', async ({ page }) => {
+    const externalMarketDataHits: string[] = []
+    await installExternalMarketDataGuard(page, externalMarketDataHits)
+
     const routes = [
       { path: '/app/dashboard', title: 'Dashboard' },
       { path: '/app/orders', title: 'Orders' },
@@ -69,6 +87,8 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
       await page.goto(route.path)
       await expectTopbarTitle(page, route.title)
     }
+
+    expect(externalMarketDataHits, `Browser attempted external market-data calls: ${externalMarketDataHits.join(', ')}`).toEqual([])
   })
 
   test('strategies page no longer uses ambiguous dry-run badge wording', async ({ page }) => {
@@ -180,6 +200,7 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
 
     // Verify paper order panel is visible with safety messages
     await expect(page.getByTestId('paper-order-panel')).toBeVisible()
+    await expect(page.getByTestId('broker-execution-status')).toContainText(/disabled/i)
     await expect(page.getByText('Paper / Mock Order').first()).toBeVisible()
     await expect(page.getByText('Mock mode only').first()).toBeVisible()
     await expect(page.getByText('No real broker order will be placed')).toBeVisible()
@@ -209,6 +230,7 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
     await expect(page.getByTestId('paper-order-status-message').getByText(/Paper order blocked by safety controls/i)).toBeVisible({
       timeout: 10_000,
     })
+    await expect(page.getByTestId('order-blocked-reason').first()).toContainText(/Kill switch|No broker order/i)
     await expect(page.getByTestId('paper-order-status-message').getByText(/No broker order was sent/i)).toBeVisible()
     expect(forbiddenPaperFlowCalls, `Paper flow touched broker/live order endpoints: ${forbiddenPaperFlowCalls.join(', ')}`).toEqual([])
 

@@ -8,6 +8,8 @@ Fails fast if a router is accidentally removed from app/main.py.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.main import app
@@ -38,4 +40,12 @@ def test_required_route_is_registered(method: str, path: str) -> None:
     assert (method, path) in routes, (
         f"Route {method} {path} is not registered in the FastAPI app. "
         "Check that the router is imported and included in app/main.py."
+    )
+
+
+def test_legacy_all_routes_module_is_removed() -> None:
+    route_dir = Path(__file__).resolve().parents[2] / "app" / "api" / "v1" / "routes"
+    assert not (route_dir / "all_routes.py").exists(), (
+        "Legacy all_routes.py must stay removed; it contained stale direct broker-selection "
+        "logic that could bypass focused route safety policy if re-registered."
     )

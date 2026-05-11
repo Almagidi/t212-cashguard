@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+from datetime import UTC
+from datetime import datetime as _dt
 from decimal import Decimal
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import select
 
-from app.db.models import Alert
+import app.services.execution_quality as _eq
+from app.db.models import Alert, AppSettings
 from app.execution.engine import ExecutionEngine
 
 
 class DummyBroker:
-    pass
+    environment = "demo"
 
 
 class FilledBroker:
+    environment = "demo"
+
     async def place_market_order(self, ticker, quantity, time_validity="DAY"):
         return {
             "id": "BROKER-FILL-1",
@@ -25,16 +31,22 @@ class FilledBroker:
 
 
 class RejectedBroker:
+    environment = "demo"
+
     async def place_market_order(self, ticker, quantity, time_validity="DAY"):
         return {"id": "B-REJ", "status": "REJECTED", "filledQuantity": 0, "filledPrice": 0}
 
 
 class CancelledBroker:
+    environment = "demo"
+
     async def place_market_order(self, ticker, quantity, time_validity="DAY"):
         return {"id": "B-CAN", "status": "CANCELLED", "filledQuantity": 0, "filledPrice": 0}
 
 
 class WorkingBroker:
+    environment = "demo"
+
     async def place_market_order(self, ticker, quantity, time_validity="DAY"):
         return {"id": "B-WRK", "status": "WORKING", "filledQuantity": 0, "filledPrice": 0}
 
@@ -46,6 +58,8 @@ class WorkingBroker:
 
 
 class FilledOnReconcileBroker:
+    environment = "demo"
+
     async def place_market_order(self, ticker, quantity, time_validity="DAY"):
         return {"id": "B-FOR", "status": "WORKING", "filledQuantity": 0, "filledPrice": 0}
 
@@ -57,13 +71,34 @@ class FilledOnReconcileBroker:
 
 
 class ErrorBroker:
+    environment = "demo"
+
     async def place_market_order(self, ticker, quantity, time_validity="DAY"):
         raise RuntimeError("Broker unavailable")
 
 
 class LimitBroker:
+    environment = "demo"
+
     async def place_limit_order(self, ticker, quantity, limit_price, time_validity="DAY"):
         return {"id": "B-LIM", "status": "WORKING", "filledQuantity": 0, "filledPrice": 0}
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def execution_policy_ready(db, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
+    db.add(
+        AppSettings(
+            id=1,
+            auto_trading_enabled=True,
+            kill_switch_active=False,
+            live_trading_unlocked=False,
+        )
+    )
+    await db.flush()
 
 
 @pytest.mark.asyncio
@@ -133,7 +168,7 @@ async def test_execution_engine_records_execution_quality_and_slippage_alert(db)
     order = await engine.submit_order(order)
 
     assert order.status == "filled"
-    assert order.execution_environment == "mock"
+    assert order.execution_environment == "demo"
     assert order.expected_fill_price == Decimal("100")
     assert order.slippage_pct == Decimal("1.0000")
     assert order.slippage_value == Decimal("10.0000")
@@ -209,8 +244,6 @@ async def test_submit_order_broker_error_sets_error_status(db, monkeypatch):
     # _infer_terminal_time accesses order.updated_at for "error" status; that column
     # is expired in the aiosqlite test DB after the pre-broker flush.  Patch it to
     # avoid the lazy-load so we can exercise the rest of the error path.
-    from datetime import UTC, datetime as _dt
-    import app.services.execution_quality as _eq
     monkeypatch.setattr(_eq, "_infer_terminal_time", lambda _o, _s: _dt.now(UTC))
 
     engine = ExecutionEngine(db, ErrorBroker())

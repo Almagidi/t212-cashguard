@@ -185,7 +185,7 @@ export default function EmergencyPage() {
                 <p className="text-xs text-muted-foreground mt-0.5">Re-enable to allow strategies to execute trades.</p>
               </div>
             </div>
-            <Button variant="success" size="sm" onClick={() => autoOn.mutate()} loading={autoOn.isPending}>
+            <Button variant="success" size="sm" onClick={() => autoOn.mutate()} loading={autoOn.isPending} data-testid="auto-trading-enable-button">
               <Power className="w-3.5 h-3.5" />
               Re-enable
             </Button>
@@ -255,7 +255,7 @@ export default function EmergencyPage() {
       <div className="space-y-3">
         <p className="section-title">Emergency Actions</p>
         {ACTIONS.map(action => (
-          <Card key={action.id} className={cn(
+          <Card key={action.id} data-testid={action.id === 'auto_trading_off' ? 'auto-trading-disable-button' : undefined} className={cn(
             'transition-all',
             action.variant === 'danger' && 'hover:border-red-500/40 hover:shadow-[var(--elev-2)]'
           )}>

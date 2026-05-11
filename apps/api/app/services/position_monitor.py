@@ -13,14 +13,12 @@ This is the automation core — it fires sell orders without human intervention.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
-
 from sqlalchemy import desc, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.models import (
@@ -28,16 +26,19 @@ from app.db.models import (
     AuditLog,
     BrokerConnection,
     Order,
-    RiskEvent,
     Signal,
     Strategy,
 )
-from app.strategies.orb_production import ORBState, OpeningRangeBreakoutStrategy
-from app.strategies.indicators import Bar, atr, trailing_stop_price
 from app.execution.engine import ExecutionEngine
-from app.risk.engine import RiskEngine, RiskViolation, activate_kill_switch
-from app.services.alert_service import alert_kill_switch_activated, AlertService
+from app.risk.engine import activate_kill_switch
+from app.services.alert_service import AlertService, alert_kill_switch_activated
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
+from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
+from app.strategies.indicators import Bar, atr
+from app.strategies.orb_production import OpeningRangeBreakoutStrategy, ORBState
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 log = structlog.get_logger()
 
@@ -60,13 +61,16 @@ class PositionMonitor:
             from app.broker.mock_adapter import MockBrokerAdapter
             return MockBrokerAdapter()
         result = await self.db.execute(
-            select(BrokerConnection).where(BrokerConnection.is_active == True).limit(1)  # noqa: E712
+            select(BrokerConnection)
+            .where(BrokerConnection.is_active == True)  # noqa: E712
+            .where(BrokerConnection.environment == settings.APP_MODE)
+            .limit(1)
         )
         conn = result.scalar_one_or_none()
         if not conn:
             return None
-        from app.core.security import CredentialDecryptionError, decrypt_field
         from app.broker.trading212 import Trading212Adapter
+        from app.core.security import CredentialDecryptionError, decrypt_field
         try:
             api_key = decrypt_field(conn.api_key_encrypted)
             api_secret = decrypt_field(conn.api_secret_encrypted)
@@ -78,6 +82,11 @@ class PositionMonitor:
                 str(exc),
                 actor="position_monitor",
             )
+            return None
+        try:
+            require_broker_environment(conn.environment, action="position monitor broker access")
+        except SafetyPolicyViolation as exc:
+            log.error("position_monitor.broker_policy_block", reason=exc.reason)
             return None
         return Trading212Adapter(
             api_key,
@@ -146,7 +155,7 @@ class PositionMonitor:
 
         # Get today's realized P&L from filled orders
         from sqlalchemy import func
-        today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         result = await self.db.execute(
             select(func.sum(Order.cash_used)).where(
                 Order.created_at >= today,
@@ -229,7 +238,6 @@ class PositionMonitor:
             )
         )
         strategies = strat_result.scalars().all()
-        strategy_by_type = {s.type: s for s in strategies}
 
         # Monitor each open position
         for pos in positions:
@@ -305,9 +313,6 @@ class PositionMonitor:
             (s for s in strategies if str(s.id) == str(last_signal.strategy_id)),
             None
         )
-        trail_mult = float(strategy.params.get("atr_trail_multiplier", 2.5)) if strategy else 2.5
-        stop_mult  = float(strategy.params.get("atr_stop_multiplier", 2.0)) if strategy else 2.0
-
         # Build ORBState for exit evaluation
         initial_stop = last_signal.stop_price
         take_profit_2r = last_signal.take_profit_price
@@ -388,8 +393,8 @@ class PositionMonitor:
             suggested_quantity=-sell_qty,
             confidence=exit_signal.confidence,
             reason=exit_signal.reason,
-            generated_at=datetime.now(timezone.utc),
-            executed_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
+            executed_at=datetime.now(UTC),
         )
         self.db.add(exit_sig_record)
 
@@ -405,7 +410,7 @@ class PositionMonitor:
                 "qty": float(sell_qty),
                 "reason": exit_signal.reason,
             },
-            occurred_at=datetime.now(timezone.utc),
+            occurred_at=datetime.now(UTC),
         ))
 
         log.info(
@@ -478,7 +483,7 @@ class PositionMonitor:
             action="eod_flatten_executed",
             actor="position_monitor",
             payload={"flattened": flattened},
-            occurred_at=datetime.now(timezone.utc),
+            occurred_at=datetime.now(UTC),
         ))
 
         log.info("position_monitor.eod_flatten", positions=flattened)

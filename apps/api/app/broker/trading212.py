@@ -13,19 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import time
-from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
-from tenacity import (
-    RetryError,
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
-from app.core.config import settings
+from app.services.safety_policy import broker_base_url_for
+
+if TYPE_CHECKING:
+    from decimal import Decimal
 
 
 class T212RateLimitError(Exception):
@@ -62,15 +57,11 @@ class Trading212Adapter:
         self.api_key = api_key
         self.api_secret = api_secret
         self.environment = environment
-        self.base_url = (
-            "https://live.trading212.com"
-            if environment == "live"
-            else "https://demo.trading212.com"
-        )
+        self.base_url = broker_base_url_for(environment)
         self._client: httpx.AsyncClient | None = None
         self._rate_limit_reset_at: float = 0.0
 
-    async def __aenter__(self) -> "Trading212Adapter":
+    async def __aenter__(self) -> Trading212Adapter:
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             auth=(self.api_key, self.api_secret),

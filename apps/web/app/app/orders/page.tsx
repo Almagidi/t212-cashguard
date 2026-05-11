@@ -149,6 +149,8 @@ export default function OrdersPage() {
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-sm font-semibold text-foreground">Paper / Mock Order</h2>
                 <Badge variant={isMockMode ? 'success' : 'warning'}>{isMockMode ? 'Mock mode only' : `${appMode} mode`}</Badge>
+                <Badge variant="success" data-testid="broker-execution-status">Broker execution disabled</Badge>
+                {appMode !== 'live' && <Badge variant="success">Live trading disabled</Badge>}
                 {settings?.kill_switch_active && <Badge variant="destructive" data-testid="paper-kill-switch-active-badge">Kill switch is active</Badge>}
               </div>
               <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
@@ -228,7 +230,7 @@ export default function OrdersPage() {
                     : 'border-amber-500/30 bg-amber-500/10 text-amber-200',
                 )} data-testid="paper-order-status-message">
                   <p className="font-semibold">{paperResult.title}</p>
-                  <p className="mt-0.5 text-xs opacity-85">{paperResult.detail}</p>
+                  <p className="mt-0.5 text-xs opacity-85" data-testid={paperResult.tone === 'blocked' ? 'order-blocked-reason' : undefined}>{paperResult.detail}</p>
                   {paperResult.orderId && (
                     <p className="mt-1 text-[10px] uppercase tracking-wider opacity-70">Order {paperResult.orderId}</p>
                   )}
@@ -303,7 +305,7 @@ export default function OrdersPage() {
                             </Badge>
                           </div>
                           {item.rejection_reason && (
-                            <p className="mt-1 text-[11px] text-amber-300">{item.rejection_reason}</p>
+                            <p className="mt-1 text-[11px] text-amber-300" data-testid="order-blocked-reason">{item.rejection_reason}</p>
                           )}
                         </div>
                       ))}

@@ -58,6 +58,7 @@ jobs:
       SECRET_KEY: test-secret-key-32-chars-minimum-x
       MASTER_KEY: test-master-key-32-chars-minimum-x
       APP_MODE: mock
+      MARKET_DATA_PROVIDER: mock
 
     steps:
       - uses: actions/checkout@v4
@@ -246,6 +247,7 @@ jobs:
       SECRET_KEY: test-secret-key-32-chars-minimum-x
       MASTER_KEY: test-master-key-32-chars-minimum-x
       APP_MODE: mock
+      MARKET_DATA_PROVIDER: mock
       ADMIN_EMAIL: admin@localhost
       ADMIN_PASSWORD: change-me
       E2E_ADMIN_EMAIL: admin@localhost
@@ -302,7 +304,7 @@ jobs:
 
           echo "Waiting for API to be ready..."
           for attempt in {1..30}; do
-            if curl -fsS http://127.0.0.1:8000/v1/health/live >/dev/null 2>&1; then
+            if curl -fsS http://127.0.0.1:8000/v1/health/ready | tee /tmp/cashguard-api-ready.json >/dev/null 2>&1; then
               echo "API is ready."
               break
             fi
@@ -311,13 +313,14 @@ jobs:
             if [ "$attempt" -eq 30 ]; then
               echo "Timeout waiting for API"
               cat /tmp/cashguard-api.log
+              cat /tmp/cashguard-api-ready.json 2>/dev/null || true
               exit 1
             fi
           done
 
           echo "Waiting for Web to be ready..."
           for attempt in {1..60}; do
-            if curl -fsS http://127.0.0.1:3000 >/dev/null 2>&1; then
+            if curl -fsS http://127.0.0.1:3000/auth/login >/dev/null 2>&1; then
               echo "Web is ready."
               break
             fi
@@ -337,7 +340,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
-          path: apps/web/playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
           if-no-files-found: ignore
 
       - name: Upload server logs

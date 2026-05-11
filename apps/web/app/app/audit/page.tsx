@@ -99,7 +99,7 @@ export default function AuditPage() {
       ) : logs.length === 0 ? (
         <Card><CardContent><EmptyState title="No audit logs" description="Events will be recorded here as you use the application." /></CardContent></Card>
       ) : (
-        <Card>
+        <Card data-testid="audit-log-panel">
           <CardContent className="p-0">
             <div className="overflow-x-auto scrollbar-none">
               <table className="w-full data-table min-w-[480px]">

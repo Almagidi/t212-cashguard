@@ -4,12 +4,10 @@ Unit tests: risk engine, ORB strategy, security helpers, sell quantity conventio
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
-import pytest_asyncio
-
 
 # ─── Security ────────────────────────────────────────────────────────────────
 
@@ -28,7 +26,7 @@ class TestSecurity:
         assert payload["type"] == "access"
 
     def test_field_encryption_roundtrip(self):
-        from app.core.security import encrypt_field, decrypt_field
+        from app.core.security import decrypt_field, encrypt_field
         secret = "my-api-secret-key-12345"
         encrypted = encrypt_field(secret)
         assert encrypted != secret
@@ -78,7 +76,7 @@ class TestORBStrategy:
     def _make_candle(self, open_=100, high=105, low=95, close=102, ts=None):
         from app.strategies.orb import OHLCV
         return OHLCV(
-            timestamp=ts or datetime.now(timezone.utc),
+            timestamp=ts or datetime.now(UTC),
             open=Decimal(str(open_)),
             high=Decimal(str(high)),
             low=Decimal(str(low)),
@@ -153,7 +151,7 @@ class TestORBStrategy:
         assert qty <= Decimal("2.00")
 
     def test_generate_signal_long_breakout(self):
-        from app.strategies.orb import OpeningRangeBreakoutStrategy, OHLCV
+        from app.strategies.orb import OpeningRangeBreakoutStrategy
         strat = OpeningRangeBreakoutStrategy({"orb_minutes": 15})
         orb_candles = [
             self._make_candle(100, 105, 98, 103),
@@ -267,10 +265,13 @@ class TestBrokerSchemasAndAdapter:
     @pytest.mark.asyncio
     async def test_trading212_auth_failure_returns_actionable_guidance(self, monkeypatch):
         from app.broker.trading212 import T212AuthError, Trading212Adapter
+        from app.core.config import settings
 
         async def fake_get_account_metadata(self):
             raise T212AuthError(401, "Unauthorized")
 
+        monkeypatch.setattr(settings, "APP_MODE", "demo")
+        monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
         monkeypatch.setattr(Trading212Adapter, "get_account_metadata", fake_get_account_metadata)
 
         async with Trading212Adapter("demo-key", "demo-secret", "demo") as broker:
@@ -344,18 +345,19 @@ class TestRiskEngine:
     def _make_profile(self, **overrides):
         """Return a minimal RiskProfile with sensible defaults."""
         from app.db.models import RiskProfile
-        defaults = dict(
-            id=uuid.uuid4(), name="Test Profile",
-            max_risk_per_trade_pct=Decimal("1.0"),
-            max_daily_loss_pct=Decimal("3.0"),
-            max_open_positions=5,
-            max_position_size_pct=Decimal("10.0"),
-            max_trades_per_day=20,
-            stop_after_consecutive_losses=3,
-            symbol_cooldown_seconds=0,
-            force_flat_eod=False,
-            is_default=True,
-        )
+        defaults = {
+            "id": uuid.uuid4(),
+            "name": "Test Profile",
+            "max_risk_per_trade_pct": Decimal("1.0"),
+            "max_daily_loss_pct": Decimal("3.0"),
+            "max_open_positions": 5,
+            "max_position_size_pct": Decimal("10.0"),
+            "max_trades_per_day": 20,
+            "stop_after_consecutive_losses": 3,
+            "symbol_cooldown_seconds": 0,
+            "force_flat_eod": False,
+            "is_default": True,
+        }
         defaults.update(overrides)
         return RiskProfile(**defaults)
 

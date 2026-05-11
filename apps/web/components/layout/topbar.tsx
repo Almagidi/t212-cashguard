@@ -67,7 +67,7 @@ export function TopBar() {
   const sidebarCollapsed   = useUIStore((s) => s.sidebarCollapsed)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
-  const mode = (process.env.NEXT_PUBLIC_APP_MODE || health?.mode || 'mock') as string
+  const mode = (health?.mode || process.env.NEXT_PUBLIC_APP_MODE || 'mock') as string
   const isMockMode = mode === 'mock'
   const meta = Object.entries(PAGE_META).find(([p]) => pathname.startsWith(p))?.[1] ?? { title: 'CashGuard' }
   const connectionLabel = health?.status === 'ok'
@@ -108,13 +108,19 @@ export function TopBar() {
         {/* Right: kill switch + mode badge + theme toggle + connection */}
         <div className="flex items-center gap-2">
           {settings?.kill_switch_active && (
-            <span className="hidden sm:inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-1 rounded-full bg-red-500/10 border border-red-500/30 text-red-400 uppercase tracking-[0.08em] shadow-sm shadow-red-500/10">
+            <span className="hidden sm:inline-flex items-center gap-1.5 text-[10px] font-semibold px-2 py-1 rounded-full bg-red-500/10 border border-red-500/30 text-red-400 uppercase tracking-[0.08em] shadow-sm shadow-red-500/10" data-testid="kill-switch-active-badge">
               <AlertOctagon className="w-3 h-3 animate-pulse-slow" />
               Kill Switch
             </span>
           )}
 
-          <span className={cn(modeBadgeClass(mode), 'hidden sm:inline-flex')}>
+          {mode !== 'live' && (
+            <span className="hidden sm:inline-flex items-center text-[10px] font-semibold px-2 py-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 text-emerald-300 uppercase tracking-[0.08em]" data-testid="live-trading-disabled-badge">
+              Live disabled
+            </span>
+          )}
+
+          <span className={cn(modeBadgeClass(mode), 'hidden sm:inline-flex')} data-testid="runtime-mode-badge">
             {mode}
           </span>
 
@@ -138,6 +144,7 @@ export function TopBar() {
                 ? 'text-cyan-400 border-cyan-500/20 bg-cyan-500/5'
                 : 'text-red-400 border-red-500/20 bg-red-500/5',
             )}
+            data-testid="api-connection-status"
           >
             {health?.status === 'ok'
               ? <Wifi    className="w-3 h-3" />

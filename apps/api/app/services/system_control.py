@@ -18,6 +18,7 @@ from app.risk.engine import activate_kill_switch
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
 from app.services.live_readiness import LiveReadinessService
 from app.services.market_regime import MarketRegimeService
+from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
 if TYPE_CHECKING:
     import uuid
@@ -45,6 +46,7 @@ class SystemControlService:
         query = (
             select(BrokerConnection)
             .where(BrokerConnection.is_active == True)  # noqa: E712
+            .where(BrokerConnection.environment == settings.APP_MODE)
             .order_by(BrokerConnection.updated_at.desc(), BrokerConnection.created_at.desc())
             .limit(1)
         )
@@ -59,9 +61,18 @@ class SystemControlService:
 
             return MockBrokerAdapter()
 
+        try:
+            require_broker_environment(settings.APP_MODE, action="system control broker access")
+        except SafetyPolicyViolation as exc:
+            raise SystemControlError(exc.reason) from exc
+
         conn = await self._get_broker_connection()
         if not conn:
             raise SystemControlError("No active broker connection is configured.")
+        try:
+            require_broker_environment(conn.environment, action="system control broker access")
+        except SafetyPolicyViolation as exc:
+            raise SystemControlError(exc.reason) from exc
 
         try:
             api_key = decrypt_field(conn.api_key_encrypted)

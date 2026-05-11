@@ -1458,6 +1458,56 @@ class TestOrderFlow:
         # May return 201 (placed) or 422 (risk violation)
         assert resp.status_code in (201, 422)
 
+    async def test_kill_switch_blocks_manual_order_before_account_summary(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        db,
+        monkeypatch,
+    ):
+        """Kill-switch-active manual orders must not perform broker reads for placement."""
+        from sqlalchemy import select
+
+        from app.db.models import AuditLog
+
+        class CountingBroker(FakeTrading212Adapter):
+            account_summary_calls = 0
+
+            async def get_account_summary(self):
+                type(self).account_summary_calls += 1
+                return await super().get_account_summary()
+
+        async def fake_get_broker(**_kwargs):
+            return CountingBroker("key", "secret", "demo")
+
+        monkeypatch.setattr("app.api.v1.routes.orders.get_broker", fake_get_broker)
+
+        await client.post("/v1/risk/kill-switch/enable", headers=auth_headers)
+
+        resp = await client.post(
+            "/v1/orders",
+            headers=auth_headers,
+            json={
+                "ticker": "AAPL",
+                "side": "buy",
+                "order_type": "market",
+                "quantity": "1",
+            },
+        )
+
+        assert resp.status_code == 403
+        assert "kill switch" in resp.json()["detail"].lower()
+        assert CountingBroker.account_summary_calls == 0
+
+        audits = (
+            await db.execute(
+                select(AuditLog).where(AuditLog.action == "order_blocked_by_kill_switch")
+            )
+        ).scalars().all()
+        assert audits
+        assert audits[-1].payload["source"] == "manual_order_route"
+        assert audits[-1].payload["no_broker_order_sent"] is True
+
     async def test_order_validation_missing_limit_price(
         self, client: AsyncClient, auth_headers: dict
     ):
@@ -2241,6 +2291,7 @@ class TestBrokerExecutionFlow:
         monkeypatch.setattr(settings, "APP_MODE", "live")
         monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", True)
         monkeypatch.setattr(settings, "T212_ENVIRONMENT", "live")
+        monkeypatch.setattr(settings, "T212_LIVE_API_KEY", "configured-live-key")
         monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", "polygon")
         monkeypatch.setattr(settings, "TELEGRAM_CHAT_ID", "12345")
         monkeypatch.setattr("app.broker.trading212.Trading212Adapter", FakeTrading212Adapter)

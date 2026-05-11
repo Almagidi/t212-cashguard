@@ -54,6 +54,7 @@ from app.services.alert_service import (
 )
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
 from app.services.market_intelligence_monitor import MarketIntelligenceMonitor
+from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 from app.services.signal_allocator import AllocationState, AllocatorCandidate, SignalAllocator
 from app.services.strategy_promotion import StrategyPromotionService
 from app.strategies.indicators import Bar, atr
@@ -81,7 +82,10 @@ class StrategyRunner:
 
             return MockBrokerAdapter()
         r = await self.db.execute(
-            select(BrokerConnection).where(BrokerConnection.is_active == True).limit(1)  # noqa: E712
+            select(BrokerConnection)
+            .where(BrokerConnection.is_active == True)  # noqa: E712
+            .where(BrokerConnection.environment == settings.APP_MODE)
+            .limit(1)
         )
         conn = r.scalar_one_or_none()
         if not conn:
@@ -100,6 +104,11 @@ class StrategyRunner:
                 str(exc),
                 actor="strategy_runner",
             )
+            return None
+        try:
+            require_broker_environment(conn.environment, action="strategy runner broker access")
+        except SafetyPolicyViolation as exc:
+            log.error("runner.broker_policy_block", reason=exc.reason)
             return None
         return Trading212Adapter(
             api_key,

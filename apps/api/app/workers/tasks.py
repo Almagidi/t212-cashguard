@@ -5,13 +5,15 @@ All tasks are idempotent and safe to retry.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from app.workers.celery_app import celery_app
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 log = structlog.get_logger()
 
@@ -43,6 +45,38 @@ async def _complete_task(db, task_name: str, summary: dict[str, Any]) -> dict[st
     await _record_task_heartbeat(db, task_name, summary)
     await db.commit()
     return summary
+
+
+async def run_daily_reset_once(db) -> dict[str, Any]:
+    """Reset daily counters without automatically recovering the kill switch."""
+    from sqlalchemy import desc, select
+
+    from app.db.models import AppSettings, AuditLog, RiskEvent
+
+    result = await db.execute(select(AppSettings).where(AppSettings.id == 1))
+    s = result.scalar_one_or_none()
+    if s:
+        last_ks = await db.execute(
+            select(RiskEvent)
+            .where(RiskEvent.event_type == "kill_switch_on")
+            .order_by(desc(RiskEvent.occurred_at))
+            .limit(1)
+        )
+        last_ks_event = last_ks.scalar_one_or_none()
+        if s.kill_switch_active and last_ks_event:
+            db.add(
+                AuditLog(
+                    action="daily_reset_manual_recovery_required",
+                    actor="daily_reset_task",
+                    payload={
+                        "reason": "Kill switch remains active after daily reset; auto-trading stays disabled.",
+                        "last_kill_switch_event": last_ks_event.message,
+                    },
+                    occurred_at=datetime.now(UTC),
+                )
+            )
+
+    return {"reset": True, "timestamp": datetime.now(UTC).isoformat()}
 
 
 async def _record_task_failure(task_name: str, exc: Exception) -> None:
@@ -168,14 +202,16 @@ def reconcile_pending_orders(self):
     async def _run():
         from datetime import timedelta
 
+        from sqlalchemy import select
+
+        from app.broker.trading212 import Trading212Adapter
         from app.core.config import settings
         from app.core.redis import task_lock
         from app.core.security import CredentialDecryptionError, decrypt_field
-        from app.broker.trading212 import Trading212Adapter
         from app.db.models import BrokerConnection, Order
         from app.db.session import AsyncSessionLocal
         from app.execution.engine import ExecutionEngine
-        from sqlalchemy import select
+        from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
         async with task_lock("reconcile_pending_orders", ttl_seconds=90) as acquired:
             if not acquired:
@@ -193,7 +229,7 @@ def reconcile_pending_orders(self):
                     select(Order).where(
                         Order.status == "submitted",
                         Order.broker_order_id.is_(None),
-                        Order.is_dry_run == False,
+                        Order.is_dry_run.is_(False),
                         Order.created_at < orphan_cutoff,
                     )
                 )
@@ -209,7 +245,7 @@ def reconcile_pending_orders(self):
                 result = await db.execute(
                     select(Order).where(
                         Order.status.in_(["accepted", "submitted"]),
-                        Order.is_dry_run == False,
+                        Order.is_dry_run.is_(False),
                         Order.broker_order_id.isnot(None),
                     ).limit(50)
                 )
@@ -219,11 +255,19 @@ def reconcile_pending_orders(self):
                     return await _complete_task(db, "reconcile_pending_orders", summary)
 
                 conn_result = await db.execute(
-                    select(BrokerConnection).where(BrokerConnection.is_active).limit(1)
+                    select(BrokerConnection)
+                    .where(BrokerConnection.is_active)
+                    .where(BrokerConnection.environment == settings.APP_MODE)
+                    .limit(1)
                 )
                 conn = conn_result.scalar_one_or_none()
                 if not conn:
                     summary = {"reconciled": 0, "skipped": "no_connection"}
+                    return await _complete_task(db, "reconcile_pending_orders", summary)
+                try:
+                    require_broker_environment(conn.environment, action="worker reconcile")
+                except SafetyPolicyViolation as exc:
+                    summary = {"reconciled": 0, "skipped": exc.decision_code, "reason": exc.reason}
                     return await _complete_task(db, "reconcile_pending_orders", summary)
 
                 count = 0
@@ -262,18 +306,23 @@ def reconcile_pending_orders(self):
 def sync_account_snapshot(self):
     async def _run():
         import uuid
+        from decimal import Decimal
 
+        from sqlalchemy import select
+
+        from app.broker.trading212 import Trading212Adapter
         from app.core.config import settings
         from app.core.security import CredentialDecryptionError, decrypt_field
         from app.db.models import BrokerAccountSnapshot, BrokerConnection
         from app.db.session import AsyncSessionLocal
-        from app.broker.trading212 import Trading212Adapter
-        from decimal import Decimal
-        from sqlalchemy import select
+        from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
         async with AsyncSessionLocal() as db:
             conn_result = await db.execute(
-                select(BrokerConnection).where(BrokerConnection.is_active).limit(1)
+                select(BrokerConnection)
+                .where(BrokerConnection.is_active)
+                .where(BrokerConnection.environment == settings.APP_MODE)
+                .limit(1)
             )
             conn = conn_result.scalar_one_or_none()
             if settings.APP_MODE == "mock":
@@ -290,6 +339,11 @@ def sync_account_snapshot(self):
                 currency = "USD"
                 conn_id = conn.id
             elif conn:
+                try:
+                    require_broker_environment(conn.environment, action="worker account sync")
+                except SafetyPolicyViolation as exc:
+                    summary = {"synced": False, "skipped": exc.decision_code, "reason": exc.reason}
+                    return await _complete_task(db, "sync_account_snapshot", summary)
                 try:
                     api_key = decrypt_field(conn.api_key_encrypted)
                     api_secret = decrypt_field(conn.api_secret_encrypted)
@@ -335,11 +389,12 @@ def sync_account_snapshot(self):
 @celery_app.task(name="app.workers.tasks.check_eod_flatten", bind=True, time_limit=120)
 def check_eod_flatten(self):
     async def _run():
+        from sqlalchemy import select
+
         from app.core.redis import task_lock
         from app.db.models import AppSettings, Strategy
         from app.db.session import AsyncSessionLocal
         from app.services.position_monitor import PositionMonitor
-        from sqlalchemy import select
 
         async with task_lock("check_eod_flatten", ttl_seconds=150) as acquired:
             if not acquired:
@@ -382,39 +437,10 @@ def check_eod_flatten(self):
 def daily_reset(self):
     """Reset daily stats and re-enable strategies after overnight reset."""
     async def _run():
-        from app.db.models import AppSettings, AuditLog, RiskEvent
         from app.db.session import AsyncSessionLocal
-        from sqlalchemy import desc, select
 
         async with AsyncSessionLocal() as db:
-            result = await db.execute(select(AppSettings).where(AppSettings.id == 1))
-            s = result.scalar_one_or_none()
-            # Auto-enable auto-trading for new day if kill switch was from daily loss
-            # (not from manual activation)
-            if s:
-                # Check if kill switch was auto-activated by daily loss
-                last_ks = await db.execute(
-                    select(RiskEvent)
-                    .where(RiskEvent.event_type == "kill_switch_on")
-                    .order_by(desc(RiskEvent.occurred_at))
-                    .limit(1)
-                )
-                last_ks_event = last_ks.scalar_one_or_none()
-                if last_ks_event and "daily_loss_monitor" in (last_ks_event.message or ""):
-                    s.kill_switch_active = False
-                    s.auto_trading_enabled = True
-                    db.add(AuditLog(
-                        action="daily_reset_auto_enable",
-                        actor="daily_reset_task",
-                        occurred_at=datetime.now(UTC),
-                    ))
-                    log.info("tasks.daily_reset.auto_enabled")
-
-            return await _complete_task(
-                db,
-                "daily_reset",
-                {"reset": True, "timestamp": datetime.now(UTC).isoformat()},
-            )
+            return await _complete_task(db, "daily_reset", await run_daily_reset_once(db))
 
     return run_monitored_task("daily_reset", _run)
 
@@ -428,14 +454,17 @@ def cancel_timed_out_orders(self):
     Prevents stale orders from filling at bad prices hours later.
     """
     async def _run():
+        from datetime import timedelta
+
+        from sqlalchemy import select
+
+        from app.broker.trading212 import Trading212Adapter
         from app.core.config import settings
         from app.core.security import CredentialDecryptionError, decrypt_field
-        from app.broker.trading212 import Trading212Adapter
         from app.db.models import BrokerConnection, Order
         from app.db.session import AsyncSessionLocal
         from app.execution.engine import ExecutionEngine
-        from datetime import timedelta
-        from sqlalchemy import select
+        from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
         ORDER_TIMEOUT_MINUTES = 60  # Cancel working orders after 1 hour
 
@@ -446,7 +475,7 @@ def cancel_timed_out_orders(self):
                     Order.status.in_(["accepted", "submitted"]),
                     Order.order_type.in_(["limit", "stop", "stop_limit"]),
                     Order.created_at < cutoff,
-                    Order.is_dry_run == False,
+                    Order.is_dry_run.is_(False),
                     Order.broker_order_id.isnot(None),
                 )
             )
@@ -455,7 +484,10 @@ def cancel_timed_out_orders(self):
                 return await _complete_task(db, "cancel_timed_out_orders", {"cancelled": 0})
 
             conn_result = await db.execute(
-                select(BrokerConnection).where(BrokerConnection.is_active).limit(1)
+                select(BrokerConnection)
+                .where(BrokerConnection.is_active)
+                .where(BrokerConnection.environment == settings.APP_MODE)
+                .limit(1)
             )
             conn = conn_result.scalar_one_or_none()
             if not conn:
@@ -463,6 +495,14 @@ def cancel_timed_out_orders(self):
                     db,
                     "cancel_timed_out_orders",
                     {"cancelled": 0, "skipped": "no_connection"},
+                )
+            try:
+                require_broker_environment(conn.environment, action="worker timeout cancel")
+            except SafetyPolicyViolation as exc:
+                return await _complete_task(
+                    db,
+                    "cancel_timed_out_orders",
+                    {"cancelled": 0, "skipped": exc.decision_code, "reason": exc.reason},
                 )
 
             count = 0
@@ -510,10 +550,11 @@ def morning_scan(self):
     Tickers that fall in the 1.5-2% overlap are routed to both.
     """
     async def _run():
+        from sqlalchemy import select
+
         from app.db.models import AuditLog, Strategy
         from app.db.session import AsyncSessionLocal
         from app.scanner.morning_scan import MorningScanner
-        from sqlalchemy import select
 
         async with AsyncSessionLocal() as db:
             result = await db.execute(
@@ -552,11 +593,8 @@ def morning_scan(self):
             for strategy in strategies:
                 stype = strategy.type  # "orb" | "vwap_reclaim" | "opening_fade"
 
-                if stype == "opening_fade":
-                    pool = fade_tickers
-                else:
-                    # ORB and VWAP-reclaim get the ORB-eligible pool
-                    pool = orb_tickers
+                # ORB and VWAP-reclaim get the ORB-eligible pool.
+                pool = fade_tickers if stype == "opening_fade" else orb_tickers
 
                 strategy_candidates = [
                     t for t in pool
@@ -632,10 +670,11 @@ def purge_old_records(self):
     async def _run() -> dict[str, Any]:
         from datetime import timedelta
 
+        from sqlalchemy import delete, select
+
         from app.core.config import settings as app_settings
         from app.db.models import AuditLog, RiskEvent
         from app.db.session import AsyncSessionLocal
-        from sqlalchemy import delete, select
 
         audit_days: int = app_settings.AUDIT_LOG_RETENTION_DAYS
         risk_days: int  = app_settings.RISK_EVENT_RETENTION_DAYS
@@ -700,17 +739,19 @@ def track_cfd_funding(self):
     Must run BEFORE EOD flatten so costs are captured even if positions are
     closed at end-of-session.
 
-    Formula: daily_charge = notional × (annual_rate / 100) / 360
+    Formula: daily_charge = notional x (annual_rate / 100) / 360
     Rates are fetched from broker position data when available.
     """
     async def _run():
+        from sqlalchemy import select
+
         from app.broker.trading212 import Trading212Adapter
         from app.core.config import settings as app_settings
         from app.core.security import CredentialDecryptionError, decrypt_field
         from app.db.models import BrokerConnection, Strategy
         from app.db.session import AsyncSessionLocal
         from app.services.cfd_funding import track_cfd_funding as _track
-        from sqlalchemy import select
+        from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
         async with AsyncSessionLocal() as db:
             # Fetch open positions from broker
@@ -719,7 +760,10 @@ def track_cfd_funding(self):
                 broker = MockBrokerAdapter()
             else:
                 br = await db.execute(
-                    select(BrokerConnection).where(BrokerConnection.is_active).limit(1)
+                    select(BrokerConnection)
+                    .where(BrokerConnection.is_active)
+                    .where(BrokerConnection.environment == app_settings.APP_MODE)
+                    .limit(1)
                 )
                 conn = br.scalar_one_or_none()
                 if not conn:
@@ -740,6 +784,14 @@ def track_cfd_funding(self):
                         db,
                         "track_cfd_funding",
                         {"recorded": 0, "skipped": "credential_error"},
+                    )
+                try:
+                    require_broker_environment(conn.environment, action="worker cfd funding")
+                except SafetyPolicyViolation as exc:
+                    return await _complete_task(
+                        db,
+                        "track_cfd_funding",
+                        {"recorded": 0, "skipped": exc.decision_code, "reason": exc.reason},
                     )
                 broker = Trading212Adapter(
                     api_key,

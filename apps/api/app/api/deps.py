@@ -7,18 +7,22 @@ FastAPI dependency injection.
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 
 from fastapi import Cookie, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.security import CredentialDecryptionError, decode_access_token
 from app.db.models import BrokerConnection, User
 from app.db.session import get_db
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
+from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -78,10 +82,16 @@ async def get_broker(
         from app.broker.mock_adapter import MockBrokerAdapter
         return MockBrokerAdapter()
 
+    try:
+        require_broker_environment(settings.APP_MODE, action="broker dependency")
+    except SafetyPolicyViolation as exc:
+        raise HTTPException(status_code=403, detail=exc.reason) from exc
+
     result = await db.execute(
         select(BrokerConnection)
-        .where(BrokerConnection.is_active == True)
+        .where(BrokerConnection.is_active.is_(True))
         .where(BrokerConnection.user_id == current_user.id)
+        .where(BrokerConnection.environment == settings.APP_MODE)
         .limit(1)
     )
     conn = result.scalar_one_or_none()
@@ -91,8 +101,8 @@ async def get_broker(
             detail="No active broker connection. Connect your Trading 212 account first.",
         )
 
-    from app.core.security import decrypt_field
     from app.broker.trading212 import Trading212Adapter
+    from app.core.security import decrypt_field
     try:
         api_key = decrypt_field(conn.api_key_encrypted)
         api_secret = decrypt_field(conn.api_secret_encrypted)

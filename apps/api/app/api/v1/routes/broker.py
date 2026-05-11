@@ -22,6 +22,7 @@ from app.services.broker_connection_recovery import (
     BROKER_RECOVERY_HINT,
     mark_broker_connection_reconnect_required,
 )
+from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
 router = APIRouter(prefix="/broker/trading212", tags=["broker"])
 
@@ -97,10 +98,6 @@ async def connect_broker(
     db: AsyncSession = Depends(get_db),
 ) -> BrokerStatusOut:
     """Test and then store encrypted broker credentials."""
-    # Block live connections unless live mode is explicitly supported
-    if body.environment == "live" and settings.APP_MODE != "live":
-        raise HTTPException(status_code=400, detail="Live trading requires APP_MODE=live")
-
     if settings.APP_MODE == "mock":
         await _audit(
             db,
@@ -113,6 +110,11 @@ async def connect_broker(
             },
         )
         return _mock_connect_status()
+
+    try:
+        require_broker_environment(body.environment, action="broker credential test")
+    except SafetyPolicyViolation as exc:
+        raise HTTPException(status_code=400, detail=exc.reason) from exc
 
     # Test the submitted credentials before replacing a working connection.
     from app.broker.trading212 import Trading212Adapter
@@ -188,6 +190,7 @@ async def test_connection(
         .where(
             BrokerConnection.user_id == current_user.id,
             BrokerConnection.is_active.is_(True),
+            BrokerConnection.environment == settings.APP_MODE,
         )
         .limit(1)
     )
@@ -196,6 +199,11 @@ async def test_connection(
         return BrokerTestResult(
             is_ok=False, account_id=None, currency=None, error="No active connection"
         )
+
+    try:
+        require_broker_environment(conn.environment, action="broker connection test")
+    except SafetyPolicyViolation as exc:
+        raise HTTPException(status_code=403, detail=exc.reason) from exc
 
     try:
         api_key = decrypt_field(conn.api_key_encrypted)
@@ -252,6 +260,7 @@ async def broker_status(
         select(BrokerConnection)
         .where(
             BrokerConnection.user_id == current_user.id,
+            BrokerConnection.environment == settings.APP_MODE,
         )
         .order_by(BrokerConnection.created_at.desc())
         .limit(1)

@@ -9,6 +9,7 @@ from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 def _find_env_file(start: Path) -> Path:
     """Find the nearest ancestor .env without assuming a fixed checkout depth."""
     for directory in (start.parent, *start.parents):
@@ -69,6 +70,10 @@ class Settings(BaseSettings):
     # Trading 212
     T212_API_KEY: str = ""
     T212_API_SECRET: str = ""
+    T212_DEMO_API_KEY: str = ""
+    T212_DEMO_API_SECRET: str = ""
+    T212_LIVE_API_KEY: str = ""
+    T212_LIVE_API_SECRET: str = ""
     T212_ENVIRONMENT: Literal["demo", "live"] = "demo"
 
     @property
@@ -79,7 +84,7 @@ class Settings(BaseSettings):
 
     # Market data
     POLYGON_API_KEY: str = ""     # Get free key at polygon.io
-    MARKET_DATA_PROVIDER: str = "mock"  # mock | polygon
+    MARKET_DATA_PROVIDER: str = "mock"  # mock | auto | alpaca | polygon | validated
     BENZINGA_API_KEY: str = ""
     BENZINGA_BASE_URL: str = "https://api.benzinga.com"
 

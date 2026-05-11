@@ -79,6 +79,7 @@ export function BrokerStatusPanel({
 
   const connectionStatus =
     status?.credential_state ?? (status ? "configured" : "unknown");
+  const mockBrokerActive = status?.environment === "mock" && status?.is_active === true;
 
   return (
     <section className="space-y-5 rounded-2xl border border-slate-800 bg-slate-950/60 p-5 shadow-sm" data-testid="broker-runtime-status">
@@ -104,6 +105,7 @@ export function BrokerStatusPanel({
             className={`rounded-full border px-3 py-1 text-xs font-medium ${statusBadgeClass(
               connectionStatus,
             )}`}
+            data-testid="broker-credentials-status"
           >
             {formatValue(connectionStatus)}
           </span>
@@ -152,7 +154,7 @@ export function BrokerStatusPanel({
             Mock broker active
           </p>
           <p className="mt-2 text-xl font-semibold text-slate-100">
-            {formatValue(status?.is_active)}
+            {formatValue(mockBrokerActive)}
           </p>
         </div>
       </div>

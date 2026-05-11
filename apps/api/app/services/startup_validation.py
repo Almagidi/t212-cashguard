@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from app.core.config import settings
+from app.services.safety_policy import credentials_configured_status
 
 StartupStatus = Literal["pass", "warn", "fail"]
 
@@ -85,6 +86,31 @@ def build_startup_report() -> dict[str, Any]:
             else "Live execution flag is not required outside live mode."
             if not live_mode
             else "APP_MODE is live but LIVE_TRADING_ENABLED is false."
+        ),
+    ))
+    credential_status = credentials_configured_status()
+    checks.append(_check(
+        key="t212_demo_credentials",
+        label="Trading 212 demo credentials configured",
+        status="pass" if settings.APP_MODE != "demo" or settings.T212_DEMO_API_KEY else "warn",
+        detail=f"TRADING212_DEMO_API_KEY: {credential_status['T212_DEMO_API_KEY']}",
+    ))
+    checks.append(_check(
+        key="t212_live_credentials",
+        label="Trading 212 live credentials configured",
+        status="pass" if not live_mode or settings.T212_LIVE_API_KEY else "fail",
+        detail=f"TRADING212_LIVE_API_KEY: {credential_status['T212_LIVE_API_KEY']}",
+    ))
+    checks.append(_check(
+        key="live_credentials_guarded",
+        label="Live credentials guarded by live flag",
+        status="pass" if live_execution_enabled or not settings.T212_LIVE_API_KEY else "warn",
+        detail=(
+            "Live credentials are configured and LIVE_TRADING_ENABLED=true."
+            if live_execution_enabled and settings.T212_LIVE_API_KEY
+            else "Live credentials are configured but LIVE_TRADING_ENABLED=false; live broker calls remain blocked."
+            if settings.T212_LIVE_API_KEY
+            else "No live Trading 212 credentials are configured."
         ),
     ))
 

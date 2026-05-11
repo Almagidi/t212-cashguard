@@ -34,6 +34,7 @@ from app.market_data import get_live_provider, get_provider_name
 from app.risk.engine import RiskEngine, RiskViolation
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
 from app.services.market_regime import MarketRegimeService
+from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 from app.services.signal_allocator import AllocationState, AllocatorCandidate, SignalAllocator
 from app.services.strategy_promotion import StrategyPromotionService
 from app.strategies.indicators import Bar
@@ -549,6 +550,7 @@ class PortfolioExecutionService:
         result = await self.db.execute(
             select(BrokerConnection)
             .where(BrokerConnection.is_active == True)  # noqa: E712
+            .where(BrokerConnection.environment == settings.APP_MODE)
             .limit(1)
         )
         conn = result.scalar_one_or_none()
@@ -568,6 +570,11 @@ class PortfolioExecutionService:
                 str(exc),
                 actor="portfolio_execution_service",
             )
+            return None
+
+        try:
+            require_broker_environment(conn.environment, action="portfolio execution broker access")
+        except SafetyPolicyViolation:
             return None
 
         return Trading212Adapter(api_key, api_secret, conn.environment)
