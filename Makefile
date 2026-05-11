@@ -581,6 +581,17 @@ operator-manual-check: ## Curl manual QA endpoints with auth against API :8002
 # ─── Local validation baseline ───────────────────────────────────────────────
 .PHONY: validate validate-api validate-web validate-e2e
 
+t212-demo-readonly-smoke: ## Run Trading 212 demo read-only smoke test; requires T212_API_KEY/T212_API_SECRET
+	@echo "$(YELLOW)→ Running Trading 212 demo read-only smoke test...$(RESET)"
+	cd apps/api && \
+		APP_MODE=demo \
+		T212_ENVIRONMENT=demo \
+		LIVE_TRADING_ENABLED=false \
+		MARKET_DATA_PROVIDER=mock \
+		PYTHONPATH=. \
+		$(PYTHON) scripts/t212_demo_readonly_smoke.py
+	@echo "$(GREEN)✓ Trading 212 demo read-only smoke passed$(RESET)"
+
 validate: validate-api validate-web validate-e2e e2e-operator-integration ## Run full local validation baseline: API, web, E2E, and operator integration
 	@echo "$(GREEN)✓ Full local validation baseline passed$(RESET)"
 
