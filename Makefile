@@ -6,12 +6,13 @@
 .PHONY: help setup dev up down migrate seed reset test lint typecheck e2e e2e-operator logs clean
 
 SHELL := /bin/bash
+PYTHON ?= python3.12
 .DEFAULT_GOAL := help
 
-GREEN  := \033[0;32m
-YELLOW := \033[1;33m
-RED    := \033[0;31m
-RESET  := \033[0m
+GREEN  := $(shell printf '\033[0;32m')
+YELLOW := $(shell printf '\033[1;33m')
+RED    := $(shell printf '\033[0;31m')
+RESET  := $(shell printf '\033[0m')
 NORMAL_API_PORT ?= 8000
 NORMAL_WEB_PORT ?= 3000
 
@@ -19,7 +20,7 @@ help: ## Show this help message
 	@echo ""
 	@echo "  T212 CashGuard Trader — Local Development Commands"
 	@echo ""
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-20s$(RESET) %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-20s$(RESET) %s\n", $$1, $$2}'
 	@echo ""
 
 setup: ## First-time setup: copy .env, install deps, build docker, migrate, seed
@@ -577,3 +578,91 @@ operator-manual-check: ## Curl manual QA endpoints with auth against API :8002
 			fi; \
 		done
 	@echo "$(GREEN)✓ Manual QA API endpoints returned 200$(RESET)"
+# ─── Local validation baseline ───────────────────────────────────────────────
+.PHONY: validate validate-api validate-web validate-e2e
+
+validate: validate-api validate-web validate-e2e e2e-operator-integration ## Run full local validation baseline: API, web, E2E, and operator integration
+	@echo "$(GREEN)✓ Full local validation baseline passed$(RESET)"
+
+validate-api: ## Run backend pytest suite with coverage gate
+	@echo "$(YELLOW)→ Running backend validation...$(RESET)"
+	cd apps/api && $(PYTHON) -m pytest -q
+	@echo "$(GREEN)✓ Backend validation passed$(RESET)"
+
+validate-web: ## Run frontend typecheck, lint, unit tests, and production build
+	@echo "$(YELLOW)→ Running frontend typecheck...$(RESET)"
+	cd apps/web && npm run typecheck
+	@echo "$(YELLOW)→ Running frontend lint...$(RESET)"
+	cd apps/web && npm run lint
+	@echo "$(YELLOW)→ Running frontend unit tests...$(RESET)"
+	cd apps/web && npm test
+	@echo "$(YELLOW)→ Running frontend production build...$(RESET)"
+	cd apps/web && npm run build
+	@echo "$(GREEN)✓ Frontend validation passed$(RESET)"
+
+validate-e2e: ## Run local Playwright E2E against mock market-data backend
+	@echo "$(YELLOW)→ Checking Docker daemon...$(RESET)"
+	@if ! docker info >/dev/null 2>&1; then \
+		echo "$(RED)Docker is not running. Start Docker Desktop, then rerun make validate-e2e.$(RESET)"; \
+		exit 1; \
+	fi
+	@echo "$(YELLOW)→ Checking local ports...$(RESET)"
+	@if lsof -tiTCP:8000 -sTCP:LISTEN >/dev/null 2>&1; then \
+		echo "$(RED)Port 8000 is already in use. Stop the running API first.$(RESET)"; \
+		lsof -nP -iTCP:8000 -sTCP:LISTEN 2>/dev/null | sed 's/^/  /'; \
+		exit 1; \
+	fi
+	@if lsof -tiTCP:3000 -sTCP:LISTEN >/dev/null 2>&1; then \
+		echo "$(RED)Port 3000 is already in use. Stop the running web server first.$(RESET)"; \
+		lsof -nP -iTCP:3000 -sTCP:LISTEN 2>/dev/null | sed 's/^/  /'; \
+		exit 1; \
+	fi
+	@echo "$(YELLOW)→ Starting Postgres and Redis...$(RESET)"
+	docker compose up -d postgres redis
+	@echo "$(YELLOW)→ Running migrations...$(RESET)"
+	$(MAKE) migrate
+	@echo "$(YELLOW)→ Seeding demo data...$(RESET)"
+	cd apps/api && APP_MODE=mock ADMIN_EMAIL=admin@localhost ADMIN_PASSWORD=change-me PYTHONPATH=. $(PYTHON) -m app.db.seed
+	@echo "$(YELLOW)→ Clearing local Redis rate-limit/cache state...$(RESET)"
+	@REDIS_PASSWORD=$$(grep -E '^REDIS_PASSWORD=' .env 2>/dev/null | tail -1 | cut -d= -f2-); \
+	if [ -n "$$REDIS_PASSWORD" ]; then \
+		docker compose exec -T redis redis-cli -a "$$REDIS_PASSWORD" FLUSHDB >/dev/null; \
+	else \
+		echo "$(YELLOW)  REDIS_PASSWORD not found in .env; skipping Redis flush.$(RESET)"; \
+	fi
+	@echo "$(YELLOW)→ Starting API with MARKET_DATA_PROVIDER=mock...$(RESET)"
+	@set -e; \
+	cd apps/api; \
+	APP_MODE=mock \
+	MARKET_DATA_PROVIDER=mock \
+	ADMIN_EMAIL=admin@localhost \
+	ADMIN_PASSWORD=change-me \
+	uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log & \
+	API_PID=$$!; \
+	cleanup() { kill $$API_PID 2>/dev/null || true; wait $$API_PID 2>/dev/null || true; }; \
+	trap cleanup EXIT INT TERM; \
+	echo "$(YELLOW)  → Waiting for API readiness...$(RESET)"; \
+	API_READY=0; \
+	for i in $$(seq 1 30); do \
+		if ! kill -0 $$API_PID 2>/dev/null; then \
+			echo "$(RED)API exited before readiness.$(RESET)"; \
+			exit 1; \
+		fi; \
+		if curl -sf http://127.0.0.1:8000/v1/health/ready >/dev/null 2>&1; then \
+			API_READY=1; \
+			break; \
+		fi; \
+		sleep 1; \
+	done; \
+	if [ "$$API_READY" != "1" ]; then \
+		echo "$(RED)API did not become ready on port 8000.$(RESET)"; \
+		exit 1; \
+	fi; \
+	echo "$(YELLOW)→ Running Playwright E2E...$(RESET)"; \
+	cd $(CURDIR)/apps/web && \
+		NEXT_PUBLIC_APP_MODE=mock \
+		NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 \
+		E2E_ADMIN_EMAIL=admin@localhost \
+		E2E_ADMIN_PASSWORD=change-me \
+		npm run e2e -- --workers=1 --grep-invert "Operator dashboard — real-backend integration"
+	@echo "$(GREEN)✓ E2E validation passed$(RESET)"

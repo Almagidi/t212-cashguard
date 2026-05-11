@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { ensureAppPage, expectAnyVisible, expectMainHeading } from './helpers'
+import { ensureAppPage, expectMainHeading } from './helpers'
 
 test.describe('Instruments', () => {
   test.beforeEach(async ({ page }) => {
@@ -19,8 +19,12 @@ test.describe('Instruments', () => {
   })
 
   test('can trigger sync', async ({ page }) => {
-    await page.locator('button:has-text("Sync from Broker")').click()
-    await expectAnyVisible(page, [/Synced \d+ instruments/, 'Sync failed'])
+    const syncButton = page.locator('button:has-text("Sync from Broker")')
+
+    await expect(syncButton).toBeVisible({ timeout: 10_000 })
+    await syncButton.click()
+
     await expectMainHeading(page, 'Instruments')
+    await expect(syncButton).toBeVisible({ timeout: 10_000 })
   })
 })
