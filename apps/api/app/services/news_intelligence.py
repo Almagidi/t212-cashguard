@@ -20,6 +20,9 @@ class NewsIntelligenceService:
         if not symbols:
             return []
 
+        if settings.APP_MODE == "mock" or settings.MARKET_DATA_PROVIDER == "mock":
+            return []
+
         items = await self._fetch_benzinga(symbols, limit=limit)
         if items:
             return items[:limit]

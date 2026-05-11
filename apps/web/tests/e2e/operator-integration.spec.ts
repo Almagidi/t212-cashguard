@@ -100,6 +100,15 @@ test.describe('Operator dashboard — real-backend integration (T-OPS-009)', () 
     // Kraken section must be present.
     await expect(page.getByRole('heading', { name: 'Kraken Summary' })).toBeVisible()
 
+    // Execution boundary is rendered from real backend status flags.
+    await expect(page.getByTestId('operator-execution-boundary')).toBeVisible()
+    await expect(page.getByTestId('operator-read-only-badge')).toContainText('Read-only endpoint')
+    await expect(page.getByTestId('operator-no-broker-order-badge')).toContainText('No broker order sent')
+    await expect(page.getByTestId('operator-execution-boundary')).toContainText('Creates orders')
+    await expect(page.getByTestId('operator-execution-boundary')).toContainText('Calls brokers')
+    await expect(page.getByTestId('operator-execution-boundary')).toContainText('Triggers schedulers')
+    await expect(page.getByTestId('operator-execution-boundary')).toContainText('Runs strategies')
+
     // Safety flags section — endpoint_read_only is hardcoded true in the route.
     await expect(page.getByText('Endpoint read-only')).toBeVisible()
 

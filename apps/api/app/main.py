@@ -6,6 +6,7 @@ All routes properly separated into focused modules.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from collections import defaultdict
@@ -130,6 +131,14 @@ async def request_logging(request: Request, call_next):
     response.headers["X-Trace-Id"] = trace_id
     return response
 
+
+def _rate_limiting_disabled_for_mock_e2e() -> bool:
+    """Disable API rate limiting only for explicit mock-mode E2E validation."""
+    return (
+        os.getenv("APP_MODE", "").lower() == "mock"
+        and os.getenv("DISABLE_RATE_LIMITING", "").lower() in {"1", "true", "yes", "on"}
+    )
+
 # ── Auth rate limiting ────────────────────────────────────────────────────────
 LOGIN_RATE_LIMIT_WINDOW_SECONDS = 300
 LOGIN_RATE_LIMIT_MAX_FAILURES = 5
@@ -141,6 +150,9 @@ _login_lock = asyncio.Lock()
 
 @app.middleware("http")
 async def auth_rate_limit(request: Request, call_next):
+    if _rate_limiting_disabled_for_mock_e2e():
+        return await call_next(request)
+
     if request.url.path == "/v1/auth/login" and request.method == "POST":
         ip = request.client.host if request.client else "unknown"
         now = time.monotonic()
@@ -191,6 +203,9 @@ _rate_lock = asyncio.Lock()
 
 @app.middleware("http")
 async def general_rate_limit(request: Request, call_next):
+    if _rate_limiting_disabled_for_mock_e2e():
+        return await call_next(request)
+
     path = request.url.path
     if any(path.startswith(p) for p in _RATE_EXEMPT_PREFIXES):
         return await call_next(request)

@@ -622,19 +622,22 @@ validate-e2e: ## Run local Playwright E2E against mock market-data backend
 	@echo "$(YELLOW)→ Running migrations...$(RESET)"
 	$(MAKE) migrate
 	@echo "$(YELLOW)→ Seeding demo data...$(RESET)"
-	cd apps/api && APP_MODE=mock ADMIN_EMAIL=admin@localhost ADMIN_PASSWORD=change-me PYTHONPATH=. $(PYTHON) -m app.db.seed
+	cd apps/api && APP_MODE=mock MARKET_DATA_PROVIDER=mock DISABLE_RATE_LIMITING=true ADMIN_EMAIL=admin@localhost ADMIN_PASSWORD=change-me PYTHONPATH=. $(PYTHON) -m app.db.seed
 	@echo "$(YELLOW)→ Clearing local Redis rate-limit/cache state...$(RESET)"
 	@REDIS_PASSWORD=$$(grep -E '^REDIS_PASSWORD=' .env 2>/dev/null | tail -1 | cut -d= -f2-); \
 	if [ -n "$$REDIS_PASSWORD" ]; then \
 		docker compose exec -T redis redis-cli -a "$$REDIS_PASSWORD" FLUSHDB >/dev/null; \
+	elif docker compose exec -T redis redis-cli FLUSHDB >/dev/null 2>&1; then \
+		true; \
 	else \
-		echo "$(YELLOW)  REDIS_PASSWORD not found in .env; skipping Redis flush.$(RESET)"; \
+		docker compose exec -T redis redis-cli -a cashguard_redis FLUSHDB >/dev/null; \
 	fi
 	@echo "$(YELLOW)→ Starting API with MARKET_DATA_PROVIDER=mock...$(RESET)"
 	@set -e; \
 	cd apps/api; \
 	APP_MODE=mock \
 	MARKET_DATA_PROVIDER=mock \
+	DISABLE_RATE_LIMITING=true \
 	ADMIN_EMAIL=admin@localhost \
 	ADMIN_PASSWORD=change-me \
 	uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log & \

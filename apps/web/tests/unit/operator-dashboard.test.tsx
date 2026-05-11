@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom";
 
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 
 import type {
   OperatorStatus,
@@ -273,6 +273,32 @@ describe("OperatorDashboard", () => {
       expect(screen.getByText(`Worker heartbeat ${workerHealth}`)).toBeTruthy();
     },
   );
+
+  it("renders execution boundary safety invariants", () => {
+    paperHistoryState = {
+      data: paperHistory(),
+      isLoading: false,
+      isError: false,
+    };
+
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const boundary = screen.getByTestId("operator-execution-boundary");
+
+    expect(boundary).toBeInTheDocument();
+    expect(screen.getByTestId("operator-read-only-badge")).toHaveTextContent("Read-only endpoint");
+    expect(screen.getByTestId("operator-no-broker-order-badge")).toHaveTextContent("No broker order sent");
+    expect(screen.getByTestId("operator-live-disabled-badge")).toHaveTextContent("Live locked");
+
+    expect(within(boundary).getByText("Creates orders")).toBeInTheDocument();
+    expect(within(boundary).getByText("Calls brokers")).toBeInTheDocument();
+    expect(within(boundary).getByText("Triggers schedulers")).toBeInTheDocument();
+    expect(within(boundary).getByText("Runs strategies")).toBeInTheDocument();
+    expect(boundary).toHaveTextContent("Local/mock only");
+    expect(boundary).toHaveTextContent("Cash-only mode");
+    expect(boundary).toHaveTextContent("Live trading possible");
+    expect(boundary).toHaveTextContent("Live enabled anywhere");
+  });
 
   it("describes scheduler registration as registered, not running", () => {
     render(<OperatorDashboard status={operatorStatus()} />);
