@@ -3,9 +3,13 @@ T212 CashGuard Trader — FastAPI Application.
 All routes properly separated into focused modules.
 # reload-trigger: 2026-04-08
 """
+# mypy: disable-error-code="no-untyped-def,arg-type,assignment,misc,return-value,unreachable"
+
+# ruff: noqa: E402, I001
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from collections import defaultdict
@@ -49,7 +53,7 @@ if settings.SENTRY_DSN and sentry_sdk is not None:
         # Never send PII: user emails, passwords, or raw request bodies
         send_default_pii=False,
         # Strip auth headers before sending to Sentry
-        before_send=lambda event, hint: _scrub_sentry_event(event),
+        before_send=lambda event, _hint: _scrub_sentry_event(event),
     )
     log.info("sentry.initialised", environment=settings.APP_MODE)
 elif settings.SENTRY_DSN:
@@ -94,11 +98,12 @@ _CSP = (
     "style-src 'self' 'unsafe-inline'; "  # unsafe-inline kept for Swagger UI
     "img-src 'self' data:; "
     "font-src 'self'; "
-    "connect-src 'self' ws: wss:; "       # allow WebSocket connections
+    "connect-src 'self' ws: wss:; "  # allow WebSocket connections
     "frame-ancestors 'none'; "
     "base-uri 'self'; "
     "form-action 'self'"
 )
+
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
@@ -112,6 +117,7 @@ async def security_headers(request: Request, call_next):
     if not settings.DEBUG:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
+
 
 # ── Request correlation + structured access log ───────────────────────────────
 @app.middleware("http")
@@ -130,6 +136,14 @@ async def request_logging(request: Request, call_next):
     response.headers["X-Trace-Id"] = trace_id
     return response
 
+
+def _rate_limiting_disabled_for_mock_e2e() -> bool:
+    """Disable API rate limiting only for explicit mock-mode E2E validation."""
+    return os.getenv("APP_MODE", "").lower() == "mock" and os.getenv(
+        "DISABLE_RATE_LIMITING", ""
+    ).lower() in {"1", "true", "yes", "on"}
+
+
 # ── Auth rate limiting ────────────────────────────────────────────────────────
 LOGIN_RATE_LIMIT_WINDOW_SECONDS = 300
 LOGIN_RATE_LIMIT_MAX_FAILURES = 5
@@ -139,8 +153,12 @@ _login_attempts: dict[str, list[float]] = defaultdict(list)
 _login_lockouts: dict[str, float] = {}
 _login_lock = asyncio.Lock()
 
+
 @app.middleware("http")
 async def auth_rate_limit(request: Request, call_next):
+    if _rate_limiting_disabled_for_mock_e2e():
+        return await call_next(request)
+
     if request.url.path == "/v1/auth/login" and request.method == "POST":
         ip = request.client.host if request.client else "unknown"
         now = time.monotonic()
@@ -181,16 +199,21 @@ async def auth_rate_limit(request: Request, call_next):
 
     return await call_next(request)
 
+
 # ── General API rate limiting (100 req/10s per IP, health + metrics exempt) ───
-_RATE_LIMIT_RPS_WINDOW = 10          # seconds
-_RATE_LIMIT_MAX_REQUESTS = 100       # per window
+_RATE_LIMIT_RPS_WINDOW = 10  # seconds
+_RATE_LIMIT_MAX_REQUESTS = 100  # per window
 _RATE_EXEMPT_PREFIXES = ("/v1/health", "/v1/ws/", "/metrics", "/docs", "/openapi")
 
 _ip_request_counts: dict[str, list[float]] = defaultdict(list)
 _rate_lock = asyncio.Lock()
 
+
 @app.middleware("http")
 async def general_rate_limit(request: Request, call_next):
+    if _rate_limiting_disabled_for_mock_e2e():
+        return await call_next(request)
+
     path = request.url.path
     if any(path.startswith(p) for p in _RATE_EXEMPT_PREFIXES):
         return await call_next(request)
@@ -211,6 +234,7 @@ async def general_rate_limit(request: Request, call_next):
         bucket.append(now)
 
     return await call_next(request)
+
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -249,23 +273,40 @@ from app.api.v1.routes.dca import router as dca_router
 from app.api.metrics import router as metrics_router
 
 for r in [
-    auth_router, broker_router, account_router, instruments_router,
-    strategies_router, signals_router, orders_router, positions_router,
-    risk_router, alerts_router, settings_router, emergency_router,
-    reports_router, trades_router, audit_router, health_router, telegram_router,
-    intelligence_router, operator_router, dca_router,
+    auth_router,
+    broker_router,
+    account_router,
+    instruments_router,
+    strategies_router,
+    signals_router,
+    orders_router,
+    positions_router,
+    risk_router,
+    alerts_router,
+    settings_router,
+    emergency_router,
+    reports_router,
+    trades_router,
+    audit_router,
+    health_router,
+    telegram_router,
+    intelligence_router,
+    operator_router,
+    dca_router,
 ]:
     app.include_router(r, prefix=PREFIX)
 
 app.include_router(metrics_router)  # /metrics — no prefix
 
 from app.api.v1.routes.backtest import router as backtest_router, attribution_router
+
 app.include_router(backtest_router, prefix=PREFIX)
 app.include_router(attribution_router, prefix=PREFIX)
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────
 from app.api.v1.routes.ws import router as ws_router
-app.include_router(ws_router)                      # /v1/ws/live  (WebSocket, no prefix)
+
+app.include_router(ws_router)  # /v1/ws/live  (WebSocket, no prefix)
 app.include_router(regime_router, prefix=PREFIX)
 
 

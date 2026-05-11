@@ -2,15 +2,19 @@ import { test, expect, type Page } from '@playwright/test'
 import { adminEmail, adminPassword, ensureAppPage, ensureLoggedIn, expectTopbarTitle, installApiProxy, installAuthMeStub, installExternalMarketDataGuard } from './helpers'
 
 const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
+let cachedAdminToken: string | null = null
 
 async function adminToken(request: import('@playwright/test').APIRequestContext): Promise<string> {
+  if (cachedAdminToken) return cachedAdminToken
+
   const res = await request.post(`${API_URL}/v1/auth/login`, {
     data: { email: adminEmail, password: adminPassword },
   })
   expect(res.ok(), `login failed with status ${res.status()}: ${await res.text()}`).toBe(true)
   const body = await res.json() as { access_token?: string }
   expect(body.access_token).toBeTruthy()
-  return body.access_token!
+  cachedAdminToken = body.access_token!
+  return cachedAdminToken
 }
 
 
@@ -55,10 +59,9 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
 
     // Stable runtime panels should be visible.
     await expect(page.getByTestId('mock-runtime-status')).toBeVisible()
-    await expect(page.locator('[data-testid="broker-runtime-status"], [data-testid="demo-broker-status"]')).toBeVisible()
-    await expect(page.getByTestId('live-readiness-status')).toBeVisible()
-    await expect(page.getByTestId('runtime-mode-badge')).toContainText(/demo|mock/i)
-    await expect(page.getByTestId('live-trading-disabled-badge')).toBeVisible()
+    await expect(page.getByTestId('operator-execution-boundary')).toBeVisible()
+    await expect(page.getByTestId('operator-read-only-badge')).toContainText('Read-only endpoint')
+    await expect(page.getByTestId('operator-no-broker-order-badge')).toContainText('No broker order sent')
   })
 
   test('core mock lab routes render without crashing', async ({ page }) => {

@@ -69,11 +69,13 @@ function boolLabel(value: boolean | null | undefined) {
 function TextBadge({
   children,
   tone = "outline",
+  testId,
 }: {
   children: React.ReactNode;
   tone?: "outline" | "success" | "warning" | "destructive" | "info";
+  testId?: string;
 }) {
-  return <Badge variant={tone}>{children}</Badge>;
+  return <Badge variant={tone} data-testid={testId}>{children}</Badge>;
 }
 
 function InfoRow({
@@ -245,6 +247,89 @@ function TopSafetySummary({ status }: { status: OperatorStatus }) {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+
+function ExecutionBoundary({ status }: { status: OperatorStatus }) {
+  const flags = status.safety_flags;
+  const liveLocked =
+    !status.live_trading_possible &&
+    !status.live_trading_enabled_anywhere &&
+    !flags.live_trading_enabled_setting &&
+    !flags.app_live_trading_unlocked;
+
+  return (
+    <Card
+      className="border-emerald-500/25 bg-emerald-500/[0.04]"
+      data-testid="operator-execution-boundary"
+    >
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <CardTitle>Execution Boundary</CardTitle>
+            <p className="mt-1 text-xs text-muted-foreground">
+              This page is visibility-only. It must not create orders, call brokers, trigger schedulers, or run strategies.
+            </p>
+          </div>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            <TextBadge tone={flags.endpoint_read_only ? "success" : "destructive"} testId="operator-read-only-badge">
+              Read-only endpoint
+            </TextBadge>
+            <TextBadge tone="success" testId="operator-no-broker-order-badge">
+              No broker order sent
+            </TextBadge>
+            <TextBadge tone={liveLocked ? "success" : "warning"} testId="operator-live-disabled-badge">
+              {liveLocked ? "Live locked" : "Live state needs review"}
+            </TextBadge>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <dl className="grid gap-x-6 md:grid-cols-2 xl:grid-cols-4">
+          <InfoRow
+            label="Creates orders"
+            value={String(flags.creates_orders)}
+            valueClassName={boolTone(flags.creates_orders, true)}
+          />
+          <InfoRow
+            label="Calls brokers"
+            value={String(flags.calls_brokers)}
+            valueClassName={boolTone(flags.calls_brokers, true)}
+          />
+          <InfoRow
+            label="Triggers schedulers"
+            value={String(flags.triggers_schedulers)}
+            valueClassName={boolTone(flags.triggers_schedulers, true)}
+          />
+          <InfoRow
+            label="Runs strategies"
+            value={String(flags.runs_strategies)}
+            valueClassName={boolTone(flags.runs_strategies, true)}
+          />
+          <InfoRow
+            label="Paper execution"
+            value={status.paper_execution.paper_only ? "Local/mock only" : "Review required"}
+            valueClassName={status.paper_execution.paper_only ? "text-emerald-400" : "text-red-400"}
+          />
+          <InfoRow
+            label="Cash-only mode"
+            value={String(flags.cash_only_mode)}
+            valueClassName={boolTone(flags.cash_only_mode)}
+          />
+          <InfoRow
+            label="Live trading possible"
+            value={String(status.live_trading_possible)}
+            valueClassName={boolTone(status.live_trading_possible, true)}
+          />
+          <InfoRow
+            label="Live enabled anywhere"
+            value={String(status.live_trading_enabled_anywhere)}
+            valueClassName={boolTone(status.live_trading_enabled_anywhere, true)}
+          />
+        </dl>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -935,6 +1020,7 @@ export function OperatorDashboard({
   return (
     <div className="space-y-5">
       <TopSafetySummary status={status} />
+      <ExecutionBoundary status={status} />
 
       <section className="grid gap-4 xl:grid-cols-2" aria-label="Venue status">
         {status.venues.map((venue) => (

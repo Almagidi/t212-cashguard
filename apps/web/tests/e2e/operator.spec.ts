@@ -350,10 +350,21 @@ test.describe('Operator dashboard readiness', () => {
     await expect(page.getByText('Mock execution').first()).toBeVisible()
     await expect(page.getByText('Paper-only').first()).toBeVisible()
     await expect(page.getByText('Live disabled').first()).toBeVisible()
+
+    // Execution boundary — the operator page is visibility-only and must not expose execution paths.
+    await expect(page.getByTestId('operator-execution-boundary')).toBeVisible()
+    await expect(page.getByTestId('operator-read-only-badge')).toContainText('Read-only endpoint')
+    await expect(page.getByTestId('operator-no-broker-order-badge')).toContainText('No broker order sent')
+    await expect(page.getByTestId('operator-live-disabled-badge')).toContainText(/Live locked|Live state needs review/)
+    await expect(page.getByTestId('operator-execution-boundary')).toContainText('Creates orders')
+    await expect(page.getByTestId('operator-execution-boundary')).toContainText('Calls brokers')
+    await expect(page.getByTestId('operator-execution-boundary')).toContainText('Triggers schedulers')
+    await expect(page.getByTestId('operator-execution-boundary')).toContainText('Runs strategies')
+
     await expect(page.getByText('Worker heartbeat missing')).toBeVisible()
     await expect(page.getByText('Endpoint read-only')).toBeVisible()
-    await expect(page.getByText('Creates orders')).toBeVisible()
-    await expect(page.getByText('Calls brokers')).toBeVisible()
+    await expect(page.getByTestId('operator-execution-boundary')).toContainText('Creates orders')
+    await expect(page.getByTestId('operator-execution-boundary')).toContainText('Calls brokers')
     await expect(page.getByText('BTC/USD').first()).toBeVisible()
     await expect(page.getByText('should-not-render')).toHaveCount(0)
     await expect(page.getByRole('button', { name: /enable|disable|execute|trade|buy|sell/i })).toHaveCount(0)
