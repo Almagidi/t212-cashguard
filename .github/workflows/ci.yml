@@ -91,7 +91,7 @@ jobs:
             DIFF_RANGE="HEAD~1..HEAD"
           fi
 
-          mapfile -t CHANGED_FILES < <(git diff --name-only "$DIFF_RANGE" | grep '^apps/api/' | sed 's|^apps/api/||' | grep '\.py$' || true)
+          mapfile -t CHANGED_FILES < <(git diff --name-only --diff-filter=ACMR "$DIFF_RANGE" | grep '^apps/api/' | sed 's|^apps/api/||' | grep '\.py$' || true)
           if ((${#CHANGED_FILES[@]})); then
             python -m ruff check "${CHANGED_FILES[@]}"
           else
@@ -108,7 +108,7 @@ jobs:
             DIFF_RANGE="HEAD~1..HEAD"
           fi
 
-          mapfile -t CHANGED_FILES < <(git diff --name-only "$DIFF_RANGE" | grep '^apps/api/' | sed 's|^apps/api/||' | grep '\.py$' || true)
+          mapfile -t CHANGED_FILES < <(git diff --name-only --diff-filter=ACMR "$DIFF_RANGE" | grep '^apps/api/' | sed 's|^apps/api/||' | grep '\.py$' || true)
           if ((${#CHANGED_FILES[@]})); then
             python -m ruff format --check "${CHANGED_FILES[@]}"
           else
@@ -125,7 +125,7 @@ jobs:
             DIFF_RANGE="HEAD~1..HEAD"
           fi
 
-          mapfile -t CHANGED_APP_FILES < <(git diff --name-only "$DIFF_RANGE" | grep '^apps/api/app/' | sed 's|^apps/api/||' | grep '\.py$' || true)
+          mapfile -t CHANGED_APP_FILES < <(git diff --name-only --diff-filter=ACMR "$DIFF_RANGE" | grep '^apps/api/app/' | sed 's|^apps/api/||' | grep '\.py$' || true)
           if ((${#CHANGED_APP_FILES[@]})); then
             python -m mypy "${CHANGED_APP_FILES[@]}" --ignore-missing-imports --follow-imports=silent
           else
