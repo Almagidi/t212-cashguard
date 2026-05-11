@@ -115,6 +115,17 @@ def _demo_missing_credentials_status() -> BrokerStatusOut:
     )
 
 
+def _broker_account_id(value: object) -> str | None:
+    """Normalise broker account identifiers for API schemas and DB storage.
+
+    Trading 212 may return account identifiers as integers, while our API schema
+    and broker_connections.account_id column expect strings.
+    """
+    if value is None:
+        return None
+    return str(value)
+
+
 @router.post("/connect", response_model=BrokerStatusOut)
 async def connect_broker(
     body: BrokerConnectRequest,
@@ -183,7 +194,7 @@ async def connect_broker(
 
     conn.last_test_at = datetime.now(UTC)
     conn.last_test_ok = test["is_ok"]
-    conn.account_id = test.get("account_id")
+    conn.account_id = _broker_account_id(test.get("account_id"))
     conn.account_currency = test.get("currency")
 
     await _audit(
@@ -249,6 +260,7 @@ async def test_connection(
 
     conn.last_test_at = datetime.now(UTC)
     conn.last_test_ok = test["is_ok"]
+    test["account_id"] = _broker_account_id(test.get("account_id"))
     return BrokerTestResult(**test)
 
 
