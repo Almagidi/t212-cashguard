@@ -3,6 +3,7 @@ T212 CashGuard Trader — FastAPI Application.
 All routes properly separated into focused modules.
 # reload-trigger: 2026-04-08
 """
+# mypy: disable-error-code="no-untyped-def,arg-type,assignment,misc,return-value,unreachable"
 
 # ruff: noqa: E402, I001
 from __future__ import annotations

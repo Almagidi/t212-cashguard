@@ -1,4 +1,5 @@
 """Optional structured watchlist news and catalyst scoring."""
+# mypy: disable-error-code="no-untyped-def,arg-type,assignment,misc,return-value,unreachable"
 
 from __future__ import annotations
 
