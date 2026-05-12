@@ -39,6 +39,13 @@ def _first_number(mapping: dict[str, Any], *keys: str, default: float = 0.0) -> 
 
 
 def _normalise_account_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    """Normalise Trading 212/mock account summary shapes.
+
+    Trading 212 may return cash as a nested object. In that shape, top-level
+    ``total`` is account total value, not cash total. Therefore nested cash
+    values must be read from ``summary["cash"]`` first, otherwise cash can be
+    incorrectly inflated to total account value.
+    """
     cash_raw = summary.get("cash")
     invested = _first_number(summary, "invested")
     result = _first_number(summary, "result")
@@ -53,6 +60,9 @@ def _normalise_account_summary(summary: dict[str, Any]) -> dict[str, Any]:
         reserved = _first_number(
             cash_raw, "blockedForPendingOrders", "blocked", "reserved"
         ) + _first_number(cash_raw, "inPies")
+
+        # Important: do not read top-level summary["total"] here. That is the
+        # account total value, not cash total, for Trading 212 nested cash data.
         cash = _first_number(
             cash_raw,
             "total",
