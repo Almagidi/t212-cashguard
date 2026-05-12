@@ -680,3 +680,156 @@ validate-e2e: ## Run local Playwright E2E against mock market-data backend
 		E2E_ADMIN_PASSWORD=change-me \
 		npm run e2e -- --workers=1 --grep-invert "Operator dashboard — real-backend integration"
 	@echo "$(GREEN)✓ E2E validation passed$(RESET)"
+
+# ── Trading 212 demo app read-only ─────────────────────────────────────────────
+T212_DEMO_API_PORT ?= 8003
+T212_DEMO_WEB_PORT ?= 3003
+T212_DEMO_DB_PATH  ?= /tmp/t212_demo_readonly.db
+T212_DEMO_API_PID  ?= /tmp/t212_demo_readonly_api.pid
+T212_DEMO_WEB_PID  ?= /tmp/t212_demo_readonly_web.pid
+
+.PHONY: t212-demo-app-readonly t212-demo-app-readonly-connect t212-demo-app-readonly-check t212-demo-app-readonly-stop
+
+t212-demo-app-readonly: ## Start Trading 212 demo app in read-only mode on API :8003 and web :3003
+	@$(MAKE) t212-demo-app-readonly-stop >/dev/null 2>&1 || true
+	@echo "$(YELLOW)→ Initialising Trading 212 demo read-only SQLite DB...$(RESET)"
+	@rm -f $(T212_DEMO_DB_PATH)
+	@cd apps/api && \
+		INTEGRATION_DB_PATH=$(T212_DEMO_DB_PATH) \
+		DATABASE_URL="sqlite+aiosqlite:///$(T212_DEMO_DB_PATH)" \
+		APP_MODE=demo \
+		ADMIN_EMAIL=admin@localhost \
+		ADMIN_PASSWORD=change-me \
+		PYTHONPATH=. \
+		$(PYTHON) scripts/init_integration_db.py
+	@echo "$(YELLOW)→ Starting API on :$(T212_DEMO_API_PORT) (APP_MODE=demo, read-only)...$(RESET)"
+	@cd apps/api; \
+		DATABASE_URL="sqlite+aiosqlite:///$(T212_DEMO_DB_PATH)" \
+		APP_MODE=demo \
+		T212_ENVIRONMENT=demo \
+		LIVE_TRADING_ENABLED=false \
+		MARKET_DATA_PROVIDER=mock \
+		DISABLE_RATE_LIMITING=true \
+		ADMIN_EMAIL=admin@localhost \
+		ADMIN_PASSWORD=change-me \
+		CORS_ORIGINS="http://localhost:$(T212_DEMO_WEB_PORT),http://127.0.0.1:$(T212_DEMO_WEB_PORT)" \
+		PYTHONPATH=. \
+		uvicorn app.main:app --host 127.0.0.1 --port $(T212_DEMO_API_PORT) --no-access-log \
+		> /tmp/t212_demo_readonly_api.log 2>&1 & echo $$! > $(T212_DEMO_API_PID)
+	@echo "$(YELLOW)  → Waiting for API readiness on :$(T212_DEMO_API_PORT)...$(RESET)"
+	@for attempt in $$(seq 1 30); do \
+		if curl -sf http://127.0.0.1:$(T212_DEMO_API_PORT)/v1/health/live >/dev/null 2>&1; then \
+			echo "$(GREEN)  ✓ API ready$(RESET)"; \
+			break; \
+		fi; \
+		if [ "$$attempt" = "30" ]; then \
+			echo "$(RED)API did not become ready. See /tmp/t212_demo_readonly_api.log$(RESET)"; \
+			exit 1; \
+		fi; \
+		sleep 2; \
+	done
+	@echo "$(YELLOW)→ Starting web app on :$(T212_DEMO_WEB_PORT) (NEXT_PUBLIC_APP_MODE=demo)...$(RESET)"
+	@cd apps/web; \
+		NEXT_PUBLIC_API_URL=http://127.0.0.1:$(T212_DEMO_API_PORT) \
+		NEXT_PUBLIC_APP_MODE=demo \
+		BASE_URL=http://localhost:$(T212_DEMO_WEB_PORT) \
+		npx next dev -p $(T212_DEMO_WEB_PORT) \
+		> /tmp/t212_demo_readonly_web.log 2>&1 & echo $$! > $(T212_DEMO_WEB_PID)
+	@echo ""
+	@echo "╔══════════════════════════════════════════════════════════╗"
+	@echo "║      T212 CashGuard — Trading 212 Demo Read-only         ║"
+	@echo "╚══════════════════════════════════════════════════════════╝"
+	@echo ""
+	@echo "  Frontend : http://localhost:$(T212_DEMO_WEB_PORT)"
+	@echo "  Backend  : http://127.0.0.1:$(T212_DEMO_API_PORT)"
+	@echo "  API docs : http://127.0.0.1:$(T212_DEMO_API_PORT)/docs"
+	@echo ""
+	@echo "  Login credentials"
+	@echo "    Email    : admin@localhost"
+	@echo "    Password : change-me"
+	@echo ""
+	@echo "  Pages to check"
+	@echo "    Broker   : http://localhost:$(T212_DEMO_WEB_PORT)/app/broker"
+	@echo "    Dashboard: http://localhost:$(T212_DEMO_WEB_PORT)/app/dashboard"
+	@echo "    Positions: http://localhost:$(T212_DEMO_WEB_PORT)/app/positions"
+	@echo "    Operator : http://localhost:$(T212_DEMO_WEB_PORT)/app/operator"
+	@echo ""
+	@echo "  Logs"
+	@echo "    API : tail -f /tmp/t212_demo_readonly_api.log"
+	@echo "    Web : tail -f /tmp/t212_demo_readonly_web.log"
+	@echo ""
+	@echo "  When finished run: make t212-demo-app-readonly-stop"
+
+
+t212-demo-app-readonly-connect: ## Store Trading 212 demo credentials from T212_API_KEY/T212_API_SECRET into local demo DB
+	@echo "$(YELLOW)→ Connecting Trading 212 demo credentials to local read-only demo DB...$(RESET)"
+	@test -n "$$T212_API_KEY" || (echo "$(RED)T212_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_API_SECRET" || (echo "$(RED)T212_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
+	@set -e; \
+		login_tmp=$$(mktemp); \
+		login_code=$$(curl -sS -o "$$login_tmp" -w '%{http_code}' -X POST http://127.0.0.1:$(T212_DEMO_API_PORT)/v1/auth/login -H 'Content-Type: application/json' -d '{"email":"admin@localhost","password":"change-me"}' || true); \
+		if [ "$$login_code" != "200" ]; then \
+			echo "$(RED)/v1/auth/login -> $$login_code$(RESET)"; \
+			cat "$$login_tmp"; echo; rm -f "$$login_tmp"; exit 1; \
+		fi; \
+		TOKEN=$$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1]))["access_token"])' "$$login_tmp"); \
+		rm -f "$$login_tmp"; \
+		payload_tmp=$$(mktemp); \
+		python3 -c 'import json, os, sys; json.dump({"api_key": os.environ["T212_API_KEY"].strip(), "api_secret": os.environ["T212_API_SECRET"].strip(), "environment": "demo"}, open(sys.argv[1], "w"))' "$$payload_tmp"; \
+		out_tmp=$$(mktemp); \
+		code=$$(curl -sS -o "$$out_tmp" -w '%{http_code}' -X POST http://127.0.0.1:$(T212_DEMO_API_PORT)/v1/broker/trading212/connect -H "Authorization: Bearer $$TOKEN" -H 'Content-Type: application/json' --data-binary "@$$payload_tmp" || true); \
+		rm -f "$$payload_tmp"; \
+		if [ "$$code" != "200" ]; then \
+			echo "$(RED)/v1/broker/trading212/connect -> $$code$(RESET)"; \
+			cat "$$out_tmp"; echo; rm -f "$$out_tmp"; exit 1; \
+		fi; \
+		python3 -c 'import json, sys; data=json.load(open(sys.argv[1])); print("  broker=" + str(data.get("broker"))); print("  environment=" + str(data.get("environment"))); print("  credential_state=" + str(data.get("credential_state"))); print("  last_test_ok=" + str(data.get("last_test_ok"))); print("  account_currency=" + str(data.get("account_currency")))' "$$out_tmp"; \
+		rm -f "$$out_tmp"
+	@echo "$(GREEN)✓ Trading 212 demo credentials connected locally$(RESET)"
+
+t212-demo-app-readonly-check: ## Check Trading 212 demo read-only API endpoints on :8003
+	@echo "$(YELLOW)→ Checking Trading 212 demo read-only API endpoints on :$(T212_DEMO_API_PORT)...$(RESET)"
+	@set -e; \
+		login_tmp=$$(mktemp); \
+		login_code=$$(curl -sS -o "$$login_tmp" -w '%{http_code}' -X POST http://127.0.0.1:$(T212_DEMO_API_PORT)/v1/auth/login -H 'Content-Type: application/json' -d '{"email":"admin@localhost","password":"change-me"}' || true); \
+		if [ "$$login_code" != "200" ]; then \
+			echo "$(RED)/v1/auth/login -> $$login_code$(RESET)"; \
+			cat "$$login_tmp"; echo; rm -f "$$login_tmp"; exit 1; \
+		fi; \
+		TOKEN=$$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1]))["access_token"])' "$$login_tmp"); \
+		rm -f "$$login_tmp"; \
+		failed=0; \
+		for endpoint in /v1/health/live /v1/broker/trading212/status /v1/account/summary /v1/positions /v1/account/cash-guard; do \
+			tmp=$$(mktemp); \
+			code=$$(curl -sS -o "$$tmp" -w '%{http_code}' -H "Authorization: Bearer $$TOKEN" http://127.0.0.1:$(T212_DEMO_API_PORT)$$endpoint || true); \
+			echo "  $$endpoint -> $$code"; \
+			if [ "$$code" != "200" ]; then \
+				cat "$$tmp"; echo; failed=1; \
+			fi; \
+			rm -f "$$tmp"; \
+		done; \
+		if [ "$$failed" != "0" ]; then \
+			echo "$(RED)Trading 212 demo read-only check failed.$(RESET)"; \
+			exit 1; \
+		fi
+	@echo "$(GREEN)✓ Trading 212 demo read-only API endpoints returned 200$(RESET)"
+
+t212-demo-app-readonly-stop: ## Stop Trading 212 demo read-only API/web servers
+	@echo "$(YELLOW)→ Stopping Trading 212 demo read-only servers...$(RESET)"
+	@for spec in "API:$(T212_DEMO_API_PID)" "Web:$(T212_DEMO_WEB_PID)"; do \
+		name=$${spec%%:*}; \
+		pidfile=$${spec#*:}; \
+		if [ -f "$$pidfile" ]; then \
+			pid=$$(cat "$$pidfile" 2>/dev/null || true); \
+			if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
+				kill "$$pid" 2>/dev/null || true; \
+				echo "  ✓ $$name stopped"; \
+			else \
+				echo "  $$name PID file existed but process was not running"; \
+			fi; \
+			rm -f "$$pidfile"; \
+		else \
+			echo "  No $$name PID file"; \
+		fi; \
+	done
+	@echo "$(GREEN)✓ Trading 212 demo read-only stop routine complete$(RESET)"
