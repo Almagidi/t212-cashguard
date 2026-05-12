@@ -240,3 +240,41 @@ async def test_kill_switch_blocks_demo_submit_before_broker_call(db, monkeypatch
     audit = (await db.execute(select(AuditLog))).scalar_one()
     assert audit.action == "demo_order_blocked_by_kill_switch"
     assert audit.payload["no_broker_order_sent"] is True
+
+
+@pytest.mark.asyncio
+async def test_market_order_payload_excludes_time_validity(monkeypatch):
+    from decimal import Decimal
+
+    from app.broker.trading212 import Trading212Adapter
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
+    monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
+
+    captured: dict[str, object] = {}
+
+    async def fake_request_dict(self, method, path, **kwargs):
+        captured["method"] = method
+        captured["path"] = path
+        captured["payload"] = kwargs.get("json")
+        return {"id": "DEMO-ORDER-1", "status": "WORKING"}
+
+    monkeypatch.setattr(Trading212Adapter, "_request_dict", fake_request_dict)
+
+    adapter = Trading212Adapter("demo-key", "demo-secret", "demo")
+    response = await adapter.place_market_order(
+        "AAPL_US_EQ",
+        Decimal("0.01"),
+        time_validity="DAY",
+    )
+
+    assert response["id"] == "DEMO-ORDER-1"
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/v0/equity/orders/market"
+    assert captured["payload"] == {
+        "ticker": "AAPL_US_EQ",
+        "quantity": 0.01,
+    }
+    assert "timeValidity" not in captured["payload"]

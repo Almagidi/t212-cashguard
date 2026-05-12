@@ -2274,6 +2274,7 @@ class TestBrokerExecutionFlow:
         from app.core.config import settings
 
         monkeypatch.setattr(settings, "APP_MODE", "demo")
+        monkeypatch.setattr(settings, "T212_DEMO_ORDER_ENABLED", True)
         monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
         monkeypatch.setattr("app.broker.trading212.Trading212Adapter", FakeTrading212Adapter)
 

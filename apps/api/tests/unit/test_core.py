@@ -1,6 +1,7 @@
 """
 Unit tests: risk engine, ORB strategy, security helpers, sell quantity convention.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -11,15 +12,18 @@ import pytest
 
 # ─── Security ────────────────────────────────────────────────────────────────
 
+
 class TestSecurity:
     def test_password_hash_and_verify(self):
         from app.core.security import hash_password, verify_password
+
         hashed = hash_password("mypassword123")
         assert verify_password("mypassword123", hashed)
         assert not verify_password("wrongpassword", hashed)
 
     def test_create_and_decode_token(self):
         from app.core.security import create_access_token, decode_access_token
+
         token = create_access_token("user-123")
         payload = decode_access_token(token)
         assert payload["sub"] == "user-123"
@@ -27,6 +31,7 @@ class TestSecurity:
 
     def test_field_encryption_roundtrip(self):
         from app.core.security import decrypt_field, encrypt_field
+
         secret = "my-api-secret-key-12345"
         encrypted = encrypt_field(secret)
         assert encrypted != secret
@@ -35,12 +40,14 @@ class TestSecurity:
 
     def test_different_values_encrypt_differently(self):
         from app.core.security import encrypt_field
+
         e1 = encrypt_field("key-one")
         e2 = encrypt_field("key-two")
         assert e1 != e2
 
 
 # ─── Sell Quantity Convention ─────────────────────────────────────────────────
+
 
 class TestSellQuantityConvention:
     """
@@ -49,20 +56,25 @@ class TestSellQuantityConvention:
 
     def test_make_sell_quantity_positive_input(self):
         from app.broker.trading212 import make_sell_quantity
+
         result = make_sell_quantity(Decimal("10.5"))
         assert result == Decimal("-10.5")
         assert result < 0
 
     def test_make_sell_quantity_already_negative(self):
         from app.broker.trading212 import make_sell_quantity
+
         result = make_sell_quantity(Decimal("-10.5"))
         assert result == Decimal("-10.5")
         assert result < 0
 
     def test_make_sell_quantity_never_positive(self):
         from app.broker.trading212 import make_sell_quantity
+
         for qty in [Decimal("1"), Decimal("100"), Decimal("0.5"), Decimal("-5")]:
-            assert make_sell_quantity(qty) < 0, f"Sell quantity must be negative, got: {make_sell_quantity(qty)}"
+            assert (
+                make_sell_quantity(qty) < 0
+            ), f"Sell quantity must be negative, got: {make_sell_quantity(qty)}"
 
     def test_buy_quantity_positive(self):
         """Buy quantities should be positive."""
@@ -72,9 +84,11 @@ class TestSellQuantityConvention:
 
 # ─── ORB Strategy ─────────────────────────────────────────────────────────────
 
+
 class TestORBStrategy:
     def _make_candle(self, open_=100, high=105, low=95, close=102, ts=None):
         from app.strategies.orb import OHLCV
+
         return OHLCV(
             timestamp=ts or datetime.now(UTC),
             open=Decimal(str(open_)),
@@ -86,6 +100,7 @@ class TestORBStrategy:
 
     def test_compute_opening_range_sufficient_candles(self):
         from app.strategies.orb import OpeningRangeBreakoutStrategy
+
         strat = OpeningRangeBreakoutStrategy({"orb_minutes": 15})
         # 15 min / 5 min candles = 3 candles
         candles = [
@@ -101,6 +116,7 @@ class TestORBStrategy:
 
     def test_compute_opening_range_insufficient_candles(self):
         from app.strategies.orb import OpeningRangeBreakoutStrategy
+
         strat = OpeningRangeBreakoutStrategy({"orb_minutes": 15})
         candles = [self._make_candle()]  # only 1, need 3
         result = strat.compute_opening_range(candles)
@@ -108,6 +124,7 @@ class TestORBStrategy:
 
     def test_validate_range_valid(self):
         from app.strategies.orb import OpeningRangeBreakoutStrategy
+
         strat = OpeningRangeBreakoutStrategy()
         valid, reason = strat.validate_range(Decimal("105"), Decimal("100"), Decimal("100"))
         assert valid
@@ -115,6 +132,7 @@ class TestORBStrategy:
 
     def test_validate_range_too_narrow(self):
         from app.strategies.orb import OpeningRangeBreakoutStrategy
+
         strat = OpeningRangeBreakoutStrategy({"min_range_pct": 1.0})
         valid, reason = strat.validate_range(Decimal("100.05"), Decimal("100.00"), Decimal("100"))
         assert not valid
@@ -122,6 +140,7 @@ class TestORBStrategy:
 
     def test_validate_range_too_wide(self):
         from app.strategies.orb import OpeningRangeBreakoutStrategy
+
         strat = OpeningRangeBreakoutStrategy({"max_range_pct": 2.0})
         valid, reason = strat.validate_range(Decimal("110"), Decimal("100"), Decimal("100"))
         assert not valid
@@ -129,6 +148,7 @@ class TestORBStrategy:
 
     def test_calculate_quantity_respects_risk_pct(self):
         from app.strategies.orb import OpeningRangeBreakoutStrategy
+
         strat = OpeningRangeBreakoutStrategy({"max_risk_per_trade_pct": 1.0})
         qty = strat.calculate_quantity(
             entry_price=Decimal("100"),
@@ -141,6 +161,7 @@ class TestORBStrategy:
 
     def test_calculate_quantity_capped_by_cash(self):
         from app.strategies.orb import OpeningRangeBreakoutStrategy
+
         strat = OpeningRangeBreakoutStrategy({"max_risk_per_trade_pct": 50.0})
         qty = strat.calculate_quantity(
             entry_price=Decimal("100"),
@@ -152,6 +173,7 @@ class TestORBStrategy:
 
     def test_generate_signal_long_breakout(self):
         from app.strategies.orb import OpeningRangeBreakoutStrategy
+
         strat = OpeningRangeBreakoutStrategy({"orb_minutes": 15})
         orb_candles = [
             self._make_candle(100, 105, 98, 103),
@@ -178,6 +200,7 @@ class TestORBStrategy:
 
     def test_generate_signal_no_breakout(self):
         from app.strategies.orb import OpeningRangeBreakoutStrategy
+
         strat = OpeningRangeBreakoutStrategy({"orb_minutes": 15})
         orb_candles = [
             self._make_candle(100, 105, 98, 103),
@@ -200,10 +223,12 @@ class TestORBStrategy:
 
 # ─── Mock Broker ─────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 class TestMockBroker:
     async def test_test_connection(self):
         from app.broker.mock_adapter import MockBrokerAdapter
+
         async with MockBrokerAdapter() as broker:
             result = await broker.test_connection()
         assert result["is_ok"] is True
@@ -212,6 +237,7 @@ class TestMockBroker:
 
     async def test_get_account_summary(self):
         from app.broker.mock_adapter import MockBrokerAdapter
+
         async with MockBrokerAdapter() as broker:
             summary = await broker.get_account_summary()
         assert "cash" in summary
@@ -220,6 +246,7 @@ class TestMockBroker:
 
     async def test_place_market_buy_order(self):
         from app.broker.mock_adapter import MockBrokerAdapter
+
         async with MockBrokerAdapter() as broker:
             order = await broker.place_market_order("GOOGL", Decimal("5"))
         assert order["ticker"] == "GOOGL"
@@ -230,6 +257,7 @@ class TestMockBroker:
         """T212 sell orders must use negative quantity."""
         from app.broker.mock_adapter import MockBrokerAdapter
         from app.broker.trading212 import make_sell_quantity
+
         async with MockBrokerAdapter() as broker:
             # Ensure we have a position first
             await broker.place_market_order("AAPL", Decimal("5"))
@@ -240,6 +268,7 @@ class TestMockBroker:
 
     async def test_get_positions(self):
         from app.broker.mock_adapter import MockBrokerAdapter
+
         async with MockBrokerAdapter() as broker:
             positions = await broker.get_positions()
         assert isinstance(positions, list)
@@ -286,10 +315,12 @@ class TestBrokerSchemasAndAdapter:
 
 # ─── Risk Engine ─────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 class TestRiskEngine:
     async def test_cash_guard_blocks_overspend(self, db):
         from app.risk.engine import RiskEngine, RiskViolation
+
         engine = RiskEngine(db)
         with pytest.raises(RiskViolation) as exc_info:
             await engine.check_cash_guard(
@@ -302,6 +333,7 @@ class TestRiskEngine:
 
     async def test_cash_guard_allows_affordable_order(self, db):
         from app.risk.engine import RiskEngine
+
         engine = RiskEngine(db)
         # Should not raise
         await engine.check_cash_guard(
@@ -313,6 +345,7 @@ class TestRiskEngine:
 
     async def test_cash_guard_ignores_sell_orders(self, db):
         from app.risk.engine import RiskEngine
+
         engine = RiskEngine(db)
         # Sells don't need cash — should not raise regardless
         await engine.check_cash_guard(
@@ -328,7 +361,9 @@ class TestRiskEngine:
 
         # Activate kill switch
         result = await db.execute(
-            __import__("sqlalchemy", fromlist=["select"]).select(AppSettings).where(AppSettings.id == 1)
+            __import__("sqlalchemy", fromlist=["select"])
+            .select(AppSettings)
+            .where(AppSettings.id == 1)
         )
         s = result.scalar_one_or_none()
         if s:
@@ -345,6 +380,7 @@ class TestRiskEngine:
     def _make_profile(self, **overrides):
         """Return a minimal RiskProfile with sensible defaults."""
         from app.db.models import RiskProfile
+
         defaults = {
             "id": uuid.uuid4(),
             "name": "Test Profile",
@@ -462,6 +498,7 @@ class TestRiskEngine:
 
 # ── Drawdown sizing — sync, no DB needed ─────────────────────────────────────
 
+
 class TestDrawdownSizing:
     def test_full_at_zero_loss(self):
         from app.risk.engine import RiskEngine
@@ -497,3 +534,25 @@ class TestDrawdownSizing:
         factor, tier = engine.get_drawdown_size_factor(Decimal("-200"), Decimal("10000"))
         assert factor == Decimal("0.25")
         assert tier == "quarter"
+
+
+def test_account_summary_normaliser_handles_nested_trading212_cash_without_top_level_total_leak():
+    from app.api.v1.routes.account import _normalise_account_summary
+
+    summary = {
+        "cash": {
+            "availableToTrade": 5000.0,
+            "blockedForPendingOrders": 300.0,
+        },
+        "invested": 4700.0,
+        "result": 0.0,
+        "total": 10000.0,
+        "currencyCode": "GBP",
+    }
+
+    normalised = _normalise_account_summary(summary)
+
+    assert normalised["total_value"] == 10000.0
+    assert normalised["cash"] == 5300.0
+    assert normalised["free_funds"] == 5000.0
+    assert normalised["currency"] == "GBP"

@@ -22,6 +22,9 @@ from app.api.schemas import (
     PaperExecutionHistoryList,
     PaperOrderCreate,
 )
+from app.api.v1.routes._broker_errors import broker_http_exception
+from app.api.v1.routes.account import _normalise_account_summary
+from app.broker.trading212 import T212APIError, T212AuthError, T212RateLimitError
 from app.core.config import settings
 from app.db.models import AppSettings, AuditLog, Order, User
 from app.db.repositories import OrderRepository
@@ -280,7 +283,7 @@ async def list_orders(
     offset: int = Query(0, ge=0, description="Number of records to skip (cursor-style pagination)"),
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> Any:
     repo = OrderRepository(db)
     return await repo.list(
         status=status, ticker=ticker, is_dry_run=is_dry_run, limit=limit, offset=offset
@@ -292,7 +295,7 @@ async def place_order(
     body: OrderCreate,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> Any:
     """
     Place an order with full pre-flight risk checks.
     Order flow: risk checks → intent created → submitted to broker → reconciled.
@@ -304,12 +307,18 @@ async def place_order(
     await _ensure_demo_order_enabled(db=db, current_user=current_user, body=body)
     broker = await get_broker(current_user=current_user, db=db)
 
-    # Fetch live account state for risk calculations
-    async with broker as b:
-        summary = await b.get_account_summary()
+    # Fetch broker account state for risk calculations.
+    # Broker-side rate limits/auth/API errors must return structured HTTP errors,
+    # not an unhandled 500, and this happens before any broker order submission.
+    try:
+        async with broker as b:
+            summary = await b.get_account_summary()
+    except (T212RateLimitError, T212AuthError, T212APIError) as exc:
+        raise broker_http_exception(exc) from exc
 
-    available_cash = Decimal(str(summary.get("free", 0)))
-    account_value = Decimal(str(summary.get("total", 0)))
+    normalised_summary = _normalise_account_summary(summary)
+    available_cash = Decimal(str(normalised_summary["free_funds"]))
+    account_value = Decimal(str(normalised_summary["total_value"]))
     estimated_price = body.limit_price or body.stop_price or Decimal("100")
 
     # Count currently open positions
@@ -376,7 +385,7 @@ async def place_paper_order(
     body: PaperOrderCreate,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> Any:
     """
     Create and fill a local paper-only order.
 
@@ -524,7 +533,7 @@ async def get_order(
     order_id: uuid.UUID,
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> Any:
     repo = OrderRepository(db)
     order = await repo.get_by_id(order_id)
     if not order:
@@ -537,8 +546,8 @@ async def cancel_order(
     order_id: uuid.UUID,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-    broker=Depends(get_broker),
-):
+    broker: Any = Depends(get_broker),
+) -> Any:
     repo = OrderRepository(db)
     order = await repo.get_by_id(order_id)
     if not order:
@@ -567,8 +576,8 @@ async def cancel_order(
 async def cancel_all_pending(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-    broker=Depends(get_broker),
-):
+    broker: Any = Depends(get_broker),
+) -> Any:
     repo = OrderRepository(db)
     orders = await repo.list_pending()
     async with broker as b:

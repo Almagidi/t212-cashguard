@@ -277,17 +277,22 @@ class Trading212Adapter:
         self,
         ticker: str,
         quantity: Decimal,
-        *,
         time_validity: str = "DAY",
     ) -> dict[str, Any]:
         """
         POST /api/v0/equity/orders/market
-        quantity must be positive for BUY, negative for SELL.
+
+        Trading 212 market orders accept ticker, quantity, and optional
+        extendedHours. They do not accept timeValidity; that field belongs to
+        pending order types such as limit/stop/stop-limit.
+
+        time_validity is kept in the signature for ExecutionEngine interface
+        compatibility, but intentionally not sent.
         """
+        _ = time_validity
         payload = {
             "ticker": ticker,
             "quantity": float(quantity),
-            "timeValidity": time_validity,
         }
         return await self._request_dict("POST", "/api/v0/equity/orders/market", json=payload)
 
