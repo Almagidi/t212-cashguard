@@ -833,3 +833,100 @@ t212-demo-app-readonly-stop: ## Stop Trading 212 demo read-only API/web servers
 		fi; \
 	done
 	@echo "$(GREEN)✓ Trading 212 demo read-only stop routine complete$(RESET)"
+
+# ── Trading 212 controlled demo order test ─────────────────────────────────────
+T212_DEMO_ORDER_API_PORT ?= 8004
+T212_DEMO_ORDER_DB_PATH  ?= /tmp/t212_demo_controlled_order.db
+T212_DEMO_ORDER_API_PID  ?= /tmp/t212_demo_controlled_order_api.pid
+T212_DEMO_ORDER_TICKER   ?= AAPL
+T212_DEMO_ORDER_QUANTITY ?= 0.001
+
+.PHONY: t212-demo-controlled-order-start t212-demo-controlled-order-arm t212-demo-controlled-order-test t212-demo-controlled-order-stop
+
+t212-demo-controlled-order-start: ## Start API for explicit Trading 212 demo order test on :8004
+	@$(MAKE) t212-demo-controlled-order-stop >/dev/null 2>&1 || true
+	@echo "$(YELLOW)→ Initialising Trading 212 controlled demo-order SQLite DB...$(RESET)"
+	@rm -f $(T212_DEMO_ORDER_DB_PATH)
+	@cd apps/api && \
+		INTEGRATION_DB_PATH=$(T212_DEMO_ORDER_DB_PATH) \
+		DATABASE_URL="sqlite+aiosqlite:///$(T212_DEMO_ORDER_DB_PATH)" \
+		APP_MODE=demo \
+		ADMIN_EMAIL=admin@localhost \
+		ADMIN_PASSWORD=change-me \
+		PYTHONPATH=. \
+		$(PYTHON) scripts/init_integration_db.py
+	@echo "$(YELLOW)→ Starting API on :$(T212_DEMO_ORDER_API_PORT) with controlled demo-order gate enabled...$(RESET)"
+	@cd apps/api; \
+		DATABASE_URL="sqlite+aiosqlite:///$(T212_DEMO_ORDER_DB_PATH)" \
+		APP_MODE=demo \
+		T212_ENVIRONMENT=demo \
+		T212_DEMO_ORDER_ENABLED=true \
+		LIVE_TRADING_ENABLED=false \
+		MARKET_DATA_PROVIDER=mock \
+		DISABLE_RATE_LIMITING=true \
+		ADMIN_EMAIL=admin@localhost \
+		ADMIN_PASSWORD=change-me \
+		CORS_ORIGINS="http://localhost:3004,http://127.0.0.1:3004" \
+		PYTHONPATH=. \
+		uvicorn app.main:app --host 127.0.0.1 --port $(T212_DEMO_ORDER_API_PORT) --no-access-log \
+		> /tmp/t212_demo_controlled_order_api.log 2>&1 & echo $$! > $(T212_DEMO_ORDER_API_PID)
+	@echo "$(YELLOW)  → Waiting for API readiness on :$(T212_DEMO_ORDER_API_PORT)...$(RESET)"
+	@for attempt in $$(seq 1 30); do \
+		if curl -sf http://127.0.0.1:$(T212_DEMO_ORDER_API_PORT)/v1/health/live >/dev/null 2>&1; then \
+			echo "$(GREEN)  ✓ API ready$(RESET)"; \
+			break; \
+		fi; \
+		if [ "$$attempt" = "30" ]; then \
+			echo "$(RED)API did not become ready. See /tmp/t212_demo_controlled_order_api.log$(RESET)"; \
+			exit 1; \
+		fi; \
+		sleep 2; \
+	done
+	@echo ""
+	@echo "Controlled Trading 212 DEMO order API is running on http://127.0.0.1:$(T212_DEMO_ORDER_API_PORT)"
+	@echo "Logs: tail -f /tmp/t212_demo_controlled_order_api.log"
+	@echo "When finished: make t212-demo-controlled-order-stop"
+
+
+t212-demo-controlled-order-arm: ## Disable kill switch only in disposable controlled demo-order DB; requires explicit confirmation
+	@echo "$(YELLOW)→ Arming disposable Trading 212 DEMO order test DB...$(RESET)"
+	@test "$$T212_DEMO_ORDER_CONFIRM" = "PLACE_DEMO_ORDER" || (echo "$(RED)Set T212_DEMO_ORDER_CONFIRM=PLACE_DEMO_ORDER before arming demo-order test DB.$(RESET)" && exit 1)
+	@cd apps/api && \
+		T212_DEMO_ORDER_DB_PATH="$(T212_DEMO_ORDER_DB_PATH)" \
+		PYTHONPATH=. \
+		$(PYTHON) scripts/t212_demo_arm_controlled_order.py
+	@echo "$(GREEN)✓ Controlled demo-order DB armed$(RESET)"
+
+t212-demo-controlled-order-test: ## Place one tiny Trading 212 DEMO order; requires explicit env confirmation
+	@echo "$(YELLOW)→ Running controlled Trading 212 DEMO order test...$(RESET)"
+	@test "$$T212_DEMO_ORDER_CONFIRM" = "PLACE_DEMO_ORDER" || (echo "$(RED)Set T212_DEMO_ORDER_CONFIRM=PLACE_DEMO_ORDER to confirm this demo-order test.$(RESET)" && exit 1)
+	@test -n "$$T212_API_KEY" || (echo "$(RED)T212_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_API_SECRET" || (echo "$(RED)T212_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
+	@cd apps/api && \
+		APP_MODE=demo \
+		T212_ENVIRONMENT=demo \
+		T212_DEMO_ORDER_ENABLED=true \
+		T212_DEMO_ORDER_CONFIRM=PLACE_DEMO_ORDER \
+		LIVE_TRADING_ENABLED=false \
+		T212_DEMO_API_URL=http://127.0.0.1:$(T212_DEMO_ORDER_API_PORT) \
+		T212_DEMO_ORDER_TICKER=$(T212_DEMO_ORDER_TICKER) \
+		T212_DEMO_ORDER_QUANTITY=$(T212_DEMO_ORDER_QUANTITY) \
+		PYTHONPATH=. \
+		$(PYTHON) scripts/t212_demo_controlled_order.py
+	@echo "$(GREEN)✓ Controlled Trading 212 DEMO order test passed$(RESET)"
+
+t212-demo-controlled-order-stop: ## Stop controlled Trading 212 demo-order API
+	@echo "$(YELLOW)→ Stopping Trading 212 controlled demo-order API...$(RESET)"
+	@if [ -f "$(T212_DEMO_ORDER_API_PID)" ]; then \
+		pid=$$(cat "$(T212_DEMO_ORDER_API_PID)" 2>/dev/null || true); \
+		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
+			kill "$$pid" 2>/dev/null || true; \
+			echo "  ✓ API stopped"; \
+		else \
+			echo "  API PID file existed but process was not running"; \
+		fi; \
+		rm -f "$(T212_DEMO_ORDER_API_PID)"; \
+	else \
+		echo "  No API PID file"; \
+	fi
+	@echo "$(GREEN)✓ Controlled demo-order stop routine complete$(RESET)"

@@ -22,6 +22,9 @@ from app.api.schemas import (
     PaperExecutionHistoryList,
     PaperOrderCreate,
 )
+from app.api.v1.routes._broker_errors import broker_http_exception
+from app.api.v1.routes.account import _normalise_account_summary
+from app.broker.trading212 import T212APIError, T212AuthError, T212RateLimitError
 from app.core.config import settings
 from app.db.models import AppSettings, AuditLog, Order, User
 from app.db.repositories import OrderRepository
@@ -304,12 +307,18 @@ async def place_order(
     await _ensure_demo_order_enabled(db=db, current_user=current_user, body=body)
     broker = await get_broker(current_user=current_user, db=db)
 
-    # Fetch live account state for risk calculations
-    async with broker as b:
-        summary = await b.get_account_summary()
+    # Fetch broker account state for risk calculations.
+    # Broker-side rate limits/auth/API errors must return structured HTTP errors,
+    # not an unhandled 500, and this happens before any broker order submission.
+    try:
+        async with broker as b:
+            summary = await b.get_account_summary()
+    except (T212RateLimitError, T212AuthError, T212APIError) as exc:
+        raise broker_http_exception(exc) from exc
 
-    available_cash = Decimal(str(summary.get("free", 0)))
-    account_value = Decimal(str(summary.get("total", 0)))
+    normalised_summary = _normalise_account_summary(summary)
+    available_cash = Decimal(str(normalised_summary["free_funds"]))
+    account_value = Decimal(str(normalised_summary["total_value"]))
     estimated_price = body.limit_price or body.stop_price or Decimal("100")
 
     # Count currently open positions
