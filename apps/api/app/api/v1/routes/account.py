@@ -18,7 +18,7 @@ from app.core.config import settings
 router = APIRouter(prefix="/account", tags=["account"])
 
 _ACCOUNT_SUMMARY_CACHE_TTL_SECONDS = 20.0
-_account_summary_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
+_account_summary_cache: dict[tuple[str, ...], tuple[float, dict[str, Any]]] = {}
 _account_summary_cache_lock = asyncio.Lock()
 
 
@@ -96,11 +96,19 @@ async def _cached_account_summary(broker: Any) -> dict[str, Any]:
     Trading 212 demo can rate-limit repeated account summary reads. The account
     and cash-guard endpoints often run back-to-back, so this short cache avoids
     unnecessary duplicate broker calls while keeping manual QA data fresh.
+
+    Fake/test brokers are isolated by object identity to prevent full-suite
+    cache pollution between monkeypatched broker instances.
     """
     now = time.monotonic()
     environment = str(getattr(broker, "environment", "unknown"))
     base_url = str(getattr(broker, "base_url", ""))
-    cache_key = (settings.APP_MODE, environment, base_url)
+    broker_type = f"{type(broker).__module__}.{type(broker).__qualname__}"
+
+    broker_identity = (
+        "trading212" if type(broker).__name__ == "Trading212Adapter" else str(id(broker))
+    )
+    cache_key = (settings.APP_MODE, environment, base_url, broker_type, broker_identity)
 
     async with _account_summary_cache_lock:
         cached = _account_summary_cache.get(cache_key)
