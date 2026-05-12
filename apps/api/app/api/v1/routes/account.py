@@ -1,6 +1,9 @@
 """Account routes — summary, cash guard status."""
+
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -13,6 +16,10 @@ from app.broker.trading212 import T212APIError, T212AuthError, T212RateLimitErro
 from app.core.config import settings
 
 router = APIRouter(prefix="/account", tags=["account"])
+
+_ACCOUNT_SUMMARY_CACHE_TTL_SECONDS = 20.0
+_account_summary_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
+_account_summary_cache_lock = asyncio.Lock()
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -43,10 +50,9 @@ def _normalise_account_summary(summary: dict[str, Any]) -> dict[str, Any]:
             "free",
             "available",
         )
-        reserved = (
-            _first_number(cash_raw, "blockedForPendingOrders", "blocked", "reserved")
-            + _first_number(cash_raw, "inPies")
-        )
+        reserved = _first_number(
+            cash_raw, "blockedForPendingOrders", "blocked", "reserved"
+        ) + _first_number(cash_raw, "inPies")
         cash = _first_number(
             summary,
             "cashTotal",
@@ -76,14 +82,49 @@ def _normalise_account_summary(summary: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _account_summary_cache_key(broker: Any) -> tuple[str, str, str]:
+    return (
+        settings.APP_MODE,
+        str(getattr(broker, "environment", "unknown")),
+        str(getattr(broker, "base_url", "unknown")),
+    )
+
+
+async def _cached_account_summary(broker: Any) -> dict[str, Any]:
+    cache_key = _account_summary_cache_key(broker)
+    now = time.monotonic()
+    cached = _account_summary_cache.get(cache_key)
+    if cached is not None:
+        expires_at, summary = cached
+        if expires_at > now:
+            return dict(summary)
+
+    async with _account_summary_cache_lock:
+        now = time.monotonic()
+        cached = _account_summary_cache.get(cache_key)
+        if cached is not None:
+            expires_at, summary = cached
+            if expires_at > now:
+                return dict(summary)
+
+        async with broker as b:
+            summary = await b.get_account_summary()
+
+        cached_summary = dict(summary)
+        _account_summary_cache[cache_key] = (
+            time.monotonic() + _ACCOUNT_SUMMARY_CACHE_TTL_SECONDS,
+            cached_summary,
+        )
+        return dict(cached_summary)
+
+
 @router.get("/summary", response_model=AccountSummaryOut)
 async def account_summary(
     _: object = Depends(get_current_user),
-    broker=Depends(get_broker),
-):
+    broker: Any = Depends(get_broker),
+) -> AccountSummaryOut:
     try:
-        async with broker as b:
-            summary = await b.get_account_summary()
+        summary = await _cached_account_summary(broker)
     except (T212RateLimitError, T212AuthError, T212APIError) as exc:
         raise broker_http_exception(exc) from exc
 
@@ -104,11 +145,10 @@ async def account_summary(
 @router.get("/cash-guard", response_model=CashGuardStatus)
 async def cash_guard_status(
     _: object = Depends(get_current_user),
-    broker=Depends(get_broker),
-):
+    broker: Any = Depends(get_broker),
+) -> CashGuardStatus:
     try:
-        async with broker as b:
-            summary = await b.get_account_summary()
+        summary = await _cached_account_summary(broker)
     except (T212RateLimitError, T212AuthError, T212APIError) as exc:
         raise broker_http_exception(exc) from exc
 
