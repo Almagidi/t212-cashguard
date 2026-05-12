@@ -39,12 +39,11 @@ def _first_number(mapping: dict[str, Any], *keys: str, default: float = 0.0) -> 
 
 
 def _normalise_account_summary(summary: dict[str, Any]) -> dict[str, Any]:
-    """Normalise Trading 212/mock account summary shapes.
+    """Normalise account summary payloads from mock and Trading 212.
 
-    Trading 212 may return cash as a nested object. In that shape, top-level
-    ``total`` is account total value, not cash total. Therefore nested cash
-    values must be read from ``summary["cash"]`` first, otherwise cash can be
-    incorrectly inflated to total account value.
+    Trading 212 may return cash as a nested object. When cash is nested,
+    top-level ``total`` represents total account value, not cash balance.
+    Therefore cash/free funds must be read from the nested cash object first.
     """
     cash_raw = summary.get("cash")
     invested = _first_number(summary, "invested")
@@ -60,9 +59,6 @@ def _normalise_account_summary(summary: dict[str, Any]) -> dict[str, Any]:
         reserved = _first_number(
             cash_raw, "blockedForPendingOrders", "blocked", "reserved"
         ) + _first_number(cash_raw, "inPies")
-
-        # Important: do not read top-level summary["total"] here. That is the
-        # account total value, not cash total, for Trading 212 nested cash data.
         cash = _first_number(
             cash_raw,
             "total",
@@ -94,40 +90,30 @@ def _normalise_account_summary(summary: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _account_summary_cache_key(broker: Any) -> tuple[str, str, str]:
-    return (
-        settings.APP_MODE,
-        str(getattr(broker, "environment", "unknown")),
-        str(getattr(broker, "base_url", "unknown")),
-    )
-
-
 async def _cached_account_summary(broker: Any) -> dict[str, Any]:
-    cache_key = _account_summary_cache_key(broker)
+    """Fetch account summary with a short per-runtime cache.
+
+    Trading 212 demo can rate-limit repeated account summary reads. The account
+    and cash-guard endpoints often run back-to-back, so this short cache avoids
+    unnecessary duplicate broker calls while keeping manual QA data fresh.
+    """
     now = time.monotonic()
-    cached = _account_summary_cache.get(cache_key)
-    if cached is not None:
-        expires_at, summary = cached
-        if expires_at > now:
-            return dict(summary)
+    environment = str(getattr(broker, "environment", "unknown"))
+    base_url = str(getattr(broker, "base_url", ""))
+    cache_key = (settings.APP_MODE, environment, base_url)
 
     async with _account_summary_cache_lock:
-        now = time.monotonic()
         cached = _account_summary_cache.get(cache_key)
-        if cached is not None:
-            expires_at, summary = cached
-            if expires_at > now:
-                return dict(summary)
+        if cached and now - cached[0] <= _ACCOUNT_SUMMARY_CACHE_TTL_SECONDS:
+            return dict(cached[1])
 
-        async with broker as b:
-            summary = await b.get_account_summary()
+    async with broker as b:
+        summary = await b.get_account_summary()
 
-        cached_summary = dict(summary)
-        _account_summary_cache[cache_key] = (
-            time.monotonic() + _ACCOUNT_SUMMARY_CACHE_TTL_SECONDS,
-            cached_summary,
-        )
-        return dict(cached_summary)
+    async with _account_summary_cache_lock:
+        _account_summary_cache[cache_key] = (now, dict(summary))
+
+    return dict(summary)
 
 
 @router.get("/summary", response_model=AccountSummaryOut)
