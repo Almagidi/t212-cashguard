@@ -200,6 +200,45 @@ async def _ensure_live_order_ready(
     raise HTTPException(status_code=403, detail=reason)
 
 
+async def _ensure_demo_order_enabled(
+    *,
+    db: AsyncSession,
+    current_user: User,
+    body: OrderCreate,
+) -> None:
+    if settings.APP_MODE != "demo":
+        return
+    if settings.T212_DEMO_ORDER_ENABLED:
+        return
+
+    reason = (
+        "Trading 212 demo order placement is disabled by default. "
+        "Set T212_DEMO_ORDER_ENABLED=true only for an explicit controlled demo-order test."
+    )
+    db.add(
+        AuditLog(
+            action="demo_order_blocked_by_feature_gate",
+            entity_type="order",
+            actor=current_user.email,
+            payload={
+                "ticker": body.ticker.upper(),
+                "side": body.side,
+                "order_type": body.order_type,
+                "quantity": str(body.quantity),
+                "reason": reason,
+                "mode": settings.APP_MODE,
+                "broker_environment": settings.T212_ENVIRONMENT,
+                "feature_gate": "T212_DEMO_ORDER_ENABLED",
+                "feature_gate_enabled": False,
+                "no_broker_order_sent": True,
+            },
+            occurred_at=datetime.now(UTC),
+        )
+    )
+    await db.commit()
+    raise HTTPException(status_code=403, detail=reason)
+
+
 async def _ensure_manual_order_not_halted(
     *,
     db: AsyncSession,
@@ -262,6 +301,7 @@ async def place_order(
 
     await _ensure_manual_order_not_halted(db=db, current_user=current_user, body=body)
     await _ensure_live_order_ready(db=db, current_user=current_user, body=body)
+    await _ensure_demo_order_enabled(db=db, current_user=current_user, body=body)
     broker = await get_broker(current_user=current_user, db=db)
 
     # Fetch live account state for risk calculations

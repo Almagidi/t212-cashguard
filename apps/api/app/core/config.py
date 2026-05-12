@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     T212_LIVE_API_KEY: str = ""
     T212_LIVE_API_SECRET: str = ""
     T212_ENVIRONMENT: Literal["demo", "live"] = "demo"
+    T212_DEMO_ORDER_ENABLED: bool = False
 
     @property
     def t212_base_url(self) -> str:
