@@ -283,7 +283,7 @@ async def list_orders(
     offset: int = Query(0, ge=0, description="Number of records to skip (cursor-style pagination)"),
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> Any:
     repo = OrderRepository(db)
     return await repo.list(
         status=status, ticker=ticker, is_dry_run=is_dry_run, limit=limit, offset=offset
@@ -295,7 +295,7 @@ async def place_order(
     body: OrderCreate,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> Any:
     """
     Place an order with full pre-flight risk checks.
     Order flow: risk checks → intent created → submitted to broker → reconciled.
@@ -385,7 +385,7 @@ async def place_paper_order(
     body: PaperOrderCreate,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> Any:
     """
     Create and fill a local paper-only order.
 
@@ -533,7 +533,7 @@ async def get_order(
     order_id: uuid.UUID,
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> Any:
     repo = OrderRepository(db)
     order = await repo.get_by_id(order_id)
     if not order:
@@ -546,8 +546,8 @@ async def cancel_order(
     order_id: uuid.UUID,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-    broker=Depends(get_broker),
-):
+    broker: Any = Depends(get_broker),
+) -> Any:
     repo = OrderRepository(db)
     order = await repo.get_by_id(order_id)
     if not order:
@@ -576,8 +576,8 @@ async def cancel_order(
 async def cancel_all_pending(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-    broker=Depends(get_broker),
-):
+    broker: Any = Depends(get_broker),
+) -> Any:
     repo = OrderRepository(db)
     orders = await repo.list_pending()
     async with broker as b:
