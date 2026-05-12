@@ -54,15 +54,17 @@ def _normalise_account_summary(summary: dict[str, Any]) -> dict[str, Any]:
             cash_raw, "blockedForPendingOrders", "blocked", "reserved"
         ) + _first_number(cash_raw, "inPies")
         cash = _first_number(
-            summary,
+            cash_raw,
+            "total",
             "cashTotal",
             "totalCash",
             default=available_to_trade + reserved,
         )
         free = _first_number(
-            summary,
+            cash_raw,
             "free",
             "availableToTrade",
+            "available",
             default=available_to_trade,
         )
     else:
