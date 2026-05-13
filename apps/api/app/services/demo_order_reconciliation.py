@@ -249,18 +249,27 @@ class DemoOrderReconciler:
             )
 
     @staticmethod
-    def _history_items(history: Any) -> list[dict[str, Any]]:
+    def _history_items(history: object) -> list[dict[str, Any]]:
+        """Return dict items from Trading 212 history payloads.
+
+        Trading 212 returns paginated history as {"items": [...]}. Older tests
+        and defensive callers may provide {"data": [...]} or a bare list.
+        Keep the input as object and raw_items as object so mypy does not infer
+        impossible branch types during narrowing.
+        """
+        raw_items: object
+
         if isinstance(history, list):
             raw_items = history
         elif isinstance(history, dict):
             raw_items = history.get("items")
-            if raw_items is None:
+            if not isinstance(raw_items, list):
                 raw_items = history.get("data")
+            if not isinstance(raw_items, list):
+                return []
         else:
-            raw_items = []
-
-        if not isinstance(raw_items, list):
             return []
+
         return [item for item in raw_items if isinstance(item, dict)]
 
     def _find_history_match(
