@@ -146,6 +146,7 @@ class DemoOrderReconciler:
             )
 
         broker_status = self._broker_status(match)
+        broker_ticker = self._broker_ticker(match)
         mapped_status = self._map_broker_status(broker_status)
         if mapped_status is None:
             order.last_reconciled_at = datetime.now(UTC)
@@ -156,6 +157,7 @@ class DemoOrderReconciler:
                 {
                     "broker_environment": "demo",
                     "broker_order_id": order.broker_order_id,
+                    "broker_ticker": broker_ticker,
                     "broker_status": broker_status,
                     "previous_status": previous_status,
                     "new_status": order.status,
@@ -181,6 +183,7 @@ class DemoOrderReconciler:
             {
                 "broker_status": broker_status,
                 "broker_order_id": order.broker_order_id,
+                "broker_ticker": broker_ticker,
                 "read_only_endpoint": "/api/v0/equity/history/orders",
             },
         )
@@ -190,6 +193,7 @@ class DemoOrderReconciler:
             {
                 "broker_environment": "demo",
                 "broker_order_id": order.broker_order_id,
+                "broker_ticker": broker_ticker,
                 "broker_status": broker_status,
                 "previous_status": previous_status,
                 "new_status": order.status,
@@ -271,6 +275,7 @@ class DemoOrderReconciler:
                 item.get("orderId"),
                 item.get("order_id"),
                 item.get("broker_order_id"),
+                _nested_value(item, "order", "id"),
             )
             if any(value is not None and str(value) == target for value in candidates):
                 return item
@@ -278,10 +283,19 @@ class DemoOrderReconciler:
 
     @staticmethod
     def _broker_status(item: dict[str, Any]) -> str | None:
-        value = item.get("status") or item.get("orderStatus")
-        if value is None:
-            return None
-        return str(value).upper()
+        value = _first_text(item, "status", "orderStatus", "state", ("order", "status"))
+        return value.upper() if value is not None else None
+
+    @staticmethod
+    def _broker_ticker(item: dict[str, Any]) -> str | None:
+        return _first_text(
+            item,
+            "ticker",
+            "instrumentCode",
+            "shortName",
+            ("order", "ticker"),
+            ("order", "instrument", "ticker"),
+        )
 
     @staticmethod
     def _map_broker_status(broker_status: str | None) -> str | None:
@@ -306,14 +320,21 @@ class DemoOrderReconciler:
         order.last_reconciled_at = reconciled_at
         order.broker_response = item
 
-        filled_quantity = _first_decimal(item, "filledQuantity", "filled_quantity")
+        filled_quantity = _first_decimal(
+            item,
+            "filledQuantity",
+            ("fill", "quantity"),
+            ("order", "filledQuantity"),
+            "filled_quantity",
+        )
         avg_fill_price = _first_decimal(
             item,
             "filledPrice",
             "avgFillPrice",
+            "averagePrice",
+            ("fill", "price"),
             "averageFillPrice",
             "avg_fill_price",
-            "averagePrice",
         )
         if filled_quantity is not None:
             order.filled_quantity = filled_quantity
@@ -323,6 +344,7 @@ class DemoOrderReconciler:
         event_time = _first_datetime(
             item,
             "filledAt",
+            ("fill", "filledAt"),
             "fillTime",
             "cancelledAt",
             "rejectedAt",
@@ -414,9 +436,21 @@ class DemoOrderReconciler:
         )
 
 
-def _first_decimal(item: dict[str, Any], *keys: str) -> Decimal | None:
-    for key in keys:
-        value = item.get(key)
+Path = str | tuple[str, ...]
+
+
+def _nested_value(item: dict[str, Any], *path: str) -> Any:
+    current: Any = item
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _first_decimal(item: dict[str, Any], *paths: Path) -> Decimal | None:
+    for path in paths:
+        value = _nested_value(item, path) if isinstance(path, str) else _nested_value(item, *path)
         if value is None or value == "":
             continue
         try:
@@ -426,9 +460,9 @@ def _first_decimal(item: dict[str, Any], *keys: str) -> Decimal | None:
     return None
 
 
-def _first_text(item: dict[str, Any], *keys: str) -> str | None:
-    for key in keys:
-        value = item.get(key)
+def _first_text(item: dict[str, Any], *paths: Path) -> str | None:
+    for path in paths:
+        value = _nested_value(item, path) if isinstance(path, str) else _nested_value(item, *path)
         if value is None:
             continue
         text = str(value).strip()
@@ -437,9 +471,9 @@ def _first_text(item: dict[str, Any], *keys: str) -> str | None:
     return None
 
 
-def _first_datetime(item: dict[str, Any], *keys: str) -> datetime | None:
-    for key in keys:
-        value = item.get(key)
+def _first_datetime(item: dict[str, Any], *paths: Path) -> datetime | None:
+    for path in paths:
+        value = _nested_value(item, path) if isinstance(path, str) else _nested_value(item, *path)
         parsed = _parse_datetime(value)
         if parsed is not None:
             return parsed

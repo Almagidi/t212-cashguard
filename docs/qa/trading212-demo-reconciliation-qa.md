@@ -27,6 +27,12 @@ The service reuses the existing adapter method:
 - `Trading212Adapter.get_historical_orders()`
 - `GET /api/v0/equity/history/orders`
 
+Trading 212 returns order history as `{ "items": [...] }`. Real DEMO history
+items may be nested as `{ "order": {...}, "fill": {...} }`; the broker order id
+can appear at `order.id`, the status at `order.status`, and fill quantity,
+price, and timestamp under `fill`. The reconciliation smoke must keep the
+history request capped at `limit=50` because Trading 212 rejects larger values.
+
 ## Audit Events
 
 - `demo_order_reconciliation_attempt`

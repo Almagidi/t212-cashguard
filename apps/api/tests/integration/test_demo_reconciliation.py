@@ -98,6 +98,79 @@ async def test_successful_demo_reconciliation_updates_order_and_audits(db, monke
 
 
 @pytest.mark.asyncio
+async def test_nested_trading212_history_shape_updates_filled_demo_order(db, monkeypatch):
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
+    monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
+
+    order = _demo_order(quantity=Decimal("0.01"), ticker="AAPL_US_EQ")
+    db.add(order)
+    await db.flush()
+    broker = HistoryBroker(
+        {
+            "items": [
+                {
+                    "fill": {
+                        "filledAt": "2026-05-13T13:30:00.000Z",
+                        "id": 48900510985,
+                        "price": 293.69,
+                        "quantity": 0.01,
+                        "tradingMethod": "OTC",
+                        "type": "TRADE",
+                        "walletImpact": {
+                            "currency": "GBP",
+                            "fxRate": 1.34720183,
+                            "netValue": 2.18,
+                            "taxes": [],
+                        },
+                    },
+                    "order": {
+                        "createdAt": "2026-05-12T20:48:28.000Z",
+                        "currency": "GBP",
+                        "extendedHours": False,
+                        "filledQuantity": 0.01,
+                        "id": 48850886521,
+                        "initiatedFrom": "API",
+                        "instrument": {
+                            "currency": "USD",
+                            "isin": "US0378331005",
+                            "name": "Apple",
+                            "ticker": "AAPL_US_EQ",
+                        },
+                        "quantity": 0.01,
+                        "side": "BUY",
+                        "status": "FILLED",
+                        "strategy": "QUANTITY",
+                        "ticker": "AAPL_US_EQ",
+                        "type": "MARKET",
+                    },
+                }
+            ],
+            "nextPagePath": None,
+        }
+    )
+
+    result = await DemoOrderReconciler(db, broker).reconcile_order(order)
+
+    assert result.matched is True
+    assert result.broker_status == "FILLED"
+    assert result.new_status == "filled"
+    assert order.status == "filled"
+    assert order.filled_quantity == Decimal("0.01")
+    assert order.avg_fill_price == Decimal("293.69")
+    assert order.filled_at is not None
+    assert order.filled_at.isoformat() == "2026-05-13T13:30:00+00:00"
+    assert order.last_reconciled_at is not None
+    assert broker.history_calls == [{"limit": 50}]
+    assert broker.placement_calls == 0
+    audits = (await db.execute(select(AuditLog))).scalars().all()
+    assert "demo_order_reconciliation_success" in [audit.action for audit in audits]
+    success = next(audit for audit in audits if audit.action == "demo_order_reconciliation_success")
+    assert success.payload["broker_ticker"] == "AAPL_US_EQ"
+    assert success.payload["no_broker_order_sent"] is True
+
+
+@pytest.mark.asyncio
 async def test_missing_broker_order_does_not_change_status_and_audits(db, monkeypatch):
     monkeypatch.setattr(settings, "APP_MODE", "demo")
     monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
