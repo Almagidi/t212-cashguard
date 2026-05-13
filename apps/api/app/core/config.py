@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     T212_LIVE_API_SECRET: str = ""
     T212_ENVIRONMENT: Literal["demo", "live"] = "demo"
     T212_DEMO_ORDER_ENABLED: bool = False
+    DEMO_RECONCILIATION_WORKER_ENABLED: bool = False
+    DEMO_RECONCILIATION_BATCH_SIZE: int = 10
+    DEMO_RECONCILIATION_MIN_INTERVAL_SECONDS: int = 30
+    DEMO_RECONCILIATION_LOOKBACK_HOURS: int = 24
+    DEMO_RECONCILIATION_MAX_ATTEMPTS_PER_RUN: int = 10
+    DEMO_RECONCILIATION_HISTORY_LIMIT: int = 50
 
     @property
     def t212_base_url(self) -> str:

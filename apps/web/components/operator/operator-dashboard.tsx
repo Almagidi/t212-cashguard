@@ -7,6 +7,7 @@ import {
   FileText,
   ListChecks,
   Lock,
+  RefreshCw,
   ShieldAlert,
 } from "lucide-react";
 import {
@@ -22,8 +23,13 @@ import {
 } from "@/components/ui";
 import { cn, formatCurrency, formatDate } from "@/lib/utils";
 import { BrokerStatusPanel } from "./broker-status-panel";
-import { useBrokerStatus, usePaperExecutionHistory } from "@/hooks/use-api";
+import {
+  useBrokerStatus,
+  useDemoReconciliationStatus,
+  usePaperExecutionHistory,
+} from "@/hooks/use-api";
 import type {
+  DemoReconciliationWorkerStatus,
   OperatorOverallStatus,
   PaperExecutionHistoryItem,
   OperatorRecentActivity,
@@ -1008,12 +1014,124 @@ function SafetyFlags({ status }: { status: OperatorStatus }) {
   );
 }
 
+function DemoReconciliationStatusCard({
+  status,
+  isLoading,
+  error,
+}: {
+  status?: DemoReconciliationWorkerStatus;
+  isLoading?: boolean;
+  error?: unknown;
+}) {
+  const latest = status?.last_run_summary as
+    | {
+        outcome?: string;
+        candidates_found?: number;
+        attempted?: number;
+        succeeded?: number;
+        failed?: number;
+        rate_limited?: number;
+      }
+    | null
+    | undefined;
+  const rateLimited = Number(latest?.rate_limited ?? 0) > 0;
+
+  return (
+    <Card data-testid="demo-reconciliation-status">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <RefreshCw className="h-4 w-4 text-cyan-300" />
+          Trading 212 Demo Reconciliation
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isLoading ? (
+          <div className="space-y-3">
+            <Skeleton className="h-4 w-36" />
+            <Skeleton className="h-20 w-full" />
+          </div>
+        ) : error ? (
+          <div className="rounded-md border border-amber-700/50 bg-amber-950/20 p-3 text-sm text-amber-100">
+            Reconciliation status unavailable.
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap gap-2">
+              <TextBadge tone={status?.enabled ? "success" : "warning"}>
+                {status?.enabled ? "Worker enabled" : "Worker disabled"}
+              </TextBadge>
+              <TextBadge
+                tone={status?.live_trading_enabled ? "destructive" : "success"}
+              >
+                Live {status?.live_trading_enabled ? "enabled" : "disabled"}
+              </TextBadge>
+              <TextBadge tone={rateLimited ? "warning" : "info"}>
+                {rateLimited ? "Rate limited" : "Read-only"}
+              </TextBadge>
+            </div>
+            <dl className="grid gap-2 text-sm">
+              <InfoRow
+                label="Broker environment"
+                value={status?.broker_environment ?? "Unknown"}
+              />
+              <InfoRow
+                label="Safety state"
+                value={status?.safety_state ?? "Unknown"}
+                valueClassName={
+                  status?.safety_state === "safe"
+                    ? "text-emerald-400"
+                    : "text-amber-300"
+                }
+              />
+              <InfoRow
+                label="Last outcome"
+                value={latest?.outcome ?? "No runs yet"}
+              />
+              <InfoRow
+                label="Last run"
+                value={status?.last_run_at ? formatDate(status.last_run_at) : "Never"}
+              />
+            </dl>
+            <div className="grid grid-cols-4 gap-2 text-center text-xs">
+              <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
+                <p className="text-slate-500">Found</p>
+                <p className="mt-1 font-semibold text-slate-100">
+                  {latest?.candidates_found ?? 0}
+                </p>
+              </div>
+              <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
+                <p className="text-slate-500">Tried</p>
+                <p className="mt-1 font-semibold text-slate-100">
+                  {latest?.attempted ?? 0}
+                </p>
+              </div>
+              <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
+                <p className="text-slate-500">OK</p>
+                <p className="mt-1 font-semibold text-emerald-300">
+                  {latest?.succeeded ?? 0}
+                </p>
+              </div>
+              <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
+                <p className="text-slate-500">Limited</p>
+                <p className="mt-1 font-semibold text-amber-300">
+                  {latest?.rate_limited ?? 0}
+                </p>
+              </div>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function OperatorDashboard({
   status,
   isLoading = false,
   isError = false,
 }: OperatorDashboardProps) {
   const brokerStatusQuery = useBrokerStatus();
+  const demoReconciliationQuery = useDemoReconciliationStatus();
   if (isLoading) return <LoadingState />;
   if (isError || !status) return <ErrorState />;
 
@@ -1037,6 +1155,12 @@ export function OperatorDashboard({
         <DcaSummary status={status} />
         <SchedulerWorkerHealth status={status} />
       </section>
+
+      <DemoReconciliationStatusCard
+        status={demoReconciliationQuery.data}
+        isLoading={demoReconciliationQuery.isLoading}
+        error={demoReconciliationQuery.error}
+      />
 
       <PaperExecutionSummary status={status} />
       <PaperExecutionHistoryPanel />

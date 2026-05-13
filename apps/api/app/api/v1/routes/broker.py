@@ -9,11 +9,17 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
-from app.api.deps import get_current_admin, get_current_user
+from app.api.deps import get_broker, get_current_admin, get_current_user
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
-from app.api.schemas import BrokerConnectRequest, BrokerStatusOut, BrokerTestResult
+from app.api.schemas import (
+    BrokerConnectRequest,
+    BrokerStatusOut,
+    BrokerTestResult,
+    DemoReconciliationWorkerRunSummary,
+    DemoReconciliationWorkerStatus,
+)
 from app.core.config import settings
 from app.core.security import CredentialDecryptionError, decrypt_field, encrypt_field
 from app.db.models import AuditLog, BrokerConnection, User
@@ -22,6 +28,7 @@ from app.services.broker_connection_recovery import (
     BROKER_RECOVERY_HINT,
     mark_broker_connection_reconnect_required,
 )
+from app.services.demo_reconciliation_worker import DemoReconciliationWorker
 from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
 router = APIRouter(prefix="/broker/trading212", tags=["broker"])
@@ -34,6 +41,10 @@ DEMO_CREDENTIALS_MISSING_HINT = (
     "APP_MODE=demo requires Trading 212 demo credentials or an active demo broker connection. "
     "Live credentials are ignored in demo mode."
 )
+
+
+class _StatusBroker:
+    environment = "demo"
 
 
 async def _audit(
@@ -338,3 +349,47 @@ async def broker_status(
             )
 
     return _serialize_status(conn, credential_state="not_connected")
+
+
+@router.get(
+    "/reconciliation/status",
+    response_model=DemoReconciliationWorkerStatus,
+)
+async def demo_reconciliation_status(
+    _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> DemoReconciliationWorkerStatus:
+    broker = _StatusBroker()
+    broker.environment = settings.T212_ENVIRONMENT
+    status = await DemoReconciliationWorker(db, broker).get_worker_status()
+    return DemoReconciliationWorkerStatus.model_validate(status)
+
+
+@router.post(
+    "/reconciliation/run-once",
+    response_model=DemoReconciliationWorkerRunSummary,
+)
+async def run_demo_reconciliation_once(
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+    broker: object = Depends(get_broker),
+) -> DemoReconciliationWorkerRunSummary:
+    try:
+        if hasattr(broker, "__aenter__"):
+            async with broker as active_broker:  # type: ignore[attr-defined]
+                summary = await DemoReconciliationWorker(
+                    db,
+                    active_broker,
+                    actor=str(current_user.id),
+                ).run_once()
+        else:
+            summary = await DemoReconciliationWorker(
+                db,
+                broker,
+                actor=str(current_user.id),
+            ).run_once()
+    except SafetyPolicyViolation as exc:
+        raise HTTPException(status_code=403, detail=exc.reason) from exc
+
+    await db.commit()
+    return DemoReconciliationWorkerRunSummary.model_validate(summary)

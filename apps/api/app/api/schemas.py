@@ -106,6 +106,51 @@ class BrokerTestResult(BaseModel):
     diagnostics: BrokerDiagnostics | None = None
 
 
+class DemoReconciliationWorkerRunSummary(BaseSchema):
+    run_id: uuid.UUID
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int
+    outcome: str
+    worker_enabled: bool
+    read_only_broker_calls: bool
+    no_broker_order_sent: bool
+    app_mode: str
+    broker_environment: str | None
+    live_trading_enabled: bool
+    batch_size: int
+    candidates_found: int
+    attempted: int
+    succeeded: int
+    missing: int
+    skipped: int
+    rate_limited: int
+    failed: int
+    unchanged: int
+    updated_order_ids: list[uuid.UUID]
+    failed_order_ids: list[uuid.UUID]
+    rate_limited_order_ids: list[uuid.UUID]
+    audit_event_ids: list[uuid.UUID]
+    message: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class DemoReconciliationWorkerStatus(BaseSchema):
+    enabled: bool
+    app_mode: str
+    broker_environment: str | None
+    live_trading_enabled: bool
+    batch_size: int
+    min_interval_seconds: int
+    lookback_hours: int
+    max_attempts_per_run: int
+    history_limit: int
+    last_run_at: datetime | None
+    last_run_summary: dict[str, Any] | None
+    safety_state: str
+    warnings: list[str] = Field(default_factory=list)
+
+
 # ─── Account ─────────────────────────────────────────────────────────────────
 
 class AccountSummaryOut(BaseModel):
