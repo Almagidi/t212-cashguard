@@ -134,6 +134,7 @@ class DemoReconciliationWorkerRunSummary(BaseSchema):
     updated_order_ids: list[uuid.UUID]
     failed_order_ids: list[uuid.UUID]
     rate_limited_order_ids: list[uuid.UUID]
+    order_results: list[dict[str, Any]] = Field(default_factory=list)
     audit_event_ids: list[uuid.UUID]
     message: str | None = None
     warnings: list[str] = Field(default_factory=list)

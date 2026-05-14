@@ -65,6 +65,7 @@ def _worker_summary(**overrides: Any) -> DemoReconciliationWorkerRunSummary:
         "updated_order_ids": [],
         "failed_order_ids": [],
         "rate_limited_order_ids": [],
+        "order_results": [],
         "audit_event_ids": [],
         "message": None,
         "warnings": [],

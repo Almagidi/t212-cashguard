@@ -841,7 +841,7 @@ T212_DEMO_ORDER_API_PID  ?= /tmp/t212_demo_controlled_order_api.pid
 T212_DEMO_ORDER_TICKER   ?= AAPL
 T212_DEMO_ORDER_QUANTITY ?= 0.001
 
-.PHONY: t212-demo-controlled-order-start t212-demo-controlled-order-arm t212-demo-controlled-order-test t212-demo-reconcile-order t212-demo-reconciliation-worker t212-demo-controlled-order-stop
+.PHONY: t212-demo-controlled-order-start t212-demo-controlled-order-arm t212-demo-controlled-order-test t212-demo-reconcile-order t212-demo-reconciliation-worker t212-demo-multi-order-reconciliation-smoke t212-demo-controlled-order-stop
 
 t212-demo-controlled-order-start: ## Start API for explicit Trading 212 demo order test on :8004
 	@$(MAKE) t212-demo-controlled-order-stop >/dev/null 2>&1 || true
@@ -951,6 +951,25 @@ t212-demo-reconciliation-worker: ## Run one read-only Trading 212 DEMO reconcili
 		PYTHONPATH=. \
 		$(PYTHON) scripts/t212_demo_reconciliation_worker.py
 	@echo "$(GREEN)✓ Trading 212 DEMO reconciliation worker finished$(RESET)"
+
+t212-demo-multi-order-reconciliation-smoke: ## Run read-only Trading 212 DEMO multi-order reconciliation smoke
+	@echo "$(YELLOW)→ Running Trading 212 DEMO multi-order reconciliation smoke...$(RESET)"
+	@test "$$T212_DEMO_RECONCILE_CONFIRM" = "READ_DEMO_ORDER_HISTORY" || (echo "$(RED)Set T212_DEMO_RECONCILE_CONFIRM=READ_DEMO_ORDER_HISTORY to confirm this read-only demo history check.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_KEY" -o -n "$$T212_API_KEY" || (echo "$(RED)T212_DEMO_API_KEY or T212_API_KEY must be loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_SECRET" -o -n "$$T212_API_SECRET" || (echo "$(RED)T212_DEMO_API_SECRET or T212_API_SECRET must be loaded in this terminal.$(RESET)" && exit 1)
+	@test "$${LIVE_TRADING_ENABLED:-false}" != "true" || (echo "$(RED)LIVE_TRADING_ENABLED must be false.$(RESET)" && exit 1)
+	@test "$${DEMO_RECONCILIATION_SCHEDULER_ENABLED:-false}" != "true" || (echo "$(RED)DEMO_RECONCILIATION_SCHEDULER_ENABLED must be false for this manual smoke.$(RESET)" && exit 1)
+	@cd apps/api && \
+		DATABASE_URL="$${DATABASE_URL:-sqlite+aiosqlite:///$(T212_DEMO_ORDER_DB_PATH)}" \
+		APP_MODE=demo \
+		T212_ENVIRONMENT=demo \
+		LIVE_TRADING_ENABLED=false \
+		DEMO_RECONCILIATION_WORKER_ENABLED=true \
+		DEMO_RECONCILIATION_SCHEDULER_ENABLED=false \
+		MARKET_DATA_PROVIDER=mock \
+		PYTHONPATH=. \
+		$(PYTHON) scripts/t212_demo_multi_order_reconciliation_smoke.py
+	@echo "$(GREEN)✓ Trading 212 DEMO multi-order reconciliation smoke finished$(RESET)"
 
 t212-demo-controlled-order-stop: ## Stop controlled Trading 212 demo-order API
 	@echo "$(YELLOW)→ Stopping Trading 212 controlled demo-order API...$(RESET)"
