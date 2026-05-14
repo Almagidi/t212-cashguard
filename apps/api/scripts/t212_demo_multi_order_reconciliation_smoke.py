@@ -14,6 +14,7 @@ import os
 from dataclasses import asdict
 from typing import Any
 
+from app.broker.safety import is_broker_write_method
 from app.broker.trading212 import (
     T212APIError,
     T212AuthError,
@@ -25,17 +26,6 @@ from app.db.session import AsyncSessionLocal
 from app.services.demo_reconciliation_worker import DemoReconciliationWorker
 from app.services.safety_policy import SafetyPolicyViolation
 
-BROKER_WRITE_METHODS = {
-    "cancel_order",
-    "modify_order",
-    "place_limit_order",
-    "place_market_order",
-    "place_order",
-    "place_stop_limit_order",
-    "place_stop_order",
-    "submit_order",
-}
-
 
 class ReadOnlyBrokerGuard:
     """Proxy broker calls and fail closed if reconciliation attempts a write."""
@@ -46,7 +36,7 @@ class ReadOnlyBrokerGuard:
         self.environment = broker.environment
 
     def __getattr__(self, name: str) -> Any:
-        if name in BROKER_WRITE_METHODS:
+        if is_broker_write_method(name):
             self.write_calls.append(name)
             raise RuntimeError(f"Broker write method blocked during reconciliation smoke: {name}")
         return getattr(self._broker, name)
