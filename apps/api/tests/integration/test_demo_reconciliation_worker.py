@@ -44,6 +44,7 @@ class WorkerBroker:
         self.history_calls: list[dict[str, object]] = []
         self.placement_calls = 0
         self.cancel_calls = 0
+        self.modify_calls = 0
 
     async def get_historical_orders(self, **kwargs):
         self.history_calls.append(kwargs)
@@ -60,6 +61,10 @@ class WorkerBroker:
     async def cancel_order(self, *args, **kwargs):  # pragma: no cover - safety sentinel
         self.cancel_calls += 1
         raise AssertionError("worker must not cancel broker orders")
+
+    async def modify_order(self, *args, **kwargs):  # pragma: no cover - safety sentinel
+        self.modify_calls += 1
+        raise AssertionError("worker must not modify broker orders")
 
 
 async def _actions(db) -> list[str]:
@@ -162,10 +167,23 @@ async def test_run_once_reconciles_candidates_and_writes_batch_audits(db):
     assert summary.attempted == 2
     assert summary.succeeded == 2
     assert summary.updated_order_ids == [first.id, second.id]
+    assert [item["order_id"] for item in summary.order_results] == [str(first.id), str(second.id)]
+    assert [item["broker_order_id"] for item in summary.order_results] == [
+        "48850886521",
+        "48850886522",
+    ]
+    assert [item["outcome"] for item in summary.order_results] == ["success", "success"]
+    assert [item["previous_status"] for item in summary.order_results] == [
+        "accepted",
+        "accepted",
+    ]
+    assert [item["new_status"] for item in summary.order_results] == ["filled", "accepted"]
     assert first.status == "filled"
     assert second.status == "accepted"
     assert broker.history_calls == [{"limit": 50}, {"limit": 50}]
     assert broker.placement_calls == 0
+    assert broker.cancel_calls == 0
+    assert broker.modify_calls == 0
     actions = await _actions(db)
     assert "demo_reconciliation_worker_started" in actions
     assert "demo_reconciliation_worker_completed" in actions
@@ -185,6 +203,18 @@ async def test_missing_broker_history_is_reported_without_failing_local_order(db
     assert summary.outcome == "completed"
     assert summary.missing == 1
     assert summary.failed == 0
+    assert summary.order_results == [
+        {
+            "order_id": str(order.id),
+            "broker_order_id": "missing",
+            "ticker": "AAPL",
+            "previous_status": "accepted",
+            "broker_status": None,
+            "new_status": "accepted",
+            "matched": False,
+            "outcome": "missing",
+        }
+    ]
     assert order.status == "accepted"
 
 
@@ -205,6 +235,18 @@ async def test_rate_limit_stops_batch_without_marking_orders_failed(db):
     assert summary.rate_limited == 1
     assert summary.failed == 0
     assert summary.rate_limited_order_ids == [first.id]
+    assert summary.order_results == [
+        {
+            "order_id": str(first.id),
+            "broker_order_id": "first",
+            "ticker": "AAPL",
+            "previous_status": "accepted",
+            "broker_status": None,
+            "new_status": "accepted",
+            "matched": False,
+            "outcome": "rate_limited",
+        }
+    ]
     assert first.status == "accepted"
     assert second.status == "accepted"
     assert "demo_reconciliation_worker_rate_limited" in await _actions(db)
@@ -280,8 +322,12 @@ async def test_run_once_endpoint_reconciles_with_admin_auth_and_preserves_safety
     assert data["outcome"] == "completed"
     assert data["attempted"] == 1
     assert data["succeeded"] == 1
+    assert data["order_results"][0]["order_id"] == str(order.id)
+    assert data["order_results"][0]["outcome"] == "success"
     assert data["no_broker_order_sent"] is True
     assert data["read_only_broker_calls"] is True
     assert data["live_trading_enabled"] is False
     assert broker.placement_calls == 0
+    assert broker.cancel_calls == 0
+    assert broker.modify_calls == 0
     assert order.status == "filled"

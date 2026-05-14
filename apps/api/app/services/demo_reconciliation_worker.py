@@ -54,6 +54,7 @@ class DemoReconciliationWorkerRunSummary:
     updated_order_ids: list[uuid.UUID] = field(default_factory=list)
     failed_order_ids: list[uuid.UUID] = field(default_factory=list)
     rate_limited_order_ids: list[uuid.UUID] = field(default_factory=list)
+    order_results: list[dict[str, Any]] = field(default_factory=list)
     audit_event_ids: list[uuid.UUID] = field(default_factory=list)
     message: str | None = None
     warnings: list[str] = field(default_factory=list)
@@ -146,6 +147,7 @@ class DemoReconciliationWorker:
         updated_order_ids: list[uuid.UUID] = []
         failed_order_ids: list[uuid.UUID] = []
         rate_limited_order_ids: list[uuid.UUID] = []
+        order_results: list[dict[str, Any]] = []
         outcome = "completed"
         message: str | None = None
         warnings: list[str] = []
@@ -174,6 +176,18 @@ class DemoReconciliationWorker:
             attempted += 1
             previous_status = order.status
             result = await reconciler.reconcile_order(order)
+            order_results.append(
+                {
+                    "order_id": str(order.id),
+                    "broker_order_id": order.broker_order_id,
+                    "ticker": order.ticker,
+                    "previous_status": result.previous_status,
+                    "broker_status": result.broker_status,
+                    "new_status": result.new_status,
+                    "matched": result.matched,
+                    "outcome": result.outcome,
+                }
+            )
             if result.outcome == "rate_limited":
                 rate_limited += 1
                 rate_limited_order_ids.append(order.id)
@@ -235,6 +249,7 @@ class DemoReconciliationWorker:
             updated_order_ids=updated_order_ids,
             failed_order_ids=failed_order_ids,
             rate_limited_order_ids=rate_limited_order_ids,
+            order_results=order_results,
             audit_event_ids=audit_event_ids,
             message=message,
             warnings=warnings,
