@@ -86,7 +86,9 @@ It then prints an aggregate JSON payload:
 
 ## No Broker Writes
 
-The smoke uses `DemoReconciliationWorker`, which delegates to `DemoOrderReconciler`. That path reads broker order history only. The script also wraps the Trading 212 adapter in a guard that blocks known broker write methods such as `place_market_order`, `place_limit_order`, `place_order`, `submit_order`, `cancel_order`, and `modify_order`.
+The smoke uses `DemoReconciliationWorker`, which delegates to `DemoOrderReconciler`. That path reads broker order history only. The script also wraps the Trading 212 adapter in a guard that imports the central Trading 212 broker write-method inventory and fails closed if reconciliation attempts any inventoried write method, including order placement, stop-order placement, cancellation, submission, or modification methods.
+
+Update the central broker write-method inventory whenever `Trading212Adapter` gains a new write-like method. Smoke guards and tests reuse that inventory so new adapter write methods are blocked consistently.
 
 The expected aggregate output must include:
 
