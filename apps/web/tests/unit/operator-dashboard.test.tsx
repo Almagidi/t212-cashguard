@@ -31,6 +31,11 @@ jest.mock("@/hooks/use-api", () => ({
     isLoading: false,
     error: null,
   }),
+  useDemoReconciliationStatus: () => ({
+    data: null,
+    isLoading: false,
+    error: null,
+  }),
   useDcaActivity: () => ({
     data: null,
     isLoading: false,

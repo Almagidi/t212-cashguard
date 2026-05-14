@@ -68,6 +68,49 @@ export interface BrokerTestResult {
   error: string | null;
   diagnostics: BrokerDiagnostics | null;
 }
+export interface DemoReconciliationWorkerRunSummary {
+  run_id: string;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  outcome: string;
+  worker_enabled: boolean;
+  read_only_broker_calls: boolean;
+  no_broker_order_sent: boolean;
+  app_mode: string;
+  broker_environment: string | null;
+  live_trading_enabled: boolean;
+  batch_size: number;
+  candidates_found: number;
+  attempted: number;
+  succeeded: number;
+  missing: number;
+  skipped: number;
+  rate_limited: number;
+  failed: number;
+  unchanged: number;
+  updated_order_ids: string[];
+  failed_order_ids: string[];
+  rate_limited_order_ids: string[];
+  audit_event_ids: string[];
+  message: string | null;
+  warnings: string[];
+}
+export interface DemoReconciliationWorkerStatus {
+  enabled: boolean;
+  app_mode: string;
+  broker_environment: string | null;
+  live_trading_enabled: boolean;
+  batch_size: number;
+  min_interval_seconds: number;
+  lookback_hours: number;
+  max_attempts_per_run: number;
+  history_limit: number;
+  last_run_at: string | null;
+  last_run_summary: DemoReconciliationWorkerRunSummary | Record<string, unknown> | null;
+  safety_state: string;
+  warnings: string[];
+}
 
 // ── Account ───────────────────────────────────────────────────────────────────
 export interface AccountSummary {

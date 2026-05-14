@@ -43,10 +43,18 @@ class DemoOrderReconciliationResult:
 class DemoOrderReconciler:
     """Reconcile local demo orders against Trading 212 historical orders."""
 
-    def __init__(self, db: Any, broker: Any, *, actor: str = "demo_order_reconciler") -> None:
+    def __init__(
+        self,
+        db: Any,
+        broker: Any,
+        *,
+        actor: str = "demo_order_reconciler",
+        history_limit: int | None = None,
+    ) -> None:
         self.db = db
         self.broker = broker
         self.actor = actor
+        self.history_limit = history_limit or 50
         self._audit_events: list[str] = []
 
     async def reconcile_by_order_id(self, order_id: uuid.UUID) -> DemoOrderReconciliationResult:
@@ -84,7 +92,7 @@ class DemoOrderReconciler:
         )
 
         try:
-            history = await self.broker.get_historical_orders(limit=50)
+            history = await self.broker.get_historical_orders(limit=self.history_limit)
         except T212RateLimitError as exc:
             await self._audit(
                 "demo_order_reconciliation_rate_limited",

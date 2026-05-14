@@ -29,6 +29,7 @@ function extractErrorMessage(error: any, fallback: string): string {
 export const QK = {
   me: ["me"],
   brokerStatus: ["broker", "status"],
+  demoReconciliationStatus: ["broker", "trading212", "reconciliation", "status"],
   account: ["account", "summary"],
   cashGuard: ["account", "cash-guard"],
   instruments: (p?: object) => ["instruments", p],
@@ -103,6 +104,13 @@ export const useBrokerStatus = () =>
   useQuery({
     queryKey: QK.brokerStatus,
     queryFn: () => api.getBrokerStatus(),
+    refetchInterval: 30_000,
+  });
+
+export const useDemoReconciliationStatus = () =>
+  useQuery({
+    queryKey: QK.demoReconciliationStatus,
+    queryFn: () => api.getDemoReconciliationStatus(),
     refetchInterval: 30_000,
   });
 

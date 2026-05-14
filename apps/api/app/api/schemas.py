@@ -1,6 +1,7 @@
 """
 Pydantic v2 schemas for all API request/response models.
 """
+
 from __future__ import annotations
 
 import uuid  # noqa: TC003
@@ -12,11 +13,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 # ─── Base ───────────────────────────────────────────────────────────────────
 
+
 class BaseSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
 # ─── Auth ────────────────────────────────────────────────────────────────────
+
 
 class LoginRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
@@ -49,6 +52,7 @@ class UserOut(BaseSchema):
 
 
 # ─── Broker ──────────────────────────────────────────────────────────────────
+
 
 class BrokerConnectRequest(BaseModel):
     broker: Literal["trading212", "kraken"] = "trading212"
@@ -106,7 +110,53 @@ class BrokerTestResult(BaseModel):
     diagnostics: BrokerDiagnostics | None = None
 
 
+class DemoReconciliationWorkerRunSummary(BaseSchema):
+    run_id: uuid.UUID
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int
+    outcome: str
+    worker_enabled: bool
+    read_only_broker_calls: bool
+    no_broker_order_sent: bool
+    app_mode: str
+    broker_environment: str | None
+    live_trading_enabled: bool
+    batch_size: int
+    candidates_found: int
+    attempted: int
+    succeeded: int
+    missing: int
+    skipped: int
+    rate_limited: int
+    failed: int
+    unchanged: int
+    updated_order_ids: list[uuid.UUID]
+    failed_order_ids: list[uuid.UUID]
+    rate_limited_order_ids: list[uuid.UUID]
+    audit_event_ids: list[uuid.UUID]
+    message: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class DemoReconciliationWorkerStatus(BaseSchema):
+    enabled: bool
+    app_mode: str
+    broker_environment: str | None
+    live_trading_enabled: bool
+    batch_size: int
+    min_interval_seconds: int
+    lookback_hours: int
+    max_attempts_per_run: int
+    history_limit: int
+    last_run_at: datetime | None
+    last_run_summary: dict[str, Any] | None
+    safety_state: str
+    warnings: list[str] = Field(default_factory=list)
+
+
 # ─── Account ─────────────────────────────────────────────────────────────────
+
 
 class AccountSummaryOut(BaseModel):
     total_value: float
@@ -292,6 +342,7 @@ class DcaActivityReportOut(BaseModel):
 
 # ─── Unified Operator Status ─────────────────────────────────────────────────
 
+
 class OperatorVenueStatusOut(BaseModel):
     venue: str
     present: bool
@@ -407,6 +458,7 @@ class OperatorStatusOut(BaseModel):
 
 # ─── Instruments ─────────────────────────────────────────────────────────────
 
+
 class InstrumentOut(BaseSchema):
     id: uuid.UUID
     ticker: str
@@ -426,6 +478,7 @@ class InstrumentList(BaseModel):
 
 
 # ─── Risk Profiles ───────────────────────────────────────────────────────────
+
 
 class RiskProfileOut(BaseSchema):
     id: uuid.UUID
@@ -490,10 +543,12 @@ StrategyPresetKey = Literal[
 
 VenueType = Literal["t212", "kraken"]
 
-_KRAKEN_STRATEGY_TYPES: frozenset[str] = frozenset({
-    "kraken_breakout_retest",
-    "kraken_trend_follow",
-})
+_KRAKEN_STRATEGY_TYPES: frozenset[str] = frozenset(
+    {
+        "kraken_breakout_retest",
+        "kraken_trend_follow",
+    }
+)
 
 
 class StrategyCreate(BaseModel):
@@ -614,14 +669,17 @@ class StrategyPromotionStatus(BaseModel):
     live_execution_approved: bool
     eligible_for_demo: bool
     eligible_for_live: bool
-    recommended_next_action: Literal[
-        "record_dry_run_review",
-        "promote_to_demo",
-        "record_demo_review",
-        "promote_to_live",
-        "demote_to_dry_run",
-        "revoke_live_promotion",
-    ] | None = None
+    recommended_next_action: (
+        Literal[
+            "record_dry_run_review",
+            "promote_to_demo",
+            "record_demo_review",
+            "promote_to_live",
+            "demote_to_dry_run",
+            "revoke_live_promotion",
+        ]
+        | None
+    ) = None
     blockers: list[str]
     checks: list[StrategyPromotionCheck]
     metrics: StrategyPromotionMetrics
@@ -841,6 +899,7 @@ class PortfolioStrategyAttributionOut(PortfolioStrategyAttributionSummaryOut):
 
 # ─── Signals ─────────────────────────────────────────────────────────────────
 
+
 class SignalOut(BaseSchema):
     id: uuid.UUID
     strategy_id: uuid.UUID
@@ -865,6 +924,7 @@ class SignalOut(BaseSchema):
 
 
 # ─── Orders ──────────────────────────────────────────────────────────────────
+
 
 class OrderCreate(BaseModel):
     ticker: str = Field(min_length=1, max_length=50)
@@ -1027,6 +1087,7 @@ class PaperExecutionAuditList(BaseModel):
 
 # ─── Positions ───────────────────────────────────────────────────────────────
 
+
 class PositionOut(BaseModel):
     ticker: str
     quantity: float
@@ -1039,6 +1100,7 @@ class PositionOut(BaseModel):
 
 # ─── Risk Events ─────────────────────────────────────────────────────────────
 
+
 class RiskEventOut(BaseSchema):
     id: uuid.UUID
     event_type: str
@@ -1048,6 +1110,7 @@ class RiskEventOut(BaseSchema):
 
 
 # ─── Alerts ──────────────────────────────────────────────────────────────────
+
 
 class AlertOut(BaseSchema):
     id: uuid.UUID
@@ -1061,6 +1124,7 @@ class AlertOut(BaseSchema):
 
 
 # ─── Settings ────────────────────────────────────────────────────────────────
+
 
 class AppSettingsOut(BaseSchema):
     id: int
@@ -1139,6 +1203,7 @@ class TelegramTestResult(BaseModel):
 
 # ─── Audit Log ───────────────────────────────────────────────────────────────
 
+
 class AuditLogOut(BaseSchema):
     id: uuid.UUID
     user_id: uuid.UUID | None
@@ -1159,6 +1224,7 @@ class AuditLogList(BaseModel):
 
 
 # ─── Reports ─────────────────────────────────────────────────────────────────
+
 
 class PerformanceReport(BaseModel):
     total_trades: int
@@ -1255,6 +1321,7 @@ class ExecutionQualityReport(BaseModel):
 
 # ─── Health ──────────────────────────────────────────────────────────────────
 
+
 class HealthStatus(BaseModel):
     status: str
     timestamp: datetime
@@ -1322,6 +1389,7 @@ class MarketDataHealth(BaseModel):
 
 # ─── Trade Journal ───────────────────────────────────────────────────────────
 
+
 class TradeJournalUpdate(BaseModel):
     notes: str | None = Field(None, max_length=5000)
     tags: list[str] | None = Field(None, max_length=20)
@@ -1355,6 +1423,7 @@ class TradeList(BaseModel):
 
 
 # ─── Emergency ───────────────────────────────────────────────────────────────
+
 
 class EmergencyActionResult(BaseModel):
     success: bool

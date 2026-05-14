@@ -16,6 +16,7 @@ import type {
   CreateStrategyPayload,
   CreateStrategyPresetPayload,
   DepsHealth,
+  DemoReconciliationWorkerStatus,
   DcaActivityResponse,
   DcaConfig,
   DcaOperatorStatus,
@@ -207,6 +208,13 @@ class ApiClient {
         ? "/broker/kraken/status"
         : "/broker/trading212/status";
     return (await this.client.get<BrokerStatus | null>(path)).data;
+  }
+  async getDemoReconciliationStatus(): Promise<DemoReconciliationWorkerStatus> {
+    return (
+      await this.client.get<DemoReconciliationWorkerStatus>(
+        "/broker/trading212/reconciliation/status",
+      )
+    ).data;
   }
 
   // ── Account ─────────────────────────────────────────────────────────────────
