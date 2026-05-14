@@ -30,6 +30,13 @@ export const QK = {
   me: ["me"],
   brokerStatus: ["broker", "status"],
   demoReconciliationStatus: ["broker", "trading212", "reconciliation", "status"],
+  demoReconciliationSchedulerStatus: [
+    "broker",
+    "trading212",
+    "reconciliation",
+    "scheduler",
+    "status",
+  ],
   account: ["account", "summary"],
   cashGuard: ["account", "cash-guard"],
   instruments: (p?: object) => ["instruments", p],
@@ -111,6 +118,13 @@ export const useDemoReconciliationStatus = () =>
   useQuery({
     queryKey: QK.demoReconciliationStatus,
     queryFn: () => api.getDemoReconciliationStatus(),
+    refetchInterval: 30_000,
+  });
+
+export const useDemoReconciliationSchedulerStatus = () =>
+  useQuery({
+    queryKey: QK.demoReconciliationSchedulerStatus,
+    queryFn: () => api.getDemoReconciliationSchedulerStatus(),
     refetchInterval: 30_000,
   });
 

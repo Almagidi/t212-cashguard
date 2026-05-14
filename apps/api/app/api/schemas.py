@@ -155,6 +155,69 @@ class DemoReconciliationWorkerStatus(BaseSchema):
     warnings: list[str] = Field(default_factory=list)
 
 
+class DemoReconciliationSchedulerRunResult(BaseSchema):
+    run_id: uuid.UUID
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int
+    outcome: str
+    enabled: bool
+    worker_enabled: bool
+    running: bool
+    app_mode: str
+    broker_environment: str | None
+    live_trading_enabled: bool
+    interval_seconds: int
+    backoff_seconds: int
+    initial_delay_seconds: int
+    run_on_startup: bool
+    no_broker_order_sent: bool
+    read_only_broker_calls: bool
+    worker_summary: dict[str, Any] | None = None
+    skip_reason: str | None = None
+    next_run_at: datetime | None = None
+    next_run_not_before: datetime | None = None
+    consecutive_failures: int
+    consecutive_rate_limits: int
+    total_runs: int
+    total_successful_runs: int
+    total_failed_runs: int
+    total_rate_limited_runs: int
+    last_error_message: str | None = None
+    audit_event_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+class DemoReconciliationSchedulerStatus(BaseSchema):
+    enabled: bool
+    running: bool
+    app_mode: str
+    broker_environment: str | None
+    live_trading_enabled: bool
+    worker_enabled: bool
+    interval_seconds: int
+    backoff_seconds: int
+    initial_delay_seconds: int
+    run_on_startup: bool
+    last_run_started_at: datetime | None
+    last_run_finished_at: datetime | None
+    last_run_duration_ms: int | None
+    last_run_outcome: str | None
+    last_run_summary: dict[str, Any] | None
+    next_run_at: datetime | None
+    next_run_not_before: datetime | None
+    consecutive_failures: int
+    consecutive_rate_limits: int
+    total_runs: int
+    total_successful_runs: int
+    total_failed_runs: int
+    total_rate_limited_runs: int
+    last_error_message: str | None
+    safety_state: str
+    warnings: list[str] = Field(default_factory=list)
+    no_broker_order_sent: bool
+    read_only_broker_calls: bool
+
+
 # ─── Account ─────────────────────────────────────────────────────────────────
 
 

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { render, screen, within } from "@testing-library/react";
 
 import type {
+  DemoReconciliationSchedulerStatus,
   OperatorStatus,
   OperatorWorkerHealth,
   PaperExecutionHistory,
@@ -23,6 +24,15 @@ let paperHistoryState: {
   isLoading: false,
   isError: false,
 };
+let demoSchedulerState: {
+  data: DemoReconciliationSchedulerStatus | undefined;
+  isLoading: boolean;
+  error: unknown;
+} = {
+  data: undefined,
+  isLoading: false,
+  error: null,
+};
 
 jest.mock("@/hooks/use-api", () => ({
   __esModule: true,
@@ -36,6 +46,7 @@ jest.mock("@/hooks/use-api", () => ({
     isLoading: false,
     error: null,
   }),
+  useDemoReconciliationSchedulerStatus: () => demoSchedulerState,
   useDcaActivity: () => ({
     data: null,
     isLoading: false,
@@ -247,9 +258,55 @@ function setPaperHistory(state: Partial<typeof paperHistoryState>) {
   };
 }
 
+function schedulerStatus(
+  overrides: Partial<DemoReconciliationSchedulerStatus> = {},
+): DemoReconciliationSchedulerStatus {
+  return {
+    enabled: false,
+    running: false,
+    app_mode: "demo",
+    broker_environment: "demo",
+    live_trading_enabled: false,
+    worker_enabled: true,
+    interval_seconds: 120,
+    backoff_seconds: 300,
+    initial_delay_seconds: 10,
+    run_on_startup: false,
+    last_run_started_at: null,
+    last_run_finished_at: null,
+    last_run_duration_ms: null,
+    last_run_outcome: null,
+    last_run_summary: null,
+    next_run_at: null,
+    next_run_not_before: null,
+    consecutive_failures: 0,
+    consecutive_rate_limits: 0,
+    total_runs: 0,
+    total_successful_runs: 0,
+    total_failed_runs: 0,
+    total_rate_limited_runs: 0,
+    last_error_message: null,
+    safety_state: "safe",
+    warnings: [],
+    no_broker_order_sent: true,
+    read_only_broker_calls: true,
+    ...overrides,
+  };
+}
+
+function setSchedulerStatus(state: Partial<typeof demoSchedulerState>) {
+  demoSchedulerState = {
+    data: schedulerStatus(),
+    isLoading: false,
+    error: null,
+    ...state,
+  };
+}
+
 describe("OperatorDashboard", () => {
   beforeEach(() => {
     setPaperHistory({});
+    setSchedulerStatus({});
   });
 
   it("renders loading state", () => {
@@ -305,11 +362,10 @@ describe("OperatorDashboard", () => {
     expect(boundary).toHaveTextContent("Live enabled anywhere");
   });
 
-  it("describes scheduler registration as registered, not running", () => {
+  it("describes DCA scheduler registration as registered", () => {
     render(<OperatorDashboard status={operatorStatus()} />);
 
     expect(screen.getAllByText("Registered").length).toBeGreaterThan(0);
-    expect(screen.queryByText(/running/i)).toBeNull();
   });
 
   it("preserves slash tickers like BTC/USD", () => {
@@ -413,6 +469,74 @@ describe("OperatorDashboard", () => {
 
     expect(screen.getByText("No DCA configs")).toBeTruthy();
     expect(screen.getByText("No recent activity")).toBeTruthy();
+  });
+
+  it("renders demo reconciliation scheduler disabled state", () => {
+    setSchedulerStatus({ data: schedulerStatus({ enabled: false }) });
+
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("demo-reconciliation-status");
+    expect(within(card).getByText("Scheduler disabled")).toBeInTheDocument();
+    expect(within(card).getByText("Scheduler disabled by config.")).toBeInTheDocument();
+    expect(within(card).getByText("Interval")).toBeInTheDocument();
+    expect(within(card).getByText("120s")).toBeInTheDocument();
+  });
+
+  it("renders demo reconciliation scheduler enabled and running state", () => {
+    setSchedulerStatus({
+      data: schedulerStatus({
+        enabled: true,
+        running: true,
+        last_run_outcome: "completed",
+        last_run_finished_at: "2026-05-01T09:35:00Z",
+        next_run_at: "2026-05-01T09:37:00Z",
+        last_run_summary: {
+          candidates_found: 3,
+          attempted: 2,
+          succeeded: 2,
+          failed: 0,
+          rate_limited: 0,
+        },
+      }),
+    });
+
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("demo-reconciliation-status");
+    expect(within(card).getByText("Scheduler enabled")).toBeInTheDocument();
+    expect(within(card).getByText("Running Yes")).toBeInTheDocument();
+    expect(within(card).getByText("completed")).toBeInTheDocument();
+    expect(within(card).getByText("3")).toBeInTheDocument();
+    expect(within(card).getAllByText("2").length).toBeGreaterThan(0);
+  });
+
+  it("renders demo reconciliation scheduler rate-limited backoff state", () => {
+    setSchedulerStatus({
+      data: schedulerStatus({
+        enabled: true,
+        running: false,
+        last_run_outcome: "rate_limited",
+        next_run_not_before: "2026-05-01T09:40:00Z",
+        consecutive_rate_limits: 2,
+        total_rate_limited_runs: 4,
+        last_run_summary: {
+          candidates_found: 1,
+          attempted: 1,
+          succeeded: 0,
+          failed: 0,
+          rate_limited: 1,
+        },
+      }),
+    });
+
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("demo-reconciliation-status");
+    expect(within(card).getByText("Backing off")).toBeInTheDocument();
+    expect(within(card).getByText("Rate limited/backing off.")).toBeInTheDocument();
+    expect(within(card).getByText("2")).toBeInTheDocument();
+    expect(within(card).getByText("4")).toBeInTheDocument();
   });
 });
 

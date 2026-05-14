@@ -16,6 +16,7 @@ import type {
   CreateStrategyPayload,
   CreateStrategyPresetPayload,
   DepsHealth,
+  DemoReconciliationSchedulerStatus,
   DemoReconciliationWorkerStatus,
   DcaActivityResponse,
   DcaConfig,
@@ -213,6 +214,13 @@ class ApiClient {
     return (
       await this.client.get<DemoReconciliationWorkerStatus>(
         "/broker/trading212/reconciliation/status",
+      )
+    ).data;
+  }
+  async getDemoReconciliationSchedulerStatus(): Promise<DemoReconciliationSchedulerStatus> {
+    return (
+      await this.client.get<DemoReconciliationSchedulerStatus>(
+        "/broker/trading212/reconciliation/scheduler/status",
       )
     ).data;
   }
