@@ -17,6 +17,8 @@ Direct `Trading212Adapter` construction is also policy-gated. It rejects mock/pa
 
 Trading 212 remains the current broker adapter. Future broker support must be added behind a common backend broker interface, with broker-specific mappers and safety gates kept explicit. Live trading and strategy-driven broker writes remain out of scope, and no second broker should be wired in until Trading 212 pending-order and reconciliation behaviours are fully understood.
 
+Broker-neutral snapshot mappers are pure transformation utilities only; they do not perform broker reads, broker writes, API calls, database access, or scheduler/worker actions.
+
 Demo and live credentials are separated:
 
 - `T212_DEMO_API_KEY` / `T212_DEMO_API_SECRET`
