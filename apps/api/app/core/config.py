@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     T212_LIVE_API_SECRET: str = ""
     T212_ENVIRONMENT: Literal["demo", "live"] = "demo"
     T212_DEMO_ORDER_ENABLED: bool = False
+    T212_DEMO_MULTI_ORDER_ENABLED: bool = False
     DEMO_RECONCILIATION_WORKER_ENABLED: bool = False
     DEMO_RECONCILIATION_BATCH_SIZE: int = 10
     DEMO_RECONCILIATION_MIN_INTERVAL_SECONDS: int = 30
