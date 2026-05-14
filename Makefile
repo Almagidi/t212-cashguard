@@ -841,7 +841,7 @@ T212_DEMO_ORDER_API_PID  ?= /tmp/t212_demo_controlled_order_api.pid
 T212_DEMO_ORDER_TICKER   ?= AAPL
 T212_DEMO_ORDER_QUANTITY ?= 0.001
 
-.PHONY: t212-demo-controlled-order-start t212-demo-controlled-order-arm t212-demo-controlled-order-test t212-demo-reconcile-order t212-demo-reconciliation-worker t212-demo-multi-order-reconciliation-smoke t212-demo-controlled-order-stop
+.PHONY: t212-demo-controlled-order-start t212-demo-controlled-order-arm t212-demo-controlled-order-test t212-demo-controlled-multi-order-arm t212-demo-controlled-multi-order t212-demo-reconcile-order t212-demo-reconciliation-worker t212-demo-multi-order-reconciliation-smoke t212-demo-controlled-order-stop
 
 t212-demo-controlled-order-start: ## Start API for explicit Trading 212 demo order test on :8004
 	@$(MAKE) t212-demo-controlled-order-stop >/dev/null 2>&1 || true
@@ -861,6 +861,7 @@ t212-demo-controlled-order-start: ## Start API for explicit Trading 212 demo ord
 		APP_MODE=demo \
 		T212_ENVIRONMENT=demo \
 		T212_DEMO_ORDER_ENABLED=true \
+		T212_DEMO_MULTI_ORDER_ENABLED=true \
 		LIVE_TRADING_ENABLED=false \
 		MARKET_DATA_PROVIDER=mock \
 		DISABLE_RATE_LIMITING=true \
@@ -914,6 +915,40 @@ t212-demo-controlled-order-test: ## Place one tiny Trading 212 DEMO order; requi
 		PYTHONPATH=. \
 		$(PYTHON) scripts/t212_demo_controlled_order.py
 	@echo "$(GREEN)✓ Controlled Trading 212 DEMO order test passed$(RESET)"
+
+t212-demo-controlled-multi-order-arm: ## Arm disposable DB for controlled multi-order DEMO placement; requires explicit confirmation
+	@echo "$(YELLOW)→ Arming disposable Trading 212 DEMO multi-order test DB...$(RESET)"
+	@test "$$T212_DEMO_MULTI_ORDER_CONFIRM" = "PLACE_MULTI_DEMO_ORDERS" || (echo "$(RED)Set T212_DEMO_MULTI_ORDER_CONFIRM=PLACE_MULTI_DEMO_ORDERS before arming demo multi-order test DB.$(RESET)" && exit 1)
+	@cd apps/api && \
+		T212_DEMO_ORDER_DB_PATH="$(T212_DEMO_ORDER_DB_PATH)" \
+		PYTHONPATH=. \
+		$(PYTHON) scripts/t212_demo_arm_controlled_order.py
+	@echo "$(GREEN)✓ Controlled demo multi-order DB armed$(RESET)"
+
+t212-demo-controlled-multi-order: ## Place tiny bounded Trading 212 DEMO orders; requires explicit plan and confirmation
+	@echo "$(YELLOW)→ Running controlled Trading 212 DEMO multi-order placement smoke...$(RESET)"
+	@test "$$T212_DEMO_MULTI_ORDER_CONFIRM" = "PLACE_MULTI_DEMO_ORDERS" || (echo "$(RED)Set T212_DEMO_MULTI_ORDER_CONFIRM=PLACE_MULTI_DEMO_ORDERS to confirm this demo multi-order placement smoke.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_MULTI_ORDER_PLAN" || (echo "$(RED)Set T212_DEMO_MULTI_ORDER_PLAN, for example AAPL_US_EQ:0.01,MSFT_US_EQ:0.01.$(RESET)" && exit 1)
+	@if [ -n "$$T212_DEMO_API_KEY" ] || [ -n "$$T212_DEMO_API_SECRET" ]; then \
+		test -n "$$T212_DEMO_API_KEY" -a -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)Both T212_DEMO_API_KEY and T212_DEMO_API_SECRET must be loaded when using demo-specific credentials.$(RESET)" && exit 1); \
+	else \
+		test -n "$$T212_API_KEY" -a -n "$$T212_API_SECRET" || (echo "$(RED)T212_DEMO_API_KEY/T212_DEMO_API_SECRET or T212_API_KEY/T212_API_SECRET must be loaded in this terminal.$(RESET)" && exit 1); \
+	fi
+	@test "$${LIVE_TRADING_ENABLED:-false}" != "true" || (echo "$(RED)LIVE_TRADING_ENABLED must be false.$(RESET)" && exit 1)
+	@test "$${DEMO_RECONCILIATION_SCHEDULER_ENABLED:-false}" != "true" || (echo "$(RED)DEMO_RECONCILIATION_SCHEDULER_ENABLED must be false for this placement smoke.$(RESET)" && exit 1)
+	@cd apps/api && \
+		APP_MODE=demo \
+		T212_ENVIRONMENT=demo \
+		T212_DEMO_ORDER_ENABLED=true \
+		T212_DEMO_MULTI_ORDER_ENABLED=true \
+		T212_DEMO_MULTI_ORDER_CONFIRM=PLACE_MULTI_DEMO_ORDERS \
+		T212_DEMO_MULTI_ORDER_PLAN="$$T212_DEMO_MULTI_ORDER_PLAN" \
+		LIVE_TRADING_ENABLED=false \
+		DEMO_RECONCILIATION_SCHEDULER_ENABLED=false \
+		T212_DEMO_API_URL=http://127.0.0.1:$(T212_DEMO_ORDER_API_PORT) \
+		PYTHONPATH=. \
+		$(PYTHON) scripts/t212_demo_controlled_multi_order.py
+	@echo "$(GREEN)✓ Controlled Trading 212 DEMO multi-order placement smoke finished$(RESET)"
 
 t212-demo-reconcile-order: ## Reconcile one local Trading 212 DEMO order from read-only broker history
 	@echo "$(YELLOW)→ Running Trading 212 DEMO order reconciliation...$(RESET)"
