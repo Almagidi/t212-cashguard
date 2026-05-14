@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from scripts.t212_demo_multi_order_reconciliation_smoke import ReadOnlyBrokerGuard
 
+from app.broker.protocols import BROKER_PROTOCOL_WRITE_METHODS
 from app.broker.safety import TRADING212_BROKER_WRITE_METHODS, is_broker_write_method
 from app.broker.trading212 import Trading212Adapter
 from app.core.config import settings
@@ -135,6 +136,32 @@ def test_trading212_write_inventory_covers_current_adapter_write_methods() -> No
         "place_stop_order",
     }
     assert adapter_write_methods <= TRADING212_BROKER_WRITE_METHODS
+
+
+def test_trading212_adapter_exposes_broker_protocol_methods() -> None:
+    required_methods = {
+        "get_historical_orders",
+        "get_pending_orders",
+        "get_order_by_id",
+        "place_market_order",
+        "place_limit_order",
+        "place_stop_order",
+        "place_stop_limit_order",
+        "cancel_order",
+    }
+
+    missing = {
+        name
+        for name in required_methods
+        if not inspect.iscoroutinefunction(getattr(Trading212Adapter, name, None))
+    }
+
+    assert missing == set()
+    assert isinstance(getattr(Trading212Adapter, "environment", None), property) is False
+
+
+def test_broker_protocol_write_methods_align_with_safety_inventory() -> None:
+    assert BROKER_PROTOCOL_WRITE_METHODS <= TRADING212_BROKER_WRITE_METHODS
 
 
 def test_trading212_write_inventory_includes_compatibility_write_names() -> None:
