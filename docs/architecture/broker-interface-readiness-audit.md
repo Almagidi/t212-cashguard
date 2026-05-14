@@ -134,6 +134,12 @@ Good candidates for a future interface:
 
 The newly added `apps/api/app/broker/protocols.py` is intentionally limited to method-level protocols and a protocol write-method inventory. It documents the current surface without requiring application services to change dependencies in this PR.
 
+## Broker-Neutral Snapshots Added
+
+`apps/api/app/broker/snapshots.py` now defines lightweight broker-neutral `BrokerAccountSnapshot` and `BrokerOrderSnapshot` dataclasses. `apps/api/app/broker/trading212_mappers.py` maps observed Trading 212 DEMO account, pending-order, historical-order, and order-response payloads into those snapshots.
+
+These mappers are pure transformation utilities. They do not construct brokers, call Trading 212, place orders, read or write the database, call API routes, change settings, or alter scheduler/worker behaviour. Existing Trading 212 runtime paths continue to consume their current raw payloads; wiring snapshots into reconciliation, execution, or account routes remains future work.
+
 ## What Should Stay Trading 212-Specific
 
 These should remain adapter- or Trading 212 module-specific:
