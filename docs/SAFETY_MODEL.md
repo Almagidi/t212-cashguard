@@ -15,6 +15,8 @@ Broker access is centralized through the backend safety policy. Mock mode blocks
 
 Direct `Trading212Adapter` construction is also policy-gated. It rejects mock/paper runtime modes, unknown app modes, unknown broker environments, blank environment credentials, demo-to-live attempts, and live adapter construction while `LIVE_TRADING_ENABLED=false`.
 
+Trading 212 remains the current broker adapter. Future broker support must be added behind a common backend broker interface, with broker-specific mappers and safety gates kept explicit. Live trading and strategy-driven broker writes remain out of scope, and no second broker should be wired in until Trading 212 pending-order and reconciliation behaviours are fully understood.
+
 Demo and live credentials are separated:
 
 - `T212_DEMO_API_KEY` / `T212_DEMO_API_SECRET`
