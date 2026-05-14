@@ -17,6 +17,8 @@ from app.api.schemas import (
     BrokerConnectRequest,
     BrokerStatusOut,
     BrokerTestResult,
+    DemoReconciliationSchedulerRunResult,
+    DemoReconciliationSchedulerStatus,
     DemoReconciliationWorkerRunSummary,
     DemoReconciliationWorkerStatus,
 )
@@ -27,6 +29,10 @@ from app.db.session import get_db
 from app.services.broker_connection_recovery import (
     BROKER_RECOVERY_HINT,
     mark_broker_connection_reconnect_required,
+)
+from app.services.demo_reconciliation_scheduler import (
+    DemoReconciliationScheduler,
+    build_scheduler_status,
 )
 from app.services.demo_reconciliation_worker import DemoReconciliationWorker
 from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
@@ -393,3 +399,45 @@ async def run_demo_reconciliation_once(
 
     await db.commit()
     return DemoReconciliationWorkerRunSummary.model_validate(summary)
+
+
+@router.get(
+    "/reconciliation/scheduler/status",
+    response_model=DemoReconciliationSchedulerStatus,
+)
+async def demo_reconciliation_scheduler_status(
+    _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> DemoReconciliationSchedulerStatus:
+    status = await build_scheduler_status(db)
+    return DemoReconciliationSchedulerStatus.model_validate(status)
+
+
+@router.post(
+    "/reconciliation/scheduler/run-once",
+    response_model=DemoReconciliationSchedulerRunResult,
+)
+async def run_demo_reconciliation_scheduler_once(
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+    broker: object = Depends(get_broker),
+) -> DemoReconciliationSchedulerRunResult:
+    try:
+        if hasattr(broker, "__aenter__"):
+            async with broker as active_broker:  # type: ignore[attr-defined]
+                result = await DemoReconciliationScheduler(
+                    db,
+                    active_broker,
+                    actor=str(current_user.id),
+                ).run_once()
+        else:
+            result = await DemoReconciliationScheduler(
+                db,
+                broker,
+                actor=str(current_user.id),
+            ).run_once()
+    except SafetyPolicyViolation as exc:
+        raise HTTPException(status_code=403, detail=exc.reason) from exc
+
+    await db.commit()
+    return DemoReconciliationSchedulerRunResult.model_validate(result)

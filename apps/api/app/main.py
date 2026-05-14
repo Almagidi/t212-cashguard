@@ -23,6 +23,10 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.core.logging import configure_logging, set_trace_id
+from app.services.demo_reconciliation_scheduler import (
+    start_global_demo_reconciliation_scheduler,
+    stop_global_demo_reconciliation_scheduler,
+)
 from app.services.startup_validation import assert_startup_safe
 
 try:
@@ -80,7 +84,9 @@ async def lifespan(app: FastAPI):
         warnings=startup_report["warnings"],
     )
     log.info("app.startup", mode=settings.APP_MODE, version="1.0.0")
+    await start_global_demo_reconciliation_scheduler()
     yield
+    await stop_global_demo_reconciliation_scheduler()
     log.info("app.shutdown")
 
 

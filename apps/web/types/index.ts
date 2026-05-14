@@ -111,6 +111,36 @@ export interface DemoReconciliationWorkerStatus {
   safety_state: string;
   warnings: string[];
 }
+export interface DemoReconciliationSchedulerStatus {
+  enabled: boolean;
+  running: boolean;
+  app_mode: string;
+  broker_environment: string | null;
+  live_trading_enabled: boolean;
+  worker_enabled: boolean;
+  interval_seconds: number;
+  backoff_seconds: number;
+  initial_delay_seconds: number;
+  run_on_startup: boolean;
+  last_run_started_at: string | null;
+  last_run_finished_at: string | null;
+  last_run_duration_ms: number | null;
+  last_run_outcome: string | null;
+  last_run_summary: Record<string, unknown> | null;
+  next_run_at: string | null;
+  next_run_not_before: string | null;
+  consecutive_failures: number;
+  consecutive_rate_limits: number;
+  total_runs: number;
+  total_successful_runs: number;
+  total_failed_runs: number;
+  total_rate_limited_runs: number;
+  last_error_message: string | null;
+  safety_state: string;
+  warnings: string[];
+  no_broker_order_sent: boolean;
+  read_only_broker_calls: boolean;
+}
 
 // ── Account ───────────────────────────────────────────────────────────────────
 export interface AccountSummary {

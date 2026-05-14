@@ -25,10 +25,12 @@ import { cn, formatCurrency, formatDate } from "@/lib/utils";
 import { BrokerStatusPanel } from "./broker-status-panel";
 import {
   useBrokerStatus,
+  useDemoReconciliationSchedulerStatus,
   useDemoReconciliationStatus,
   usePaperExecutionHistory,
 } from "@/hooks/use-api";
 import type {
+  DemoReconciliationSchedulerStatus,
   DemoReconciliationWorkerStatus,
   OperatorOverallStatus,
   PaperExecutionHistoryItem,
@@ -1016,12 +1018,18 @@ function SafetyFlags({ status }: { status: OperatorStatus }) {
 
 function DemoReconciliationStatusCard({
   status,
+  schedulerStatus,
   isLoading,
+  schedulerLoading,
   error,
+  schedulerError,
 }: {
   status?: DemoReconciliationWorkerStatus;
+  schedulerStatus?: DemoReconciliationSchedulerStatus;
   isLoading?: boolean;
+  schedulerLoading?: boolean;
   error?: unknown;
+  schedulerError?: unknown;
 }) {
   const latest = status?.last_run_summary as
     | {
@@ -1034,7 +1042,27 @@ function DemoReconciliationStatusCard({
       }
     | null
     | undefined;
-  const rateLimited = Number(latest?.rate_limited ?? 0) > 0;
+  const schedulerLatest = schedulerStatus?.last_run_summary as
+    | {
+        candidates_found?: number;
+        attempted?: number;
+        succeeded?: number;
+        failed?: number;
+        rate_limited?: number;
+      }
+    | null
+    | undefined;
+  const latestCounts = schedulerLatest ?? latest;
+  const backingOff = Boolean(schedulerStatus?.next_run_not_before);
+  const rateLimited =
+    Number(schedulerLatest?.rate_limited ?? latest?.rate_limited ?? 0) > 0 ||
+    schedulerStatus?.last_run_outcome === "rate_limited";
+  const schedulerWarnings = [
+    ...(schedulerStatus?.enabled === false ? ["Scheduler disabled by config."] : []),
+    ...(schedulerStatus?.worker_enabled === false ? ["Worker disabled by config."] : []),
+    ...(backingOff ? ["Rate limited/backing off."] : []),
+    ...((schedulerStatus?.warnings ?? []).map((warning) => `Unsafe config: ${warning}`)),
+  ];
 
   return (
     <Card data-testid="demo-reconciliation-status">
@@ -1045,12 +1073,12 @@ function DemoReconciliationStatusCard({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {isLoading ? (
+        {isLoading || schedulerLoading ? (
           <div className="space-y-3">
             <Skeleton className="h-4 w-36" />
             <Skeleton className="h-20 w-full" />
           </div>
-        ) : error ? (
+        ) : error || schedulerError ? (
           <div className="rounded-md border border-amber-700/50 bg-amber-950/20 p-3 text-sm text-amber-100">
             Reconciliation status unavailable.
           </div>
@@ -1060,13 +1088,19 @@ function DemoReconciliationStatusCard({
               <TextBadge tone={status?.enabled ? "success" : "warning"}>
                 {status?.enabled ? "Worker enabled" : "Worker disabled"}
               </TextBadge>
+              <TextBadge tone={schedulerStatus?.enabled ? "success" : "warning"}>
+                {schedulerStatus?.enabled ? "Scheduler enabled" : "Scheduler disabled"}
+              </TextBadge>
+              <TextBadge tone={schedulerStatus?.running ? "info" : "outline"}>
+                Running {schedulerStatus?.running ? "Yes" : "No"}
+              </TextBadge>
               <TextBadge
                 tone={status?.live_trading_enabled ? "destructive" : "success"}
               >
                 Live {status?.live_trading_enabled ? "enabled" : "disabled"}
               </TextBadge>
-              <TextBadge tone={rateLimited ? "warning" : "info"}>
-                {rateLimited ? "Rate limited" : "Read-only"}
+              <TextBadge tone={backingOff || rateLimited ? "warning" : "info"}>
+                {backingOff ? "Backing off" : rateLimited ? "Rate limited" : "Read-only"}
               </TextBadge>
             </div>
             <dl className="grid gap-2 text-sm">
@@ -1085,36 +1119,73 @@ function DemoReconciliationStatusCard({
               />
               <InfoRow
                 label="Last outcome"
-                value={latest?.outcome ?? "No runs yet"}
+                value={schedulerStatus?.last_run_outcome ?? latest?.outcome ?? "No runs yet"}
               />
               <InfoRow
                 label="Last run"
-                value={status?.last_run_at ? formatDate(status.last_run_at) : "Never"}
+                value={
+                  schedulerStatus?.last_run_finished_at
+                    ? formatDate(schedulerStatus.last_run_finished_at)
+                    : status?.last_run_at
+                      ? formatDate(status.last_run_at)
+                      : "Never"
+                }
+              />
+              <InfoRow
+                label="Next run"
+                value={
+                  schedulerStatus?.next_run_not_before
+                    ? formatDate(schedulerStatus.next_run_not_before)
+                    : schedulerStatus?.next_run_at
+                      ? formatDate(schedulerStatus.next_run_at)
+                      : "Not scheduled"
+                }
+              />
+              <InfoRow
+                label="Interval"
+                value={`${schedulerStatus?.interval_seconds ?? 0}s`}
+              />
+              <InfoRow
+                label="Consecutive rate limits"
+                value={schedulerStatus?.consecutive_rate_limits ?? 0}
+              />
+              <InfoRow
+                label="Total rate-limited runs"
+                value={schedulerStatus?.total_rate_limited_runs ?? 0}
               />
             </dl>
+            {schedulerWarnings.length > 0 && (
+              <div className="rounded-md border border-amber-700/50 bg-amber-950/20 p-3 text-xs text-amber-100">
+                <ul className="space-y-1">
+                  {schedulerWarnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div className="grid grid-cols-4 gap-2 text-center text-xs">
               <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
                 <p className="text-slate-500">Found</p>
                 <p className="mt-1 font-semibold text-slate-100">
-                  {latest?.candidates_found ?? 0}
+                  {latestCounts?.candidates_found ?? 0}
                 </p>
               </div>
               <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
                 <p className="text-slate-500">Tried</p>
                 <p className="mt-1 font-semibold text-slate-100">
-                  {latest?.attempted ?? 0}
+                  {latestCounts?.attempted ?? 0}
                 </p>
               </div>
               <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
                 <p className="text-slate-500">OK</p>
                 <p className="mt-1 font-semibold text-emerald-300">
-                  {latest?.succeeded ?? 0}
+                  {latestCounts?.succeeded ?? 0}
                 </p>
               </div>
               <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
                 <p className="text-slate-500">Limited</p>
                 <p className="mt-1 font-semibold text-amber-300">
-                  {latest?.rate_limited ?? 0}
+                  {latestCounts?.rate_limited ?? 0}
                 </p>
               </div>
             </div>
@@ -1132,6 +1203,7 @@ export function OperatorDashboard({
 }: OperatorDashboardProps) {
   const brokerStatusQuery = useBrokerStatus();
   const demoReconciliationQuery = useDemoReconciliationStatus();
+  const demoReconciliationSchedulerQuery = useDemoReconciliationSchedulerStatus();
   if (isLoading) return <LoadingState />;
   if (isError || !status) return <ErrorState />;
 
@@ -1158,8 +1230,11 @@ export function OperatorDashboard({
 
       <DemoReconciliationStatusCard
         status={demoReconciliationQuery.data}
+        schedulerStatus={demoReconciliationSchedulerQuery.data}
         isLoading={demoReconciliationQuery.isLoading}
+        schedulerLoading={demoReconciliationSchedulerQuery.isLoading}
         error={demoReconciliationQuery.error}
+        schedulerError={demoReconciliationSchedulerQuery.error}
       />
 
       <PaperExecutionSummary status={status} />
