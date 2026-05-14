@@ -135,7 +135,9 @@ async def test_selects_only_eligible_due_demo_broker_orders(db):
     db.add_all(rows)
     await db.flush()
 
-    candidates = await DemoReconciliationWorker(db, WorkerBroker()).select_reconciliation_candidates()
+    candidates = await DemoReconciliationWorker(
+        db, WorkerBroker()
+    ).select_reconciliation_candidates()
 
     assert [candidate.id for candidate in candidates] == [eligible.id]
 
@@ -262,9 +264,7 @@ async def test_run_once_endpoint_reconciles_with_admin_auth_and_preserves_safety
     order = _demo_order(broker_order_id="48850886521")
     db.add(order)
     await db.flush()
-    broker = WorkerBroker(
-        responses=[{"items": [{"id": "48850886521", "status": "FILLED"}]}]
-    )
+    broker = WorkerBroker(responses=[{"items": [{"id": "48850886521", "status": "FILLED"}]}])
 
     app.dependency_overrides[get_broker] = lambda: broker
     try:
