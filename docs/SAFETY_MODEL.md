@@ -23,6 +23,8 @@ The demo reconciliation broker protocol remains read-only and excludes placement
 
 Broker provider work must preserve explicit broker and environment safety gates; it must not introduce generic live broker construction or bypass Trading 212 credential-specific checks.
 
+The current provider scaffolding is validation-only and unwired. It does not construct adapters, read credentials, call brokers, or bypass broker safety gates.
+
 Demo and live credentials are separated:
 
 - `T212_DEMO_API_KEY` / `T212_DEMO_API_SECRET`
