@@ -107,6 +107,12 @@ The provider result should be an async context-manager-capable adapter implement
 
 The provider itself should not expose placement/cancel methods. It should only return an adapter after validating the request. Write capability belongs to the returned adapter protocol and the downstream execution safety gates.
 
+## Type-Only Provider Scaffolding Added
+
+`apps/api/app/broker/provider.py` now defines type-only provider request scaffolding: `BrokerId`, `BrokerRuntimeEnvironment`, `BrokerProviderPurpose`, frozen `BrokerProviderRequest`, and `validate_broker_provider_request(...)`.
+
+The helper is pure fail-closed validation only. It accepts only `trading212`, accepts only real broker environments `demo` and `live`, rejects mock/paper app modes for real broker construction, blocks demo-to-live and live-to-demo requests, and requires `live_trading_enabled=True` for live validation. It does not construct `Trading212Adapter`, touch credentials, access the database, import API routes, call Trading 212, or wire any runtime call sites.
+
 ## Trading 212 Provider Behavior
 
 For Trading 212, a future provider would preserve existing construction behavior:

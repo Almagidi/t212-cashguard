@@ -142,6 +142,8 @@ Demo reconciliation now type-targets `ReconciliationHistoryBrokerProtocol` at th
 
 `docs/architecture/broker-provider-design.md` now documents the next broker-agnostic architecture step: a future provider boundary that can return the existing `Trading212Adapter` by broker id and environment without changing current Trading 212 routes, credential handling, demo reconciliation, or write safety gates.
 
+`apps/api/app/broker/provider.py` now contains unwired type-only provider request scaffolding and fail-closed validation for that future boundary.
+
 ## Broker-Neutral Snapshots Added
 
 `apps/api/app/broker/snapshots.py` now defines lightweight broker-neutral `BrokerAccountSnapshot` and `BrokerOrderSnapshot` dataclasses. `apps/api/app/broker/trading212_mappers.py` maps observed Trading 212 DEMO account, pending-order, historical-order, and order-response payloads into those snapshots.
