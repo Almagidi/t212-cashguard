@@ -31,7 +31,7 @@ from app.services.safety_policy import SafetyPolicyViolation
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from app.broker.protocols import ReadOnlyBrokerProtocol
+    from app.broker.protocols import ReconciliationHistoryBrokerProtocol
 
 
 SCHEDULER_STATE_KEY = "demo_reconciliation_scheduler"
@@ -114,7 +114,7 @@ class DemoReconciliationScheduler:
     def __init__(
         self,
         db: AsyncSession,
-        broker: ReadOnlyBrokerProtocol,
+        broker: ReconciliationHistoryBrokerProtocol,
         *,
         actor: str = "demo_reconciliation_scheduler",
         worker_factory: WorkerFactory = DemoReconciliationWorker,
@@ -559,6 +559,14 @@ class DemoReconciliationScheduler:
 
 class _StatusBroker:
     environment = "demo"
+
+    async def get_historical_orders(
+        self,
+        cursor: int | None = None,
+        ticker: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        raise RuntimeError("Status broker cannot fetch historical orders.")
 
 
 async def start_global_demo_reconciliation_scheduler() -> asyncio.Task[None] | None:
