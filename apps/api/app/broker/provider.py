@@ -1,8 +1,8 @@
 """Broker provider request and Trading 212 construction scaffolding.
 
-This module validates future real-broker provider requests without touching
-credential stores, importing database/session code at module import time, or
-wiring runtime call sites.
+This module validates real-broker provider requests without touching credential
+stores or importing database/session code at module import time. Runtime call
+sites remain responsible for credential lookup and safety-policy context.
 """
 
 from __future__ import annotations
@@ -168,9 +168,8 @@ def create_trading212_provider_adapter(
 ) -> Trading212Adapter:
     """Construct a Trading 212 adapter after explicit provider validation.
 
-    This function is intentionally unwired from runtime call sites. It does not
-    read settings, fetch/decrypt credentials, access the database, call Trading
-    212, or place/cancel orders.
+    This function does not read settings, fetch/decrypt credentials, access the
+    database, call Trading 212, or place/cancel orders.
     """
 
     validated_request = validate_broker_provider_request(

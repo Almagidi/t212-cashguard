@@ -537,10 +537,12 @@ def test_blank_provider_credentials_fail_before_adapter_construction(
     assert RecordingTrading212Adapter.calls == []
 
 
-def test_provider_function_is_not_referenced_from_runtime_call_sites() -> None:
+def test_provider_function_is_only_referenced_from_get_broker_runtime_call_site() -> None:
     forbidden = {
-        "create_trading212_provider_adapter",
         "BrokerProviderCredentials",
+        "BrokerProviderRequest",
+        "BrokerRuntimeEnvironment",
+        "create_trading212_provider_adapter",
     }
 
     scanned = [path for path in _runtime_source_paths() if path.exists()]
@@ -553,4 +555,11 @@ def test_provider_function_is_not_referenced_from_runtime_call_sites() -> None:
         if used:
             matches[str(path.relative_to(APP_ROOT.parent))] = used
 
-    assert matches == {}
+    assert matches == {
+        "app/api/deps.py": {
+            "BrokerProviderCredentials",
+            "BrokerProviderRequest",
+            "BrokerRuntimeEnvironment",
+            "create_trading212_provider_adapter",
+        }
+    }

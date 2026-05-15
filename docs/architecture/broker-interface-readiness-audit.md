@@ -142,11 +142,13 @@ Demo reconciliation now type-targets `ReconciliationHistoryBrokerProtocol` at th
 
 `docs/architecture/broker-provider-design.md` now documents the next broker-agnostic architecture step: a future provider boundary that can return the existing `Trading212Adapter` by broker id and environment without changing current Trading 212 routes, credential handling, demo reconciliation, or write safety gates.
 
-`apps/api/app/broker/provider.py` now contains unwired type-only provider request scaffolding and fail-closed validation for that future boundary.
+`apps/api/app/broker/provider.py` now contains provider request scaffolding and fail-closed validation for that future boundary.
 
-It also contains an unwired Trading 212 provider function that requires explicit credentials and constructs `Trading212Adapter` only after provider and credential validation pass.
+It also contains a Trading 212 provider function that requires explicit credentials and constructs `Trading212Adapter` only after provider and credential validation pass.
 
-`apps/api/tests/integration/test_get_broker_provider_equivalence.py` now locks the current `get_broker()` behaviour before any provider wiring: mock-mode selection, active encrypted credential precedence, demo fallback credentials, live flag blocking, invalid runtime-mode safety errors, credential decryption failure handling, and proof that the provider helper remains unwired.
+`get_broker()` now uses that provider function only for final Trading 212 adapter construction. Active encrypted credential lookup, demo fallback selection, credential decryption, reconnect-required handling, route behaviour, and live safety gates remain in the existing dependency path.
+
+`apps/api/tests/integration/test_get_broker_provider_equivalence.py` now locks the current `get_broker()` behaviour during provider wiring: mock-mode selection, active encrypted credential precedence, demo fallback credentials, live flag blocking, invalid runtime-mode safety errors, credential decryption failure handling, and proof that fallback construction reaches the provider with the selected request and credentials.
 
 ## Broker-Neutral Snapshots Added
 
@@ -182,9 +184,9 @@ These should remain adapter- or Trading 212 module-specific:
 2. Add a broker-neutral `BrokerOrderSnapshot` and `BrokerAccountSnapshot` model in a follow-up PR, with Trading 212 mapping tests based on existing DEMO QA examples.
 3. Update `ExecutionEngine` type hints to depend on `OrderPlacementBrokerProtocol` without changing runtime construction.
 4. Add type-only broker provider scaffolding and tests for fail-closed provider request validation.
-5. Introduce a Trading 212 provider only after its safety gates and credential handling are specified and tested.
+5. Done: introduce a Trading 212 provider and wire `get_broker()` final construction only after its safety gates and credential handling are specified and tested.
 6. Only after those seams are tested, design a second adapter spike using recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
 
 ## Next Recommended PR
 
-Move `get_broker()` to the unwired Trading 212 provider only under the new behaviour-equivalence tests, preserving credential precedence, demo fallback credentials, route behaviour, and safety errors.
+Move `/v1/broker/trading212` credential-test construction to the Trading 212 provider while preserving route names, response schemas, credential storage/decryption, audit behaviour, and safety errors.

@@ -23,9 +23,9 @@ The demo reconciliation broker protocol remains read-only and excludes placement
 
 Broker provider work must preserve explicit broker and environment safety gates; it must not introduce generic live broker construction or bypass Trading 212 credential-specific checks.
 
-The provider request and credential validation helpers are construction-free. The unwired `create_trading212_provider_adapter(...)` helper constructs `Trading212Adapter` only after request and credential validation pass, and it is called by no runtime code path.
+The provider request and credential validation helpers do not select credentials, decrypt secrets, read environment variables, query the database, or place/cancel orders. `get_broker()` now calls `create_trading212_provider_adapter(...)` only after its existing credential lookup, decryption, fallback, and safety-policy decisions have already selected explicit Trading 212 credentials.
 
-`get_broker()` behaviour-equivalence tests lock current credential precedence, demo fallback, live flag blocking, and provider-unwired behaviour before any provider migration.
+`get_broker()` behaviour-equivalence tests lock current credential precedence, demo fallback, live flag blocking, credential decrypt failure behaviour, and provider request data during this migration.
 
 Demo and live credentials are separated:
 
