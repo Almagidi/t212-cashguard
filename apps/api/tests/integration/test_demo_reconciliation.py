@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
 
+import app.services.demo_order_reconciliation as reconciliation_module
+from app.broker.snapshots import BrokerOrderSnapshot
 from app.broker.trading212 import T212APIError, T212AuthError, T212RateLimitError
 from app.core.config import settings
 from app.db.models import AuditLog, Order
@@ -168,6 +171,240 @@ async def test_nested_trading212_history_shape_updates_filled_demo_order(db, mon
     success = next(audit for audit in audits if audit.action == "demo_order_reconciliation_success")
     assert success.payload["broker_ticker"] == "AAPL_US_EQ"
     assert success.payload["no_broker_order_sent"] is True
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_uses_trading212_history_mapper_for_matching_and_fills(
+    db,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
+    monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
+
+    order = _demo_order(broker_order_id="mapper-order")
+    db.add(order)
+    await db.flush()
+
+    calls = []
+
+    def mapper(item, *, environment="demo"):
+        calls.append((item, environment))
+        return BrokerOrderSnapshot(
+            broker="trading212",
+            environment=environment,
+            broker_order_id="mapper-order",
+            ticker="MAPPED_TICKER",
+            status="FILLED",
+            side=None,
+            order_type=None,
+            quantity=None,
+            filled_quantity=Decimal("2"),
+            average_fill_price=Decimal("99.50"),
+            currency=None,
+            created_at=None,
+            filled_at=None,
+            raw=item,
+        )
+
+    monkeypatch.setattr(
+        reconciliation_module,
+        "map_trading212_history_order_to_snapshot",
+        mapper,
+    )
+
+    result = await DemoOrderReconciler(
+        db,
+        HistoryBroker({"items": [{"id": "mapper-order", "unexpected": "shape"}]}),
+    ).reconcile_order(order)
+
+    assert result.matched is True
+    assert result.broker_status == "FILLED"
+    assert result.new_status == "filled"
+    assert order.filled_quantity == Decimal("2")
+    assert order.avg_fill_price == Decimal("99.50")
+    assert calls == [({"id": "mapper-order", "unexpected": "shape"}, "demo")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "history_item",
+    [
+        {"id": "48850886521", "status": "FILLED"},
+        {
+            "id": "48850886521",
+            "status": "FILLED",
+            "filledQuantity": "not-a-number",
+            "filledPrice": "not-a-price",
+        },
+    ],
+)
+async def test_filled_reconciliation_handles_missing_or_malformed_optional_fill_fields(
+    db,
+    monkeypatch,
+    history_item,
+):
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
+    monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
+
+    order = _demo_order()
+    db.add(order)
+    await db.flush()
+
+    result = await DemoOrderReconciler(
+        db,
+        HistoryBroker({"items": [history_item]}),
+    ).reconcile_order(order)
+
+    assert result.matched is True
+    assert result.broker_status == "FILLED"
+    assert result.new_status == "filled"
+    assert order.status == "filled"
+    assert order.filled_quantity is None
+    assert order.avg_fill_price is None
+    assert order.filled_at is not None
+
+
+@pytest.mark.asyncio
+async def test_filled_reconciliation_preserves_top_level_snake_case_filled_quantity(
+    db,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
+    monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
+
+    order = _demo_order()
+    db.add(order)
+    await db.flush()
+
+    result = await DemoOrderReconciler(
+        db,
+        HistoryBroker(
+            {
+                "items": [
+                    {
+                        "id": "48850886521",
+                        "status": "FILLED",
+                        "filled_quantity": "3",
+                    }
+                ]
+            }
+        ),
+    ).reconcile_order(order)
+
+    assert result.matched is True
+    assert result.new_status == "filled"
+    assert order.filled_quantity == Decimal("3")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_reconciliation_uses_cancelled_timestamp_without_broker_writes(
+    db,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
+    monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
+
+    order = _demo_order()
+    db.add(order)
+    await db.flush()
+    broker = HistoryBroker(
+        {
+            "items": [
+                {
+                    "id": "48850886521",
+                    "status": "CANCELLED",
+                    "cancelledAt": "2026-05-15T10:00:00.000Z",
+                }
+            ]
+        }
+    )
+
+    result = await DemoOrderReconciler(db, broker).reconcile_order(order)
+
+    assert result.matched is True
+    assert result.broker_status == "CANCELLED"
+    assert result.new_status == "cancelled"
+    assert order.status == "cancelled"
+    assert order.cancelled_at == datetime(2026, 5, 15, 10, 0, tzinfo=UTC)
+    assert broker.placement_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_rejected_reconciliation_uses_rejected_timestamp_and_reason_without_broker_writes(
+    db,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
+    monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
+
+    order = _demo_order()
+    db.add(order)
+    await db.flush()
+    broker = HistoryBroker(
+        {
+            "items": [
+                {
+                    "id": "48850886521",
+                    "status": "REJECTED",
+                    "rejectedAt": "2026-05-15T11:00:00.000Z",
+                    "rejectReason": "Broker rejected demo order.",
+                }
+            ]
+        }
+    )
+
+    result = await DemoOrderReconciler(db, broker).reconcile_order(order)
+
+    assert result.matched is True
+    assert result.broker_status == "REJECTED"
+    assert result.new_status == "rejected"
+    assert order.status == "rejected"
+    assert order.rejected_at == datetime(2026, 5, 15, 11, 0, tzinfo=UTC)
+    assert order.error_message == "Broker rejected demo order."
+    assert broker.placement_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_mapper_failure_after_raw_id_match_is_audited_and_non_destructive(
+    db,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
+    monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
+
+    order = _demo_order(status="accepted")
+    db.add(order)
+    await db.flush()
+    broker = HistoryBroker({"items": [{"id": "48850886521", "status": "FILLED"}]})
+
+    def mapper(_item, *, environment="demo"):
+        raise ValueError("mapper could not parse broker id")
+
+    monkeypatch.setattr(
+        reconciliation_module,
+        "map_trading212_history_order_to_snapshot",
+        mapper,
+    )
+
+    result = await DemoOrderReconciler(db, broker).reconcile_order(order)
+
+    assert result.matched is True
+    assert result.outcome == "failed"
+    assert result.error_type == "ValueError"
+    assert result.new_status == "accepted"
+    assert order.status == "accepted"
+    assert broker.placement_calls == 0
+    audits = (await db.execute(select(AuditLog))).scalars().all()
+    failed = next(audit for audit in audits if audit.action == "demo_order_reconciliation_failed")
+    assert failed.payload["no_status_update"] is True
+    assert failed.payload["no_broker_order_sent"] is True
+    assert failed.payload["parse_failed"] is True
 
 
 @pytest.mark.asyncio

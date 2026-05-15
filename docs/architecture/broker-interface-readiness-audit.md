@@ -73,6 +73,8 @@ Order submission and reconciliation currently assume Trading 212-like response k
 
 Historical order reconciliation expects Trading 212 paginated history as `{"items": [...]}` with defensive support for `{"data": [...]}` and bare lists. Matching looks for `id`, `orderId`, `order_id`, `broker_order_id`, or nested `order.id`. Ticker extraction looks at `ticker`, `instrumentCode`, `shortName`, `order.ticker`, and `order.instrument.ticker`. Fill fields include nested Trading 212 `fill.quantity`, `fill.price`, `fill.filledAt`, and nested `order.filledQuantity`.
 
+Demo reconciliation now performs that Trading 212 historical-order parsing through the broker-neutral `BrokerOrderSnapshot` mapper surface, keeping the service read-only and preserving the existing status mapping and audit behaviour.
+
 These shapes are adapter-specific and should eventually be normalized before application services consume them.
 
 ## Trading 212-Tied Safety Gates

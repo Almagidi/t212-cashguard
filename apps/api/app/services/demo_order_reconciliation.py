@@ -10,12 +10,12 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
 from app.broker.trading212 import T212APIError, T212AuthError, T212RateLimitError
+from app.broker.trading212_mappers import map_trading212_history_order_to_snapshot
 from app.core.config import settings
 from app.db.models import AuditLog, Order, OrderEvent
 from app.execution.engine import _safe_broker_error_reason
@@ -25,6 +25,9 @@ from app.services.execution_quality import (
     milliseconds_between,
 )
 from app.services.safety_policy import SafetyPolicyViolation
+
+if TYPE_CHECKING:
+    from app.broker.snapshots import BrokerOrderSnapshot
 
 
 @dataclass(frozen=True)
@@ -38,6 +41,13 @@ class DemoOrderReconciliationResult:
     broker_status: str | None = None
     error_type: str | None = None
     audit_events: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _HistoryMatch:
+    item: dict[str, Any]
+    snapshot: BrokerOrderSnapshot | None = None
+    parse_error: ValueError | None = None
 
 
 class DemoOrderReconciler:
@@ -134,8 +144,8 @@ class DemoOrderReconciler:
                 error_type=type(exc).__name__,
             )
 
-        match = self._find_history_match(history, order.broker_order_id)
-        if match is None:
+        matched_history = self._find_history_match(history, order.broker_order_id)
+        if matched_history is None:
             await self._audit(
                 "demo_order_reconciliation_missing",
                 order,
@@ -153,8 +163,34 @@ class DemoOrderReconciler:
                 outcome="missing",
             )
 
-        broker_status = self._broker_status(match)
-        broker_ticker = self._broker_ticker(match)
+        if matched_history.parse_error is not None:
+            await self._audit(
+                "demo_order_reconciliation_failed",
+                order,
+                {
+                    "broker_environment": "demo",
+                    "broker_order_id": order.broker_order_id,
+                    "error_type": type(matched_history.parse_error).__name__,
+                    "safe_reason": _safe_broker_error_reason(matched_history.parse_error),
+                    "parse_failed": True,
+                    "no_status_update": True,
+                    "no_broker_order_sent": True,
+                },
+            )
+            return self._result(
+                order,
+                previous_status=previous_status,
+                matched=True,
+                outcome="failed",
+                error_type=type(matched_history.parse_error).__name__,
+            )
+
+        match = matched_history.item
+        snapshot = matched_history.snapshot
+        if snapshot is None:
+            raise RuntimeError("Matched Trading 212 history item is missing a parsed snapshot.")
+        broker_status = self._broker_status(snapshot)
+        broker_ticker = snapshot.ticker
         mapped_status = self._map_broker_status(broker_status)
         if mapped_status is None:
             order.last_reconciled_at = datetime.now(UTC)
@@ -182,7 +218,7 @@ class DemoOrderReconciler:
                 broker_status=broker_status,
             )
 
-        await self._apply_match(order, match, mapped_status)
+        await self._apply_match(order, match, snapshot, mapped_status)
         await self._log_order_event(
             order,
             "demo_history_reconciled",
@@ -284,7 +320,7 @@ class DemoOrderReconciler:
         self,
         history: Any,
         broker_order_id: str | None,
-    ) -> dict[str, Any] | None:
+    ) -> _HistoryMatch | None:
         target = str(broker_order_id)
         for item in self._history_items(history):
             candidates = (
@@ -294,25 +330,18 @@ class DemoOrderReconciler:
                 item.get("broker_order_id"),
                 _nested_value(item, "order", "id"),
             )
-            if any(value is not None and str(value) == target for value in candidates):
-                return item
+            if not any(value is not None and str(value) == target for value in candidates):
+                continue
+            try:
+                snapshot = map_trading212_history_order_to_snapshot(item)
+            except ValueError as exc:
+                return _HistoryMatch(item=item, parse_error=exc)
+            return _HistoryMatch(item=item, snapshot=snapshot)
         return None
 
     @staticmethod
-    def _broker_status(item: dict[str, Any]) -> str | None:
-        value = _first_text(item, "status", "orderStatus", "state", ("order", "status"))
-        return value.upper() if value is not None else None
-
-    @staticmethod
-    def _broker_ticker(item: dict[str, Any]) -> str | None:
-        return _first_text(
-            item,
-            "ticker",
-            "instrumentCode",
-            "shortName",
-            ("order", "ticker"),
-            ("order", "instrument", "ticker"),
-        )
+    def _broker_status(snapshot: BrokerOrderSnapshot) -> str | None:
+        return snapshot.status.upper() if snapshot.status is not None else None
 
     @staticmethod
     def _map_broker_status(broker_status: str | None) -> str | None:
@@ -330,6 +359,7 @@ class DemoOrderReconciler:
         self,
         order: Order,
         item: dict[str, Any],
+        snapshot: BrokerOrderSnapshot,
         mapped_status: str,
     ) -> None:
         reconciled_at = datetime.now(UTC)
@@ -337,41 +367,14 @@ class DemoOrderReconciler:
         order.last_reconciled_at = reconciled_at
         order.broker_response = item
 
-        filled_quantity = _first_decimal(
-            item,
-            "filledQuantity",
-            ("fill", "quantity"),
-            ("order", "filledQuantity"),
-            "filled_quantity",
-        )
-        avg_fill_price = _first_decimal(
-            item,
-            "filledPrice",
-            "avgFillPrice",
-            "averagePrice",
-            ("fill", "price"),
-            "averageFillPrice",
-            "avg_fill_price",
-        )
-        if filled_quantity is not None:
-            order.filled_quantity = filled_quantity
-        if avg_fill_price is not None:
-            order.avg_fill_price = avg_fill_price
+        if snapshot.filled_quantity is not None:
+            order.filled_quantity = snapshot.filled_quantity
+        if snapshot.average_fill_price is not None:
+            order.avg_fill_price = snapshot.average_fill_price
 
-        event_time = _first_datetime(
-            item,
-            "filledAt",
-            ("fill", "filledAt"),
-            "fillTime",
-            "cancelledAt",
-            "rejectedAt",
-            "dateExecuted",
-            "dateModified",
-            "dateCreated",
-            "created",
-            "createdAt",
-        )
-        terminal_at = event_time or reconciled_at
+        # For Trading 212 history snapshots, filled_at carries the best available
+        # terminal event timestamp for filled, cancelled, and rejected records.
+        terminal_at = snapshot.filled_at or reconciled_at
 
         if mapped_status == "filled":
             order.filled_at = order.filled_at or terminal_at
@@ -465,18 +468,6 @@ def _nested_value(item: dict[str, Any], *path: str) -> Any:
     return current
 
 
-def _first_decimal(item: dict[str, Any], *paths: Path) -> Decimal | None:
-    for path in paths:
-        value = _nested_value(item, path) if isinstance(path, str) else _nested_value(item, *path)
-        if value is None or value == "":
-            continue
-        try:
-            return Decimal(str(value))
-        except (InvalidOperation, ValueError):
-            continue
-    return None
-
-
 def _first_text(item: dict[str, Any], *paths: Path) -> str | None:
     for path in paths:
         value = _nested_value(item, path) if isinstance(path, str) else _nested_value(item, *path)
@@ -486,27 +477,3 @@ def _first_text(item: dict[str, Any], *paths: Path) -> str | None:
         if text:
             return text
     return None
-
-
-def _first_datetime(item: dict[str, Any], *paths: Path) -> datetime | None:
-    for path in paths:
-        value = _nested_value(item, path) if isinstance(path, str) else _nested_value(item, *path)
-        parsed = _parse_datetime(value)
-        if parsed is not None:
-            return parsed
-    return None
-
-
-def _parse_datetime(value: Any) -> datetime | None:
-    if isinstance(value, datetime):
-        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-    if not isinstance(value, str) or not value.strip():
-        return None
-    text = value.strip()
-    if text.endswith("Z"):
-        text = f"{text[:-1]}+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)

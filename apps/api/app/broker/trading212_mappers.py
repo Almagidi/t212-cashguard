@@ -89,22 +89,38 @@ def map_trading212_history_order_to_snapshot(
     return _map_order_payload(
         item,
         environment=environment,
-        id_paths=(("order", "id"), "id", "orderId", "brokerOrderId", "broker_order_id"),
+        id_paths=(
+            ("order", "id"),
+            "id",
+            "orderId",
+            "order_id",
+            "brokerOrderId",
+            "broker_order_id",
+        ),
         ticker_paths=(
             "ticker",
+            "instrumentCode",
+            "shortName",
             ("instrument", "ticker"),
             ("order", "ticker"),
             ("order", "instrument", "ticker"),
         ),
-        status_paths=("status", ("order", "status")),
+        status_paths=("status", "orderStatus", "state", ("order", "status")),
         side_paths=("side", ("order", "side")),
         order_type_paths=("type", "orderType", ("order", "type"), ("order", "orderType")),
         quantity_paths=("quantity", ("fill", "quantity"), ("order", "quantity")),
-        filled_quantity_paths=("filledQuantity", ("order", "filledQuantity"), ("fill", "quantity")),
+        filled_quantity_paths=(
+            "filledQuantity",
+            "filled_quantity",
+            ("order", "filledQuantity"),
+            ("fill", "quantity"),
+        ),
         average_fill_price_paths=(
             "filledPrice",
             "avgFillPrice",
+            "averagePrice",
             "averageFillPrice",
+            "avg_fill_price",
             ("fill", "price"),
         ),
         currency_paths=(
@@ -114,7 +130,18 @@ def map_trading212_history_order_to_snapshot(
             ("order", "instrument", "currency"),
         ),
         created_at_paths=("createdAt", "created", ("order", "createdAt")),
-        filled_at_paths=("filledAt", ("fill", "filledAt")),
+        filled_at_paths=(
+            "filledAt",
+            ("fill", "filledAt"),
+            "fillTime",
+            "cancelledAt",
+            "rejectedAt",
+            "dateExecuted",
+            "dateModified",
+            "dateCreated",
+            "created",
+            "createdAt",
+        ),
     )
 
 
