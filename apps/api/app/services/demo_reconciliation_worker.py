@@ -24,6 +24,8 @@ from app.services.safety_policy import SafetyPolicyViolation
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from app.broker.protocols import ReadOnlyBrokerProtocol
+
 
 TERMINAL_ORDER_STATUSES = {"filled", "cancelled", "rejected", "expired", "failed", "error"}
 WORKER_STATE_KEY = "demo_reconciliation_worker"
@@ -121,7 +123,13 @@ def is_reconciliation_candidate(
 class DemoReconciliationWorker:
     """Run a bounded, read-only Trading 212 DEMO reconciliation pass."""
 
-    def __init__(self, db: AsyncSession, broker: Any, *, actor: str = "demo_reconciliation_worker"):
+    def __init__(
+        self,
+        db: AsyncSession,
+        broker: ReadOnlyBrokerProtocol,
+        *,
+        actor: str = "demo_reconciliation_worker",
+    ):
         self.db = db
         self.broker = broker
         self.actor = actor

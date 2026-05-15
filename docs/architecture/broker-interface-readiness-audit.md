@@ -136,6 +136,8 @@ Good candidates for a future interface:
 
 The newly added `apps/api/app/broker/protocols.py` is intentionally limited to method-level protocols and a protocol write-method inventory. It documents the current surface without requiring application services to change dependencies in this PR.
 
+Demo reconciliation now type-targets `ReadOnlyBrokerProtocol` at the service, worker, and scheduler boundaries while runtime construction remains Trading 212-specific.
+
 ## Broker-Neutral Snapshots Added
 
 `apps/api/app/broker/snapshots.py` now defines lightweight broker-neutral `BrokerAccountSnapshot` and `BrokerOrderSnapshot` dataclasses. `apps/api/app/broker/trading212_mappers.py` maps observed Trading 212 DEMO account, pending-order, historical-order, and order-response payloads into those snapshots.
