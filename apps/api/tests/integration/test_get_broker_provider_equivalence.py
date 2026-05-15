@@ -359,30 +359,110 @@ async def test_stored_credential_decryption_failure_returns_reconnect_required(
 
 
 @pytest.mark.asyncio
-async def test_provider_helper_remains_unwired_from_get_broker(
+async def test_demo_fallback_adapter_construction_goes_through_provider_helper(
     db,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.broker.provider as provider
     import app.broker.trading212 as trading212
 
+    calls: list[tuple[object, object, str, bool]] = []
+    sentinel_broker = object()
     user = await _user(db)
     monkeypatch.setattr(settings, "APP_MODE", "demo")
     monkeypatch.setattr(settings, "T212_DEMO_API_KEY", "fallback-demo-key")
     monkeypatch.setattr(settings, "T212_DEMO_API_SECRET", "fallback-demo-secret")
     monkeypatch.setattr(trading212, "Trading212Adapter", RecordingTrading212Adapter)
 
-    def forbidden_provider_helper(*args: object, **kwargs: object) -> object:
-        raise AssertionError("get_broker must remain unwired from the provider helper")
+    def recording_provider_helper(
+        request: provider.BrokerProviderRequest,
+        credentials: provider.BrokerProviderCredentials,
+        *,
+        app_mode: str,
+        live_trading_enabled: bool,
+    ) -> object:
+        calls.append((request, credentials, app_mode, live_trading_enabled))
+        return sentinel_broker
 
     monkeypatch.setattr(
         provider,
         "create_trading212_provider_adapter",
-        forbidden_provider_helper,
+        recording_provider_helper,
     )
 
     broker = await get_broker(current_user=user, db=db)
 
-    assert isinstance(broker, RecordingTrading212Adapter)
-    assert RECORDED_TRADING212_CALLS == [("fallback-demo-key", "fallback-demo-secret", "demo")]
-    assert "create_trading212_provider_adapter" not in inspect.getsource(deps.get_broker)
+    assert broker is sentinel_broker
+    assert RECORDED_TRADING212_CALLS == []
+    assert len(calls) == 1
+    request, credentials, app_mode, live_trading_enabled = calls[0]
+    assert request == provider.BrokerProviderRequest(
+        broker_id="trading212",
+        environment="demo",
+        purpose="dependency",
+        user_id=user.id,
+    )
+    assert credentials == provider.BrokerProviderCredentials(
+        api_key="fallback-demo-key",
+        api_secret="fallback-demo-secret",
+    )
+    assert app_mode == "demo"
+    assert live_trading_enabled is False
+    assert "create_trading212_provider_adapter" in inspect.getsource(deps.get_broker)
+
+
+@pytest.mark.asyncio
+async def test_stored_demo_credentials_adapter_construction_goes_through_provider_helper(
+    db,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.broker.provider as provider
+
+    calls: list[tuple[object, object, str, bool]] = []
+    sentinel_broker = object()
+    user = await _user(db)
+    await _add_connection(
+        db,
+        user,
+        environment="demo",
+        api_key="stored-demo-key",
+        api_secret="stored-demo-secret",
+    )
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(settings, "T212_DEMO_API_KEY", "fallback-demo-key")
+    monkeypatch.setattr(settings, "T212_DEMO_API_SECRET", "fallback-demo-secret")
+
+    def recording_provider_helper(
+        request: provider.BrokerProviderRequest,
+        credentials: provider.BrokerProviderCredentials,
+        *,
+        app_mode: str,
+        live_trading_enabled: bool,
+    ) -> object:
+        calls.append((request, credentials, app_mode, live_trading_enabled))
+        return sentinel_broker
+
+    monkeypatch.setattr(
+        provider,
+        "create_trading212_provider_adapter",
+        recording_provider_helper,
+    )
+
+    broker = await get_broker(current_user=user, db=db)
+
+    assert broker is sentinel_broker
+    assert RECORDED_TRADING212_CALLS == []
+    assert len(calls) == 1
+    request, credentials, app_mode, live_trading_enabled = calls[0]
+    assert request == provider.BrokerProviderRequest(
+        broker_id="trading212",
+        environment="demo",
+        purpose="dependency",
+        user_id=user.id,
+    )
+    assert credentials == provider.BrokerProviderCredentials(
+        api_key="stored-demo-key",
+        api_secret="stored-demo-secret",
+    )
+    assert app_mode == "demo"
+    assert live_trading_enabled is False

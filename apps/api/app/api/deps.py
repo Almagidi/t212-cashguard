@@ -8,7 +8,7 @@ FastAPI dependency injection.
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import Cookie, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -36,7 +36,7 @@ async def _resolve_token(
     if cg_token:
         return cg_token
     if credentials:
-        return credentials.credentials
+        return cast(str, credentials.credentials)
     return None
 
 
@@ -100,13 +100,30 @@ async def get_broker(
     if not conn:
         if settings.APP_MODE == "demo":
             if settings.T212_DEMO_API_KEY and settings.T212_DEMO_API_SECRET:
-                from app.broker.trading212 import Trading212Adapter
-
-                return Trading212Adapter(
-                    settings.T212_DEMO_API_KEY,
-                    settings.T212_DEMO_API_SECRET,
-                    "demo",
+                from app.broker.provider import (
+                    BrokerProviderCredentials,
+                    BrokerProviderRequest,
+                    BrokerProviderValidationError,
+                    create_trading212_provider_adapter,
                 )
+
+                try:
+                    return create_trading212_provider_adapter(
+                        BrokerProviderRequest(
+                            broker_id="trading212",
+                            environment="demo",
+                            purpose="dependency",
+                            user_id=current_user.id,
+                        ),
+                        BrokerProviderCredentials(
+                            api_key=settings.T212_DEMO_API_KEY,
+                            api_secret=settings.T212_DEMO_API_SECRET,
+                        ),
+                        app_mode=settings.APP_MODE,
+                        live_trading_enabled=bool(settings.LIVE_TRADING_ENABLED),
+                    )
+                except BrokerProviderValidationError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -120,7 +137,13 @@ async def get_broker(
             detail="No active broker connection. Connect your Trading 212 account first.",
         )
 
-    from app.broker.trading212 import Trading212Adapter
+    from app.broker.provider import (
+        BrokerProviderCredentials,
+        BrokerProviderRequest,
+        BrokerProviderValidationError,
+        BrokerRuntimeEnvironment,
+        create_trading212_provider_adapter,
+    )
     from app.core.security import decrypt_field
 
     try:
@@ -135,4 +158,17 @@ async def get_broker(
             commit=True,
         )
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return Trading212Adapter(api_key, api_secret, conn.environment)
+    try:
+        return create_trading212_provider_adapter(
+            BrokerProviderRequest(
+                broker_id="trading212",
+                environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                purpose="dependency",
+                user_id=current_user.id,
+            ),
+            BrokerProviderCredentials(api_key=api_key, api_secret=api_secret),
+            app_mode=settings.APP_MODE,
+            live_trading_enabled=bool(settings.LIVE_TRADING_ENABLED),
+        )
+    except BrokerProviderValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
