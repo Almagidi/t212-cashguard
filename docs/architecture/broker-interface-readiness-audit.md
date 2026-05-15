@@ -140,6 +140,8 @@ The newly added `apps/api/app/broker/protocols.py` is intentionally limited to m
 
 Demo reconciliation now type-targets `ReconciliationHistoryBrokerProtocol` at the service, worker, and scheduler boundaries while runtime construction remains Trading 212-specific. The broader `ReadOnlyBrokerProtocol` remains available for account, order, and wider broker-read paths.
 
+`docs/architecture/broker-provider-design.md` now documents the next broker-agnostic architecture step: a future provider boundary that can return the existing `Trading212Adapter` by broker id and environment without changing current Trading 212 routes, credential handling, demo reconciliation, or write safety gates.
+
 ## Broker-Neutral Snapshots Added
 
 `apps/api/app/broker/snapshots.py` now defines lightweight broker-neutral `BrokerAccountSnapshot` and `BrokerOrderSnapshot` dataclasses. `apps/api/app/broker/trading212_mappers.py` maps observed Trading 212 DEMO account, pending-order, historical-order, and order-response payloads into those snapshots.
@@ -173,10 +175,10 @@ These should remain adapter- or Trading 212 module-specific:
 1. Keep this PR as audit plus protocol scaffolding only.
 2. Add a broker-neutral `BrokerOrderSnapshot` and `BrokerAccountSnapshot` model in a follow-up PR, with Trading 212 mapping tests based on existing DEMO QA examples.
 3. Update `ExecutionEngine` type hints to depend on `OrderPlacementBrokerProtocol` without changing runtime construction.
-4. Add a typed broker provider proposal that returns the existing `Trading212Adapter` by broker id and environment while preserving `/broker/trading212` behaviour.
-5. Introduce that provider only after its safety gates and credential handling are specified and tested.
+4. Add type-only broker provider scaffolding and tests for fail-closed provider request validation.
+5. Introduce a Trading 212 provider only after its safety gates and credential handling are specified and tested.
 6. Only after those seams are tested, design a second adapter spike using recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
 
 ## Next Recommended PR
 
-Draft a broker provider design for returning the existing `Trading212Adapter` by broker id and environment without changing `/broker/trading212`, credential handling, demo reconciliation runtime behaviour, or any write safety gates.
+Add type-only broker provider scaffolding and tests for fail-closed provider request validation. Keep it unwired from routes, workers, scheduler startup, credential storage, and order placement.
