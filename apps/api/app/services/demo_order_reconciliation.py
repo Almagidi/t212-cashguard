@@ -27,6 +27,7 @@ from app.services.execution_quality import (
 from app.services.safety_policy import SafetyPolicyViolation
 
 if TYPE_CHECKING:
+    from app.broker.protocols import ReadOnlyBrokerProtocol
     from app.broker.snapshots import BrokerOrderSnapshot
 
 
@@ -56,7 +57,7 @@ class DemoOrderReconciler:
     def __init__(
         self,
         db: Any,
-        broker: Any,
+        broker: ReadOnlyBrokerProtocol,
         *,
         actor: str = "demo_order_reconciler",
         history_limit: int | None = None,

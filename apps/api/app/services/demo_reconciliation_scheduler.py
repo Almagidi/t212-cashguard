@@ -31,6 +31,8 @@ from app.services.safety_policy import SafetyPolicyViolation
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from app.broker.protocols import ReadOnlyBrokerProtocol
+
 
 SCHEDULER_STATE_KEY = "demo_reconciliation_scheduler"
 _RUN_LOCK = asyncio.Lock()
@@ -112,7 +114,7 @@ class DemoReconciliationScheduler:
     def __init__(
         self,
         db: AsyncSession,
-        broker: Any,
+        broker: ReadOnlyBrokerProtocol,
         *,
         actor: str = "demo_reconciliation_scheduler",
         worker_factory: WorkerFactory = DemoReconciliationWorker,
