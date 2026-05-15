@@ -75,6 +75,8 @@ Historical order reconciliation expects Trading 212 paginated history as `{"item
 
 Demo reconciliation now performs that Trading 212 historical-order parsing through the broker-neutral `BrokerOrderSnapshot` mapper surface, keeping the service read-only and preserving the existing status mapping and audit behaviour.
 
+Demo reconciliation now targets a narrow `ReconciliationHistoryBrokerProtocol` containing only broker environment metadata and broker-history read access through `get_historical_orders(...)`.
+
 These shapes are adapter-specific and should eventually be normalized before application services consume them.
 
 ## Trading 212-Tied Safety Gates
@@ -134,9 +136,9 @@ Good candidates for a future interface:
 - broker capability metadata, including supported order types, time validity semantics, fractional quantity support, and cancel support;
 - broker-neutral error categories for auth, rate limit, retryable API error, validation error, and unknown failure.
 
-The newly added `apps/api/app/broker/protocols.py` is intentionally limited to method-level protocols and a protocol write-method inventory. It documents the current surface without requiring application services to change dependencies in this PR.
+The newly added `apps/api/app/broker/protocols.py` is intentionally limited to method-level protocols and a protocol write-method inventory. It documents the current surface without requiring runtime broker construction to change.
 
-Demo reconciliation now type-targets `ReadOnlyBrokerProtocol` at the service, worker, and scheduler boundaries while runtime construction remains Trading 212-specific.
+Demo reconciliation now type-targets `ReconciliationHistoryBrokerProtocol` at the service, worker, and scheduler boundaries while runtime construction remains Trading 212-specific. The broader `ReadOnlyBrokerProtocol` remains available for account, order, and wider broker-read paths.
 
 ## Broker-Neutral Snapshots Added
 
@@ -171,10 +173,10 @@ These should remain adapter- or Trading 212 module-specific:
 1. Keep this PR as audit plus protocol scaffolding only.
 2. Add a broker-neutral `BrokerOrderSnapshot` and `BrokerAccountSnapshot` model in a follow-up PR, with Trading 212 mapping tests based on existing DEMO QA examples.
 3. Update `ExecutionEngine` type hints to depend on `OrderPlacementBrokerProtocol` without changing runtime construction.
-4. Update reconciliation service type hints to depend on `ReadOnlyBrokerProtocol`, then isolate Trading 212 history parsing into a dedicated mapper.
-5. Introduce a broker registry/factory that can return the existing `Trading212Adapter` by broker id while preserving `/broker/trading212` behaviour.
+4. Add a typed broker provider proposal that returns the existing `Trading212Adapter` by broker id and environment while preserving `/broker/trading212` behaviour.
+5. Introduce that provider only after its safety gates and credential handling are specified and tested.
 6. Only after those seams are tested, design a second adapter spike using recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
 
 ## Next Recommended PR
 
-Add broker-neutral snapshot dataclasses and Trading 212 mapper tests for account summary, order placement responses, pending order responses, and historical order records. The PR should keep runtime behaviour unchanged and should use existing Trading 212 DEMO evidence as fixtures where possible.
+Draft a broker provider design for returning the existing `Trading212Adapter` by broker id and environment without changing `/broker/trading212`, credential handling, demo reconciliation runtime behaviour, or any write safety gates.

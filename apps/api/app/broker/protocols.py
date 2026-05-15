@@ -30,7 +30,18 @@ class BrokerEnvironmentProtocol(Protocol):
     environment: str
 
 
-class ReadOnlyBrokerProtocol(BrokerEnvironmentProtocol, Protocol):
+class ReconciliationHistoryBrokerProtocol(BrokerEnvironmentProtocol, Protocol):
+    """Read-only broker history surface used by DEMO order reconciliation."""
+
+    async def get_historical_orders(
+        self,
+        cursor: int | None = None,
+        ticker: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]: ...
+
+
+class ReadOnlyBrokerProtocol(ReconciliationHistoryBrokerProtocol, Protocol):
     """Read-only broker methods used by account, order, and reconciliation paths."""
 
     async def get_account_summary(self) -> dict[str, Any]: ...
@@ -44,13 +55,6 @@ class ReadOnlyBrokerProtocol(BrokerEnvironmentProtocol, Protocol):
     async def get_pending_orders(self) -> list[dict[str, Any]]: ...
 
     async def get_order_by_id(self, order_id: str) -> dict[str, Any]: ...
-
-    async def get_historical_orders(
-        self,
-        cursor: int | None = None,
-        ticker: str | None = None,
-        limit: int = 50,
-    ) -> dict[str, Any]: ...
 
     async def test_connection(self) -> dict[str, Any]: ...
 

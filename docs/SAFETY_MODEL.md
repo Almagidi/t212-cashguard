@@ -19,6 +19,8 @@ Trading 212 remains the current broker adapter. Future broker support must be ad
 
 Broker-neutral snapshot mappers are pure transformation utilities only; they do not perform broker reads, broker writes, API calls, database access, or scheduler/worker actions.
 
+The demo reconciliation broker protocol remains read-only and excludes placement, cancellation, and other broker write methods.
+
 Demo and live credentials are separated:
 
 - `T212_DEMO_API_KEY` / `T212_DEMO_API_SECRET`

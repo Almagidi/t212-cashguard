@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from scripts.t212_demo_multi_order_reconciliation_smoke import ReadOnlyBrokerGuard
 
-from app.broker.protocols import BROKER_PROTOCOL_WRITE_METHODS
+from app.broker.protocols import BROKER_PROTOCOL_WRITE_METHODS, ReconciliationHistoryBrokerProtocol
 from app.broker.safety import TRADING212_BROKER_WRITE_METHODS, is_broker_write_method
 from app.broker.trading212 import Trading212Adapter
 from app.core.config import settings
@@ -158,6 +158,18 @@ def test_trading212_adapter_exposes_broker_protocol_methods() -> None:
 
     assert missing == set()
     assert isinstance(getattr(Trading212Adapter, "environment", None), property) is False
+
+
+def test_reconciliation_history_protocol_is_read_only_and_supported_by_trading212() -> None:
+    assert ReconciliationHistoryBrokerProtocol.__protocol_attrs__ == {
+        "environment",
+        "get_historical_orders",
+    }
+    assert ReconciliationHistoryBrokerProtocol.__protocol_attrs__.isdisjoint(
+        BROKER_PROTOCOL_WRITE_METHODS
+    )
+    assert inspect.iscoroutinefunction(getattr(Trading212Adapter, "get_historical_orders", None))
+    assert "environment" in Trading212Adapter.__init__.__code__.co_varnames
 
 
 def test_broker_protocol_write_methods_align_with_safety_inventory() -> None:
