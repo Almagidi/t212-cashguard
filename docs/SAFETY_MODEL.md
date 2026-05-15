@@ -21,6 +21,8 @@ Broker-neutral snapshot mappers are pure transformation utilities only; they do 
 
 The demo reconciliation broker protocol remains read-only and excludes placement, cancellation, and other broker write methods.
 
+Broker provider work must preserve explicit broker and environment safety gates; it must not introduce generic live broker construction or bypass Trading 212 credential-specific checks.
+
 Demo and live credentials are separated:
 
 - `T212_DEMO_API_KEY` / `T212_DEMO_API_SECRET`
