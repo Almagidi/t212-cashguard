@@ -113,6 +113,14 @@ The provider itself should not expose placement/cancel methods. It should only r
 
 The helper is pure fail-closed validation only. It accepts only `trading212`, accepts only real broker environments `demo` and `live`, rejects mock/paper app modes for real broker construction, blocks demo-to-live and live-to-demo requests, and requires `live_trading_enabled=True` for live validation. It does not construct `Trading212Adapter`, touch credentials, access the database, import API routes, call Trading 212, or wire any runtime call sites.
 
+## Unwired Trading 212 Provider Function Added
+
+`apps/api/app/broker/provider.py` now also contains `BrokerProviderCredentials`, `validate_broker_provider_credentials(...)`, and `create_trading212_provider_adapter(...)` behind unit tests. The function requires explicit credentials, validates the provider request first, rejects blank credentials before adapter construction, and only then constructs the existing `Trading212Adapter`.
+
+`create_trading212_provider_adapter(...)` validates the provider request before credentials. Request gates reject unsupported broker ids, unsupported broker environments, unsupported app modes, mock/paper modes, demo-to-live requests, live-to-demo requests, and live requests when `LIVE_TRADING_ENABLED` is not true. Credential validation runs only after those request gates pass, and the local `Trading212Adapter` import/construction happens only after both validators pass.
+
+No runtime call site uses this helper yet. `get_broker()`, `/v1/broker/trading212`, workers, scheduler startup, scripts, credential lookup/decryption, and order placement continue to use their existing Trading 212-specific paths. Route, worker, and scheduler migration remains future work.
+
 ## Trading 212 Provider Behavior
 
 For Trading 212, a future provider would preserve existing construction behavior:
@@ -168,7 +176,7 @@ The provider should be introduced only after its test matrix proves it preserves
 1. Keep this PR documentation-only.
 2. Add type-only provider scaffolding with `BrokerId`, `BrokerRuntimeEnvironment`, `BrokerProviderRequest`, and no runtime call-site wiring.
 3. Add provider tests that prove unsupported broker ids fail closed, mock/paper modes cannot construct real broker adapters, demo can only request demo, and live requires the existing live gates.
-4. Add a Trading 212 provider function behind tests, but do not wire routes yet.
+4. Done: add unwired Trading 212 provider-function scaffolding behind tests, without wiring routes.
 5. Move `get_broker()` to call the provider while preserving every existing error message, credential fallback, and route behavior.
 6. Move broker route credential-test construction to the provider while keeping `/v1/broker/trading212` names and response schemas unchanged.
 7. Move scheduler and worker construction only after their demo-only gates and credential fallback behavior are covered by tests.
@@ -201,4 +209,4 @@ A later runtime provider PR should be accepted only when:
 
 ## Next Recommended PR
 
-Add type-only broker provider scaffolding and tests for fail-closed provider request validation. Keep it unwired from routes, workers, scheduler startup, credential storage, and order placement.
+Move `get_broker()` to the Trading 212 provider only after adding behavior-equivalence tests for credential precedence, demo fallback credentials, error messages, and unchanged route behaviour.

@@ -1,8 +1,8 @@
-"""Type-only broker provider request scaffolding.
+"""Broker provider request and Trading 212 construction scaffolding.
 
-This module validates future real-broker provider requests without constructing
-adapters, touching credentials, importing database/session code, or wiring any
-runtime call sites.
+This module validates future real-broker provider requests without touching
+credential stores, importing database/session code at module import time, or
+wiring runtime call sites.
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from uuid import UUID
+
+    from app.broker.trading212 import Trading212Adapter
 
 BrokerId = Literal["trading212"]
 BrokerRuntimeEnvironment = Literal["demo", "live"]
@@ -62,6 +64,17 @@ class BrokerProviderRequest:
     environment: BrokerRuntimeEnvironment
     purpose: BrokerProviderPurpose
     user_id: UUID | None = None
+
+
+@dataclass(frozen=True)
+class BrokerProviderCredentials:
+    """Explicit credentials supplied by a broker-specific caller.
+
+    Provider scaffolding does not fetch, decrypt, or infer credentials.
+    """
+
+    api_key: str
+    api_secret: str
 
 
 def validate_broker_provider_request(
@@ -132,3 +145,45 @@ def validate_broker_provider_request(
         return request
 
     raise BrokerProviderValidationError(f"Unsupported app mode for provider request: {app_mode!r}.")
+
+
+def validate_broker_provider_credentials(
+    credentials: BrokerProviderCredentials,
+) -> BrokerProviderCredentials:
+    """Validate explicit provider credentials before adapter construction."""
+
+    if not credentials.api_key.strip() or not credentials.api_secret.strip():
+        raise BrokerProviderValidationError(
+            "Broker provider credentials are not configured for adapter construction."
+        )
+    return credentials
+
+
+def create_trading212_provider_adapter(
+    request: BrokerProviderRequest,
+    credentials: BrokerProviderCredentials,
+    *,
+    app_mode: str,
+    live_trading_enabled: bool,
+) -> Trading212Adapter:
+    """Construct a Trading 212 adapter after explicit provider validation.
+
+    This function is intentionally unwired from runtime call sites. It does not
+    read settings, fetch/decrypt credentials, access the database, call Trading
+    212, or place/cancel orders.
+    """
+
+    validated_request = validate_broker_provider_request(
+        request,
+        app_mode=app_mode,
+        live_trading_enabled=live_trading_enabled,
+    )
+    validated_credentials = validate_broker_provider_credentials(credentials)
+
+    from app.broker.trading212 import Trading212Adapter
+
+    return Trading212Adapter(
+        validated_credentials.api_key,
+        validated_credentials.api_secret,
+        validated_request.environment,
+    )

@@ -144,6 +144,8 @@ Demo reconciliation now type-targets `ReconciliationHistoryBrokerProtocol` at th
 
 `apps/api/app/broker/provider.py` now contains unwired type-only provider request scaffolding and fail-closed validation for that future boundary.
 
+It also contains an unwired Trading 212 provider function that requires explicit credentials and constructs `Trading212Adapter` only after provider and credential validation pass.
+
 ## Broker-Neutral Snapshots Added
 
 `apps/api/app/broker/snapshots.py` now defines lightweight broker-neutral `BrokerAccountSnapshot` and `BrokerOrderSnapshot` dataclasses. `apps/api/app/broker/trading212_mappers.py` maps observed Trading 212 DEMO account, pending-order, historical-order, and order-response payloads into those snapshots.
@@ -183,4 +185,4 @@ These should remain adapter- or Trading 212 module-specific:
 
 ## Next Recommended PR
 
-Add type-only broker provider scaffolding and tests for fail-closed provider request validation. Keep it unwired from routes, workers, scheduler startup, credential storage, and order placement.
+Add behavior-equivalence tests for moving `get_broker()` to the unwired Trading 212 provider while preserving credential precedence, demo fallback credentials, route behaviour, and safety errors.
