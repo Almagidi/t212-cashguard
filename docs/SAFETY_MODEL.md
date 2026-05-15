@@ -25,6 +25,8 @@ Broker provider work must preserve explicit broker and environment safety gates;
 
 The provider request and credential validation helpers are construction-free. The unwired `create_trading212_provider_adapter(...)` helper constructs `Trading212Adapter` only after request and credential validation pass, and it is called by no runtime code path.
 
+`get_broker()` behaviour-equivalence tests lock current credential precedence, demo fallback, live flag blocking, and provider-unwired behaviour before any provider migration.
+
 Demo and live credentials are separated:
 
 - `T212_DEMO_API_KEY` / `T212_DEMO_API_SECRET`

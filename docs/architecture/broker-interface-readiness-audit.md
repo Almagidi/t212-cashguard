@@ -146,6 +146,8 @@ Demo reconciliation now type-targets `ReconciliationHistoryBrokerProtocol` at th
 
 It also contains an unwired Trading 212 provider function that requires explicit credentials and constructs `Trading212Adapter` only after provider and credential validation pass.
 
+`apps/api/tests/integration/test_get_broker_provider_equivalence.py` now locks the current `get_broker()` behaviour before any provider wiring: mock-mode selection, active encrypted credential precedence, demo fallback credentials, live flag blocking, invalid runtime-mode safety errors, credential decryption failure handling, and proof that the provider helper remains unwired.
+
 ## Broker-Neutral Snapshots Added
 
 `apps/api/app/broker/snapshots.py` now defines lightweight broker-neutral `BrokerAccountSnapshot` and `BrokerOrderSnapshot` dataclasses. `apps/api/app/broker/trading212_mappers.py` maps observed Trading 212 DEMO account, pending-order, historical-order, and order-response payloads into those snapshots.
@@ -185,4 +187,4 @@ These should remain adapter- or Trading 212 module-specific:
 
 ## Next Recommended PR
 
-Add behavior-equivalence tests for moving `get_broker()` to the unwired Trading 212 provider while preserving credential precedence, demo fallback credentials, route behaviour, and safety errors.
+Move `get_broker()` to the unwired Trading 212 provider only under the new behaviour-equivalence tests, preserving credential precedence, demo fallback credentials, route behaviour, and safety errors.
