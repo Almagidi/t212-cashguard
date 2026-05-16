@@ -131,6 +131,10 @@ The provider receives only already-selected explicit credentials plus a `BrokerP
 
 `apps/api/tests/integration/test_get_broker_provider_equivalence.py` now documents the current `get_broker()` behaviour that a future provider migration must preserve. The tests cover mock-mode selection, active encrypted credential precedence, demo fallback credentials, demo refusal to use live credentials, live flag blocking, invalid runtime modes, unreadable stored credentials, stable safety error details, and proof that demo fallback adapter construction goes through the provider helper with the already-selected credentials and request data.
 
+## Scheduler And Worker Equivalence Tests Added
+
+`apps/api/tests/integration/test_scheduler_worker_provider_equivalence.py` now documents the current scheduler and worker Trading 212 construction behaviour before any migration. The tests cover the background scheduler's demo-only startup gates, demo environment construction, existing `T212_DEMO_*` to generic `T212_API_*` credential fallback, refusal to use live credentials, and proof that scheduler/worker construction does not call `create_trading212_provider_adapter(...)` yet. They also document that `DemoReconciliationWorker` receives an already-constructed broker while the terminal worker script still constructs `Trading212Adapter` directly from its current generic demo credential environment variables under demo-only gates.
+
 ## Trading 212 Provider Behavior
 
 For Trading 212, a future provider would preserve existing construction behavior:
@@ -190,9 +194,10 @@ The provider should be introduced only after its test matrix proves it preserves
 5. Done: add `get_broker()` behaviour-equivalence tests for credential precedence, demo fallback, safety errors, and provider-wiring proof.
 6. Done: move `get_broker()` to call the provider while preserving every existing error message, credential fallback, and route behavior.
 7. Done: move broker route credential-test construction to the provider while keeping `/v1/broker/trading212` names and response schemas unchanged.
-8. Move scheduler and worker construction only after their demo-only gates and credential fallback behavior are covered by tests.
-9. Consider broker-neutral route design only after the Trading 212 provider migration is complete and behavior-equivalent.
-10. Design any second broker with recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
+8. Done: add scheduler/worker provider-equivalence tests for current demo-only gates and credential fallback behavior without migrating construction.
+9. Move scheduler and worker construction to the provider while preserving the newly locked demo-only gates, credential sources, route handoff behaviour, and read-only reconciliation boundary.
+10. Consider broker-neutral route design only after the Trading 212 provider migration is complete and behavior-equivalent.
+11. Design any second broker with recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
 
 ## Risks Of Introducing A Provider Too Early
 
