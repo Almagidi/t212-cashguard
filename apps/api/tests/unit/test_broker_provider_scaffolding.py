@@ -537,10 +537,11 @@ def test_blank_provider_credentials_fail_before_adapter_construction(
     assert RecordingTrading212Adapter.calls == []
 
 
-def test_provider_function_is_only_referenced_from_get_broker_runtime_call_site() -> None:
+def test_provider_function_is_only_referenced_from_approved_runtime_call_sites() -> None:
     forbidden = {
         "BrokerProviderCredentials",
         "BrokerProviderRequest",
+        "BrokerProviderValidationError",
         "BrokerRuntimeEnvironment",
         "create_trading212_provider_adapter",
     }
@@ -559,7 +560,15 @@ def test_provider_function_is_only_referenced_from_get_broker_runtime_call_site(
         "app/api/deps.py": {
             "BrokerProviderCredentials",
             "BrokerProviderRequest",
+            "BrokerProviderValidationError",
             "BrokerRuntimeEnvironment",
             "create_trading212_provider_adapter",
-        }
+        },
+        "app/api/v1/routes/broker.py": {
+            "BrokerProviderCredentials",
+            "BrokerProviderRequest",
+            "BrokerProviderValidationError",
+            "BrokerRuntimeEnvironment",
+            "create_trading212_provider_adapter",
+        },
     }

@@ -7,7 +7,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -125,6 +125,11 @@ class FakeRejectingTrading212Adapter(FakeTrading212Adapter):
                 "note": "Trading 212 did not specify the exact reason.",
             },
         }
+
+
+class ExplodingDirectTrading212Adapter:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise AssertionError("broker routes must construct Trading 212 via the provider")
 
 
 class FakeNestedCashBroker:
@@ -2221,10 +2226,19 @@ class TestBrokerExecutionFlow:
     ):
         from app.core.config import settings
 
+        def fake_provider(request, credentials, *, app_mode, live_trading_enabled):
+            return FakeRejectingTrading212Adapter(
+                credentials.api_key,
+                credentials.api_secret,
+                request.environment,
+            )
+
         monkeypatch.setattr(settings, "APP_MODE", "demo")
         monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
+        monkeypatch.setattr("app.broker.provider.create_trading212_provider_adapter", fake_provider)
         monkeypatch.setattr(
-            "app.broker.trading212.Trading212Adapter", FakeRejectingTrading212Adapter
+            "app.broker.trading212.Trading212Adapter",
+            ExplodingDirectTrading212Adapter,
         )
 
         resp = await client.post(
@@ -2240,6 +2254,226 @@ class TestBrokerExecutionFlow:
         assert detail["diagnostics"]["environment"] == "demo"
         assert detail["diagnostics"]["http_status"] == 401
         assert detail["diagnostics"]["causes"][0]["key"] == "wrong_environment"
+
+    async def test_connect_constructs_submitted_credentials_via_provider(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        db,
+        monkeypatch,
+    ):
+        from sqlalchemy import select
+
+        from app.core.config import settings
+        from app.core.security import decrypt_field
+        from app.db.models import BrokerConnection
+
+        provider_calls: list[dict[str, Any]] = []
+
+        def fake_provider(request, credentials, *, app_mode, live_trading_enabled):
+            provider_calls.append(
+                {
+                    "request": request,
+                    "credentials": credentials,
+                    "app_mode": app_mode,
+                    "live_trading_enabled": live_trading_enabled,
+                }
+            )
+            return FakeTrading212Adapter(
+                credentials.api_key,
+                credentials.api_secret,
+                request.environment,
+            )
+
+        monkeypatch.setattr(settings, "APP_MODE", "demo")
+        monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
+        monkeypatch.setattr("app.broker.provider.create_trading212_provider_adapter", fake_provider)
+        monkeypatch.setattr(
+            "app.broker.trading212.Trading212Adapter",
+            ExplodingDirectTrading212Adapter,
+        )
+
+        resp = await client.post(
+            "/v1/broker/trading212/connect",
+            headers=auth_headers,
+            json={
+                "api_key": " submitted-demo-key ",
+                "api_secret": " submitted-demo-secret ",
+                "environment": "demo",
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["environment"] == "demo"
+        assert data["credential_state"] == "configured"
+        assert data["account_id"] == "DEMO-ACCOUNT"
+        assert provider_calls == [
+            {
+                "request": provider_calls[0]["request"],
+                "credentials": provider_calls[0]["credentials"],
+                "app_mode": "demo",
+                "live_trading_enabled": False,
+            }
+        ]
+        request = provider_calls[0]["request"]
+        credentials = provider_calls[0]["credentials"]
+        assert request.broker_id == "trading212"
+        assert request.environment == "demo"
+        assert request.purpose == "credential_test"
+        assert request.user_id is not None
+        assert credentials.api_key == "submitted-demo-key"
+        assert credentials.api_secret == "submitted-demo-secret"
+
+        saved = (await db.execute(select(BrokerConnection))).scalar_one()
+        assert decrypt_field(saved.api_key_encrypted) == "submitted-demo-key"
+        assert decrypt_field(saved.api_secret_encrypted) == "submitted-demo-secret"
+
+    async def test_test_route_constructs_decrypted_credentials_via_provider(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        db,
+        monkeypatch,
+    ):
+        from sqlalchemy import select
+
+        from app.core.config import settings
+        from app.core.security import encrypt_field
+        from app.db.models import BrokerConnection, User
+
+        provider_calls: list[dict[str, Any]] = []
+
+        def fake_provider(request, credentials, *, app_mode, live_trading_enabled):
+            provider_calls.append(
+                {
+                    "request": request,
+                    "credentials": credentials,
+                    "app_mode": app_mode,
+                    "live_trading_enabled": live_trading_enabled,
+                }
+            )
+            return FakeTrading212Adapter(
+                credentials.api_key,
+                credentials.api_secret,
+                request.environment,
+            )
+
+        monkeypatch.setattr(settings, "APP_MODE", "demo")
+        monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
+        monkeypatch.setattr("app.broker.provider.create_trading212_provider_adapter", fake_provider)
+        monkeypatch.setattr(
+            "app.broker.trading212.Trading212Adapter",
+            ExplodingDirectTrading212Adapter,
+        )
+        user = (await db.execute(select(User).where(User.email == "admin@test.com"))).scalar_one()
+        db.add(
+            BrokerConnection(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                broker="trading212",
+                environment="demo",
+                api_key_encrypted=encrypt_field("stored-demo-key"),
+                api_secret_encrypted=encrypt_field("stored-demo-secret"),
+                is_active=True,
+            )
+        )
+        await db.commit()
+
+        resp = await client.post("/v1/broker/trading212/test", headers=auth_headers)
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {
+            "is_ok": True,
+            "account_id": "DEMO-ACCOUNT",
+            "currency": "USD",
+            "error": None,
+            "diagnostics": None,
+        }
+        request = provider_calls[0]["request"]
+        credentials = provider_calls[0]["credentials"]
+        assert request.broker_id == "trading212"
+        assert request.environment == "demo"
+        assert request.purpose == "credential_test"
+        assert request.user_id == user.id
+        assert credentials.api_key == "stored-demo-key"
+        assert credentials.api_secret == "stored-demo-secret"
+        assert provider_calls[0]["app_mode"] == "demo"
+        assert provider_calls[0]["live_trading_enabled"] is False
+
+    async def test_provider_validation_error_on_connect_returns_safe_http_400(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        monkeypatch,
+    ):
+        from app.broker.provider import BrokerProviderValidationError
+        from app.core.config import settings
+
+        def rejecting_provider(*args, **kwargs):
+            raise BrokerProviderValidationError("provider rejected credential test")
+
+        monkeypatch.setattr(settings, "APP_MODE", "demo")
+        monkeypatch.setattr(
+            "app.broker.provider.create_trading212_provider_adapter", rejecting_provider
+        )
+        monkeypatch.setattr(
+            "app.broker.trading212.Trading212Adapter",
+            ExplodingDirectTrading212Adapter,
+        )
+
+        resp = await client.post(
+            "/v1/broker/trading212/connect",
+            headers=auth_headers,
+            json={"api_key": "demo-key", "api_secret": "demo-secret", "environment": "demo"},
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "provider rejected credential test"
+
+    async def test_provider_validation_error_on_test_route_returns_safe_http_400(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        db,
+        monkeypatch,
+    ):
+        from sqlalchemy import select
+
+        from app.broker.provider import BrokerProviderValidationError
+        from app.core.config import settings
+        from app.core.security import encrypt_field
+        from app.db.models import BrokerConnection, User
+
+        def rejecting_provider(*args, **kwargs):
+            raise BrokerProviderValidationError("provider rejected active credential test")
+
+        monkeypatch.setattr(settings, "APP_MODE", "demo")
+        monkeypatch.setattr(
+            "app.broker.provider.create_trading212_provider_adapter", rejecting_provider
+        )
+        monkeypatch.setattr(
+            "app.broker.trading212.Trading212Adapter",
+            ExplodingDirectTrading212Adapter,
+        )
+        user = (await db.execute(select(User).where(User.email == "admin@test.com"))).scalar_one()
+        db.add(
+            BrokerConnection(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                broker="trading212",
+                environment="demo",
+                api_key_encrypted=encrypt_field("stored-demo-key"),
+                api_secret_encrypted=encrypt_field("stored-demo-secret"),
+                is_active=True,
+            )
+        )
+        await db.commit()
+
+        resp = await client.post("/v1/broker/trading212/test", headers=auth_headers)
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "provider rejected active credential test"
 
     async def test_demo_broker_status_reports_missing_demo_credentials_safely(
         self,
@@ -2276,7 +2510,19 @@ class TestBrokerExecutionFlow:
         monkeypatch.setattr(settings, "APP_MODE", "demo")
         monkeypatch.setattr(settings, "T212_DEMO_ORDER_ENABLED", True)
         monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
-        monkeypatch.setattr("app.broker.trading212.Trading212Adapter", FakeTrading212Adapter)
+
+        def fake_provider(request, credentials, *, app_mode, live_trading_enabled):
+            return FakeTrading212Adapter(
+                credentials.api_key,
+                credentials.api_secret,
+                request.environment,
+            )
+
+        monkeypatch.setattr("app.broker.provider.create_trading212_provider_adapter", fake_provider)
+        monkeypatch.setattr(
+            "app.broker.trading212.Trading212Adapter",
+            ExplodingDirectTrading212Adapter,
+        )
 
         connect_resp = await client.post(
             "/v1/broker/trading212/connect",
@@ -2323,7 +2569,19 @@ class TestBrokerExecutionFlow:
         monkeypatch.setattr(settings, "T212_LIVE_API_KEY", "configured-live-key")
         monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", "polygon")
         monkeypatch.setattr(settings, "TELEGRAM_CHAT_ID", "12345")
-        monkeypatch.setattr("app.broker.trading212.Trading212Adapter", FakeTrading212Adapter)
+
+        def fake_provider(request, credentials, *, app_mode, live_trading_enabled):
+            return FakeTrading212Adapter(
+                credentials.api_key,
+                credentials.api_secret,
+                request.environment,
+            )
+
+        monkeypatch.setattr("app.broker.provider.create_trading212_provider_adapter", fake_provider)
+        monkeypatch.setattr(
+            "app.broker.trading212.Trading212Adapter",
+            ExplodingDirectTrading212Adapter,
+        )
 
         startup_resp = await client.get("/v1/health/startup")
         assert startup_resp.status_code == 200
