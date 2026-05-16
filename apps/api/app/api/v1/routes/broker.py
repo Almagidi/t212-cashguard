@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -169,9 +169,31 @@ async def connect_broker(
         raise HTTPException(status_code=400, detail=exc.reason) from exc
 
     # Test the submitted credentials before replacing a working connection.
-    from app.broker.trading212 import Trading212Adapter
+    from app.broker.provider import (
+        BrokerProviderCredentials,
+        BrokerProviderRequest,
+        BrokerProviderValidationError,
+        BrokerRuntimeEnvironment,
+        create_trading212_provider_adapter,
+    )
 
-    async with Trading212Adapter(body.api_key, body.api_secret, body.environment) as broker:
+    try:
+        broker = create_trading212_provider_adapter(
+            # Credential tests intentionally allow demo/live validation through the provider.
+            BrokerProviderRequest(
+                broker_id="trading212",
+                environment=cast(BrokerRuntimeEnvironment, body.environment),
+                purpose="credential_test",
+                user_id=current_user.id,
+            ),
+            BrokerProviderCredentials(api_key=body.api_key, api_secret=body.api_secret),
+            app_mode=settings.APP_MODE,
+            live_trading_enabled=bool(settings.LIVE_TRADING_ENABLED),
+        )
+    except BrokerProviderValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async with broker:
         test = await broker.test_connection()
 
     if not test["is_ok"]:
@@ -270,9 +292,31 @@ async def test_connection(
         )
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    from app.broker.trading212 import Trading212Adapter
+    from app.broker.provider import (
+        BrokerProviderCredentials,
+        BrokerProviderRequest,
+        BrokerProviderValidationError,
+        BrokerRuntimeEnvironment,
+        create_trading212_provider_adapter,
+    )
 
-    async with Trading212Adapter(api_key, api_secret, conn.environment) as broker:
+    try:
+        broker = create_trading212_provider_adapter(
+            # Credential tests intentionally allow demo/live validation through the provider.
+            BrokerProviderRequest(
+                broker_id="trading212",
+                environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                purpose="credential_test",
+                user_id=current_user.id,
+            ),
+            BrokerProviderCredentials(api_key=api_key, api_secret=api_secret),
+            app_mode=settings.APP_MODE,
+            live_trading_enabled=bool(settings.LIVE_TRADING_ENABLED),
+        )
+    except BrokerProviderValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async with broker:
         test = await broker.test_connection()
 
     conn.last_test_at = datetime.now(UTC)

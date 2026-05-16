@@ -150,6 +150,8 @@ It also contains a Trading 212 provider function that requires explicit credenti
 
 `apps/api/tests/integration/test_get_broker_provider_equivalence.py` now locks the current `get_broker()` behaviour during provider wiring: mock-mode selection, active encrypted credential precedence, demo fallback credentials, live flag blocking, invalid runtime-mode safety errors, credential decryption failure handling, and proof that fallback construction reaches the provider with the selected request and credentials.
 
+`/v1/broker/trading212/connect` and `/v1/broker/trading212/test` now also use the provider function only for final adapter construction during credential tests. The route layer still owns submitted credential handling, active connection lookup, encryption/decryption, reconnect-required handling, schemas, and audit behaviour.
+
 ## Broker-Neutral Snapshots Added
 
 `apps/api/app/broker/snapshots.py` now defines lightweight broker-neutral `BrokerAccountSnapshot` and `BrokerOrderSnapshot` dataclasses. `apps/api/app/broker/trading212_mappers.py` maps observed Trading 212 DEMO account, pending-order, historical-order, and order-response payloads into those snapshots.
@@ -185,8 +187,9 @@ These should remain adapter- or Trading 212 module-specific:
 3. Update `ExecutionEngine` type hints to depend on `OrderPlacementBrokerProtocol` without changing runtime construction.
 4. Add type-only broker provider scaffolding and tests for fail-closed provider request validation.
 5. Done: introduce a Trading 212 provider and wire `get_broker()` final construction only after its safety gates and credential handling are specified and tested.
-6. Only after those seams are tested, design a second adapter spike using recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
+6. Done: move `/v1/broker/trading212` credential-test construction to the provider while preserving route names, schemas, credential handling, and audit behaviour.
+7. Only after those paths are tested, design a second adapter spike using recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
 
 ## Next Recommended PR
 
-Move `/v1/broker/trading212` credential-test construction to the Trading 212 provider while preserving route names, response schemas, credential storage/decryption, audit behaviour, and safety errors.
+Move scheduler and worker Trading 212 construction only after their demo-only gates and credential fallback behaviour are covered by focused provider-equivalence tests.
