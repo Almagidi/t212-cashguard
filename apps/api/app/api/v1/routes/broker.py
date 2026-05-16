@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
 from app.api.deps import get_broker, get_current_admin, get_current_user
+from app.broker.protocols import ReconciliationHistoryBrokerProtocol
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,6 +52,14 @@ DEMO_CREDENTIALS_MISSING_HINT = (
 
 class _StatusBroker:
     environment = "demo"
+
+    async def get_historical_orders(
+        self,
+        cursor: int | None = None,
+        ticker: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        raise RuntimeError("Status broker does not support historical order reconciliation.")
 
 
 async def _audit(
@@ -178,7 +187,7 @@ async def connect_broker(
     )
 
     try:
-        broker = create_trading212_provider_adapter(
+        trading212_adapter = create_trading212_provider_adapter(
             # Credential tests intentionally allow demo/live validation through the provider.
             BrokerProviderRequest(
                 broker_id="trading212",
@@ -193,7 +202,7 @@ async def connect_broker(
     except BrokerProviderValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    async with broker:
+    async with trading212_adapter as broker:
         test = await broker.test_connection()
 
     if not test["is_ok"]:
@@ -301,7 +310,7 @@ async def test_connection(
     )
 
     try:
-        broker = create_trading212_provider_adapter(
+        trading212_adapter = create_trading212_provider_adapter(
             # Credential tests intentionally allow demo/live validation through the provider.
             BrokerProviderRequest(
                 broker_id="trading212",
@@ -316,7 +325,7 @@ async def test_connection(
     except BrokerProviderValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    async with broker:
+    async with trading212_adapter as broker:
         test = await broker.test_connection()
 
     conn.last_test_at = datetime.now(UTC)
@@ -427,15 +436,17 @@ async def run_demo_reconciliation_once(
     try:
         if hasattr(broker, "__aenter__"):
             async with broker as active_broker:  # type: ignore[attr-defined]
+                history_broker = cast(ReconciliationHistoryBrokerProtocol, active_broker)
                 summary = await DemoReconciliationWorker(
                     db,
-                    active_broker,
+                    history_broker,
                     actor=str(current_user.id),
                 ).run_once()
         else:
+            history_broker = cast(ReconciliationHistoryBrokerProtocol, broker)
             summary = await DemoReconciliationWorker(
                 db,
-                broker,
+                history_broker,
                 actor=str(current_user.id),
             ).run_once()
     except SafetyPolicyViolation as exc:
@@ -469,15 +480,17 @@ async def run_demo_reconciliation_scheduler_once(
     try:
         if hasattr(broker, "__aenter__"):
             async with broker as active_broker:  # type: ignore[attr-defined]
+                history_broker = cast(ReconciliationHistoryBrokerProtocol, active_broker)
                 result = await DemoReconciliationScheduler(
                     db,
-                    active_broker,
+                    history_broker,
                     actor=str(current_user.id),
                 ).run_once()
         else:
+            history_broker = cast(ReconciliationHistoryBrokerProtocol, broker)
             result = await DemoReconciliationScheduler(
                 db,
-                broker,
+                history_broker,
                 actor=str(current_user.id),
             ).run_once()
     except SafetyPolicyViolation as exc:
