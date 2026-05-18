@@ -594,7 +594,12 @@ async def start_global_demo_reconciliation_scheduler() -> asyncio.Task[None] | N
     await _audit_global_lifecycle("demo_reconciliation_scheduler_started")
 
     async def _loop() -> None:
-        from app.broker.trading212 import Trading212Adapter
+        from app.broker.provider import (
+            BrokerProviderCredentials,
+            BrokerProviderRequest,
+            BrokerProviderValidationError,
+            create_trading212_provider_adapter,
+        )
         from app.db.session import AsyncSessionLocal
 
         if (
@@ -610,9 +615,19 @@ async def start_global_demo_reconciliation_scheduler() -> asyncio.Task[None] | N
                 if not api_key or not api_secret:
                     log.warning("demo_reconciliation_scheduler.credentials_missing")
                 else:
+                    broker = create_trading212_provider_adapter(
+                        BrokerProviderRequest(
+                            broker_id="trading212",
+                            environment="demo",
+                            purpose="demo_reconciliation",
+                        ),
+                        BrokerProviderCredentials(api_key=api_key, api_secret=api_secret),
+                        app_mode=settings.APP_MODE,
+                        live_trading_enabled=bool(settings.LIVE_TRADING_ENABLED),
+                    )
                     async with (
                         AsyncSessionLocal() as db,
-                        Trading212Adapter(api_key, api_secret, "demo") as broker,
+                        broker,
                     ):
                         scheduler = DemoReconciliationScheduler(
                             db,
@@ -623,6 +638,11 @@ async def start_global_demo_reconciliation_scheduler() -> asyncio.Task[None] | N
                         await db.commit()
             except asyncio.CancelledError:
                 raise
+            except BrokerProviderValidationError as exc:
+                log.exception(
+                    "demo_reconciliation_scheduler.provider_validation_error",
+                    error_type=type(exc).__name__,
+                )
             except Exception as exc:
                 log.warning(
                     "demo_reconciliation_scheduler.loop_error",

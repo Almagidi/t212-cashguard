@@ -29,7 +29,7 @@ The provider request and credential validation helpers do not select credentials
 
 `/v1/broker/trading212/connect` and `/v1/broker/trading212/test` now use the provider only for final adapter construction during credential tests. Submitted credential handling, encrypted credential storage, decryption, reconnect-required handling, route schemas, and audit behaviour remain in the route layer.
 
-Scheduler/worker provider-equivalence tests document the current demo-only construction gates before migration. Scheduler and terminal worker construction remain direct Trading 212 paths for now, continue to require demo mode and demo environment, avoid live credentials, and remain read-only.
+Scheduler/worker provider-equivalence tests document the migrated demo-only construction gates. Scheduler startup and the terminal one-shot worker now use `create_trading212_provider_adapter(...)` only for final Trading 212 adapter construction after their existing demo mode, demo environment, live-disabled, enabled-state, and credential-source checks pass. They avoid live credentials and remain read-only.
 
 Demo and live credentials are separated:
 
