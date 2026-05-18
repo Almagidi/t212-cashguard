@@ -6,6 +6,7 @@ from typing import Any, ClassVar
 
 import pytest
 
+from app.broker.provider import BrokerProviderCredentials, BrokerProviderRequest
 from app.core.config import settings
 from app.services import demo_reconciliation_scheduler as scheduler_module
 from app.services import demo_reconciliation_worker as worker_module
@@ -113,16 +114,29 @@ def _safe_demo_settings(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def scheduler_construction_fakes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    provider_calls: list[str] = []
+def scheduler_construction_fakes(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    provider_calls: list[dict[str, Any]] = []
 
-    def forbidden_provider(*_args: Any, **_kwargs: Any) -> Any:
-        provider_calls.append("create_trading212_provider_adapter")
-        raise AssertionError("scheduler/worker construction must not use provider helper yet")
+    def recording_provider(
+        request: BrokerProviderRequest,
+        credentials: BrokerProviderCredentials,
+        *,
+        app_mode: str,
+        live_trading_enabled: bool,
+    ) -> RecordingAdapter:
+        provider_calls.append(
+            {
+                "request": request,
+                "credentials": credentials,
+                "app_mode": app_mode,
+                "live_trading_enabled": live_trading_enabled,
+            }
+        )
+        return RecordingAdapter(credentials.api_key, credentials.api_secret, request.environment)
 
     monkeypatch.setattr(
         "app.broker.provider.create_trading212_provider_adapter",
-        forbidden_provider,
+        recording_provider,
     )
     monkeypatch.setattr("app.broker.trading212.Trading212Adapter", RecordingAdapter)
     monkeypatch.setattr("app.db.session.AsyncSessionLocal", lambda: FakeSession())
@@ -141,7 +155,7 @@ async def _start_scheduler_and_cancel() -> None:
 @pytest.mark.asyncio
 async def test_scheduler_startup_constructs_demo_adapter_after_demo_gates(
     monkeypatch: pytest.MonkeyPatch,
-    scheduler_construction_fakes: list[str],
+    scheduler_construction_fakes: list[dict[str, Any]],
 ) -> None:
     monkeypatch.setattr(settings, "T212_DEMO_API_KEY", "demo-key")
     monkeypatch.setattr(settings, "T212_DEMO_API_SECRET", "demo-secret")
@@ -153,6 +167,21 @@ async def test_scheduler_startup_constructs_demo_adapter_after_demo_gates(
     await _start_scheduler_and_cancel()
 
     assert RecordingAdapter.calls == [("demo-key", "demo-secret", "demo")]
+    assert scheduler_construction_fakes == [
+        {
+            "request": BrokerProviderRequest(
+                broker_id="trading212",
+                environment="demo",
+                purpose="demo_reconciliation",
+            ),
+            "credentials": BrokerProviderCredentials(
+                api_key="demo-key",
+                api_secret="demo-secret",
+            ),
+            "app_mode": "demo",
+            "live_trading_enabled": False,
+        }
+    ]
     assert RecordingScheduler.tick_calls == 1
     adapter_construction_actors = [
         actor
@@ -160,14 +189,13 @@ async def test_scheduler_startup_constructs_demo_adapter_after_demo_gates(
         if isinstance(broker, RecordingAdapter)
     ]
     assert adapter_construction_actors == ["background:demo_reconciliation_scheduler"]
-    assert scheduler_construction_fakes == []
     assert RecordingAdapter.write_calls == []
 
 
 @pytest.mark.asyncio
 async def test_scheduler_startup_preserves_current_generic_demo_credential_fallback(
     monkeypatch: pytest.MonkeyPatch,
-    scheduler_construction_fakes: list[str],
+    scheduler_construction_fakes: list[dict[str, Any]],
 ) -> None:
     monkeypatch.setattr(settings, "T212_API_KEY", "generic-demo-key")
     monkeypatch.setattr(settings, "T212_API_SECRET", "generic-demo-secret")
@@ -177,14 +205,28 @@ async def test_scheduler_startup_preserves_current_generic_demo_credential_fallb
     await _start_scheduler_and_cancel()
 
     assert RecordingAdapter.calls == [("generic-demo-key", "generic-demo-secret", "demo")]
-    assert scheduler_construction_fakes == []
+    assert scheduler_construction_fakes == [
+        {
+            "request": BrokerProviderRequest(
+                broker_id="trading212",
+                environment="demo",
+                purpose="demo_reconciliation",
+            ),
+            "credentials": BrokerProviderCredentials(
+                api_key="generic-demo-key",
+                api_secret="generic-demo-secret",
+            ),
+            "app_mode": "demo",
+            "live_trading_enabled": False,
+        }
+    ]
     assert RecordingAdapter.write_calls == []
 
 
 @pytest.mark.asyncio
 async def test_scheduler_startup_missing_demo_credentials_never_uses_live_credentials(
     monkeypatch: pytest.MonkeyPatch,
-    scheduler_construction_fakes: list[str],
+    scheduler_construction_fakes: list[dict[str, Any]],
 ) -> None:
     monkeypatch.setattr(settings, "T212_LIVE_API_KEY", "live-key-must-not-be-used")
     monkeypatch.setattr(settings, "T212_LIVE_API_SECRET", "live-secret-must-not-be-used")
@@ -210,7 +252,7 @@ async def test_scheduler_startup_missing_demo_credentials_never_uses_live_creden
 )
 async def test_scheduler_startup_refuses_unsafe_states_before_adapter_construction(
     monkeypatch: pytest.MonkeyPatch,
-    scheduler_construction_fakes: list[str],
+    scheduler_construction_fakes: list[dict[str, Any]],
     setting_name: str,
     unsafe_value: object,
 ) -> None:
@@ -263,7 +305,30 @@ def worker_script_module(monkeypatch: pytest.MonkeyPatch) -> Any:
     # RecordingWorker is only exercised through this fixture, so reset its state here.
     RecordingWorker.brokers.clear()
     RecordingWorker.calls = 0
-    monkeypatch.setattr(script, "Trading212Adapter", RecordingAdapter)
+    script.provider_calls = []
+
+    def recording_provider(
+        request: BrokerProviderRequest,
+        credentials: BrokerProviderCredentials,
+        *,
+        app_mode: str,
+        live_trading_enabled: bool,
+    ) -> RecordingAdapter:
+        script.provider_calls.append(
+            {
+                "request": request,
+                "credentials": credentials,
+                "app_mode": app_mode,
+                "live_trading_enabled": live_trading_enabled,
+            }
+        )
+        return RecordingAdapter(credentials.api_key, credentials.api_secret, request.environment)
+
+    monkeypatch.setattr(
+        script,
+        "create_trading212_provider_adapter",
+        recording_provider,
+    )
     monkeypatch.setattr(script, "AsyncSessionLocal", lambda: FakeSession())
     monkeypatch.setattr(script, "DemoReconciliationWorker", RecordingWorker)
     return script
@@ -289,6 +354,21 @@ async def test_worker_script_constructs_demo_adapter_from_current_generic_creden
 
     assert result == 0
     assert RecordingAdapter.calls == [("script-demo-key", "script-demo-secret", "demo")]
+    assert worker_script_module.provider_calls == [
+        {
+            "request": BrokerProviderRequest(
+                broker_id="trading212",
+                environment="demo",
+                purpose="demo_reconciliation",
+            ),
+            "credentials": BrokerProviderCredentials(
+                api_key="script-demo-key",
+                api_secret="script-demo-secret",
+            ),
+            "app_mode": "demo",
+            "live_trading_enabled": False,
+        }
+    ]
     assert [broker.environment for broker in RecordingWorker.brokers] == ["demo"]
     assert RecordingWorker.calls == 1
     assert RecordingAdapter.write_calls == []
@@ -324,6 +404,7 @@ async def test_worker_script_refuses_unsafe_states_before_adapter_construction(
         await worker_script_module.main()
 
     assert RecordingAdapter.calls == []
+    assert worker_script_module.provider_calls == []
     assert RecordingWorker.calls == 0
     assert RecordingAdapter.write_calls == []
 
@@ -346,15 +427,18 @@ async def test_worker_script_missing_generic_credentials_do_not_fall_through_to_
         await worker_script_module.main()
 
     assert RecordingAdapter.calls == []
+    assert worker_script_module.provider_calls == []
     assert RecordingWorker.calls == 0
     assert RecordingAdapter.write_calls == []
 
 
-def test_scheduler_worker_runtime_provider_call_sites_remain_unwired() -> None:
+def test_scheduler_worker_runtime_provider_call_sites_are_limited_to_construction_sites() -> None:
     scheduler_source = inspect.getsource(scheduler_module)
     worker_source = inspect.getsource(worker_module)
 
-    assert "create_trading212_provider_adapter" not in scheduler_source
-    assert "app.broker.provider" not in scheduler_source
+    # 1 occurrence in the import list and 1 at the construction call site.
+    assert scheduler_source.count("create_trading212_provider_adapter") == 2
+    assert scheduler_source.count("BrokerProviderRequest") == 2
+    assert scheduler_source.count("BrokerProviderCredentials") == 2
     assert "create_trading212_provider_adapter" not in worker_source
     assert "app.broker.provider" not in worker_source

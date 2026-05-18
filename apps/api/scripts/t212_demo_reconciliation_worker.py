@@ -13,7 +13,12 @@ import json
 import os
 from dataclasses import asdict
 
-from app.broker.trading212 import Trading212Adapter
+from app.broker.provider import (
+    BrokerProviderCredentials,
+    BrokerProviderRequest,
+    BrokerProviderValidationError,
+    create_trading212_provider_adapter,
+)
 from app.core.serialization import to_jsonable
 from app.db.session import AsyncSessionLocal
 from app.services.demo_reconciliation_worker import DemoReconciliationWorker
@@ -31,9 +36,10 @@ def _enabled(name: str) -> bool:
     return os.getenv(name, "").lower() in {"1", "true", "yes", "on"}
 
 
-def _require_safety_env() -> None:
+def _require_safety_env() -> tuple[str, bool]:
     app_mode = os.getenv("APP_MODE", "demo").lower()
     t212_environment = os.getenv("T212_ENVIRONMENT", "demo").lower()
+    live_trading_enabled = _enabled("LIVE_TRADING_ENABLED")
 
     if app_mode != "demo":
         raise SystemExit(f"Refusing to run: APP_MODE must be demo, got {app_mode!r}")
@@ -41,17 +47,18 @@ def _require_safety_env() -> None:
         raise SystemExit(
             f"Refusing to run: T212_ENVIRONMENT must be demo, got {t212_environment!r}"
         )
-    if _enabled("LIVE_TRADING_ENABLED"):
+    if live_trading_enabled:
         raise SystemExit("Refusing to run: LIVE_TRADING_ENABLED must be false")
     if not _enabled("DEMO_RECONCILIATION_WORKER_ENABLED"):
         raise SystemExit(
             "Refusing to run: DEMO_RECONCILIATION_WORKER_ENABLED must be true "
             "for this controlled one-shot worker pass."
         )
+    return app_mode, live_trading_enabled
 
 
 async def main() -> int:
-    _require_safety_env()
+    app_mode, live_trading_enabled = _require_safety_env()
     api_key = _env("T212_API_KEY")
     api_secret = _env("T212_API_SECRET")
 
@@ -64,9 +71,19 @@ async def main() -> int:
     print("")
 
     try:
+        broker = create_trading212_provider_adapter(
+            BrokerProviderRequest(
+                broker_id="trading212",
+                environment="demo",
+                purpose="demo_reconciliation",
+            ),
+            BrokerProviderCredentials(api_key=api_key, api_secret=api_secret),
+            app_mode=app_mode,
+            live_trading_enabled=live_trading_enabled,
+        )
         async with (
             AsyncSessionLocal() as db,
-            Trading212Adapter(api_key, api_secret, "demo") as broker,
+            broker,
         ):
             summary = await DemoReconciliationWorker(
                 db,
@@ -74,6 +91,9 @@ async def main() -> int:
                 actor="script:t212_demo_reconciliation_worker",
             ).run_once()
             await db.commit()
+    except BrokerProviderValidationError as exc:
+        print(f"Safety gate refused worker run: {exc}")
+        return 2
     except SafetyPolicyViolation as exc:
         print(f"Safety gate refused worker run: {exc.reason}")
         return 2
