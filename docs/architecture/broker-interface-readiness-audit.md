@@ -224,6 +224,12 @@ Read-only worker migrations now lock these acceptance tests:
 - `BrokerAccountSnapshot` and local CFD funding persistence plus task summaries remain unchanged;
 - no placement, cancellation, modification, deposit, or withdrawal method is called.
 
+`apps/api/tests/unit/test_order_worker_provider_equivalence.py` now locks the current direct construction behaviour for the remaining order-worker paths before any provider migration. `reconcile_pending_orders` and `cancel_timed_out_orders` still do not call `create_trading212_provider_adapter(...)`; they construct `Trading212Adapter` directly only after candidate order selection, active connection lookup, `require_broker_environment(...)`, and credential decryption pass.
+
+The new order-worker tests prove unsafe states return the existing skipped summaries before adapter construction: mock mode, no eligible orders, no active connection, credential-decryption failure with reconnect-required marking, policy rejection, and live-disabled mismatch. They also prove active encrypted `BrokerConnection` credentials for the current `settings.APP_MODE` are used, the constructed broker is handed to `ExecutionEngine`, and the engine receives exactly the selected orders.
+
+`cancel_timed_out_orders` remains write-capable through `ExecutionEngine.cancel_order(...)` and must stay deferred until a provider migration can prove unchanged cancellation behaviour. `reconcile_pending_orders` is read-like in the current engine flow, but it still passes a broad broker into `ExecutionEngine`; it should also be migrated only with focused acceptance tests and fake brokers that prevent broker writes.
+
 ## Broker-Neutral Snapshots Added
 
 `apps/api/app/broker/snapshots.py` now defines lightweight broker-neutral `BrokerAccountSnapshot` and `BrokerOrderSnapshot` dataclasses. `apps/api/app/broker/trading212_mappers.py` maps observed Trading 212 DEMO account, pending-order, historical-order, and order-response payloads into those snapshots.

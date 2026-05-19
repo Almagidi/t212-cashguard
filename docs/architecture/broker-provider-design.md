@@ -16,6 +16,8 @@ The provider migration now covers `get_broker()`, `/v1/broker/trading212` creden
 
 `track_cfd_funding` now delegates only final Trading 212 adapter construction to `create_trading212_provider_adapter(...)` with purpose `worker_cfd_funding`. It remains read-only at the broker boundary and calls only `get_positions()` before persisting local CFD funding records. Active connection lookup, credential decryption, reconnect-required handling, `require_broker_environment(conn.environment, action="worker cfd funding")`, provider-validation failure summarization, and local funding persistence remain in worker code. Write-capable worker and service paths remain deferred.
 
+`reconcile_pending_orders` and `cancel_timed_out_orders` remain intentionally unwired from the provider. Focused unit tests now document their current direct `Trading212Adapter` construction behaviour and future migration acceptance criteria: no provider helper call, no construction before candidate order selection, no construction before active connection lookup, no construction before `require_broker_environment(...)`, no construction before credential decryption, and no real broker calls in tests. `cancel_timed_out_orders` is write-capable through `ExecutionEngine.cancel_order(...)`; `reconcile_pending_orders` is read-like today but still receives a broad broker through `ExecutionEngine`.
+
 Tests may still import or monkeypatch `Trading212Adapter` to prove safety boundaries without network calls. Those references are not runtime construction paths.
 
 ## Current Credential Sources
@@ -196,8 +198,9 @@ The provider should be introduced only after its test matrix proves it preserves
 9. Done: move scheduler and terminal worker construction to the provider while preserving the newly locked demo-only gates, credential sources, route handoff behaviour, and read-only reconciliation boundary.
 10. Done: move `sync_account_snapshot` final adapter construction to the provider while preserving active connection lookup, credential decryption, environment gates, reconnect-required handling, snapshot persistence, and read-only account-summary behavior.
 11. Done: move `track_cfd_funding` final adapter construction to the provider while preserving active connection lookup, credential decryption, environment gates, reconnect-required handling, local CFD funding persistence, and read-only positions behavior.
-12. Consider broker-neutral route design only after the Trading 212 provider migration is complete and behavior-equivalent.
-13. Design any second broker with recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
+12. Done: add order-worker provider-equivalence tests for `reconcile_pending_orders` and `cancel_timed_out_orders` before any order-worker provider migration, locking current direct construction gates, credential source, provider-unwired status, and fake engine/broker boundaries.
+13. Consider broker-neutral route design only after the Trading 212 provider migration is complete and behavior-equivalent.
+14. Design any second broker with recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
 
 ## Risks Of Introducing A Provider Too Early
 
@@ -225,4 +228,4 @@ A later runtime provider PR should be accepted only when:
 
 ## Next Recommended PR
 
-Keep write-capable paths deferred. Future provider PRs should avoid `reconcile_pending_orders`, `cancel_timed_out_orders`, `position_monitor`, `strategy_runner`, `portfolio_execution_service`, and `system_control` until each path has explicit tests for its safety gates, credential source, broker write boundary, and unchanged order behavior.
+Keep write-capable paths deferred. The next provider migration PR can use the new order-worker equivalence tests as acceptance coverage, but should still migrate at most one order-worker path at a time. `cancel_timed_out_orders` should remain especially late because it can cancel broker orders through the execution engine; migrate it only when unchanged cancellation selection, environment gating, credentials, and broker-write behaviour are proven against fakes. Continue to avoid `position_monitor`, `strategy_runner`, `portfolio_execution_service`, and `system_control` until each path has similarly focused tests for its safety gates, credential source, broker write boundary, and unchanged order behavior.
