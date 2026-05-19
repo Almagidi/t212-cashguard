@@ -33,7 +33,9 @@ Scheduler/worker provider-equivalence tests document the migrated demo-only cons
 
 Remaining direct Trading 212 construction paths are inventoried and locked by a unit test. Read-only account sync and CFD funding tracking now use the provider only for final adapter construction, after worker-owned active connection lookup, credential decryption, reconnect-required handling, and environment gates. Account sync calls only `get_account_summary()` before persisting a local snapshot; CFD funding calls only `get_positions()` before persisting local funding records.
 
-Order submission, cancellation, strategy execution, position monitoring, portfolio execution, reconciliation, and emergency system-control paths remain direct and deferred so provider work does not expand broker write reach.
+Focused order-worker provider-equivalence tests now lock the remaining direct `reconcile_pending_orders` and `cancel_timed_out_orders` behaviour before migration. They prove these workers still do not call the provider helper, skip adapter construction in unsafe states, use active encrypted connection credentials for the current runtime mode, and hand the constructed broker only to a fake `ExecutionEngine` in tests. Live-disabled mismatch remains a policy-layer rejection through `require_broker_environment(...)`, not a separate worker-owned gate.
+
+Order submission, cancellation, strategy execution, position monitoring, portfolio execution, reconciliation, and emergency system-control paths remain direct and deferred so provider work does not expand broker write reach. `cancel_timed_out_orders` is write-capable through `ExecutionEngine.cancel_order(...)` and must not be migrated until unchanged cancellation behaviour is proven. `reconcile_pending_orders` is read-like in the current engine flow, but it still passes a broad broker through the execution engine and should move only under focused acceptance tests.
 
 Demo and live credentials are separated:
 
