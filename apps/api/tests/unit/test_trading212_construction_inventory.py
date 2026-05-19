@@ -132,9 +132,8 @@ def test_runtime_trading212_adapter_construction_inventory_is_locked() -> None:
         # Worker task references map mechanically to these functions:
         # reconcile_pending_orders: import + construct
         # cancel_timed_out_orders: import + construct
-        # track_cfd_funding: import + construct
-        # sync_account_snapshot has migrated to provider construction.
-        "app/workers/tasks.py": {"construct": 3, "import": 3},
+        # sync_account_snapshot and track_cfd_funding have migrated to provider construction.
+        "app/workers/tasks.py": {"construct": 2, "import": 2},
         # Manual terminal-only DEMO reconciliation smoke with a write-method guard.
         "scripts/t212_demo_multi_order_reconciliation_smoke.py": {
             "construct": 1,

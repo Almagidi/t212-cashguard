@@ -833,7 +833,13 @@ def track_cfd_funding(self: Any) -> dict[str, Any]:
     async def _run() -> dict[str, Any]:
         from sqlalchemy import select
 
-        from app.broker.trading212 import Trading212Adapter
+        from app.broker.provider import (
+            BrokerProviderCredentials,
+            BrokerProviderRequest,
+            BrokerProviderValidationError,
+            BrokerRuntimeEnvironment,
+            create_trading212_provider_adapter,
+        )
         from app.core.config import settings as app_settings
         from app.core.security import CredentialDecryptionError, decrypt_field
         from app.db.models import BrokerConnection, Strategy
@@ -884,11 +890,31 @@ def track_cfd_funding(self: Any) -> dict[str, Any]:
                         "track_cfd_funding",
                         {"recorded": 0, "skipped": exc.decision_code, "reason": exc.reason},
                     )
-                trading212_broker = Trading212Adapter(
-                    api_key,
-                    api_secret,
-                    conn.environment,
-                )
+                try:
+                    trading212_broker = create_trading212_provider_adapter(
+                        BrokerProviderRequest(
+                            broker_id="trading212",
+                            environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                            purpose="worker_cfd_funding",
+                            user_id=conn.user_id,
+                        ),
+                        BrokerProviderCredentials(
+                            api_key=api_key,
+                            api_secret=api_secret,
+                        ),
+                        app_mode=app_settings.APP_MODE,
+                        live_trading_enabled=bool(app_settings.LIVE_TRADING_ENABLED),
+                    )
+                except BrokerProviderValidationError as exc:
+                    return await _complete_task(
+                        db,
+                        "track_cfd_funding",
+                        {
+                            "recorded": 0,
+                            "skipped": "provider_validation_error",
+                            "reason": str(exc),
+                        },
+                    )
 
             funding_broker = mock_broker if app_settings.APP_MODE == "mock" else trading212_broker
             async with funding_broker as b:

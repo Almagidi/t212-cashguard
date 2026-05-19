@@ -31,9 +31,9 @@ The provider request and credential validation helpers do not select credentials
 
 Scheduler/worker provider-equivalence tests document the migrated demo-only construction gates. Scheduler startup and the terminal one-shot worker now use `create_trading212_provider_adapter(...)` only for final Trading 212 adapter construction after their existing demo mode, demo environment, live-disabled, enabled-state, and credential-source checks pass. They avoid live credentials and remain read-only.
 
-Remaining direct Trading 212 construction paths are inventoried and locked by a unit test. Read-only account sync now uses the provider only for final adapter construction, after worker-owned active connection lookup, credential decryption, reconnect-required handling, and environment gates. It remains read-only and calls only `get_account_summary()` before persisting a local snapshot.
+Remaining direct Trading 212 construction paths are inventoried and locked by a unit test. Read-only account sync and CFD funding tracking now use the provider only for final adapter construction, after worker-owned active connection lookup, credential decryption, reconnect-required handling, and environment gates. Account sync calls only `get_account_summary()` before persisting a local snapshot; CFD funding calls only `get_positions()` before persisting local funding records.
 
-`track_cfd_funding` remains deferred to a separate read-only PR. Order submission, cancellation, strategy execution, position monitoring, portfolio execution, and emergency system-control paths remain direct and deferred so provider work does not expand broker write reach.
+Order submission, cancellation, strategy execution, position monitoring, portfolio execution, reconciliation, and emergency system-control paths remain direct and deferred so provider work does not expand broker write reach.
 
 Demo and live credentials are separated:
 
