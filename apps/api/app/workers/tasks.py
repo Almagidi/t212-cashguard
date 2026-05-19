@@ -2,11 +2,12 @@
 Celery periodic tasks.
 All tasks are idempotent and safe to retry.
 """
+
 from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
@@ -29,25 +30,27 @@ def run_async(coro: Awaitable[Any]) -> Any:
     return _LOOP.run_until_complete(coro)
 
 
-async def _record_task_heartbeat(db, task_name: str, payload: dict[str, Any]) -> None:
+async def _record_task_heartbeat(db: Any, task_name: str, payload: dict[str, Any]) -> None:
     from app.services.worker_health import record_worker_heartbeat
 
     await record_worker_heartbeat(db, task_name=task_name, payload=payload)
 
 
-async def _mark_connection_reconnect_required(db, conn, reason: str, *, actor: str) -> None:
+async def _mark_connection_reconnect_required(
+    db: Any, conn: Any, reason: str, *, actor: str
+) -> None:
     from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
 
     await mark_broker_connection_reconnect_required(db, conn, reason, actor=actor)
 
 
-async def _complete_task(db, task_name: str, summary: dict[str, Any]) -> dict[str, Any]:
+async def _complete_task(db: Any, task_name: str, summary: dict[str, Any]) -> dict[str, Any]:
     await _record_task_heartbeat(db, task_name, summary)
     await db.commit()
     return summary
 
 
-async def run_daily_reset_once(db) -> dict[str, Any]:
+async def run_daily_reset_once(db: Any) -> dict[str, Any]:
     """Reset daily counters without automatically recovering the kill switch."""
     from sqlalchemy import desc, select
 
@@ -95,7 +98,9 @@ async def _record_task_failure(task_name: str, exc: Exception) -> None:
         await db.commit()
 
 
-def run_monitored_task(task_name: str, coro_factory: Callable[[], Awaitable[dict[str, Any]]]) -> dict[str, Any]:
+def run_monitored_task(
+    task_name: str, coro_factory: Callable[[], Awaitable[dict[str, Any]]]
+) -> dict[str, Any]:
     async def _wrapped() -> dict[str, Any]:
         try:
             return await coro_factory()
@@ -107,16 +112,23 @@ def run_monitored_task(task_name: str, coro_factory: Callable[[], Awaitable[dict
                 log.exception("tasks.failure_heartbeat_failed", task=task_name)
             raise
 
-    return run_async(_wrapped())
+    return cast(dict[str, Any], run_async(_wrapped()))
 
 
 # ── Strategy signal generation (every 5 min) ─────────────────────────────────
 
-@celery_app.task(name="app.workers.tasks.run_strategy_signals", bind=True,
-                 max_retries=0, time_limit=240, soft_time_limit=180)
-def run_strategy_signals(self):
+
+@celery_app.task(
+    name="app.workers.tasks.run_strategy_signals",
+    bind=True,
+    max_retries=0,
+    time_limit=240,
+    soft_time_limit=180,
+)
+def run_strategy_signals(self: Any) -> dict[str, Any]:
     """Entry signal generation loop. Runs every 5 minutes."""
-    async def _run():
+
+    async def _run() -> dict[str, Any]:
         from app.core.redis import task_lock
         from app.db.session import AsyncSessionLocal
         from app.services.strategy_runner import StrategyRunner
@@ -127,7 +139,7 @@ def run_strategy_signals(self):
                 return {"skipped": True, "reason": "already_running"}
             async with AsyncSessionLocal() as db:
                 runner = StrategyRunner(db)
-                summary = await runner.run_all_enabled()
+                summary: dict[str, Any] = await runner.run_all_enabled()
                 summary = await _complete_task(db, "run_strategy_signals", summary)
             log.info("tasks.signals_complete", **summary)
             return summary
@@ -137,11 +149,18 @@ def run_strategy_signals(self):
 
 # ── Portfolio rebalancing (every 15 min; service gates on due dates) ─────────
 
-@celery_app.task(name="app.workers.tasks.run_portfolio_rebalance", bind=True,
-                 max_retries=0, time_limit=300, soft_time_limit=240)
-def run_portfolio_rebalance(self):
+
+@celery_app.task(
+    name="app.workers.tasks.run_portfolio_rebalance",
+    bind=True,
+    max_retries=0,
+    time_limit=300,
+    soft_time_limit=240,
+)
+def run_portfolio_rebalance(self: Any) -> dict[str, Any]:
     """Portfolio sleeve automation for lower-turnover basket strategies."""
-    async def _run():
+
+    async def _run() -> dict[str, Any]:
         from app.core.redis import task_lock
         from app.db.session import AsyncSessionLocal
         from app.services.portfolio_execution_service import PortfolioExecutionService
@@ -152,7 +171,7 @@ def run_portfolio_rebalance(self):
                 return {"skipped": True, "reason": "already_running"}
             async with AsyncSessionLocal() as db:
                 service = PortfolioExecutionService(db)
-                summary = await service.run_all_enabled()
+                summary: dict[str, Any] = await service.run_all_enabled()
                 summary = await _complete_task(db, "run_portfolio_rebalance", summary)
             if summary.get("strategies_due", 0) > 0 or summary.get("errors"):
                 log.info("tasks.portfolio_rebalance", **summary)
@@ -163,9 +182,15 @@ def run_portfolio_rebalance(self):
 
 # ── Position monitor (every 60s) ──────────────────────────────────────────────
 
-@celery_app.task(name="app.workers.tasks.run_position_monitor", bind=True,
-                 max_retries=0, time_limit=90, soft_time_limit=75)
-def run_position_monitor(self):
+
+@celery_app.task(
+    name="app.workers.tasks.run_position_monitor",
+    bind=True,
+    max_retries=0,
+    time_limit=90,
+    soft_time_limit=75,
+)
+def run_position_monitor(self: Any) -> dict[str, Any]:
     """
     THE EXIT ENGINE.
     Monitors open positions every 60 seconds for:
@@ -174,7 +199,8 @@ def run_position_monitor(self):
     - Partial exits at 1R
     - Daily loss limit breach (including unrealized)
     """
-    async def _run():
+
+    async def _run() -> dict[str, Any]:
         from app.core.redis import task_lock
         from app.db.session import AsyncSessionLocal
         from app.services.position_monitor import PositionMonitor
@@ -185,7 +211,7 @@ def run_position_monitor(self):
                 return {"skipped": True, "reason": "already_running"}
             async with AsyncSessionLocal() as db:
                 monitor = PositionMonitor(db)
-                summary = await monitor.run()
+                summary: dict[str, Any] = await monitor.run()
                 summary = await _complete_task(db, "run_position_monitor", summary)
             if summary.get("exits_submitted", 0) > 0:
                 log.info("tasks.position_monitor", **summary)
@@ -196,10 +222,12 @@ def run_position_monitor(self):
 
 # ── Order reconciliation (every 30s) ─────────────────────────────────────────
 
-@celery_app.task(name="app.workers.tasks.reconcile_pending_orders", bind=True,
-                 max_retries=3, time_limit=60)
-def reconcile_pending_orders(self):
-    async def _run():
+
+@celery_app.task(
+    name="app.workers.tasks.reconcile_pending_orders", bind=True, max_retries=3, time_limit=60
+)
+def reconcile_pending_orders(self: Any) -> dict[str, Any]:
+    async def _run() -> dict[str, Any]:
         from datetime import timedelta
 
         from sqlalchemy import select
@@ -243,15 +271,17 @@ def reconcile_pending_orders(self):
                     )
 
                 result = await db.execute(
-                    select(Order).where(
+                    select(Order)
+                    .where(
                         Order.status.in_(["accepted", "submitted"]),
                         Order.is_dry_run.is_(False),
                         Order.broker_order_id.isnot(None),
-                    ).limit(50)
+                    )
+                    .limit(50)
                 )
                 orders = result.scalars().all()
                 if not orders or settings.APP_MODE == "mock":
-                    summary = {"reconciled": 0}
+                    summary: dict[str, Any] = {"reconciled": 0}
                     return await _complete_task(db, "reconcile_pending_orders", summary)
 
                 conn_result = await db.execute(
@@ -275,7 +305,9 @@ def reconcile_pending_orders(self):
                     api_key = decrypt_field(conn.api_key_encrypted)
                     api_secret = decrypt_field(conn.api_secret_encrypted)
                 except CredentialDecryptionError as exc:
-                    log.warning("tasks.credentials_invalid", task="reconcile_pending_orders", error=str(exc))
+                    log.warning(
+                        "tasks.credentials_invalid", task="reconcile_pending_orders", error=str(exc)
+                    )
                     await _mark_connection_reconnect_required(
                         db,
                         conn,
@@ -285,11 +317,7 @@ def reconcile_pending_orders(self):
                     summary = {"reconciled": 0, "skipped": "credential_error"}
                     return await _complete_task(db, "reconcile_pending_orders", summary)
 
-                async with Trading212Adapter(
-                    api_key,
-                    api_secret,
-                    conn.environment
-                ) as broker:
+                async with Trading212Adapter(api_key, api_secret, conn.environment) as broker:
                     engine = ExecutionEngine(db, broker)
                     for order in orders:
                         await engine.reconcile_order(order)
@@ -302,15 +330,22 @@ def reconcile_pending_orders(self):
 
 # ── Account snapshot (every 60s) ─────────────────────────────────────────────
 
+
 @celery_app.task(name="app.workers.tasks.sync_account_snapshot", bind=True, time_limit=30)
-def sync_account_snapshot(self):
-    async def _run():
+def sync_account_snapshot(self: Any) -> dict[str, Any]:
+    async def _run() -> dict[str, Any]:
         import uuid
         from decimal import Decimal
 
         from sqlalchemy import select
 
-        from app.broker.trading212 import Trading212Adapter
+        from app.broker.provider import (
+            BrokerProviderCredentials,
+            BrokerProviderRequest,
+            BrokerProviderValidationError,
+            BrokerRuntimeEnvironment,
+            create_trading212_provider_adapter,
+        )
         from app.core.config import settings
         from app.core.security import CredentialDecryptionError, decrypt_field
         from app.db.models import BrokerAccountSnapshot, BrokerConnection
@@ -327,8 +362,9 @@ def sync_account_snapshot(self):
             conn = conn_result.scalar_one_or_none()
             if settings.APP_MODE == "mock":
                 from app.broker.mock_adapter import MockBrokerAdapter
-                async with MockBrokerAdapter() as broker:
-                    summary = await broker.get_account_summary()
+
+                async with MockBrokerAdapter() as mock_broker:
+                    summary = await mock_broker.get_account_summary()
                 # In mock mode there is no real broker_connection row, so we
                 # cannot satisfy the FK on broker_accounts_snapshots.
                 # Skip the DB write — live account data is served on-demand
@@ -348,7 +384,9 @@ def sync_account_snapshot(self):
                     api_key = decrypt_field(conn.api_key_encrypted)
                     api_secret = decrypt_field(conn.api_secret_encrypted)
                 except CredentialDecryptionError as exc:
-                    log.warning("tasks.credentials_invalid", task="sync_account_snapshot", error=str(exc))
+                    log.warning(
+                        "tasks.credentials_invalid", task="sync_account_snapshot", error=str(exc)
+                    )
                     await _mark_connection_reconnect_required(
                         db,
                         conn,
@@ -357,27 +395,49 @@ def sync_account_snapshot(self):
                     )
                     summary = {"synced": False, "skipped": "credential_error"}
                     return await _complete_task(db, "sync_account_snapshot", summary)
-                async with Trading212Adapter(
-                    api_key,
-                    api_secret,
-                    conn.environment
-                ) as broker:
-                    summary = await broker.get_account_summary()
+                try:
+                    provider_broker = create_trading212_provider_adapter(
+                        BrokerProviderRequest(
+                            broker_id="trading212",
+                            environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                            purpose="worker_account_sync",
+                            user_id=conn.user_id,
+                        ),
+                        BrokerProviderCredentials(
+                            api_key=api_key,
+                            api_secret=api_secret,
+                        ),
+                        app_mode=settings.APP_MODE,
+                        live_trading_enabled=bool(settings.LIVE_TRADING_ENABLED),
+                    )
+                except BrokerProviderValidationError as exc:
+                    summary = {
+                        "synced": False,
+                        "skipped": "provider_validation_error",
+                        "reason": str(exc),
+                    }
+                    return await _complete_task(db, "sync_account_snapshot", summary)
+                async with provider_broker:
+                    summary = await provider_broker.get_account_summary()
                 currency = conn.account_currency or "USD"
                 conn_id = conn.id
             else:
                 summary = {"synced": False, "skipped": "no_connection"}
                 return await _complete_task(db, "sync_account_snapshot", summary)
 
-            db.add(BrokerAccountSnapshot(
-                id=uuid.uuid4(), connection_id=conn_id,
-                total_value=Decimal(str(summary.get("total", 0))),
-                cash=Decimal(str(summary.get("cash", 0))),
-                free_funds=Decimal(str(summary.get("free", 0))),
-                invested=Decimal(str(summary.get("invested", 0))),
-                result=Decimal(str(summary.get("result", 0))),
-                currency=currency, raw=summary,
-            ))
+            db.add(
+                BrokerAccountSnapshot(
+                    id=uuid.uuid4(),
+                    connection_id=conn_id,
+                    total_value=Decimal(str(summary.get("total", 0))),
+                    cash=Decimal(str(summary.get("cash", 0))),
+                    free_funds=Decimal(str(summary.get("free", 0))),
+                    invested=Decimal(str(summary.get("invested", 0))),
+                    result=Decimal(str(summary.get("result", 0))),
+                    currency=currency,
+                    raw=summary,
+                )
+            )
             task_summary = {"synced": True}
             return await _complete_task(db, "sync_account_snapshot", task_summary)
 
@@ -386,9 +446,10 @@ def sync_account_snapshot(self):
 
 # ── EOD flatten (every 2 min) ─────────────────────────────────────────────────
 
+
 @celery_app.task(name="app.workers.tasks.check_eod_flatten", bind=True, time_limit=120)
-def check_eod_flatten(self):
-    async def _run():
+def check_eod_flatten(self: Any) -> dict[str, Any]:
+    async def _run() -> dict[str, Any]:
         from sqlalchemy import select
 
         from app.core.redis import task_lock
@@ -433,10 +494,12 @@ def check_eod_flatten(self):
 
 # ── Daily reset (midnight UTC) ────────────────────────────────────────────────
 
+
 @celery_app.task(name="app.workers.tasks.daily_reset", bind=True)
-def daily_reset(self):
+def daily_reset(self: Any) -> dict[str, Any]:
     """Reset daily stats and re-enable strategies after overnight reset."""
-    async def _run():
+
+    async def _run() -> dict[str, Any]:
         from app.db.session import AsyncSessionLocal
 
         async with AsyncSessionLocal() as db:
@@ -447,13 +510,15 @@ def daily_reset(self):
 
 # ── Order timeout (every 5 min) ───────────────────────────────────────────────
 
+
 @celery_app.task(name="app.workers.tasks.cancel_timed_out_orders", bind=True, time_limit=60)
-def cancel_timed_out_orders(self):
+def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
     """
     Cancel working limit/stop orders that have been open longer than the timeout.
     Prevents stale orders from filling at bad prices hours later.
     """
-    async def _run():
+
+    async def _run() -> dict[str, Any]:
         from datetime import timedelta
 
         from sqlalchemy import select
@@ -510,7 +575,9 @@ def cancel_timed_out_orders(self):
                 api_key = decrypt_field(conn.api_key_encrypted)
                 api_secret = decrypt_field(conn.api_secret_encrypted)
             except CredentialDecryptionError as exc:
-                log.warning("tasks.credentials_invalid", task="cancel_timed_out_orders", error=str(exc))
+                log.warning(
+                    "tasks.credentials_invalid", task="cancel_timed_out_orders", error=str(exc)
+                )
                 await _mark_connection_reconnect_required(
                     db,
                     conn,
@@ -522,16 +589,16 @@ def cancel_timed_out_orders(self):
                     "cancel_timed_out_orders",
                     {"cancelled": 0, "skipped": "credential_error"},
                 )
-            async with Trading212Adapter(
-                api_key,
-                api_secret,
-                conn.environment
-            ) as broker:
+            async with Trading212Adapter(api_key, api_secret, conn.environment) as broker:
                 engine = ExecutionEngine(db, broker)
                 for order in timed_out:
                     await engine.cancel_order(order)
-                    log.warning("tasks.order_timeout_cancel", order_id=str(order.id),
-                                ticker=order.ticker, age_mins=ORDER_TIMEOUT_MINUTES)
+                    log.warning(
+                        "tasks.order_timeout_cancel",
+                        order_id=str(order.id),
+                        ticker=order.ticker,
+                        age_mins=ORDER_TIMEOUT_MINUTES,
+                    )
                     count += 1
 
             return await _complete_task(db, "cancel_timed_out_orders", {"cancelled": count})
@@ -541,15 +608,17 @@ def cancel_timed_out_orders(self):
 
 # ── Morning scanner (09:15 ET = 14:15 UTC) ────────────────────────────────────
 
+
 @celery_app.task(name="app.workers.tasks.morning_scan", bind=True, time_limit=120)
-def morning_scan(self):
+def morning_scan(self: Any) -> dict[str, Any]:
     """
     Runs at 09:15 ET to find ORB and Opening Fade candidates for today.
     Uses strategy-typed scan: ORB strategies receive gap 0.5-2% candidates,
     Opening Fade strategies receive gap 1.5-6% candidates.
     Tickers that fall in the 1.5-2% overlap are routed to both.
     """
-    async def _run():
+
+    async def _run() -> dict[str, Any]:
         from sqlalchemy import select
 
         from app.db.models import AuditLog, Strategy
@@ -573,17 +642,17 @@ def morning_scan(self):
             scanner = MorningScanner()
             candidates = await scanner.scan(universe=universe if universe else None)
             orb_candidates = [
-                candidate for candidate in candidates
-                if candidate.strategy_type in {"orb", "both"}
+                candidate for candidate in candidates if candidate.strategy_type in {"orb", "both"}
             ]
             fade_candidates = [
-                candidate for candidate in candidates
+                candidate
+                for candidate in candidates
                 if candidate.strategy_type in {"opening_fade", "both"}
             ]
 
             orb_tickers = [candidate.ticker for candidate in orb_candidates]
             fade_tickers = [candidate.ticker for candidate in fade_candidates]
-            all_tickers  = list({*orb_tickers, *fade_tickers})
+            all_tickers = list({*orb_tickers, *fade_tickers})
 
             if not all_tickers:
                 log.warning("morning_scan.no_candidates")
@@ -597,8 +666,7 @@ def morning_scan(self):
                 pool = fade_tickers if stype == "opening_fade" else orb_tickers
 
                 strategy_candidates = [
-                    t for t in pool
-                    if not strategy.allowed_tickers or t in strategy.allowed_tickers
+                    t for t in pool if not strategy.allowed_tickers or t in strategy.allowed_tickers
                 ]
                 if strategy_candidates:
                     candidate_pool = orb_candidates if stype != "opening_fade" else fade_candidates
@@ -623,39 +691,48 @@ def morning_scan(self):
                         "watchlist_candidates": candidate_context,
                         "watchlist_updated_at": datetime.now(UTC).isoformat(),
                     }
-                    db.add(AuditLog(
-                        action="watchlist_updated",
-                        entity_type="strategy",
-                        entity_id=str(strategy.id),
-                        actor="morning_scan",
-                        payload={
-                            "tickers": strategy_candidates,
-                            "watchlist_candidates": candidate_context,
-                            "strategy_type": stype,
-                            "orb_pool": orb_tickers,
-                            "fade_pool": fade_tickers,
-                        },
-                        occurred_at=datetime.now(UTC),
-                    ))
+                    db.add(
+                        AuditLog(
+                            action="watchlist_updated",
+                            entity_type="strategy",
+                            entity_id=str(strategy.id),
+                            actor="morning_scan",
+                            payload={
+                                "tickers": strategy_candidates,
+                                "watchlist_candidates": candidate_context,
+                                "strategy_type": stype,
+                                "orb_pool": orb_tickers,
+                                "fade_pool": fade_tickers,
+                            },
+                            occurred_at=datetime.now(UTC),
+                        )
+                    )
 
             log.info(
                 "morning_scan.complete",
                 orb_tickers=orb_tickers,
                 fade_tickers=fade_tickers,
             )
-            return await _complete_task(db, "morning_scan", {
-                "scanned": len(all_tickers),
-                "orb": orb_tickers,
-                "fade": fade_tickers,
-            })
+            return await _complete_task(
+                db,
+                "morning_scan",
+                {
+                    "scanned": len(all_tickers),
+                    "orb": orb_tickers,
+                    "fade": fade_tickers,
+                },
+            )
 
     return run_monitored_task("morning_scan", _run)
 
 
 # ── Data retention / archival (03:00 UTC daily) ──────────────────────────────
 
-@celery_app.task(name="app.workers.tasks.purge_old_records", bind=True, time_limit=300, soft_time_limit=240)
-def purge_old_records(self):
+
+@celery_app.task(
+    name="app.workers.tasks.purge_old_records", bind=True, time_limit=300, soft_time_limit=240
+)
+def purge_old_records(self: Any) -> dict[str, Any]:
     """
     Delete audit logs and risk events older than the configured retention window.
 
@@ -667,6 +744,7 @@ def purge_old_records(self):
     Uses chunked deletes (1 000 rows per loop) to avoid long-lock table scans
     on large Postgres tables.
     """
+
     async def _run() -> dict[str, Any]:
         from datetime import timedelta
 
@@ -677,44 +755,52 @@ def purge_old_records(self):
         from app.db.session import AsyncSessionLocal
 
         audit_days: int = app_settings.AUDIT_LOG_RETENTION_DAYS
-        risk_days: int  = app_settings.RISK_EVENT_RETENTION_DAYS
+        risk_days: int = app_settings.RISK_EVENT_RETENTION_DAYS
         chunk = 1_000
 
         async with AsyncSessionLocal() as db:
             now = datetime.now(UTC)
             audit_cutoff = now - timedelta(days=audit_days)
-            risk_cutoff  = now - timedelta(days=risk_days)
+            risk_cutoff = now - timedelta(days=risk_days)
 
             # ── AuditLog purge ────────────────────────────────────────────────
             audit_deleted = 0
             while True:
                 # Fetch a batch of IDs to delete (avoids full-table lock)
-                id_rows = (await db.execute(
-                    select(AuditLog.id)
-                    .where(AuditLog.occurred_at < audit_cutoff)
-                    .limit(chunk)
-                )).scalars().all()
+                id_rows = (
+                    (
+                        await db.execute(
+                            select(AuditLog.id)
+                            .where(AuditLog.occurred_at < audit_cutoff)
+                            .limit(chunk)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
                 if not id_rows:
                     break
-                result = await db.execute(
-                    delete(AuditLog).where(AuditLog.id.in_(id_rows))
-                )
+                result = await db.execute(delete(AuditLog).where(AuditLog.id.in_(id_rows)))
                 audit_deleted += result.rowcount
                 await db.flush()
 
             # ── RiskEvent purge ───────────────────────────────────────────────
             risk_deleted = 0
             while True:
-                id_rows = (await db.execute(
-                    select(RiskEvent.id)
-                    .where(RiskEvent.occurred_at < risk_cutoff)
-                    .limit(chunk)
-                )).scalars().all()
+                id_rows = (
+                    (
+                        await db.execute(
+                            select(RiskEvent.id)
+                            .where(RiskEvent.occurred_at < risk_cutoff)
+                            .limit(chunk)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
                 if not id_rows:
                     break
-                result = await db.execute(
-                    delete(RiskEvent).where(RiskEvent.id.in_(id_rows))
-                )
+                result = await db.execute(delete(RiskEvent).where(RiskEvent.id.in_(id_rows)))
                 risk_deleted += result.rowcount
                 await db.flush()
 
@@ -732,8 +818,9 @@ def purge_old_records(self):
 
 # ── CFD overnight funding cost tracker (22:00 UTC = 17:00 ET) ────────────────
 
+
 @celery_app.task(name="app.workers.tasks.track_cfd_funding", bind=True, time_limit=60)
-def track_cfd_funding(self):
+def track_cfd_funding(self: Any) -> dict[str, Any]:
     """
     Records daily financing charges for all open CFD positions at 22:00 UTC.
     Must run BEFORE EOD flatten so costs are captured even if positions are
@@ -742,7 +829,8 @@ def track_cfd_funding(self):
     Formula: daily_charge = notional x (annual_rate / 100) / 360
     Rates are fetched from broker position data when available.
     """
-    async def _run():
+
+    async def _run() -> dict[str, Any]:
         from sqlalchemy import select
 
         from app.broker.trading212 import Trading212Adapter
@@ -757,7 +845,8 @@ def track_cfd_funding(self):
             # Fetch open positions from broker
             if app_settings.APP_MODE == "mock":
                 from app.broker.mock_adapter import MockBrokerAdapter
-                broker = MockBrokerAdapter()
+
+                mock_broker = MockBrokerAdapter()
             else:
                 br = await db.execute(
                     select(BrokerConnection)
@@ -773,7 +862,9 @@ def track_cfd_funding(self):
                     api_key = decrypt_field(conn.api_key_encrypted)
                     api_secret = decrypt_field(conn.api_secret_encrypted)
                 except CredentialDecryptionError as exc:
-                    log.warning("tasks.credentials_invalid", task="track_cfd_funding", error=str(exc))
+                    log.warning(
+                        "tasks.credentials_invalid", task="track_cfd_funding", error=str(exc)
+                    )
                     await _mark_connection_reconnect_required(
                         db,
                         conn,
@@ -793,22 +884,21 @@ def track_cfd_funding(self):
                         "track_cfd_funding",
                         {"recorded": 0, "skipped": exc.decision_code, "reason": exc.reason},
                     )
-                broker = Trading212Adapter(
+                trading212_broker = Trading212Adapter(
                     api_key,
                     api_secret,
                     conn.environment,
                 )
 
-            async with broker as b:
+            funding_broker = mock_broker if app_settings.APP_MODE == "mock" else trading212_broker
+            async with funding_broker as b:
                 positions = await b.get_positions()
 
             if not positions:
                 return await _complete_task(db, "track_cfd_funding", {"recorded": 0})
 
             # Build strategy_map: {ticker: strategy_id} from enabled strategies
-            strat_result = await db.execute(
-                select(Strategy).where(Strategy.is_enabled)
-            )
+            strat_result = await db.execute(select(Strategy).where(Strategy.is_enabled))
             strategies = strat_result.scalars().all()
             strategy_map: dict[str, str] = {}
             for s in strategies:
