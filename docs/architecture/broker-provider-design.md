@@ -10,18 +10,11 @@ The current supported real broker remains Trading 212. The purpose of this desig
 
 ## Current Direct Construction Points
 
-The application currently constructs or selects Trading 212 adapters in several places:
+The provider migration now covers `get_broker()`, `/v1/broker/trading212` credential-test construction, scheduler startup construction, and the terminal one-shot demo reconciliation worker. The remaining direct `Trading212Adapter` construction/import inventory is locked by `apps/api/tests/unit/test_trading212_construction_inventory.py` and detailed in `docs/architecture/broker-interface-readiness-audit.md`.
 
-- `apps/api/app/api/deps.py`: `get_broker()` returns `MockBrokerAdapter` in `APP_MODE=mock`; otherwise it validates `settings.APP_MODE`, looks for an active encrypted `BrokerConnection`, falls back to configured demo credentials in demo mode, decrypts credentials, and returns `Trading212Adapter`.
-- `apps/api/app/api/v1/routes/broker.py`: `/v1/broker/trading212/connect` tests submitted credentials by constructing `Trading212Adapter`; `/test` decrypts the active connection and constructs `Trading212Adapter`; status routes preserve Trading 212-specific response naming and mock/demo status behavior.
-- `apps/api/app/api/v1/routes/orders.py`: order placement and cancel routes depend on `get_broker()` and therefore inherit its Trading 212 construction and safety behavior.
-- `apps/api/app/services/demo_reconciliation_scheduler.py`: the background scheduler constructs `Trading212Adapter` directly from demo credentials and only after demo-only scheduler gates pass.
-- `apps/api/app/services/position_monitor.py`, `apps/api/app/services/system_control.py`, `apps/api/app/services/strategy_runner.py`, and `apps/api/app/services/portfolio_execution_service.py`: service-level helpers query active `BrokerConnection` rows and construct `Trading212Adapter` after environment validation.
-- `apps/api/app/workers/tasks.py`: worker tasks construct `Trading212Adapter` for reconcile, account sync, timeout cancel, and other operational paths after app-mode and broker-environment checks.
-- `apps/api/scripts/t212_demo_reconcile_order.py`, `apps/api/scripts/t212_demo_reconciliation_worker.py`, `apps/api/scripts/t212_demo_readonly_smoke.py`, and `apps/api/scripts/t212_demo_multi_order_reconciliation_smoke.py`: terminal smoke scripts construct `Trading212Adapter` directly under explicit demo-only environment gates.
-- Tests monkeypatch `Trading212Adapter`, override `get_broker()`, or use fake broker-like objects to prove route and reconciliation boundaries without network calls.
+Next narrow migration target: move only `sync_account_snapshot` in `apps/api/app/workers/tasks.py` through the provider. It is an isolated read-only worker task that reads account summary, already has `worker_account_sync` as a provider purpose, uses active encrypted `BrokerConnection` credentials, and does not submit, cancel, or modify broker orders. Write-capable service helpers and worker cancel/strategy execution paths should wait until each has explicit provider-equivalence tests for its safety gates and broker write boundaries.
 
-The provider migration now covers `get_broker()` and the `/v1/broker/trading212` credential-test construction paths. The other construction points are intentionally unchanged.
+Tests may still import or monkeypatch `Trading212Adapter` to prove safety boundaries without network calls. Those references are not runtime construction paths.
 
 ## Current Credential Sources
 
@@ -147,7 +140,7 @@ For Trading 212, a future provider would preserve existing construction behavior
 - Submitted credential tests keep using the submitted key/secret and requested environment.
 - Authenticated route dependencies keep preferring active encrypted `BrokerConnection` credentials for the current user and app mode.
 - Demo fallback credentials remain `T212_DEMO_API_KEY` and `T212_DEMO_API_SECRET` for the existing demo dependency path.
-- Scheduler and smoke-script credential behavior should be migrated only after their current terminal/demo-only gates are represented in provider tests.
+- Scheduler startup and the terminal one-shot demo reconciliation worker now use provider construction after their demo-only gates; remaining smoke scripts stay direct, manual, and Trading 212-specific for now.
 
 The provider should not infer that a live credential is safe because it exists. Live construction remains blocked unless app mode, environment, live flag, and live readiness checks allow the relevant action.
 
@@ -227,4 +220,4 @@ A later runtime provider PR should be accepted only when:
 
 ## Next Recommended PR
 
-Move scheduler and worker Trading 212 construction only after their demo-only gates and credential fallback behaviour are covered by focused provider-equivalence tests.
+Migrate only `sync_account_snapshot` in `apps/api/app/workers/tasks.py` through the provider. Keep the PR read-only and behavior-equivalent: preserve active encrypted connection credential lookup, environment gates, credential-decryption failure handling, account snapshot persistence, and the no-broker-write boundary.

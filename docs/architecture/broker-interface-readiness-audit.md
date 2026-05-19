@@ -12,11 +12,12 @@ Trading 212 remains the current broker adapter. Future API-native broker support
 
 The main broker adapter is `Trading212Adapter` in `apps/api/app/broker/trading212.py`. It is an async HTTP adapter around Trading 212 endpoints, with an async context manager that owns an `httpx.AsyncClient`, rate-limit tracking, Trading 212 auth/API exceptions, response-shape checks, and the current `environment`/`base_url` selection.
 
-Broker construction is still mostly Trading 212-specific:
+Broker construction is still partly Trading 212-specific:
 
-- `apps/api/app/api/deps.py` returns `MockBrokerAdapter` in mock mode and otherwise constructs `Trading212Adapter` from either active encrypted `BrokerConnection` credentials or `T212_DEMO_API_KEY`/`T212_DEMO_API_SECRET`.
-- `apps/api/app/api/v1/routes/broker.py` exposes routes under `/broker/trading212`, stores `broker="trading212"`, tests credentials by constructing `Trading212Adapter`, and serializes Trading 212 connection status.
-- controlled smoke scripts under `apps/api/scripts/t212_demo_*` either call the app routes or construct `Trading212Adapter` directly for read-only reconciliation.
+- `apps/api/app/api/deps.py` returns `MockBrokerAdapter` in mock mode and otherwise delegates final adapter construction to the Trading 212 provider after selecting active encrypted `BrokerConnection` credentials or demo fallback credentials.
+- `apps/api/app/api/v1/routes/broker.py` exposes routes under `/broker/trading212`, stores `broker="trading212"`, tests credentials through the Trading 212 provider, and serializes Trading 212 connection status.
+- scheduler startup and the terminal one-shot demo reconciliation worker delegate final adapter construction to the provider after their existing demo-only gates.
+- service helpers, selected worker tasks, and controlled smoke scripts still construct `Trading212Adapter` directly as inventoried below.
 
 The runtime execution paths are more broker-like than the construction paths. `ExecutionEngine`, reconciliation services, and route dependencies generally accept an object with expected async methods and an `environment` attribute. That makes them partially ready for a protocol, but they still assume Trading 212 status values, payload fields, order quantity conventions, and environment names.
 
@@ -24,14 +25,12 @@ The runtime execution paths are more broker-like than the construction paths. `E
 
 Direct construction or import appears in these important areas:
 
-- `apps/api/app/api/deps.py`: broker dependency factory for demo/live app modes.
-- `apps/api/app/api/v1/routes/broker.py`: credential connect/test and reconciliation route dependencies.
+- `apps/api/app/broker/provider.py`: canonical Trading 212 provider construction after caller-owned credential and safety decisions.
 - `apps/api/app/api/v1/routes/orders.py`: imports Trading 212 exception types for broker HTTP error handling.
 - `apps/api/app/execution/engine.py`: imports `make_sell_quantity`, because Trading 212 sell quantities must be negative.
 - `apps/api/app/services/demo_order_reconciliation.py`: imports Trading 212 exception classes and parses Trading 212 history payloads.
-- `apps/api/app/services/demo_reconciliation_scheduler.py`: background startup path constructs `Trading212Adapter` with demo credentials.
-- `apps/api/app/services/position_monitor.py`, `apps/api/app/services/system_control.py`, and `apps/api/app/workers/tasks.py`: construct Trading 212 adapters for operational broker reads/writes.
-- `apps/api/scripts/t212_demo_reconcile_order.py`, `apps/api/scripts/t212_demo_multi_order_reconciliation_smoke.py`, and read-only smoke scripts: construct `Trading212Adapter` directly.
+- `apps/api/app/services/position_monitor.py`, `apps/api/app/services/system_control.py`, `apps/api/app/services/strategy_runner.py`, `apps/api/app/services/portfolio_execution_service.py`, and selected functions in `apps/api/app/workers/tasks.py`: construct Trading 212 adapters for operational broker reads/writes.
+- `apps/api/scripts/t212_demo_reconcile_order.py`, `apps/api/scripts/t212_demo_multi_order_reconciliation_smoke.py`, and `apps/api/scripts/t212_demo_readonly_smoke.py`: construct `Trading212Adapter` directly under terminal-only DEMO gates.
 - integration and unit tests monkeypatch `Trading212Adapter` methods or replace `get_broker` with fake broker-like objects.
 
 ## Read-Only Broker Methods Relied On
@@ -138,7 +137,7 @@ Good candidates for a future interface:
 
 The newly added `apps/api/app/broker/protocols.py` is intentionally limited to method-level protocols and a protocol write-method inventory. It documents the current surface without requiring runtime broker construction to change.
 
-Demo reconciliation now type-targets `ReconciliationHistoryBrokerProtocol` at the service, worker, and scheduler boundaries while runtime construction remains Trading 212-specific. The broader `ReadOnlyBrokerProtocol` remains available for account, order, and wider broker-read paths.
+Demo reconciliation now type-targets `ReconciliationHistoryBrokerProtocol` at the service, worker, and scheduler boundaries. Scheduler startup and the terminal one-shot worker delegate final adapter construction to the provider, while remaining reconciliation smoke scripts stay Trading 212-specific. The broader `ReadOnlyBrokerProtocol` remains available for account, order, and wider broker-read paths.
 
 `docs/architecture/broker-provider-design.md` now documents the next broker-agnostic architecture step: a future provider boundary that can return the existing `Trading212Adapter` by broker id and environment without changing current Trading 212 routes, credential handling, demo reconciliation, or write safety gates.
 
@@ -153,6 +152,83 @@ It also contains a Trading 212 provider function that requires explicit credenti
 `/v1/broker/trading212/connect` and `/v1/broker/trading212/test` now also use the provider function only for final adapter construction during credential tests. The route layer still owns submitted credential handling, active connection lookup, encryption/decryption, reconnect-required handling, schemas, and audit behaviour.
 
 `apps/api/tests/integration/test_scheduler_worker_provider_equivalence.py` now locks the migrated scheduler and worker construction paths. It proves the background scheduler calls the provider only after demo-only gates pass, preserves the current demo credential fallback order, refuses unsafe mock/paper/live and live-flag states before provider construction, and does not use live credentials. It also documents that the service worker receives a broker object while the terminal demo worker script now delegates final demo adapter construction to the provider under its own environment gates.
+
+## Remaining Trading 212 Direct Construction Audit
+
+Date: 2026-05-19
+
+This audit covers the remaining direct `Trading212Adapter` construction/import paths after the provider migrations. It is audit, tests, and docs only. It does not migrate another call site, change routes or schemas, change credential storage/decryption, place broker orders, expand live trading, add Alpaca, add frontend order controls, or weaken safety gates.
+
+`apps/api/tests/unit/test_trading212_construction_inventory.py` now locks the approved runtime inventory. The test scans `apps/api/app` and `apps/api/scripts`, excludes tests/docs and the adapter definition itself, and fails if a new runtime `Trading212Adapter` import or constructor call appears without updating this audit.
+
+`apps/api/scripts/t212_demo_reconciliation_worker.py` was migrated in the previous provider PR and is therefore intentionally absent from the remaining direct construction inventory.
+
+### Classification Summary
+
+| Classification | Direct runtime references |
+| --- | --- |
+| Runtime production app paths | `app/broker/provider.py`; `app/services/portfolio_execution_service.py`; `app/services/position_monitor.py`; `app/services/strategy_runner.py`; `app/services/system_control.py`; `app/workers/tasks.py` |
+| Runtime scripts/smoke tools | `scripts/t212_demo_readonly_smoke.py`; `scripts/t212_demo_reconcile_order.py`; `scripts/t212_demo_multi_order_reconciliation_smoke.py` |
+| Tests/fakes/monkeypatching | Unit/integration tests import, instantiate, or monkeypatch `Trading212Adapter` for safety-policy, provider-equivalence, route-boundary, paper-execution, demo-boundary, and inventory tests. These are not runtime construction paths. |
+| Docs | This audit, the provider design, and the safety model mention `Trading212Adapter` to document current boundaries and future migration sequencing. |
+
+### Runtime Production App Inventory
+
+| Path | Function/class | Direct use | Purpose | Current safety gates | Credential source | Read/write capability | Migration timing | Incorrect-migration risk | Recommended acceptance tests |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `apps/api/app/broker/provider.py` | `create_trading212_provider_adapter(...)` | Imports and constructs the adapter after provider request and credential validation. It also has a type-checking import. | Canonical final Trading 212 construction point for migrated callers. | `validate_broker_provider_request(...)` rejects unsupported broker ids/environments/purposes, mock/paper modes, demo-to-live, live-to-demo, and live when `LIVE_TRADING_ENABLED` is false; credential validation rejects blank secrets before construction. | Explicit `BrokerProviderCredentials` supplied by caller; no DB, env, or decryption lookup inside provider. | Returns the broad adapter, but the provider itself performs no broker read/write. | Never migrate away until a real provider registry replaces it. This is the intended construction boundary. | Moving credential lookup or live gating into a generic shortcut could change credential precedence or permit live construction too early. | Existing provider scaffolding tests plus provider-equivalence tests for each migrated caller. |
+| `apps/api/app/workers/tasks.py` | `sync_account_snapshot` | Local import and direct `async with Trading212Adapter(...)`. | Scheduled account snapshot persistence from broker account summary. | Mock mode uses `MockBrokerAdapter`; real path requires active connection for `settings.APP_MODE`, `require_broker_environment(conn.environment, action="worker account sync")`, adapter credential/environment gates, and credential-decryption failure marks reconnect required. | Active encrypted `BrokerConnection` for current `settings.APP_MODE`. | Read-only: calls `get_account_summary()` and writes a local snapshot row. | Soon. This is the narrowest recommended next migration target. | Accidentally changing connection selection, mock persistence behavior, reconnect-required marking, or constructing before the environment gate could alter worker safety. | Provider called only after mock/no-connection/decryption/environment gates; request purpose is `worker_account_sync` with active connection user id; no provider call in mock/paper/invalid/live-disabled mismatch; snapshot output unchanged with fake adapter. |
+| `apps/api/app/workers/tasks.py` | `reconcile_pending_orders` | Local import and direct `async with Trading212Adapter(...)`. | Reconciles accepted/submitted local orders by polling broker order status through `ExecutionEngine.reconcile_order(...)`. | Task lock; skips mock; requires non-dry-run orders with broker ids; active connection for current app mode; `require_broker_environment(conn.environment, action="worker reconcile")`; decryption failure marks reconnect required; adapter gates. | Active encrypted `BrokerConnection` for current `settings.APP_MODE`. | Read-only in current engine flow because reconciliation calls `get_order_by_id(...)`, but it passes a broad adapter into `ExecutionEngine`. | Later, after `sync_account_snapshot`. | A provider migration that treats this as write-capable or broadens order selection could mutate local order states from the wrong broker/environment. | Provider request purpose `worker_reconcile`; no broker writes invoked; skips unchanged for no orders/no connection/mock/decryption failure; reconciled status transitions unchanged with fake broker. |
+| `apps/api/app/workers/tasks.py` | `cancel_timed_out_orders` | Local import and direct `async with Trading212Adapter(...)`. | Cancels stale accepted/submitted limit/stop/stop-limit orders through `ExecutionEngine.cancel_order(...)`. | Selects only non-dry-run timed-out orders with broker ids; skips mock/no connection; `require_broker_environment(conn.environment, action="worker timeout cancel")`; decryption failure marks reconnect required; adapter gates. | Active encrypted `BrokerConnection` for current `settings.APP_MODE`. | Write-capable: can call broker `cancel_order(...)`. | Later. Do not migrate before read-only workers. | A wrong provider purpose or premature construction could expand cancellation reach or bypass timeout/order filters. | Provider called only after timed-out candidate selection and environment gate; cancellation count/status behavior unchanged; no provider call when no candidates; live-disabled and mock/paper rejection unchanged. |
+| `apps/api/app/workers/tasks.py` | `track_cfd_funding` | Local import and direct `Trading212Adapter(...)`. | Reads open broker positions and records CFD funding costs locally. | Mock uses `MockBrokerAdapter`; real path requires active connection, credential decryption, `require_broker_environment(conn.environment, action="worker cfd funding")`, and adapter gates. | Active encrypted `BrokerConnection` for current `settings.APP_MODE`. | Read-only: calls `get_positions()` and writes local funding records. | After `sync_account_snapshot` only, in a separate PR. | A migration could accidentally read live positions in an unsafe app mode or change funding-record input shape. | Provider request purpose added or chosen explicitly for read-only funding; no provider call in mock/no-connection/decryption failure; positions-to-records behavior unchanged. |
+| `apps/api/app/services/system_control.py` | `SystemControlService._get_broker` | Local import and direct construction. | Shared helper for operator/system status, positions, emergency cancel-all, and emergency flatten-all. | Mock returns mock adapter; `require_broker_environment(settings.APP_MODE, action="system control broker access")`; active connection optionally scoped by `broker_user_id`; `require_broker_environment(conn.environment, ...)`; decryption failure marks reconnect required and commits; adapter gates. | Active encrypted `BrokerConnection`, optionally user scoped. | Mixed: read-only `get_snapshot()`/`get_positions_summary()` and write-capable `cancel_all_pending()`/`flatten_all()`. | Later, probably after splitting or separately testing read-only and emergency-write use cases. | Migrating the shared helper as one broad path could accidentally grant write-capable adapters to read-only status flows or alter emergency controls. | Separate tests for read-only snapshot provider purpose and emergency cancel/flatten provider purpose; unchanged reconnect-required commit behavior; no provider call before system-control environment gates. |
+| `apps/api/app/services/portfolio_execution_service.py` | `PortfolioExecutionService._get_broker` | Local import and direct construction. | Reads account/positions for portfolio rebalance and can submit portfolio rebalance orders through `ExecutionEngine`. | Mock returns mock adapter; active connection for `settings.APP_MODE`; decryption failure marks reconnect required; `require_broker_environment(conn.environment, action="portfolio execution broker access")`; higher-level kill switch, auto-trading, live unlock, strategy promotion, risk, and allocation gates before submission. | Active encrypted `BrokerConnection` for current `settings.APP_MODE`. | Mixed/write-capable: account/position reads plus possible order submission. | Later. | A wrong migration could construct before live unlock/promotion checks are considered, or blur dry-run versus real submission behavior. | Provider not called when no broker/credential/environment blocks; live and dry-run order behavior unchanged; order submission still passes through execution safety gates. |
+| `apps/api/app/services/position_monitor.py` | `PositionMonitor._get_broker` | Local import and direct construction. | Monitors positions and submits automated exits or EOD flatten orders. | Mock returns mock adapter; active connection for `settings.APP_MODE`; decryption failure marks reconnect required; `require_broker_environment(conn.environment, action="position monitor broker access")`; higher-level app settings and strategy/risk checks in monitor flow. | Active encrypted `BrokerConnection` for current `settings.APP_MODE`. | Write-capable: can create and submit exit/flatten orders. | Later. | Premature migration could expand automated exit write access or weaken position/environment checks. | Provider called only after monitor gates; no provider call in mock/no connection/decryption failure; exit and EOD flatten tests prove no change to order intent/submission gates. |
+| `apps/api/app/services/strategy_runner.py` | `StrategyRunner._get_broker` | Local import and direct construction. | Reads account/positions and can submit strategy orders through `ExecutionEngine`. | Mock returns mock adapter; active connection for `settings.APP_MODE`; decryption failure marks reconnect required; `require_broker_environment(conn.environment, action="strategy runner broker access")`; higher-level auto-trading, kill switch, strategy state, and risk checks before submission. | Active encrypted `BrokerConnection` for current `settings.APP_MODE`. | Mixed/write-capable. | Later. | A generic provider path could make strategy writes easier to reach before the strategy/live gates are proven equivalent. | Provider-equivalence tests for account/position reads, no-broker/decryption/environment skips, and unchanged dry-run/live submit behavior. |
+
+### Runtime Scripts And Smoke Tools
+
+| Path | Terminal/manual | Demo/live constraints | Can place/cancel/modify orders? | Credential source | Migration order |
+| --- | --- | --- | --- | --- | --- |
+| `apps/api/scripts/t212_demo_readonly_smoke.py` | Manual terminal smoke. | Requires `APP_MODE=demo`, `T212_ENVIRONMENT=demo`, and `LIVE_TRADING_ENABLED=false`. | No. It calls `test_connection()`, `get_account_summary()`, `get_positions()`, and a direct GET history request. | `T212_API_KEY` / `T212_API_SECRET`. | After read-only runtime workers. It is already manual, demo-only, and read-only. |
+| `apps/api/scripts/t212_demo_reconcile_order.py` | Manual terminal reconciliation. | Requires `APP_MODE=demo`, `T212_ENVIRONMENT=demo`, `LIVE_TRADING_ENABLED=false`, and one explicit local order id or broker order id. | No broker writes. It reconciles from `GET /api/v0/equity/history/orders` and writes local DB reconciliation/audit state. | `T212_API_KEY` / `T212_API_SECRET`. | After read-only runtime workers. Preserve explicit terminal inputs and local DB behavior. |
+| `apps/api/scripts/t212_demo_multi_order_reconciliation_smoke.py` | Manual terminal smoke. | Requires `APP_MODE=demo`, `T212_ENVIRONMENT=demo`, `LIVE_TRADING_ENABLED=false`, `DEMO_RECONCILIATION_WORKER_ENABLED=true`, and `DEMO_RECONCILIATION_SCHEDULER_ENABLED=false`. | No expected broker writes. `ReadOnlyBrokerGuard` blocks inventoried write methods if called. | Prefers `T212_DEMO_API_KEY` / `T212_DEMO_API_SECRET`; falls back to `T212_API_KEY` / `T212_API_SECRET`. | After read-only runtime workers. Keep the write guard and scheduler-disabled constraint. |
+
+These scripts should not be migrated before read-only production workers because they are terminal-only, manually gated, and already constrained to DEMO. They are valuable broker-specific QA tools and may remain Trading 212-specific longer than application workers.
+
+### Test References
+
+Tests import or monkeypatch `Trading212Adapter` for bounded reasons:
+
+- provider-equivalence tests replace `app.broker.trading212.Trading212Adapter` with recording fakes to prove provider request data and credential precedence without network calls;
+- safety-policy and demo-boundary tests instantiate the adapter with fake credentials to prove constructor gates and method-level protections;
+- paper-execution, route, operator-status, and heartbeat tests monkeypatch adapter methods so broker writes cannot escape during tests;
+- `test_broker_safety_inventory.py` introspects the adapter to keep the write-method inventory aligned with real adapter methods;
+- `test_trading212_construction_inventory.py` scans runtime source and does not treat test fake usage as runtime construction.
+
+These references are intentionally separate from runtime production and script inventories.
+
+### Next Recommended Migration Target
+
+Migrate only `sync_account_snapshot` in `apps/api/app/workers/tasks.py` next.
+
+Reasons:
+
+- it is an isolated scheduled worker path;
+- it is read-only at the broker boundary and calls only `get_account_summary()`;
+- provider purpose `worker_account_sync` already exists;
+- it uses the same active encrypted `BrokerConnection` credential source as other live-mode workers, so the test can lock credential/decryption behavior without touching route schemas or storage;
+- it writes only a local `BrokerAccountSnapshot`, so acceptance tests can prove behavior equivalence without broker writes.
+
+Write-capable execution paths should not be migrated first. `position_monitor`, `strategy_runner`, `portfolio_execution_service`, `system_control` emergency actions, and `cancel_timed_out_orders` can submit or cancel orders after their own domain gates. Moving those broad helpers too early would make it harder to prove the provider migration did not change order placement, cancellation, dry-run behavior, live unlock semantics, risk gates, or kill-switch coverage.
+
+Read-only/account-sync paths should be prioritised because they exercise the same credential and environment construction boundary while keeping the broker method surface small. A successful `sync_account_snapshot` migration should lock these acceptance tests before code changes:
+
+- provider is not called in mock mode, no-connection, credential-decryption failure, unsafe environment, or live-disabled mismatch cases;
+- provider receives `broker_id="trading212"`, the active connection environment, `purpose="worker_account_sync"`, and the active connection user id;
+- provider receives only decrypted active connection credentials;
+- `BrokerAccountSnapshot` persistence and task summary remain unchanged;
+- no placement, cancellation, modification, deposit, or withdrawal method is called.
 
 ## Broker-Neutral Snapshots Added
 
@@ -192,8 +268,9 @@ These should remain adapter- or Trading 212 module-specific:
 6. Done: move `/v1/broker/trading212` credential-test construction to the provider while preserving route names, schemas, credential handling, and audit behaviour.
 7. Done: add focused scheduler/worker provider-equivalence tests before migrating their construction points.
 8. Done: migrate scheduler and terminal worker construction to the Trading 212 provider while preserving the newly documented demo-only gates, credential source rules, and read-only reconciliation boundary.
-9. Only after the remaining direct construction paths are audited and migrated where appropriate, design a second adapter spike using recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
+9. Done: audit the remaining direct construction paths and choose `sync_account_snapshot` as the next narrow read-only migration target.
+10. Only after the remaining direct construction paths are migrated where appropriate, design a second adapter spike using recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
 
 ## Next Recommended PR
 
-Audit the remaining Trading 212 direct construction paths and choose the next narrow migration target, starting with read-only worker/account-sync paths before any write-capable execution path.
+Migrate only `sync_account_snapshot` in `apps/api/app/workers/tasks.py` through the Trading 212 provider, with focused provider-equivalence tests for its read-only account-summary behavior, credential source, environment gates, and no-write boundary.

@@ -31,6 +31,8 @@ The provider request and credential validation helpers do not select credentials
 
 Scheduler/worker provider-equivalence tests document the migrated demo-only construction gates. Scheduler startup and the terminal one-shot worker now use `create_trading212_provider_adapter(...)` only for final Trading 212 adapter construction after their existing demo mode, demo environment, live-disabled, enabled-state, and credential-source checks pass. They avoid live credentials and remain read-only.
 
+Remaining direct Trading 212 construction paths are inventoried and locked by a unit test. The next provider migration should start with read-only account sync, not order submission/cancellation paths, so credential and environment construction can be proven without expanding broker write reach.
+
 Demo and live credentials are separated:
 
 - `T212_DEMO_API_KEY` / `T212_DEMO_API_SECRET`
