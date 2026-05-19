@@ -286,6 +286,24 @@ def test_demo_app_mode_allows_read_only_worker_account_sync() -> None:
     )
 
 
+def test_demo_app_mode_allows_read_only_worker_cfd_funding() -> None:
+    request = BrokerProviderRequest(
+        broker_id="trading212",
+        environment="demo",
+        purpose="worker_cfd_funding",
+        user_id=uuid.uuid4(),
+    )
+
+    assert (
+        validate_broker_provider_request(
+            request,
+            app_mode="demo",
+            live_trading_enabled=False,
+        )
+        is request
+    )
+
+
 def test_live_app_mode_rejects_demo_only_purpose() -> None:
     request = BrokerProviderRequest(
         broker_id="trading212",
@@ -303,7 +321,7 @@ def test_live_app_mode_rejects_demo_only_purpose() -> None:
 
 @pytest.mark.parametrize(
     "purpose",
-    ["worker_account_sync", "worker_reconcile", "worker_cancel"],
+    ["worker_account_sync", "worker_cfd_funding", "worker_reconcile", "worker_cancel"],
 )
 def test_user_scoped_purpose_requires_user_id(purpose: BrokerProviderPurpose) -> None:
     request = BrokerProviderRequest(

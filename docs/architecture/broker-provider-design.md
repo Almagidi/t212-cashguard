@@ -10,9 +10,11 @@ The current supported real broker remains Trading 212. The purpose of this desig
 
 ## Current Direct Construction Points
 
-The provider migration now covers `get_broker()`, `/v1/broker/trading212` credential-test construction, scheduler startup construction, the terminal one-shot demo reconciliation worker, and `sync_account_snapshot`. The remaining direct `Trading212Adapter` construction/import inventory is locked by `apps/api/tests/unit/test_trading212_construction_inventory.py` and detailed in `docs/architecture/broker-interface-readiness-audit.md`.
+The provider migration now covers `get_broker()`, `/v1/broker/trading212` credential-test construction, scheduler startup construction, the terminal one-shot demo reconciliation worker, `sync_account_snapshot`, and `track_cfd_funding`. The remaining direct `Trading212Adapter` construction/import inventory is locked by `apps/api/tests/unit/test_trading212_construction_inventory.py` and detailed in `docs/architecture/broker-interface-readiness-audit.md`.
 
 `sync_account_snapshot` now delegates only final Trading 212 adapter construction to `create_trading212_provider_adapter(...)`. It is still an isolated read-only worker task that reads account summary with `get_account_summary()`, uses active encrypted `BrokerConnection` credentials, and does not submit, cancel, or modify broker orders. Active connection lookup, credential decryption, reconnect-required handling, environment gates, provider-validation failure summarization, and snapshot persistence remain in worker code. Write-capable service helpers and worker cancel/strategy execution paths remain deferred until each has explicit provider-equivalence tests for its safety gates and broker write boundaries.
+
+`track_cfd_funding` now delegates only final Trading 212 adapter construction to `create_trading212_provider_adapter(...)` with purpose `worker_cfd_funding`. It remains read-only at the broker boundary and calls only `get_positions()` before persisting local CFD funding records. Active connection lookup, credential decryption, reconnect-required handling, `require_broker_environment(conn.environment, action="worker cfd funding")`, provider-validation failure summarization, and local funding persistence remain in worker code. Write-capable worker and service paths remain deferred.
 
 Tests may still import or monkeypatch `Trading212Adapter` to prove safety boundaries without network calls. Those references are not runtime construction paths.
 
@@ -84,6 +86,7 @@ class BrokerProviderRequest:
         "credential_test",
         "demo_reconciliation",
         "worker_account_sync",
+        "worker_cfd_funding",
         "worker_reconcile",
         "worker_cancel",
     ]
@@ -114,7 +117,7 @@ The helper is pure fail-closed validation only. It accepts only `trading212`, ac
 
 `get_broker()` now delegates final Trading 212 adapter construction to this helper after it has selected already-active encrypted credentials or the existing demo fallback credentials. Credential lookup, credential decryption, reconnect-required marking, route behaviour, and order-placement gates remain outside the provider and unchanged.
 
-The demo reconciliation scheduler startup path, terminal one-shot worker script, and `sync_account_snapshot` now also delegate only final Trading 212 adapter construction to `create_trading212_provider_adapter(...)`. Their gates, enabled checks, credential source selection, scheduler timing, audit behaviour, account snapshot persistence, and read-only broker boundaries remain in caller code. `/v1/broker/trading212` route names and schemas, credential lookup/decryption rules, and order placement remain unchanged.
+The demo reconciliation scheduler startup path, terminal one-shot worker script, `sync_account_snapshot`, and `track_cfd_funding` now also delegate only final Trading 212 adapter construction to `create_trading212_provider_adapter(...)`. Their gates, enabled checks, credential source selection, scheduler timing, audit behaviour, account snapshot and CFD funding persistence, and read-only broker boundaries remain in caller code. `/v1/broker/trading212` route names and schemas, credential lookup/decryption rules, and order placement remain unchanged.
 
 ## Broker Route Credential-Test Migration
 
@@ -140,7 +143,7 @@ For Trading 212, a future provider would preserve existing construction behavior
 - Submitted credential tests keep using the submitted key/secret and requested environment.
 - Authenticated route dependencies keep preferring active encrypted `BrokerConnection` credentials for the current user and app mode.
 - Demo fallback credentials remain `T212_DEMO_API_KEY` and `T212_DEMO_API_SECRET` for the existing demo dependency path.
-- Scheduler startup, the terminal one-shot demo reconciliation worker, and account snapshot sync now use provider construction after their existing gates; remaining smoke scripts stay direct, manual, and Trading 212-specific for now.
+- Scheduler startup, the terminal one-shot demo reconciliation worker, account snapshot sync, and CFD funding tracking now use provider construction after their existing gates; remaining smoke scripts stay direct, manual, and Trading 212-specific for now.
 
 The provider should not infer that a live credential is safe because it exists. Live construction remains blocked unless app mode, environment, live flag, and live readiness checks allow the relevant action.
 
@@ -192,8 +195,9 @@ The provider should be introduced only after its test matrix proves it preserves
 8. Done: add scheduler/worker provider-equivalence tests for current demo-only gates and credential fallback behavior before migrating construction.
 9. Done: move scheduler and terminal worker construction to the provider while preserving the newly locked demo-only gates, credential sources, route handoff behaviour, and read-only reconciliation boundary.
 10. Done: move `sync_account_snapshot` final adapter construction to the provider while preserving active connection lookup, credential decryption, environment gates, reconnect-required handling, snapshot persistence, and read-only account-summary behavior.
-11. Consider broker-neutral route design only after the Trading 212 provider migration is complete and behavior-equivalent.
-12. Design any second broker with recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
+11. Done: move `track_cfd_funding` final adapter construction to the provider while preserving active connection lookup, credential decryption, environment gates, reconnect-required handling, local CFD funding persistence, and read-only positions behavior.
+12. Consider broker-neutral route design only after the Trading 212 provider migration is complete and behavior-equivalent.
+13. Design any second broker with recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
 
 ## Risks Of Introducing A Provider Too Early
 
@@ -221,4 +225,4 @@ A later runtime provider PR should be accepted only when:
 
 ## Next Recommended PR
 
-Keep write-capable paths deferred. A future narrow PR may migrate another read-only worker such as `track_cfd_funding`, but only with tests proving its mock/no-connection/decryption/environment gates, credential source, read-only broker calls, and local persistence behaviour remain unchanged.
+Keep write-capable paths deferred. Future provider PRs should avoid `reconcile_pending_orders`, `cancel_timed_out_orders`, `position_monitor`, `strategy_runner`, `portfolio_execution_service`, and `system_control` until each path has explicit tests for its safety gates, credential source, broker write boundary, and unchanged order behavior.
