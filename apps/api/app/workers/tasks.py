@@ -139,7 +139,7 @@ def run_strategy_signals(self: Any) -> dict[str, Any]:
                 return {"skipped": True, "reason": "already_running"}
             async with AsyncSessionLocal() as db:
                 runner = StrategyRunner(db)
-                summary = cast(dict[str, Any], await runner.run_all_enabled())
+                summary: dict[str, Any] = await runner.run_all_enabled()
                 summary = await _complete_task(db, "run_strategy_signals", summary)
             log.info("tasks.signals_complete", **summary)
             return summary
@@ -171,7 +171,7 @@ def run_portfolio_rebalance(self: Any) -> dict[str, Any]:
                 return {"skipped": True, "reason": "already_running"}
             async with AsyncSessionLocal() as db:
                 service = PortfolioExecutionService(db)
-                summary = cast(dict[str, Any], await service.run_all_enabled())
+                summary: dict[str, Any] = await service.run_all_enabled()
                 summary = await _complete_task(db, "run_portfolio_rebalance", summary)
             if summary.get("strategies_due", 0) > 0 or summary.get("errors"):
                 log.info("tasks.portfolio_rebalance", **summary)
@@ -211,7 +211,7 @@ def run_position_monitor(self: Any) -> dict[str, Any]:
                 return {"skipped": True, "reason": "already_running"}
             async with AsyncSessionLocal() as db:
                 monitor = PositionMonitor(db)
-                summary = cast(dict[str, Any], await monitor.run())
+                summary: dict[str, Any] = await monitor.run()
                 summary = await _complete_task(db, "run_position_monitor", summary)
             if summary.get("exits_submitted", 0) > 0:
                 log.info("tasks.position_monitor", **summary)
