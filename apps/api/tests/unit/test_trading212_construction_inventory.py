@@ -130,11 +130,11 @@ def test_runtime_trading212_adapter_construction_inventory_is_locked() -> None:
         # operations sharing one broker helper.
         "app/services/system_control.py": {"construct": 1, "import": 1},
         # Worker task references map mechanically to these functions:
-        # sync_account_snapshot: import + construct
         # reconcile_pending_orders: import + construct
         # cancel_timed_out_orders: import + construct
         # track_cfd_funding: import + construct
-        "app/workers/tasks.py": {"construct": 4, "import": 4},
+        # sync_account_snapshot has migrated to provider construction.
+        "app/workers/tasks.py": {"construct": 3, "import": 3},
         # Manual terminal-only DEMO reconciliation smoke with a write-method guard.
         "scripts/t212_demo_multi_order_reconciliation_smoke.py": {
             "construct": 1,

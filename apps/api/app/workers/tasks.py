@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
@@ -310,7 +310,13 @@ def sync_account_snapshot(self):
 
         from sqlalchemy import select
 
-        from app.broker.trading212 import Trading212Adapter
+        from app.broker.provider import (
+            BrokerProviderCredentials,
+            BrokerProviderRequest,
+            BrokerProviderValidationError,
+            BrokerRuntimeEnvironment,
+            create_trading212_provider_adapter,
+        )
         from app.core.config import settings
         from app.core.security import CredentialDecryptionError, decrypt_field
         from app.db.models import BrokerAccountSnapshot, BrokerConnection
@@ -357,11 +363,29 @@ def sync_account_snapshot(self):
                     )
                     summary = {"synced": False, "skipped": "credential_error"}
                     return await _complete_task(db, "sync_account_snapshot", summary)
-                async with Trading212Adapter(
-                    api_key,
-                    api_secret,
-                    conn.environment
-                ) as broker:
+                try:
+                    broker = create_trading212_provider_adapter(
+                        BrokerProviderRequest(
+                            broker_id="trading212",
+                            environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                            purpose="worker_account_sync",
+                            user_id=conn.user_id,
+                        ),
+                        BrokerProviderCredentials(
+                            api_key=api_key,
+                            api_secret=api_secret,
+                        ),
+                        app_mode=settings.APP_MODE,
+                        live_trading_enabled=bool(settings.LIVE_TRADING_ENABLED),
+                    )
+                except BrokerProviderValidationError as exc:
+                    summary = {
+                        "synced": False,
+                        "skipped": "provider_validation_error",
+                        "reason": str(exc),
+                    }
+                    return await _complete_task(db, "sync_account_snapshot", summary)
+                async with broker:
                     summary = await broker.get_account_summary()
                 currency = conn.account_currency or "USD"
                 conn_id = conn.id
