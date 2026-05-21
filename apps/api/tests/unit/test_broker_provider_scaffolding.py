@@ -124,6 +124,23 @@ def test_live_request_passes_when_live_trading_enabled() -> None:
     )
 
 
+@pytest.mark.parametrize("purpose", ["worker_reconcile", "worker_cancel"])
+def test_live_worker_purposes_require_live_trading_flag(purpose: BrokerProviderPurpose) -> None:
+    request = BrokerProviderRequest(
+        broker_id="trading212",
+        environment="live",
+        purpose=purpose,
+        user_id=uuid.uuid4(),
+    )
+
+    with pytest.raises(BrokerProviderValidationError, match="LIVE_TRADING_ENABLED"):
+        validate_broker_provider_request(
+            request,
+            app_mode="live",
+            live_trading_enabled=False,
+        )
+
+
 def test_demo_app_mode_cannot_request_live_environment() -> None:
     request = BrokerProviderRequest(
         broker_id="trading212",
@@ -248,15 +265,11 @@ def test_invalid_provider_purpose_fails_closed() -> None:
         )
 
 
-@pytest.mark.parametrize(
-    "purpose",
-    ["worker_reconcile", "worker_cancel"],
-)
-def test_demo_app_mode_rejects_live_only_purposes(purpose: BrokerProviderPurpose) -> None:
+def test_demo_app_mode_rejects_worker_cancel_live_only_purpose() -> None:
     request = BrokerProviderRequest(
         broker_id="trading212",
         environment="demo",
-        purpose=purpose,
+        purpose="worker_cancel",
         user_id=uuid.uuid4(),
     )
 
@@ -266,6 +279,24 @@ def test_demo_app_mode_rejects_live_only_purposes(purpose: BrokerProviderPurpose
             app_mode="demo",
             live_trading_enabled=False,
         )
+
+
+def test_demo_app_mode_allows_worker_reconcile_with_user_id() -> None:
+    request = BrokerProviderRequest(
+        broker_id="trading212",
+        environment="demo",
+        purpose="worker_reconcile",
+        user_id=uuid.uuid4(),
+    )
+
+    assert (
+        validate_broker_provider_request(
+            request,
+            app_mode="demo",
+            live_trading_enabled=False,
+        )
+        is request
+    )
 
 
 def test_demo_app_mode_allows_read_only_worker_account_sync() -> None:

@@ -232,8 +232,14 @@ def reconcile_pending_orders(self: Any) -> dict[str, Any]:
 
         from sqlalchemy import select
 
-        from app.broker.trading212 import Trading212Adapter
-        from app.core.config import settings
+        from app.broker.provider import (
+            BrokerProviderCredentials,
+            BrokerProviderRequest,
+            BrokerProviderValidationError,
+            BrokerRuntimeEnvironment,
+            create_trading212_provider_adapter,
+        )
+        from app.core.config import settings as app_settings
         from app.core.redis import task_lock
         from app.core.security import CredentialDecryptionError, decrypt_field
         from app.db.models import BrokerConnection, Order
@@ -280,14 +286,14 @@ def reconcile_pending_orders(self: Any) -> dict[str, Any]:
                     .limit(50)
                 )
                 orders = result.scalars().all()
-                if not orders or settings.APP_MODE == "mock":
+                if not orders or app_settings.APP_MODE == "mock":
                     summary: dict[str, Any] = {"reconciled": 0}
                     return await _complete_task(db, "reconcile_pending_orders", summary)
 
                 conn_result = await db.execute(
                     select(BrokerConnection)
                     .where(BrokerConnection.is_active)
-                    .where(BrokerConnection.environment == settings.APP_MODE)
+                    .where(BrokerConnection.environment == app_settings.APP_MODE)
                     .limit(1)
                 )
                 conn = conn_result.scalar_one_or_none()
@@ -317,7 +323,30 @@ def reconcile_pending_orders(self: Any) -> dict[str, Any]:
                     summary = {"reconciled": 0, "skipped": "credential_error"}
                     return await _complete_task(db, "reconcile_pending_orders", summary)
 
-                async with Trading212Adapter(api_key, api_secret, conn.environment) as broker:
+                try:
+                    provider_broker = create_trading212_provider_adapter(
+                        BrokerProviderRequest(
+                            broker_id="trading212",
+                            environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                            purpose="worker_reconcile",
+                            user_id=conn.user_id,
+                        ),
+                        BrokerProviderCredentials(
+                            api_key=api_key,
+                            api_secret=api_secret,
+                        ),
+                        app_mode=app_settings.APP_MODE,
+                        live_trading_enabled=bool(app_settings.LIVE_TRADING_ENABLED),
+                    )
+                except BrokerProviderValidationError as exc:
+                    summary = {
+                        "reconciled": 0,
+                        "skipped": "provider_validation_error",
+                        "reason": str(exc),
+                    }
+                    return await _complete_task(db, "reconcile_pending_orders", summary)
+
+                async with provider_broker as broker:
                     engine = ExecutionEngine(db, broker)
                     for order in orders:
                         await engine.reconcile_order(order)

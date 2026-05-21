@@ -42,7 +42,7 @@ _SUPPORTED_PURPOSES: frozenset[str] = frozenset(
     }
 )
 _DEMO_ONLY_PURPOSES: frozenset[str] = frozenset({"demo_reconciliation"})
-_LIVE_ONLY_PURPOSES: frozenset[str] = frozenset({"worker_reconcile", "worker_cancel"})
+_LIVE_ONLY_PURPOSES: frozenset[str] = frozenset({"worker_cancel"})
 _USER_SCOPED_PURPOSES: frozenset[str] = frozenset(
     {"worker_account_sync", "worker_cfd_funding", "worker_reconcile", "worker_cancel"}
 )
