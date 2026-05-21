@@ -410,7 +410,7 @@ See [`docs/implementation-roadmap.md`](docs/implementation-roadmap.md) for the t
 | Database | PostgreSQL 16 |
 | Cache/Queue | Redis 7 |
 | Workers | Celery + Celery Beat |
-| Auth | JWT (jose) + bcrypt |
+| Auth | Internal HS256 JWT + bcrypt |
 | Encryption | Fernet (AES-256-CBC) |
 | Testing | pytest, Jest, Playwright |
 

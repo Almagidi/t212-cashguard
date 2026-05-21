@@ -12,11 +12,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import Cookie, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.core.security import CredentialDecryptionError, decode_access_token
+from app.core.security import CredentialDecryptionError, TokenDecodeError, decode_access_token
 from app.db.models import BrokerConnection, User
 from app.db.session import get_db
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
@@ -59,7 +58,7 @@ async def get_current_user(
             user_id = uuid.UUID(str(user_id_raw))
         except ValueError as exc:
             raise HTTPException(status_code=401, detail="Invalid token subject") from exc
-    except JWTError as exc:
+    except TokenDecodeError as exc:
         raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
 
     result = await db.execute(select(User).where(User.id == user_id))

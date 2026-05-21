@@ -4,11 +4,45 @@ Unit tests: risk engine, ORB strategy, security helpers, sell quantity conventio
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+
+
+def _b64url_decode(segment: str) -> bytes:
+    return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _replace_jwt_segment(token: str, index: int, value: dict[str, object]) -> str:
+    parts = token.split(".")
+    parts[index] = _b64url_encode(json.dumps(value, separators=(",", ":")).encode("utf-8"))
+    return ".".join(parts)
+
+
+def _sign_jwt(header: dict[str, object], payload: dict[str, object]) -> str:
+    from app.core.config import settings
+
+    signing_input = ".".join(
+        [
+            _b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8")),
+            _b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")),
+        ]
+    )
+    signature = hmac.new(
+        settings.SECRET_KEY.encode("utf-8"), signing_input.encode("ascii"), hashlib.sha256
+    )
+    return f"{signing_input}.{_b64url_encode(signature.digest())}"
+
 
 # ─── Security ────────────────────────────────────────────────────────────────
 
@@ -25,9 +59,184 @@ class TestSecurity:
         from app.core.security import create_access_token, decode_access_token
 
         token = create_access_token("user-123")
+        assert isinstance(token, str)
+
         payload = decode_access_token(token)
         assert payload["sub"] == "user-123"
         assert payload["type"] == "access"
+
+    def test_decode_expired_token_raises_token_decode_error(self):
+        from app.core.security import TokenDecodeError, decode_access_token
+
+        now = datetime.now(UTC)
+        token = _sign_jwt(
+            {"alg": "HS256", "typ": "JWT"},
+            {
+                "sub": "user-123",
+                "iat": int(now.timestamp()),
+                "exp": int((now - timedelta(minutes=1)).timestamp()),
+                "type": "access",
+            },
+        )
+
+        with pytest.raises(TokenDecodeError):
+            decode_access_token(token)
+
+    def test_decode_token_rejects_tampered_payload(self):
+        from app.core.security import TokenDecodeError, create_access_token, decode_access_token
+
+        token = create_access_token("user-123")
+        payload = json.loads(_b64url_decode(token.split(".")[1]))
+        payload["sub"] = "attacker"
+        tampered = _replace_jwt_segment(token, 1, payload)
+
+        with pytest.raises(TokenDecodeError):
+            decode_access_token(tampered)
+
+    def test_decode_token_rejects_tampered_signature(self):
+        from app.core.security import TokenDecodeError, create_access_token, decode_access_token
+
+        token = create_access_token("user-123")
+        tampered = f"{token[:-1]}{'a' if token[-1] != 'a' else 'b'}"
+
+        with pytest.raises(TokenDecodeError):
+            decode_access_token(tampered)
+
+    def test_decode_token_rejects_alg_none(self):
+        from app.core.security import TokenDecodeError, decode_access_token
+
+        now = datetime.now(UTC)
+        token = _sign_jwt(
+            {"alg": "none", "typ": "JWT"},
+            {
+                "sub": "user-123",
+                "iat": int(now.timestamp()),
+                "exp": int((now + timedelta(minutes=5)).timestamp()),
+                "type": "access",
+            },
+        )
+
+        with pytest.raises(TokenDecodeError):
+            decode_access_token(token)
+
+    def test_decode_token_rejects_wrong_alg(self):
+        from app.core.security import TokenDecodeError, decode_access_token
+
+        now = datetime.now(UTC)
+        token = _sign_jwt(
+            {"alg": "HS512", "typ": "JWT"},
+            {
+                "sub": "user-123",
+                "iat": int(now.timestamp()),
+                "exp": int((now + timedelta(minutes=5)).timestamp()),
+                "type": "access",
+            },
+        )
+
+        with pytest.raises(TokenDecodeError):
+            decode_access_token(token)
+
+    def test_decode_token_rejects_malformed_token(self):
+        from app.core.security import TokenDecodeError, decode_access_token
+
+        with pytest.raises(TokenDecodeError):
+            decode_access_token("not-a-jwt")
+
+    def test_decode_token_rejects_missing_typ_header(self):
+        from app.core.security import TokenDecodeError, decode_access_token
+
+        now = datetime.now(UTC)
+        token = _sign_jwt(
+            {"alg": "HS256"},
+            {
+                "sub": "user-123",
+                "iat": int(now.timestamp()),
+                "exp": int((now + timedelta(minutes=5)).timestamp()),
+                "type": "access",
+            },
+        )
+
+        with pytest.raises(TokenDecodeError):
+            decode_access_token(token)
+
+    def test_decode_token_rejects_missing_access_type(self):
+        from app.core.security import TokenDecodeError, decode_access_token
+
+        now = datetime.now(UTC)
+        token = _sign_jwt(
+            {"alg": "HS256", "typ": "JWT"},
+            {
+                "sub": "user-123",
+                "iat": int(now.timestamp()),
+                "exp": int((now + timedelta(minutes=5)).timestamp()),
+                "type": "refresh",
+            },
+        )
+
+        with pytest.raises(TokenDecodeError):
+            decode_access_token(token)
+
+    def test_extra_non_reserved_claim_is_preserved(self):
+        from app.core.security import create_access_token, decode_access_token
+
+        token = create_access_token("user-123", extra={"role": "admin"})
+        payload = decode_access_token(token)
+        assert payload["role"] == "admin"
+
+    def test_extra_cannot_override_sub(self):
+        from app.core.security import create_access_token, decode_access_token
+
+        token = create_access_token("user-123", extra={"sub": "attacker"})
+        payload = decode_access_token(token)
+        assert payload["sub"] == "user-123"
+
+    def test_extra_cannot_override_type(self):
+        from app.core.security import create_access_token, decode_access_token
+
+        token = create_access_token("user-123", extra={"type": "refresh"})
+        payload = decode_access_token(token)
+        assert payload["type"] == "access"
+
+    def test_extra_cannot_override_exp(self):
+        from app.core.security import create_access_token, decode_access_token
+
+        past = int((datetime.now(UTC) - timedelta(minutes=10)).timestamp())
+        token = create_access_token("user-123", extra={"exp": past})
+        # token must still decode successfully (exp was not overridden)
+        payload = decode_access_token(token)
+        assert payload["exp"] > int(datetime.now(UTC).timestamp())
+
+    def test_decode_token_rejects_missing_exp(self):
+        from app.core.security import TokenDecodeError, decode_access_token
+
+        now = datetime.now(UTC)
+        token = _sign_jwt(
+            {"alg": "HS256", "typ": "JWT"},
+            {
+                "sub": "user-123",
+                "iat": int(now.timestamp()),
+                "type": "access",
+                # no "exp"
+            },
+        )
+        with pytest.raises(TokenDecodeError):
+            decode_access_token(token)
+
+    def test_decode_token_rejects_bool_exp(self):
+        from app.core.security import TokenDecodeError, decode_access_token
+
+        now = datetime.now(UTC)
+        token = _sign_jwt(
+            {"alg": "HS256", "typ": "JWT"},
+            {
+                "sub": "user-123",
+                "iat": int(now.timestamp()),
+                "exp": True,
+                "type": "access",
+            },
+        )
+        with pytest.raises(TokenDecodeError):
+            decode_access_token(token)
 
     def test_field_encryption_roundtrip(self):
         from app.core.security import decrypt_field, encrypt_field
