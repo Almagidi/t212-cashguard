@@ -4,6 +4,7 @@ Clients connect at /v1/ws/live, then send {"type":"auth","token":"<jwt>"} as
 the first message (within 5 s).  The token never appears in query params or
 Nginx access logs.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,11 +17,10 @@ from typing import TYPE_CHECKING
 
 import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from jose import JWTError
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.core.security import decode_access_token
+from app.core.security import TokenDecodeError, decode_access_token
 from app.db.models import (
     AppSettings,
     BrokerAccountSnapshot,
@@ -51,6 +51,7 @@ _AUTH_TIMEOUT = 5
 
 # ── Connection manager ────────────────────────────────────────────────────────
 
+
 class ConnectionManager:
     def __init__(self) -> None:
         self._active: dict[str, WebSocket] = {}
@@ -79,7 +80,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-def _json_serial(obj):
+def _json_serial(obj: object) -> str | float:
     if isinstance(obj, datetime):
         return obj.isoformat()
     if isinstance(obj, Decimal):
@@ -91,11 +92,12 @@ def _json_serial(obj):
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
+
 async def _auth_first_message(websocket: WebSocket, db: AsyncSession) -> User | None:
     """Await the mandatory first-message auth frame; close 4001 on any failure."""
     try:
         raw = await asyncio.wait_for(websocket.receive_json(), timeout=_AUTH_TIMEOUT)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         with contextlib.suppress(Exception):
             await websocket.close(code=4001, reason="auth_timeout")
         return None
@@ -129,11 +131,12 @@ async def _authenticate(token: str | None, db: AsyncSession) -> User | None:
         result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         return user if user and user.is_active else None
-    except (JWTError, Exception):
+    except (TokenDecodeError, Exception):
         return None
 
 
 # ── Live data assembler ───────────────────────────────────────────────────────
+
 
 async def _build_payload(db: AsyncSession) -> dict:
     """Assemble the live snapshot from the database (or mock data)."""
@@ -150,14 +153,10 @@ async def _build_payload(db: AsyncSession) -> dict:
     positions_result = await db.execute(select(PositionSnapshot))
     positions = positions_result.scalars().all()
 
-    signals_result = await db.execute(
-        select(Signal).order_by(Signal.generated_at.desc()).limit(6)
-    )
+    signals_result = await db.execute(select(Signal).order_by(Signal.generated_at.desc()).limit(6))
     signals = signals_result.scalars().all()
 
-    orders_result = await db.execute(
-        select(Order).order_by(Order.created_at.desc()).limit(8)
-    )
+    orders_result = await db.execute(select(Order).order_by(Order.created_at.desc()).limit(8))
     orders = orders_result.scalars().all()
 
     settings_result = await db.execute(select(AppSettings).limit(1))
@@ -243,17 +242,70 @@ async def _mock_payload() -> dict:
             "unrealized_pnl": unrealized,
         },
         "positions": [
-            {"ticker": "AAPL", "quantity": 5.0, "average_price": 178.50, "current_price": 181.20, "unrealized_pnl": 13.50, "market_value": 906.00},
-            {"ticker": "MSFT", "quantity": 3.0, "average_price": 415.00, "current_price": 421.80, "unrealized_pnl": 20.40, "market_value": 1265.40},
-            {"ticker": "NVDA", "quantity": 2.0, "average_price": 880.00, "current_price": 894.50, "unrealized_pnl": 29.00, "market_value": 1789.00},
+            {
+                "ticker": "AAPL",
+                "quantity": 5.0,
+                "average_price": 178.50,
+                "current_price": 181.20,
+                "unrealized_pnl": 13.50,
+                "market_value": 906.00,
+            },
+            {
+                "ticker": "MSFT",
+                "quantity": 3.0,
+                "average_price": 415.00,
+                "current_price": 421.80,
+                "unrealized_pnl": 20.40,
+                "market_value": 1265.40,
+            },
+            {
+                "ticker": "NVDA",
+                "quantity": 2.0,
+                "average_price": 880.00,
+                "current_price": 894.50,
+                "unrealized_pnl": 29.00,
+                "market_value": 1789.00,
+            },
         ],
         "signals": [
-            {"id": str(uuid.uuid4()), "ticker": "AAPL", "side": "buy", "signal_type": "orb_breakout", "status": "executed", "confidence": 0.82, "generated_at": datetime.now(UTC).isoformat()},
-            {"id": str(uuid.uuid4()), "ticker": "TSLA", "side": "sell", "signal_type": "vwap_reclaim", "status": "rejected", "confidence": 0.61, "generated_at": datetime.now(UTC).isoformat()},
+            {
+                "id": str(uuid.uuid4()),
+                "ticker": "AAPL",
+                "side": "buy",
+                "signal_type": "orb_breakout",
+                "status": "executed",
+                "confidence": 0.82,
+                "generated_at": datetime.now(UTC).isoformat(),
+            },
+            {
+                "id": str(uuid.uuid4()),
+                "ticker": "TSLA",
+                "side": "sell",
+                "signal_type": "vwap_reclaim",
+                "status": "rejected",
+                "confidence": 0.61,
+                "generated_at": datetime.now(UTC).isoformat(),
+            },
         ],
         "orders": [
-            {"id": str(uuid.uuid4()), "ticker": "AAPL", "side": "buy", "order_type": "limit", "quantity": 5.0, "status": "filled", "created_at": datetime.now(UTC).isoformat()},
-            {"id": str(uuid.uuid4()), "ticker": "MSFT", "side": "buy", "order_type": "limit", "quantity": 3.0, "status": "filled", "created_at": datetime.now(UTC).isoformat()},
+            {
+                "id": str(uuid.uuid4()),
+                "ticker": "AAPL",
+                "side": "buy",
+                "order_type": "limit",
+                "quantity": 5.0,
+                "status": "filled",
+                "created_at": datetime.now(UTC).isoformat(),
+            },
+            {
+                "id": str(uuid.uuid4()),
+                "ticker": "MSFT",
+                "side": "buy",
+                "order_type": "limit",
+                "quantity": 3.0,
+                "status": "filled",
+                "created_at": datetime.now(UTC).isoformat(),
+            },
         ],
         "system": {
             "auto_trading_enabled": True,
@@ -265,6 +317,7 @@ async def _mock_payload() -> dict:
 
 
 # ── WebSocket endpoint ────────────────────────────────────────────────────────
+
 
 @router.websocket("/v1/ws/live")
 async def websocket_live(websocket: WebSocket) -> None:
@@ -318,10 +371,12 @@ async def websocket_live(websocket: WebSocket) -> None:
                     try:
                         data = json.loads(raw)
                         if data.get("type") != "pong":
-                            log.debug("ws.unexpected_message", client=client_id, type=data.get("type"))
+                            log.debug(
+                                "ws.unexpected_message", client=client_id, type=data.get("type")
+                            )
                     except (json.JSONDecodeError, Exception):
                         pass
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     log.warning("ws.heartbeat_timeout", client=client_id)
                     with contextlib.suppress(Exception):
                         await websocket.close(code=1001, reason="heartbeat_timeout")
@@ -331,7 +386,7 @@ async def websocket_live(websocket: WebSocket) -> None:
 
         broadcast_task = asyncio.create_task(_broadcast_loop())
         heartbeat_task = asyncio.create_task(_heartbeat_loop())
-        receive_task   = asyncio.create_task(_receive_loop())
+        receive_task = asyncio.create_task(_receive_loop())
 
         try:
             done, pending = await asyncio.wait(

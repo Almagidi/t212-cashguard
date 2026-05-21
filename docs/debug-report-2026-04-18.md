@@ -61,7 +61,7 @@ All edits kept behavior intact on the risk / live-trading path.
 
 **File:** `apps/api/app/api/deps.py`
 
-- `raise HTTPException(401, "Invalid or expired token") from exc` (was swallowing the JWTError context for debugging).
+- `raise HTTPException(401, "Invalid or expired token") from exc` (was swallowing the JWT exception context for debugging).
 
 ## Items you need to apply locally
 
