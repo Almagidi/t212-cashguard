@@ -5,10 +5,17 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 
+from app.broker.provider import (
+    BrokerProviderCredentials,
+    BrokerProviderRequest,
+    BrokerProviderValidationError,
+    BrokerRuntimeEnvironment,
+    create_trading212_provider_adapter,
+)
 from app.core.config import settings
 from app.core.security import CredentialDecryptionError
 from app.services.safety_policy import SafetyPolicyViolation
@@ -208,6 +215,16 @@ def _install_adapter_sentinel(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.broker.trading212.Trading212Adapter", _raise_adapter_sentinel)
 
 
+def _install_provider_sentinel(
+    monkeypatch: pytest.MonkeyPatch, calls: list[tuple[tuple[Any, ...], dict[str, Any]]]
+) -> None:
+    def provider_sentinel(*args: Any, **kwargs: Any) -> object:
+        calls.append((args, kwargs))
+        raise AssertionError("provider must not be called in this path")
+
+    monkeypatch.setattr("app.broker.provider.create_trading212_provider_adapter", provider_sentinel)
+
+
 def _assert_no_adapter_context_entered() -> None:
     assert RecordingTrading212Adapter.entered == 0
     assert RecordingTrading212Adapter.exited == 0
@@ -238,9 +255,11 @@ def test_order_workers_skip_safely_in_mock_mode_without_constructing_adapter(
     expected: dict[str, Any],
 ) -> None:
     summaries: list[tuple[str, dict[str, Any]]] = []
+    provider_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     fake_db = FakeSession(results=results)
     _install_session(monkeypatch, fake_db, summaries)
     _install_adapter_sentinel(monkeypatch)
+    _install_provider_sentinel(monkeypatch, provider_calls)
     monkeypatch.setattr(settings, "APP_MODE", "mock")
 
     assert run_task() == expected
@@ -248,6 +267,7 @@ def test_order_workers_skip_safely_in_mock_mode_without_constructing_adapter(
     # Mock mode skips adapter construction after the existing query sequence.
     assert fake_db.results == []
     assert summaries == [(task_name, expected)]
+    assert provider_calls == []
     assert RecordingTrading212Adapter.constructed == []
     assert RecordingExecutionEngine.brokers == []
     _assert_no_adapter_context_entered()
@@ -278,14 +298,17 @@ def test_order_workers_skip_safely_when_no_candidate_orders_exist(
     expected: dict[str, Any],
 ) -> None:
     summaries: list[tuple[str, dict[str, Any]]] = []
+    provider_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     fake_db = FakeSession(results=results)
     _install_session(monkeypatch, fake_db, summaries)
     _install_adapter_sentinel(monkeypatch)
+    _install_provider_sentinel(monkeypatch, provider_calls)
 
     assert run_task() == expected
 
     assert summaries == [(task_name, expected)]
     assert fake_db.results == []
+    assert provider_calls == []
     assert RecordingTrading212Adapter.constructed == []
     _assert_no_adapter_context_entered()
 
@@ -315,14 +338,17 @@ def test_order_workers_skip_safely_when_no_active_connection_exists(
     expected: dict[str, Any],
 ) -> None:
     summaries: list[tuple[str, dict[str, Any]]] = []
+    provider_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     fake_db = FakeSession(results=results)
     _install_session(monkeypatch, fake_db, summaries)
     _install_adapter_sentinel(monkeypatch)
+    _install_provider_sentinel(monkeypatch, provider_calls)
 
     assert run_task() == expected
 
     assert fake_db.results == []
     assert summaries == [(task_name, expected)]
+    assert provider_calls == []
     assert RecordingTrading212Adapter.constructed == []
     assert RecordingExecutionEngine.brokers == []
     _assert_no_adapter_context_entered()
@@ -356,11 +382,13 @@ def test_order_workers_mark_reconnect_required_when_credential_decryption_fails(
     expected: dict[str, Any],
 ) -> None:
     summaries: list[tuple[str, dict[str, Any]]] = []
+    provider_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     reconnect_calls: list[tuple[FakeSession, Any, str, str]] = []
     fake_db = FakeSession(results=results)
     expected_conn = results[-1]
     _install_session(monkeypatch, fake_db, summaries)
     _install_adapter_sentinel(monkeypatch)
+    _install_provider_sentinel(monkeypatch, provider_calls)
 
     def fail_decrypt(_value: str) -> str:
         raise CredentialDecryptionError("cannot decrypt active worker credentials")
@@ -378,6 +406,7 @@ def test_order_workers_mark_reconnect_required_when_credential_decryption_fails(
     assert reconnect_calls == [
         (fake_db, expected_conn, "cannot decrypt active worker credentials", actor)
     ]
+    assert provider_calls == []
     assert RecordingTrading212Adapter.constructed == []
     _assert_no_adapter_context_entered()
 
@@ -418,10 +447,12 @@ def test_order_workers_do_not_construct_adapter_when_environment_gate_rejects(
     expected: dict[str, Any],
 ) -> None:
     summaries: list[tuple[str, dict[str, Any]]] = []
+    provider_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     gate_calls: list[tuple[str, str]] = []
     fake_db = FakeSession(results=results)
     _install_session(monkeypatch, fake_db, summaries)
     _install_adapter_sentinel(monkeypatch)
+    _install_provider_sentinel(monkeypatch, provider_calls)
 
     def reject_environment(environment: str, *, action: str) -> None:
         gate_calls.append((environment, action))
@@ -437,6 +468,7 @@ def test_order_workers_do_not_construct_adapter_when_environment_gate_rejects(
     assert fake_db.results == []
     assert gate_calls == [("live", action)]
     assert summaries == [(task_name, expected)]
+    assert provider_calls == []
     assert RecordingTrading212Adapter.constructed == []
     _assert_no_adapter_context_entered()
 
@@ -480,9 +512,11 @@ def test_order_workers_do_not_construct_adapter_on_live_disabled_mismatch(
     expected: dict[str, Any],
 ) -> None:
     summaries: list[tuple[str, dict[str, Any]]] = []
+    provider_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     fake_db = FakeSession(results=results)
     _install_session(monkeypatch, fake_db, summaries)
     _install_adapter_sentinel(monkeypatch)
+    _install_provider_sentinel(monkeypatch, provider_calls)
     monkeypatch.setattr(settings, "APP_MODE", "live")
     monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
 
@@ -490,6 +524,7 @@ def test_order_workers_do_not_construct_adapter_on_live_disabled_mismatch(
 
     assert fake_db.results == []
     assert summaries == [(task_name, expected)]
+    assert provider_calls == []
     assert RecordingTrading212Adapter.constructed == []
     assert RecordingExecutionEngine.brokers == []
     _assert_no_adapter_context_entered()
@@ -502,7 +537,7 @@ def test_order_workers_do_not_construct_adapter_on_live_disabled_mismatch(
         ("demo", "demo", False, "decrypted-demo-key", "decrypted-demo-secret"),
     ],
 )
-def test_reconcile_pending_orders_constructs_direct_adapter_after_all_gates_and_reconciles_orders(
+def test_reconcile_pending_orders_calls_provider_after_all_gates_and_reconciles_orders(
     monkeypatch: pytest.MonkeyPatch,
     environment: str,
     app_mode: str,
@@ -515,6 +550,7 @@ def test_reconcile_pending_orders_constructs_direct_adapter_after_all_gates_and_
     summaries: list[tuple[str, dict[str, Any]]] = []
     fake_db = FakeSession(results=[[], selected_orders, conn])
     events: list[str] = []
+    provider_calls: list[dict[str, Any]] = []
     _install_session(monkeypatch, fake_db, summaries)
     _install_decrypt(monkeypatch)
     monkeypatch.setattr(settings, "APP_MODE", app_mode)
@@ -523,21 +559,59 @@ def test_reconcile_pending_orders_constructs_direct_adapter_after_all_gates_and_
     def gate(environment: str, *, action: str) -> None:
         events.append(f"gate:{environment}:{action}")
 
-    original_adapter_init = RecordingTrading212Adapter.__init__
-
-    def adapter_init(
-        self: RecordingTrading212Adapter, api_key: str, api_secret: str, environment: str
-    ) -> None:
-        events.append(f"adapter:{environment}")
-        original_adapter_init(self, api_key, api_secret, environment)
+    def recording_provider(
+        request: BrokerProviderRequest,
+        credentials: BrokerProviderCredentials,
+        *,
+        app_mode: str,
+        live_trading_enabled: bool,
+    ) -> RecordingTrading212Adapter:
+        events.append(f"provider:{request.environment}")
+        provider_calls.append(
+            {
+                "request": request,
+                "credentials": credentials,
+                "app_mode": app_mode,
+                "live_trading_enabled": live_trading_enabled,
+            }
+        )
+        return cast(
+            RecordingTrading212Adapter,
+            create_trading212_provider_adapter(
+                request,
+                credentials,
+                app_mode=app_mode,
+                live_trading_enabled=live_trading_enabled,
+            ),
+        )
 
     monkeypatch.setattr("app.services.safety_policy.require_broker_environment", gate)
-    monkeypatch.setattr(RecordingTrading212Adapter, "__init__", adapter_init)
+    monkeypatch.setattr("app.broker.trading212.Trading212Adapter", RecordingTrading212Adapter)
+    monkeypatch.setattr(
+        "app.broker.provider.create_trading212_provider_adapter",
+        recording_provider,
+    )
 
     assert tasks.reconcile_pending_orders.run() == {"reconciled": 2}
 
     assert fake_db.results == []
-    assert events == [f"gate:{environment}:worker reconcile", f"adapter:{environment}"]
+    assert events == [f"gate:{environment}:worker reconcile", f"provider:{environment}"]
+    assert provider_calls == [
+        {
+            "request": BrokerProviderRequest(
+                broker_id="trading212",
+                environment=cast(BrokerRuntimeEnvironment, environment),
+                purpose="worker_reconcile",
+                user_id=conn.user_id,
+            ),
+            "credentials": BrokerProviderCredentials(
+                api_key=expected_key,
+                api_secret=expected_secret,
+            ),
+            "app_mode": app_mode,
+            "live_trading_enabled": live_trading_enabled,
+        }
+    ]
     assert RecordingTrading212Adapter.constructed == [(expected_key, expected_secret, environment)]
     assert RecordingTrading212Adapter.entered == 1
     assert RecordingTrading212Adapter.exited == 1
@@ -547,6 +621,45 @@ def test_reconcile_pending_orders_constructs_direct_adapter_after_all_gates_and_
     assert RecordingExecutionEngine.cancel_calls == []
     assert RecordingTrading212Adapter.write_calls == []
     assert summaries == [("reconcile_pending_orders", {"reconciled": 2})]
+
+
+def test_reconcile_pending_orders_provider_validation_error_uses_skipped_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_orders = [_order(broker_order_id="broker-1")]
+    summaries: list[tuple[str, dict[str, Any]]] = []
+    fake_db = FakeSession(results=[[], selected_orders, _active_conn(environment="live")])
+    _install_session(monkeypatch, fake_db, summaries)
+    _install_decrypt(monkeypatch)
+    _install_adapter_sentinel(monkeypatch)
+
+    # This covers the worker's provider-validation failure summary when the
+    # provider itself rejects construction after all worker-owned gates pass.
+    def fail_provider(*_args: Any, **_kwargs: Any) -> RecordingTrading212Adapter:
+        raise BrokerProviderValidationError("provider refused worker reconcile")
+
+    monkeypatch.setattr("app.broker.provider.create_trading212_provider_adapter", fail_provider)
+
+    assert tasks.reconcile_pending_orders.run() == {
+        "reconciled": 0,
+        "skipped": "provider_validation_error",
+        "reason": "provider refused worker reconcile",
+    }
+
+    assert fake_db.results == []
+    assert RecordingExecutionEngine.reconcile_calls == []
+    assert RecordingExecutionEngine.brokers == []
+    assert RecordingTrading212Adapter.constructed == []
+    assert summaries == [
+        (
+            "reconcile_pending_orders",
+            {
+                "reconciled": 0,
+                "skipped": "provider_validation_error",
+                "reason": "provider refused worker reconcile",
+            },
+        )
+    ]
 
 
 @pytest.mark.parametrize(
@@ -572,8 +685,10 @@ def test_cancel_timed_out_orders_constructs_direct_adapter_after_all_gates_and_c
     summaries: list[tuple[str, dict[str, Any]]] = []
     fake_db = FakeSession(results=[selected_orders, conn])
     events: list[str] = []
+    provider_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     _install_session(monkeypatch, fake_db, summaries)
     _install_decrypt(monkeypatch)
+    _install_provider_sentinel(monkeypatch, provider_calls)
     monkeypatch.setattr(settings, "APP_MODE", app_mode)
     monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", live_trading_enabled)
 
@@ -595,6 +710,7 @@ def test_cancel_timed_out_orders_constructs_direct_adapter_after_all_gates_and_c
 
     assert fake_db.results == []
     assert events == [f"gate:{environment}:worker timeout cancel", f"adapter:{environment}"]
+    assert provider_calls == []
     assert RecordingTrading212Adapter.constructed == [(expected_key, expected_secret, environment)]
     assert RecordingTrading212Adapter.entered == 1
     assert RecordingTrading212Adapter.exited == 1
@@ -640,12 +756,16 @@ def test_order_worker_provider_helper_is_still_unwired_and_direct_references_are
         and "create_trading212_provider_adapter" in ast.unparse(node)
     }
 
-    assert _adapter_counts(reconcile_node) == {"construct": 1, "import": 1}
+    assert _adapter_counts(reconcile_node) == {"construct": 0, "import": 0}
     assert _adapter_counts(cancel_node) == {"construct": 1, "import": 1}
-    assert "create_trading212_provider_adapter" not in ast.unparse(reconcile_node)
+    assert "create_trading212_provider_adapter" in ast.unparse(reconcile_node)
     assert "create_trading212_provider_adapter" not in ast.unparse(cancel_node)
     assert "create_trading212_provider_adapter" in ast.unparse(migrated_node)
     assert "create_trading212_provider_adapter" in ast.unparse(funding_node)
-    assert provider_helper_functions == {"sync_account_snapshot", "track_cfd_funding"}
+    assert provider_helper_functions == {
+        "sync_account_snapshot",
+        "track_cfd_funding",
+        "reconcile_pending_orders",
+    }
 
-    assert _adapter_counts(tree) == {"construct": 2, "import": 2}
+    assert _adapter_counts(tree) == {"construct": 1, "import": 1}

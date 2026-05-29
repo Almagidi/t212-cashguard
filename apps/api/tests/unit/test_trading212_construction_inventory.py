@@ -129,11 +129,10 @@ def test_runtime_trading212_adapter_construction_inventory_is_locked() -> None:
         # System control has read-only status helpers and emergency cancel/flatten
         # operations sharing one broker helper.
         "app/services/system_control.py": {"construct": 1, "import": 1},
-        # Worker task references map mechanically to these functions:
-        # reconcile_pending_orders: import + construct
-        # cancel_timed_out_orders: import + construct
-        # sync_account_snapshot and track_cfd_funding have migrated to provider construction.
-        "app/workers/tasks.py": {"construct": 2, "import": 2},
+        # Worker task references map mechanically to cancel_timed_out_orders.
+        # sync_account_snapshot, track_cfd_funding, and reconcile_pending_orders
+        # have migrated to provider construction.
+        "app/workers/tasks.py": {"construct": 1, "import": 1},
         # Manual terminal-only DEMO reconciliation smoke with a write-method guard.
         "scripts/t212_demo_multi_order_reconciliation_smoke.py": {
             "construct": 1,
