@@ -163,6 +163,8 @@ This audit covers the remaining direct `Trading212Adapter` construction/import p
 
 `apps/api/tests/unit/test_write_capable_provider_boundary_audit.py` adds the semantic boundary lock for the remaining direct paths. It proves `cancel_timed_out_orders` is still direct/provider-unwired and cancellation-capable, proves provider usage in `apps/api/app/workers/tasks.py` remains limited to `sync_account_snapshot`, `track_cfd_funding`, and `reconcile_pending_orders`, and classifies `position_monitor`, `strategy_runner`, `portfolio_execution_service`, and `system_control` by their write-capable surfaces. The test is source/AST-level only and does not execute broker code.
 
+`apps/api/tests/unit/test_system_control_provider_equivalence.py` adds focused equivalence coverage for the current `SystemControlService` boundary without migrating runtime construction. It locks `_get_broker` as direct/provider-unwired, proves mock mode and unsafe policy paths return or fail before `Trading212Adapter` construction, preserves active encrypted `BrokerConnection` credential use and optional `broker_user_id` scoping, and verifies credential-decryption failures still mark reconnect required with `commit=True`. The same fake broker boundary proves `get_snapshot()` and `get_positions_summary()` are read/status paths, while `cancel_all_pending()` and `flatten_all()` remain emergency write-capable through `ExecutionEngine` fakes only. No real broker, network, cancellation, or order submission occurs in these tests.
+
 `apps/api/scripts/t212_demo_reconciliation_worker.py` was migrated in the previous provider PR and is therefore intentionally absent from the remaining direct construction inventory.
 
 ### Classification Summary
@@ -244,6 +246,8 @@ The remaining direct runtime paths are deliberately classified before further mi
 - `portfolio_execution_service`: mixed/write-capable portfolio rebalance submission path; direct/provider-unwired.
 - `system_control`: mixed read/status plus emergency cancel/flatten path; direct/provider-unwired.
 - manual smoke scripts: terminal-only/manual DEMO tools; direct/provider-unwired and not production provider migration targets.
+
+`system_control` now has tests/docs-only provider-equivalence coverage for the existing direct boundary. It remains direct/provider-unwired because read/status paths and emergency cancel/flatten paths share `_get_broker`; any future migration should probably split read-only status from emergency-write paths, or introduce separate provider purposes with separate acceptance tests, before changing runtime construction.
 
 The next recommended provider step, if the migration continues, is another tests-only/equivalence PR for exactly one candidate. That PR should prove the selected path's existing safety gates, credential source, direct/provider-unwired baseline, provider request purpose, fake broker boundary, and unchanged read/write behavior before any runtime construction changes are made.
 

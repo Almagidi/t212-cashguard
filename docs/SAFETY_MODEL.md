@@ -37,6 +37,8 @@ Focused order-worker provider-equivalence tests now lock `reconcile_pending_orde
 
 Order submission, cancellation, strategy execution, position monitoring, portfolio execution, and emergency system-control paths remain direct and deferred so provider work does not expand broker write reach. A source-level write-capable provider-boundary audit now locks this state without executing broker code: `cancel_timed_out_orders` remains direct/provider-unwired and cancellation-capable through `ExecutionEngine.cancel_order(...)`; `position_monitor` remains write-capable for automated exits and EOD flatten; `strategy_runner` remains mixed/write-capable for strategy entries and exits; `portfolio_execution_service` remains mixed/write-capable for rebalance orders; and `system_control` remains mixed/write-capable because read-only status calls and emergency cancel/flatten share one broker helper. Manual smoke scripts remain terminal-only/manual DEMO tools and are not production provider migration targets. This PR does not change live trading, order placement, cancellation behaviour, credential storage/decryption, route schemas, or frontend controls.
 
+System-control provider-equivalence coverage is tests/docs-only. `SystemControlService._get_broker` still directly constructs `Trading212Adapter` after the existing mock-mode shortcut, app-mode policy gate, active encrypted connection lookup, connection-environment gate, and credential decryption. Read/status methods are proven read-only against fakes, while emergency cancel-all and flatten-all are proven write-capable only through fake broker and fake execution-engine records. No runtime provider migration, live-readiness claim, real broker call, network call, cancellation, or order placement is added.
+
 Demo and live credentials are separated:
 
 - `T212_DEMO_API_KEY` / `T212_DEMO_API_SECRET`
@@ -68,7 +70,7 @@ Demo broker events use distinct action names (`demo_broker_order_attempt`, `demo
 
 ## Future Work
 
-- Add a tests-only/equivalence PR for exactly one remaining direct provider candidate before any runtime construction migration. Do not migrate write-capable paths until unchanged safety gates, credential source, provider request purpose, fake broker boundary, and order behavior are proven.
+- Add a tests-only/equivalence PR for exactly one remaining direct provider candidate before any runtime construction migration. Do not migrate write-capable paths until unchanged safety gates, credential source, provider request purpose, fake broker boundary, and order behavior are proven. For system control, split read-only status from emergency-write paths or give them separate provider purposes and tests before changing runtime construction.
 - Move remaining broker workers or services through the provider only after the relevant equivalence tests are in place.
 - Add DB-level audit event categories/correlation IDs.
 - Add request/correlation IDs consistently across all broker/audit paths.
