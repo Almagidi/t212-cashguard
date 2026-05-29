@@ -24,6 +24,8 @@ The provider migration now covers `get_broker()`, `/v1/broker/trading212` creden
 
 The remaining direct runtime construction count in `apps/api/app/workers/tasks.py` is now `{"construct": 1, "import": 1}`, owned by `cancel_timed_out_orders`.
 
+`SystemControlService._get_broker` is now covered by tests/docs-only provider-equivalence tests and remains direct/provider-unwired. The coverage locks the current mock-mode path, app-mode and connection-environment safety gates, active encrypted `BrokerConnection` credential use, reconnect-required `commit=True` handling on decrypt failure, optional `broker_user_id` scoping, and direct `Trading212Adapter` construction after those gates. It also proves the same helper backs read/status paths and emergency cancel/flatten paths using fakes only; no runtime provider migration has happened.
+
 The other remaining direct paths are intentionally deferred:
 
 - `position_monitor` is write-capable because it can submit automated exits and EOD flatten orders.
@@ -32,7 +34,7 @@ The other remaining direct paths are intentionally deferred:
 - `system_control` is mixed/write-capable because the same broker helper backs read-only status calls and emergency cancel/flatten operations.
 - manual smoke scripts are terminal-only/manual DEMO tools and are not production provider migration targets.
 
-None of these paths should be migrated from this document alone. Each needs a focused tests-only/equivalence PR before runtime construction changes.
+None of these paths should be migrated from this document alone. Each needs a focused tests-only/equivalence PR before runtime construction changes. For `system_control`, a later runtime migration should probably split read-only status from emergency-write paths, or use separate provider purposes and tests for those surfaces, because a single broad helper currently serves both.
 
 Tests may still import or monkeypatch `Trading212Adapter` to prove safety boundaries without network calls. Those references are not runtime construction paths.
 
@@ -217,9 +219,10 @@ The provider should be introduced only after its test matrix proves it preserves
 12. Done: add order-worker provider-equivalence tests for `reconcile_pending_orders` and `cancel_timed_out_orders` before any order-worker provider migration, locking direct construction gates, credential source, initial provider-unwired status, and fake engine/broker boundaries.
 13. Done: move `reconcile_pending_orders` final adapter construction to the provider while preserving worker-owned order selection, active connection lookup, credential decryption, environment gates, reconnect-required handling, `ExecutionEngine.reconcile_order(...)`, and summary behaviour.
 14. Done: add a tests/docs-only write-capable provider-boundary audit that locks the remaining direct paths and classifies `cancel_timed_out_orders`, `position_monitor`, `strategy_runner`, `portfolio_execution_service`, `system_control`, and manual smoke scripts without changing runtime code.
-15. Before migrating another direct path, add a tests-only/equivalence PR for exactly one selected candidate. It must prove the current direct/provider-unwired baseline, safety gates, credential source, provider request purpose, fake broker boundary, and unchanged read/write behavior.
-16. Consider broker-neutral route design only after the Trading 212 provider migration is complete and behavior-equivalent.
-17. Design any second broker with recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
+15. Done: add tests/docs-only provider-equivalence coverage for `SystemControlService`, locking the current direct/provider-unwired mixed boundary without runtime migration.
+16. Before migrating another direct path, add a tests-only/equivalence PR for exactly one selected candidate. It must prove the current direct/provider-unwired baseline, safety gates, credential source, provider request purpose, fake broker boundary, and unchanged read/write behavior.
+17. Consider broker-neutral route design only after the Trading 212 provider migration is complete and behavior-equivalent.
+18. Design any second broker with recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
 
 ## Risks Of Introducing A Provider Too Early
 
@@ -247,4 +250,4 @@ A later runtime provider PR should be accepted only when:
 
 ## Next Recommended PR
 
-Keep write-capable paths deferred. The next PR should be tests-only/equivalence for exactly one candidate and should not migrate runtime construction. `cancel_timed_out_orders` should remain especially late because it can cancel broker orders through the execution engine; migrate it only when unchanged cancellation selection, environment gating, credentials, and broker-write behaviour are proven against fakes. Continue to avoid runtime migrations for `position_monitor`, `strategy_runner`, `portfolio_execution_service`, and `system_control` until each path has similarly focused tests for its safety gates, credential source, broker write boundary, and unchanged order behavior.
+Keep write-capable paths deferred. The next PR should be tests-only/equivalence for exactly one remaining candidate and should not migrate runtime construction. `cancel_timed_out_orders` should remain especially late because it can cancel broker orders through the execution engine; migrate it only when unchanged cancellation selection, environment gating, credentials, and broker-write behaviour are proven against fakes. Continue to avoid runtime migrations for `position_monitor`, `strategy_runner`, and `portfolio_execution_service` until each path has similarly focused tests for its safety gates, credential source, broker write boundary, and unchanged order behavior. For `system_control`, the next useful step before migration is a design or tests PR that separates read-only status from emergency-write provider purposes.
