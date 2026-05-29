@@ -12,6 +12,8 @@ The current supported real broker remains Trading 212. The purpose of this desig
 
 The provider migration now covers `get_broker()`, `/v1/broker/trading212` credential-test construction, scheduler startup construction, the terminal one-shot demo reconciliation worker, `sync_account_snapshot`, `track_cfd_funding`, and `reconcile_pending_orders`. The remaining direct `Trading212Adapter` construction/import inventory is locked by `apps/api/tests/unit/test_trading212_construction_inventory.py` and detailed in `docs/architecture/broker-interface-readiness-audit.md`.
 
+`apps/api/tests/unit/test_write_capable_provider_boundary_audit.py` now adds the semantic lock for the remaining direct paths. It proves `cancel_timed_out_orders` is still direct/provider-unwired and cancellation-capable, proves provider calls in `apps/api/app/workers/tasks.py` remain limited to `sync_account_snapshot`, `track_cfd_funding`, and `reconcile_pending_orders`, and classifies the remaining service helpers as write-capable or mixed before any further migration.
+
 `sync_account_snapshot` now delegates only final Trading 212 adapter construction to `create_trading212_provider_adapter(...)`. It is still an isolated read-only worker task that reads account summary with `get_account_summary()`, uses active encrypted `BrokerConnection` credentials, and does not submit, cancel, or modify broker orders. Active connection lookup, credential decryption, reconnect-required handling, environment gates, provider-validation failure summarization, and snapshot persistence remain in worker code. Write-capable service helpers and worker cancel/strategy execution paths remain deferred until each has explicit provider-equivalence tests for its safety gates and broker write boundaries.
 
 `track_cfd_funding` now delegates only final Trading 212 adapter construction to `create_trading212_provider_adapter(...)` with purpose `worker_cfd_funding`. It remains read-only at the broker boundary and calls only `get_positions()` before persisting local CFD funding records. Active connection lookup, credential decryption, reconnect-required handling, `require_broker_environment(conn.environment, action="worker cfd funding")`, provider-validation failure summarization, and local funding persistence remain in worker code. Write-capable worker and service paths remain deferred.
@@ -21,6 +23,16 @@ The provider migration now covers `get_broker()`, `/v1/broker/trading212` creden
 `cancel_timed_out_orders` remains intentionally unwired from the provider and direct because it is cancellation-capable through `ExecutionEngine.cancel_order(...)`. Focused unit tests document that it does not call the provider helper, does not construct before timed-out candidate selection, active connection lookup, `require_broker_environment(...)`, or credential decryption, and makes no real broker calls in tests.
 
 The remaining direct runtime construction count in `apps/api/app/workers/tasks.py` is now `{"construct": 1, "import": 1}`, owned by `cancel_timed_out_orders`.
+
+The other remaining direct paths are intentionally deferred:
+
+- `position_monitor` is write-capable because it can submit automated exits and EOD flatten orders.
+- `strategy_runner` is mixed/write-capable because it reads account/positions and can submit strategy entry and exit orders.
+- `portfolio_execution_service` is mixed/write-capable because it reads account/positions and can submit rebalance orders.
+- `system_control` is mixed/write-capable because the same broker helper backs read-only status calls and emergency cancel/flatten operations.
+- manual smoke scripts are terminal-only/manual DEMO tools and are not production provider migration targets.
+
+None of these paths should be migrated from this document alone. Each needs a focused tests-only/equivalence PR before runtime construction changes.
 
 Tests may still import or monkeypatch `Trading212Adapter` to prove safety boundaries without network calls. Those references are not runtime construction paths.
 
@@ -204,8 +216,10 @@ The provider should be introduced only after its test matrix proves it preserves
 11. Done: move `track_cfd_funding` final adapter construction to the provider while preserving active connection lookup, credential decryption, environment gates, reconnect-required handling, local CFD funding persistence, and read-only positions behavior.
 12. Done: add order-worker provider-equivalence tests for `reconcile_pending_orders` and `cancel_timed_out_orders` before any order-worker provider migration, locking direct construction gates, credential source, initial provider-unwired status, and fake engine/broker boundaries.
 13. Done: move `reconcile_pending_orders` final adapter construction to the provider while preserving worker-owned order selection, active connection lookup, credential decryption, environment gates, reconnect-required handling, `ExecutionEngine.reconcile_order(...)`, and summary behaviour.
-14. Consider broker-neutral route design only after the Trading 212 provider migration is complete and behavior-equivalent.
-15. Design any second broker with recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
+14. Done: add a tests/docs-only write-capable provider-boundary audit that locks the remaining direct paths and classifies `cancel_timed_out_orders`, `position_monitor`, `strategy_runner`, `portfolio_execution_service`, `system_control`, and manual smoke scripts without changing runtime code.
+15. Before migrating another direct path, add a tests-only/equivalence PR for exactly one selected candidate. It must prove the current direct/provider-unwired baseline, safety gates, credential source, provider request purpose, fake broker boundary, and unchanged read/write behavior.
+16. Consider broker-neutral route design only after the Trading 212 provider migration is complete and behavior-equivalent.
+17. Design any second broker with recorded/non-live fixtures. Do not add live trading or strategy-driven broker writes as part of that spike.
 
 ## Risks Of Introducing A Provider Too Early
 
@@ -233,4 +247,4 @@ A later runtime provider PR should be accepted only when:
 
 ## Next Recommended PR
 
-Keep write-capable paths deferred. `cancel_timed_out_orders` should remain especially late because it can cancel broker orders through the execution engine; migrate it only when unchanged cancellation selection, environment gating, credentials, and broker-write behaviour are proven against fakes. Continue to avoid `position_monitor`, `strategy_runner`, `portfolio_execution_service`, and `system_control` until each path has similarly focused tests for its safety gates, credential source, broker write boundary, and unchanged order behavior.
+Keep write-capable paths deferred. The next PR should be tests-only/equivalence for exactly one candidate and should not migrate runtime construction. `cancel_timed_out_orders` should remain especially late because it can cancel broker orders through the execution engine; migrate it only when unchanged cancellation selection, environment gating, credentials, and broker-write behaviour are proven against fakes. Continue to avoid runtime migrations for `position_monitor`, `strategy_runner`, `portfolio_execution_service`, and `system_control` until each path has similarly focused tests for its safety gates, credential source, broker write boundary, and unchanged order behavior.
