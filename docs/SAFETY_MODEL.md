@@ -39,6 +39,8 @@ Order submission, cancellation, strategy execution, position monitoring, portfol
 
 System-control provider-equivalence coverage is tests/docs-only. `SystemControlService._get_broker` still directly constructs `Trading212Adapter` after the existing mock-mode shortcut, app-mode policy gate, active encrypted connection lookup, connection-environment gate, and credential decryption. Read/status methods are proven read-only against fakes, while emergency cancel-all and flatten-all are proven write-capable only through fake broker and fake execution-engine records. No runtime provider migration, live-readiness claim, real broker call, network call, cancellation, or order placement is added.
 
+Portfolio-execution provider-equivalence coverage is tests/docs-only. `PortfolioExecutionService._get_broker` still directly constructs `Trading212Adapter` after the existing mock-mode shortcut, active encrypted connection lookup, credential decryption, and connection-environment gate. `require_broker_environment(...)` currently runs after credential decryption and before direct adapter construction; policy rejection returns no broker before construction. The service remains direct/provider-unwired and mixed/write-capable because account/position reads and rebalance order-producing behavior share the same broker helper. Tests prove early `run_all_enabled(...)` kill-switch, auto-trading, and live-unlocked skips happen before broker lookup, prove rebalance orders are routed through fake `ExecutionEngine` intent/submission calls only, preserve dry-run behavior and the live promotion gate, and make no real broker call, network call, cancellation, or order placement. This is not a live-readiness claim and does not migrate runtime construction.
+
 Demo and live credentials are separated:
 
 - `T212_DEMO_API_KEY` / `T212_DEMO_API_SECRET`
@@ -70,7 +72,7 @@ Demo broker events use distinct action names (`demo_broker_order_attempt`, `demo
 
 ## Future Work
 
-- Add a tests-only/equivalence PR for exactly one remaining direct provider candidate before any runtime construction migration. Do not migrate write-capable paths until unchanged safety gates, credential source, provider request purpose, fake broker boundary, and order behavior are proven. For system control, split read-only status from emergency-write paths or give them separate provider purposes and tests before changing runtime construction.
+- Add a tests-only/equivalence PR for exactly one remaining direct provider candidate before any runtime construction migration. Do not migrate write-capable paths until unchanged safety gates, credential source, provider request purpose, fake broker boundary, and order behavior are proven. For system control, split read-only status from emergency-write paths or give them separate provider purposes and tests before changing runtime construction. For portfolio execution, the current equivalence coverage locks construction paths, early `run_all_enabled(...)` safety gates, account/position reads, dry-run order routing, and the live promotion gate. Before provider wiring, add or retain focused coverage for allocation and risk blocker paths, then preserve credential source, provider purpose, fake broker boundary, and `ExecutionEngine` order submission behavior.
 - Move remaining broker workers or services through the provider only after the relevant equivalence tests are in place.
 - Add DB-level audit event categories/correlation IDs.
 - Add request/correlation IDs consistently across all broker/audit paths.
