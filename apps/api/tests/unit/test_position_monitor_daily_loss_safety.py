@@ -170,7 +170,7 @@ async def test_daily_loss_uses_closed_trade_realized_pnl_not_order_cash_used(db:
 
 
 @pytest.mark.asyncio
-async def test_unrealized_pnl_exception_is_logged_before_defaulting_to_zero(
+async def test_unrealized_pnl_failure_currently_logs_and_assumes_zero(
     db: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -184,6 +184,9 @@ async def test_unrealized_pnl_exception_is_logged_before_defaulting_to_zero(
         account_value=Decimal("10000"),
     )
 
+    # Current policy is fail-open: the monitor records the snapshot failure,
+    # assumes unrealized P&L is zero, and continues because realised P&L alone
+    # does not breach the daily-loss limit.
     assert breached is False
     assert logger.warnings == []
     assert logger.errors == [

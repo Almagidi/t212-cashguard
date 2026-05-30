@@ -47,6 +47,8 @@ Position-monitor provider-equivalence coverage is tests/docs-only. `PositionMoni
 
 Position-monitor daily-loss safety now uses non-dry-run closed `Trade.realized_pnl` for realised P&L instead of order cash-flow fields, logs `position_monitor.unrealized_pnl_error` when unrealized P&L cannot be calculated, and commits the `eod_flatten_executed` audit record after fake/real execution-engine routing completes.
 
+Position-monitor unrealized P&L snapshot failure is a remaining fail-open risk. The current daily-loss path logs `position_monitor.unrealized_pnl_error` and assumes `unrealized = 0.0` if `broker.get_positions()` or unrealized P&L calculation fails, so realised P&L alone can allow the check to pass. `docs/architecture/position-monitor-unrealized-pnl-failure-policy.md` documents this current behaviour and defines fail-closed, kill-switch, and configurable-policy options that should be decided before live automation.
+
 Demo and live credentials are separated:
 
 - `T212_DEMO_API_KEY` / `T212_DEMO_API_SECRET`
