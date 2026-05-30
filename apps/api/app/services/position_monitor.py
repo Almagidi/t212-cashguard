@@ -10,6 +10,7 @@ Checks all open positions for:
 
 This is the automation core — it fires sell orders without human intervention.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -25,9 +26,9 @@ from app.db.models import (
     AppSettings,
     AuditLog,
     BrokerConnection,
-    Order,
     Signal,
     Strategy,
+    Trade,
 )
 from app.execution.engine import ExecutionEngine
 from app.risk.engine import activate_kill_switch
@@ -59,6 +60,7 @@ class PositionMonitor:
     async def _get_broker(self) -> Any | None:
         if settings.APP_MODE == "mock":
             from app.broker.mock_adapter import MockBrokerAdapter
+
             return MockBrokerAdapter()
         result = await self.db.execute(
             select(BrokerConnection)
@@ -71,6 +73,7 @@ class PositionMonitor:
             return None
         from app.broker.trading212 import Trading212Adapter
         from app.core.security import CredentialDecryptionError, decrypt_field
+
         try:
             api_key = decrypt_field(conn.api_key_encrypted)
             api_secret = decrypt_field(conn.api_secret_encrypted)
@@ -98,24 +101,24 @@ class PositionMonitor:
         """Returns (bars, current_price). Falls back to empty on error."""
         try:
             from app.market_data import get_live_provider
+
             provider = get_live_provider()
 
-            if hasattr(provider, '__aenter__'):
+            if hasattr(provider, "__aenter__"):
                 async with provider as md:
-                    raw_bars = await md.get_bars(
-                        ticker, multiplier=5, timespan="minute", limit=50
-                    )
+                    raw_bars = await md.get_bars(ticker, multiplier=5, timespan="minute", limit=50)
                 bars = [
-                    Bar(open=b.open, high=b.high, low=b.low,
-                        close=b.close, volume=b.volume)
+                    Bar(open=b.open, high=b.high, low=b.low, close=b.close, volume=b.volume)
                     for b in raw_bars
                 ]
             else:
                 raw = provider.get_ohlcv(ticker, interval_minutes=5, bars=50)
                 bars = [
                     Bar(
-                        open=Decimal(str(b["open"])), high=Decimal(str(b["high"])),
-                        low=Decimal(str(b["low"])),  close=Decimal(str(b["close"])),
+                        open=Decimal(str(b["open"])),
+                        high=Decimal(str(b["high"])),
+                        low=Decimal(str(b["low"])),
+                        close=Decimal(str(b["close"])),
                         volume=Decimal(str(b["volume"])),
                     )
                     for b in raw
@@ -138,6 +141,7 @@ class PositionMonitor:
         Returns True if limit breached (caller should halt).
         """
         from app.db.models import RiskProfile
+
         rp_result = await self.db.execute(
             select(RiskProfile).where(RiskProfile.is_default == True)  # noqa: E712
         )
@@ -150,18 +154,25 @@ class PositionMonitor:
             async with broker as b:
                 positions = await b.get_positions()
             unrealized = sum(float(p.get("ppl", 0)) for p in positions)
-        except Exception:
+        except Exception as exc:
+            log.error(
+                "position_monitor.unrealized_pnl_error",
+                error=str(exc),
+                exc_info=True,
+                unrealized_assumed=0.0,
+            )
             unrealized = 0.0
 
-        # Get today's realized P&L from filled orders
+        # Get today's realized P&L from closed trades; negative values mean losses.
         from sqlalchemy import func
+
+        # Daily loss uses the UTC day boundary, matching existing behavior.
         today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         result = await self.db.execute(
-            select(func.sum(Order.cash_used)).where(
-                Order.created_at >= today,
-                Order.status == "filled",
-                Order.side == "sell",
-                Order.is_dry_run == False,  # noqa: E712
+            select(func.sum(Trade.realized_pnl)).where(
+                Trade.closed_at >= today,
+                Trade.is_dry_run == False,  # noqa: E712
+                Trade.realized_pnl.isnot(None),
             )
         )
         realized = float(result.scalar_one() or 0)
@@ -172,7 +183,8 @@ class PositionMonitor:
             if loss_pct >= float(rp.max_daily_loss_pct):
                 log.warning(
                     "position_monitor.daily_loss_breach",
-                    loss_pct=loss_pct, limit=float(rp.max_daily_loss_pct),
+                    loss_pct=loss_pct,
+                    limit=float(rp.max_daily_loss_pct),
                 )
                 return True
 
@@ -234,7 +246,7 @@ class PositionMonitor:
         strat_result = await self.db.execute(
             select(Strategy).where(
                 Strategy.is_enabled == True,  # noqa: E712
-                Strategy.is_live == True,     # noqa: E712
+                Strategy.is_live == True,  # noqa: E712
             )
         )
         strategies = strat_result.scalars().all()
@@ -309,10 +321,7 @@ class PositionMonitor:
             return result
 
         # Find the active strategy to get params
-        strategy = next(
-            (s for s in strategies if str(s.id) == str(last_signal.strategy_id)),
-            None
-        )
+        strategy = next((s for s in strategies if str(s.id) == str(last_signal.strategy_id)), None)
         # Build ORBState for exit evaluation
         initial_stop = last_signal.stop_price
         take_profit_2r = last_signal.take_profit_price
@@ -326,12 +335,15 @@ class PositionMonitor:
 
         # Check if we've already taken partial exit
         partial_result = await self.db.execute(
-            select(Signal).where(
+            select(Signal)
+            .where(
                 Signal.ticker == ticker,
                 Signal.signal_type == "partial_exit",
                 Signal.status == "executed",
                 Signal.strategy_id == last_signal.strategy_id,
-            ).order_by(desc(Signal.generated_at)).limit(1)
+            )
+            .order_by(desc(Signal.generated_at))
+            .limit(1)
         )
         partial_done = partial_result.scalar_one_or_none() is not None
 
@@ -398,20 +410,22 @@ class PositionMonitor:
         )
         self.db.add(exit_sig_record)
 
-        self.db.add(AuditLog(
-            action="position_exit_automated",
-            entity_type="order",
-            entity_id=str(order.id),
-            actor="position_monitor",
-            payload={
-                "ticker": ticker,
-                "exit_type": exit_signal.signal_type,
-                "price": float(current_price),
-                "qty": float(sell_qty),
-                "reason": exit_signal.reason,
-            },
-            occurred_at=datetime.now(UTC),
-        ))
+        self.db.add(
+            AuditLog(
+                action="position_exit_automated",
+                entity_type="order",
+                entity_id=str(order.id),
+                actor="position_monitor",
+                payload={
+                    "ticker": ticker,
+                    "exit_type": exit_signal.signal_type,
+                    "price": float(current_price),
+                    "qty": float(sell_qty),
+                    "reason": exit_signal.reason,
+                },
+                occurred_at=datetime.now(UTC),
+            )
+        )
 
         log.info(
             "position_monitor.exit_submitted",
@@ -474,17 +488,22 @@ class PositionMonitor:
                         order_type="market",
                         quantity=qty,
                         is_dry_run=(settings.APP_MODE == "mock"),
-                        estimated_price=Decimal(str(pos.get("currentPrice", 0) or pos.get("averagePrice", 0) or 0)),
+                        estimated_price=Decimal(
+                            str(pos.get("currentPrice", 0) or pos.get("averagePrice", 0) or 0)
+                        ),
                     )
                     await engine.submit_order(order)
                     flattened += 1
 
-        self.db.add(AuditLog(
-            action="eod_flatten_executed",
-            actor="position_monitor",
-            payload={"flattened": flattened},
-            occurred_at=datetime.now(UTC),
-        ))
+        self.db.add(
+            AuditLog(
+                action="eod_flatten_executed",
+                actor="position_monitor",
+                payload={"flattened": flattened},
+                occurred_at=datetime.now(UTC),
+            )
+        )
+        await self.db.commit()
 
         log.info("position_monitor.eod_flatten", positions=flattened)
         return {"flattened": flattened}

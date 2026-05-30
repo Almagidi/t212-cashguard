@@ -711,6 +711,5 @@ async def test_eod_flatten_reads_positions_and_routes_sell_orders_through_execut
     assert [entry.action for entry in db.added if hasattr(entry, "action")] == [
         "eod_flatten_executed"
     ]
-    # Current runtime records the audit log but does not commit in eod_flatten().
-    # Keep this tests/docs-only PR aligned with that behavior; follow up in runtime.
-    assert db.committed == 0
+    # Runtime commits the audit record after routing flatten orders through the engine.
+    assert db.committed == 1
