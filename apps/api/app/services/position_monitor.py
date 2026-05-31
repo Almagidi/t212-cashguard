@@ -339,7 +339,7 @@ class PositionMonitor:
                 Strategy.is_live == True,  # noqa: E712
             )
         )
-        strategies = strat_result.scalars().all()
+        strategies = list(strat_result.scalars().all())
 
         # Monitor each open position
         for pos in positions:
