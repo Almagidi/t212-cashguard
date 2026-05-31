@@ -531,7 +531,13 @@ def test_order_workers_do_not_construct_adapter_on_live_disabled_mismatch(
 
 
 @pytest.mark.parametrize(
-    ("environment", "app_mode", "live_trading_enabled", "expected_key", "expected_secret"),
+    (
+        "environment",
+        "app_mode",
+        "live_trading_enabled",
+        "expected_key",
+        "expected_secret",
+    ),
     [
         ("live", "live", True, "decrypted-live-key", "decrypted-live-secret"),
         ("demo", "demo", False, "decrypted-demo-key", "decrypted-demo-secret"),
@@ -545,7 +551,10 @@ def test_reconcile_pending_orders_calls_provider_after_all_gates_and_reconciles_
     expected_key: str,
     expected_secret: str,
 ) -> None:
-    selected_orders = [_order(broker_order_id="broker-1"), _order(broker_order_id="broker-2")]
+    selected_orders = [
+        _order(broker_order_id="broker-1"),
+        _order(broker_order_id="broker-2"),
+    ]
     conn = _active_conn(environment=environment)
     summaries: list[tuple[str, dict[str, Any]]] = []
     fake_db = FakeSession(results=[[], selected_orders, conn])
@@ -663,13 +672,19 @@ def test_reconcile_pending_orders_provider_validation_error_uses_skipped_summary
 
 
 @pytest.mark.parametrize(
-    ("environment", "app_mode", "live_trading_enabled", "expected_key", "expected_secret"),
+    (
+        "environment",
+        "app_mode",
+        "live_trading_enabled",
+        "expected_key",
+        "expected_secret",
+    ),
     [
         ("live", "live", True, "decrypted-live-key", "decrypted-live-secret"),
         ("demo", "demo", False, "decrypted-demo-key", "decrypted-demo-secret"),
     ],
 )
-def test_cancel_timed_out_orders_constructs_direct_adapter_after_all_gates_and_cancels_candidates(
+def test_cancel_timed_out_orders_calls_provider_after_all_gates_and_cancels_candidates(
     monkeypatch: pytest.MonkeyPatch,
     environment: str,
     app_mode: str,
@@ -685,32 +700,70 @@ def test_cancel_timed_out_orders_constructs_direct_adapter_after_all_gates_and_c
     summaries: list[tuple[str, dict[str, Any]]] = []
     fake_db = FakeSession(results=[selected_orders, conn])
     events: list[str] = []
-    provider_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    provider_calls: list[dict[str, Any]] = []
     _install_session(monkeypatch, fake_db, summaries)
     _install_decrypt(monkeypatch)
-    _install_provider_sentinel(monkeypatch, provider_calls)
     monkeypatch.setattr(settings, "APP_MODE", app_mode)
     monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", live_trading_enabled)
 
     def gate(environment: str, *, action: str) -> None:
         events.append(f"gate:{environment}:{action}")
 
-    original_adapter_init = RecordingTrading212Adapter.__init__
-
-    def adapter_init(
-        self: RecordingTrading212Adapter, api_key: str, api_secret: str, environment: str
-    ) -> None:
-        events.append(f"adapter:{environment}")
-        original_adapter_init(self, api_key, api_secret, environment)
+    def recording_provider(
+        request: BrokerProviderRequest,
+        credentials: BrokerProviderCredentials,
+        *,
+        app_mode: str,
+        live_trading_enabled: bool,
+    ) -> RecordingTrading212Adapter:
+        events.append(f"provider:{request.environment}")
+        provider_calls.append(
+            {
+                "request": request,
+                "credentials": credentials,
+                "app_mode": app_mode,
+                "live_trading_enabled": live_trading_enabled,
+            }
+        )
+        return cast(
+            RecordingTrading212Adapter,
+            create_trading212_provider_adapter(
+                request,
+                credentials,
+                app_mode=app_mode,
+                live_trading_enabled=live_trading_enabled,
+            ),
+        )
 
     monkeypatch.setattr("app.services.safety_policy.require_broker_environment", gate)
-    monkeypatch.setattr(RecordingTrading212Adapter, "__init__", adapter_init)
+    monkeypatch.setattr(
+        "app.broker.provider.create_trading212_provider_adapter",
+        recording_provider,
+    )
 
     assert tasks.cancel_timed_out_orders.run() == {"cancelled": 2}
 
     assert fake_db.results == []
-    assert events == [f"gate:{environment}:worker timeout cancel", f"adapter:{environment}"]
-    assert provider_calls == []
+    assert events == [
+        f"gate:{environment}:worker timeout cancel",
+        f"provider:{environment}",
+    ]
+    assert provider_calls == [
+        {
+            "request": BrokerProviderRequest(
+                broker_id="trading212",
+                environment=cast(BrokerRuntimeEnvironment, environment),
+                purpose="worker_cancel_timed_out_orders",
+                user_id=conn.user_id,
+            ),
+            "credentials": BrokerProviderCredentials(
+                api_key=expected_key,
+                api_secret=expected_secret,
+            ),
+            "app_mode": app_mode,
+            "live_trading_enabled": live_trading_enabled,
+        }
+    ]
     assert RecordingTrading212Adapter.constructed == [(expected_key, expected_secret, environment)]
     assert RecordingTrading212Adapter.entered == 1
     assert RecordingTrading212Adapter.exited == 1
@@ -720,6 +773,43 @@ def test_cancel_timed_out_orders_constructs_direct_adapter_after_all_gates_and_c
     assert RecordingExecutionEngine.reconcile_calls == []
     assert RecordingTrading212Adapter.write_calls == []
     assert summaries == [("cancel_timed_out_orders", {"cancelled": 2})]
+
+
+def test_cancel_timed_out_orders_provider_validation_error_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_orders = [_order(order_type="limit", broker_order_id="broker-limit")]
+    summaries: list[tuple[str, dict[str, Any]]] = []
+    fake_db = FakeSession(results=[selected_orders, _active_conn(environment="live")])
+    _install_session(monkeypatch, fake_db, summaries)
+    _install_decrypt(monkeypatch)
+    _install_adapter_sentinel(monkeypatch)
+
+    def fail_provider(*_args: Any, **_kwargs: Any) -> RecordingTrading212Adapter:
+        raise BrokerProviderValidationError("provider refused timeout cancel")
+
+    monkeypatch.setattr("app.broker.provider.create_trading212_provider_adapter", fail_provider)
+
+    assert tasks.cancel_timed_out_orders.run() == {
+        "cancelled": 0,
+        "skipped": "provider_validation_error",
+        "reason": "provider refused timeout cancel",
+    }
+
+    assert fake_db.results == []
+    assert RecordingExecutionEngine.cancel_calls == []
+    assert RecordingExecutionEngine.brokers == []
+    assert RecordingTrading212Adapter.constructed == []
+    assert summaries == [
+        (
+            "cancel_timed_out_orders",
+            {
+                "cancelled": 0,
+                "skipped": "provider_validation_error",
+                "reason": "provider refused timeout cancel",
+            },
+        )
+    ]
 
 
 def _top_level_function(name: str) -> ast.FunctionDef:
@@ -741,9 +831,7 @@ def _adapter_counts(node: ast.AST) -> dict[str, int]:
     return {"construct": constructs, "import": imports}
 
 
-def test_order_worker_provider_helper_is_still_unwired_and_direct_references_are_localized() -> (
-    None
-):
+def test_order_worker_provider_helper_is_wired_and_direct_references_are_localized() -> None:
     tree = ast.parse(TASKS_PATH.read_text())
     reconcile_node = _top_level_function("reconcile_pending_orders")
     cancel_node = _top_level_function("cancel_timed_out_orders")
@@ -757,15 +845,16 @@ def test_order_worker_provider_helper_is_still_unwired_and_direct_references_are
     }
 
     assert _adapter_counts(reconcile_node) == {"construct": 0, "import": 0}
-    assert _adapter_counts(cancel_node) == {"construct": 1, "import": 1}
+    assert _adapter_counts(cancel_node) == {"construct": 0, "import": 0}
     assert "create_trading212_provider_adapter" in ast.unparse(reconcile_node)
-    assert "create_trading212_provider_adapter" not in ast.unparse(cancel_node)
+    assert "create_trading212_provider_adapter" in ast.unparse(cancel_node)
     assert "create_trading212_provider_adapter" in ast.unparse(migrated_node)
     assert "create_trading212_provider_adapter" in ast.unparse(funding_node)
     assert provider_helper_functions == {
         "sync_account_snapshot",
         "track_cfd_funding",
         "reconcile_pending_orders",
+        "cancel_timed_out_orders",
     }
 
-    assert _adapter_counts(tree) == {"construct": 1, "import": 1}
+    assert _adapter_counts(tree) == {"construct": 0, "import": 0}

@@ -129,6 +129,7 @@ def test_live_request_passes_when_live_trading_enabled() -> None:
     [
         "worker_reconcile",
         "worker_cancel",
+        "worker_cancel_timed_out_orders",
         "worker_strategy_runner",
         "worker_portfolio_execution",
     ],
@@ -289,6 +290,24 @@ def test_demo_app_mode_rejects_worker_cancel_live_only_purpose() -> None:
         )
 
 
+def test_demo_app_mode_allows_worker_cancel_timed_out_orders_with_user_id() -> None:
+    request = BrokerProviderRequest(
+        broker_id="trading212",
+        environment="demo",
+        purpose="worker_cancel_timed_out_orders",
+        user_id=uuid.uuid4(),
+    )
+
+    assert (
+        validate_broker_provider_request(
+            request,
+            app_mode="demo",
+            live_trading_enabled=False,
+        )
+        is request
+    )
+
+
 def test_demo_app_mode_allows_worker_reconcile_with_user_id() -> None:
     request = BrokerProviderRequest(
         broker_id="trading212",
@@ -435,6 +454,7 @@ def test_live_app_mode_rejects_demo_only_purpose() -> None:
         "worker_cfd_funding",
         "worker_reconcile",
         "worker_cancel",
+        "worker_cancel_timed_out_orders",
         "worker_position_monitor",
         "worker_strategy_runner",
         "worker_portfolio_execution",
