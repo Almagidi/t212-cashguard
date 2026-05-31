@@ -162,12 +162,13 @@ class TestRunDailyLossHalt:
             patch(
                 "app.services.position_monitor.alert_kill_switch_activated",
                 new_callable=AsyncMock,
-            ),
+            ) as mock_alert,
         ):
             result = await monitor.run()
 
         assert result.get("halted") == "daily_loss_breach"
-        mock_ks.assert_called_once()
+        mock_ks.assert_awaited_once_with(db, actor="position_monitor:daily_loss")
+        mock_alert.assert_awaited_once_with(db, actor="position_monitor:daily_loss")
 
     async def test_block_trading_snapshot_failure_halts_without_kill_switch(self, db, monkeypatch):
         await _make_app_settings(db)
