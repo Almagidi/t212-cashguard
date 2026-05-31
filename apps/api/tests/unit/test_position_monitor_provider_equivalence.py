@@ -10,6 +10,11 @@ from typing import Any, ClassVar
 
 import pytest
 
+from app.broker.provider import (
+    BrokerProviderCredentials,
+    BrokerProviderRequest,
+    BrokerProviderValidationError,
+)
 from app.core import security as security_module
 from app.core.config import settings
 from app.core.security import CredentialDecryptionError
@@ -339,7 +344,9 @@ def _strategy(strategy_id: uuid.UUID) -> SimpleNamespace:
     return SimpleNamespace(id=strategy_id, is_enabled=True, is_live=True, params={})
 
 
-def test_position_monitor_source_remains_direct_provider_unwired_and_write_capable() -> None:
+def test_position_monitor_source_uses_provider_final_construction_and_remains_write_capable() -> (
+    None
+):
     tree = _parse_position_monitor()
     service = _service_class()
     get_broker = _method_node("_get_broker")
@@ -349,15 +356,15 @@ def test_position_monitor_source_remains_direct_provider_unwired_and_write_capab
     eod_flatten = _method_node("eod_flatten")
     source = POSITION_MONITOR_PATH.read_text()
 
-    assert _adapter_counts(get_broker) == {"construct": 1, "import": 1}
-    assert _adapter_counts(tree) == {"construct": 1, "import": 1}
-    assert construction_inventory._trading212_adapter_references()[
-        "app/services/position_monitor.py"
-    ] == {"construct": 1, "import": 1}
-    assert "create_trading212_provider_adapter" not in source
-    assert "app.broker.provider" not in source
-    assert "BrokerProviderRequest" not in source
-    assert "BrokerProviderCredentials" not in source
+    assert _adapter_counts(get_broker) == {"construct": 0, "import": 0}
+    assert _adapter_counts(tree) == {"construct": 0, "import": 0}
+    assert "app/services/position_monitor.py" not in (
+        construction_inventory._trading212_adapter_references()
+    )
+    assert "create_trading212_provider_adapter" in source
+    assert "app.broker.provider" in source
+    assert "BrokerProviderRequest" in source
+    assert "BrokerProviderCredentials" in source
 
     assert {"get_positions", "get_account_summary"} <= _call_names(run)
     assert "get_positions" in _call_names(check_daily_loss)
@@ -374,6 +381,13 @@ async def test_get_broker_mock_mode_returns_mock_adapter_without_trading212_cons
 ) -> None:
     monkeypatch.setattr(settings, "APP_MODE", "mock")
     monkeypatch.setattr("app.broker.trading212.Trading212Adapter", _adapter_sentinel)
+    monkeypatch.setattr(
+        position_monitor,
+        "create_trading212_provider_adapter",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider must not be called in mock mode")
+        ),
+    )
     db = FakeSession(results=[])
     service = PositionMonitor(db)
 
@@ -389,6 +403,13 @@ async def test_get_broker_preserves_no_active_connection_as_no_broker_without_co
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("app.broker.trading212.Trading212Adapter", _adapter_sentinel)
+    monkeypatch.setattr(
+        position_monitor,
+        "create_trading212_provider_adapter",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider must not be called without an active connection")
+        ),
+    )
     service = PositionMonitor(FakeSession(results=[None]))
 
     broker = await service._get_broker()
@@ -427,6 +448,13 @@ async def test_get_broker_marks_reconnect_required_on_decryption_failure(
         mark_reconnect,
     )
     monkeypatch.setattr("app.broker.trading212.Trading212Adapter", _adapter_sentinel)
+    monkeypatch.setattr(
+        position_monitor,
+        "create_trading212_provider_adapter",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider must not be called after decryption failure")
+        ),
+    )
 
     broker = await service._get_broker()
 
@@ -468,6 +496,13 @@ async def test_get_broker_policy_rejection_happens_before_adapter_construction(
         "mark_broker_connection_reconnect_required",
         mark_reconnect,
     )
+    monkeypatch.setattr(
+        position_monitor,
+        "create_trading212_provider_adapter",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider must not be called after environment policy rejection")
+        ),
+    )
 
     broker = await service._get_broker()
 
@@ -475,11 +510,10 @@ async def test_get_broker_policy_rejection_happens_before_adapter_construction(
     assert gate_calls == [("live", "position monitor broker access")]
     assert RecordingTrading212Adapter.constructed == []
     assert reconnect_calls == []
-    assert "create_trading212_provider_adapter" not in POSITION_MONITOR_PATH.read_text()
 
 
 @pytest.mark.asyncio
-async def test_get_broker_constructs_direct_adapter_after_lookup_decrypt_and_environment_gate(
+async def test_get_broker_uses_provider_after_lookup_decrypt_and_environment_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -496,20 +530,26 @@ async def test_get_broker_constructs_direct_adapter_after_lookup_decrypt_and_env
     def gate(environment: str, *, action: str) -> None:
         events.append(f"gate:{environment}:{action}")
 
-    original_init = RecordingTrading212Adapter.__init__
+    provider_calls: list[tuple[BrokerProviderRequest, BrokerProviderCredentials, str, bool]] = []
 
-    def adapter_init(
-        self: RecordingTrading212Adapter,
-        api_key: str,
-        api_secret: str,
-        environment: str,
-    ) -> None:
-        events.append(f"adapter:{environment}")
-        original_init(self, api_key, api_secret, environment)
+    def provider_adapter(
+        request: BrokerProviderRequest,
+        credentials: BrokerProviderCredentials,
+        *,
+        app_mode: str,
+        live_trading_enabled: bool,
+    ) -> RecordingTrading212Adapter:
+        events.append(f"provider:{request.environment}:{request.purpose}")
+        provider_calls.append((request, credentials, app_mode, live_trading_enabled))
+        return RecordingTrading212Adapter(
+            credentials.api_key,
+            credentials.api_secret,
+            request.environment,
+        )
 
     monkeypatch.setattr(security_module, "decrypt_field", decrypt)
     monkeypatch.setattr(position_monitor, "require_broker_environment", gate)
-    monkeypatch.setattr(RecordingTrading212Adapter, "__init__", adapter_init)
+    monkeypatch.setattr(position_monitor, "create_trading212_provider_adapter", provider_adapter)
 
     broker = await service._get_broker()
 
@@ -519,11 +559,76 @@ async def test_get_broker_constructs_direct_adapter_after_lookup_decrypt_and_env
         "decrypt:encrypted-live-key",
         "decrypt:encrypted-live-secret",
         "gate:live:position monitor broker access",
-        "adapter:live",
+        "provider:live:worker_position_monitor",
+    ]
+    assert provider_calls == [
+        (
+            BrokerProviderRequest(
+                broker_id="trading212",
+                environment="live",
+                purpose="worker_position_monitor",
+                user_id=conn.user_id,
+            ),
+            BrokerProviderCredentials(
+                api_key="decrypted-live-key",
+                api_secret="decrypted-live-secret",
+            ),
+            "live",
+            True,
+        )
     ]
     assert RecordingTrading212Adapter.constructed == [
         ("decrypted-live-key", "decrypted-live-secret", "live")
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_broker_provider_validation_error_returns_none_and_logs_safe_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _connection(environment="demo")
+    db = FakeSession(results=[conn])
+    service = PositionMonitor(db)
+    log_calls: list[tuple[str, dict[str, Any]]] = []
+
+    def provider_adapter(
+        request: BrokerProviderRequest,
+        credentials: BrokerProviderCredentials,
+        *,
+        app_mode: str,
+        live_trading_enabled: bool,
+    ) -> RecordingTrading212Adapter:
+        assert request.purpose == "worker_position_monitor"
+        assert credentials.api_key == "decrypted-demo-key"
+        assert credentials.api_secret == "decrypted-demo-secret"
+        raise BrokerProviderValidationError("blocked for test secret-value")
+
+    class Logger:
+        def error(self, event: str, **kwargs: Any) -> None:
+            log_calls.append((event, kwargs))
+
+    monkeypatch.setattr(security_module, "decrypt_field", _decrypt)
+    monkeypatch.setattr(position_monitor, "create_trading212_provider_adapter", provider_adapter)
+    monkeypatch.setattr(position_monitor, "log", Logger())
+
+    broker = await service._get_broker()
+
+    assert broker is None
+    assert log_calls == [
+        (
+            "position_monitor.provider_validation_error",
+            {
+                "reason": "blocked for test secret-value",
+                "broker_id": "trading212",
+                "environment": "demo",
+                "purpose": "worker_position_monitor",
+                "user_id": str(conn.user_id),
+            },
+        )
+    ]
+    logged = repr(log_calls)
+    assert "decrypted-demo-key" not in logged
+    assert "decrypted-demo-secret" not in logged
 
 
 @pytest.mark.asyncio

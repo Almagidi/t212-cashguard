@@ -299,6 +299,40 @@ def test_demo_app_mode_allows_worker_reconcile_with_user_id() -> None:
     )
 
 
+def test_demo_app_mode_allows_worker_position_monitor_with_user_id() -> None:
+    request = BrokerProviderRequest(
+        broker_id="trading212",
+        environment="demo",
+        purpose="worker_position_monitor",
+        user_id=uuid.uuid4(),
+    )
+
+    assert (
+        validate_broker_provider_request(
+            request,
+            app_mode="demo",
+            live_trading_enabled=False,
+        )
+        is request
+    )
+
+
+def test_live_worker_position_monitor_requires_live_trading_flag() -> None:
+    request = BrokerProviderRequest(
+        broker_id="trading212",
+        environment="live",
+        purpose="worker_position_monitor",
+        user_id=uuid.uuid4(),
+    )
+
+    with pytest.raises(BrokerProviderValidationError, match="LIVE_TRADING_ENABLED"):
+        validate_broker_provider_request(
+            request,
+            app_mode="live",
+            live_trading_enabled=False,
+        )
+
+
 def test_demo_app_mode_allows_read_only_worker_account_sync() -> None:
     request = BrokerProviderRequest(
         broker_id="trading212",
@@ -352,7 +386,13 @@ def test_live_app_mode_rejects_demo_only_purpose() -> None:
 
 @pytest.mark.parametrize(
     "purpose",
-    ["worker_account_sync", "worker_cfd_funding", "worker_reconcile", "worker_cancel"],
+    [
+        "worker_account_sync",
+        "worker_cfd_funding",
+        "worker_reconcile",
+        "worker_cancel",
+        "worker_position_monitor",
+    ],
 )
 def test_user_scoped_purpose_requires_user_id(purpose: BrokerProviderPurpose) -> None:
     request = BrokerProviderRequest(
@@ -646,6 +686,13 @@ def test_provider_function_is_only_referenced_from_approved_runtime_call_sites()
             "BrokerProviderCredentials",
             "BrokerProviderRequest",
             "BrokerProviderValidationError",
+            "create_trading212_provider_adapter",
+        },
+        "app/services/position_monitor.py": {
+            "BrokerProviderCredentials",
+            "BrokerProviderRequest",
+            "BrokerProviderValidationError",
+            "BrokerRuntimeEnvironment",
             "create_trading212_provider_adapter",
         },
         "app/workers/tasks.py": {

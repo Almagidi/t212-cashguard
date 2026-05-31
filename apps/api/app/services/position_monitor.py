@@ -17,11 +17,18 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from sqlalchemy import desc, select
 
+from app.broker.provider import (
+    BrokerProviderCredentials,
+    BrokerProviderRequest,
+    BrokerProviderValidationError,
+    BrokerRuntimeEnvironment,
+    create_trading212_provider_adapter,
+)
 from app.core.config import settings
 from app.db.models import (
     AppSettings,
@@ -79,7 +86,6 @@ class PositionMonitor:
         conn = result.scalar_one_or_none()
         if not conn:
             return None
-        from app.broker.trading212 import Trading212Adapter
         from app.core.security import CredentialDecryptionError, decrypt_field
 
         try:
@@ -99,11 +105,32 @@ class PositionMonitor:
         except SafetyPolicyViolation as exc:
             log.error("position_monitor.broker_policy_block", reason=exc.reason)
             return None
-        return Trading212Adapter(
-            api_key,
-            api_secret,
-            conn.environment,
-        )
+        try:
+            return create_trading212_provider_adapter(
+                BrokerProviderRequest(
+                    broker_id="trading212",
+                    environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                    purpose="worker_position_monitor",
+                    user_id=conn.user_id,
+                ),
+                BrokerProviderCredentials(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                ),
+                app_mode=settings.APP_MODE,
+                live_trading_enabled=bool(settings.LIVE_TRADING_ENABLED),
+            )
+        except BrokerProviderValidationError as exc:
+            # Provider validation messages must remain safe metadata and never include credentials.
+            log.error(
+                "position_monitor.provider_validation_error",
+                reason=str(exc),
+                broker_id="trading212",
+                environment=conn.environment,
+                purpose="worker_position_monitor",
+                user_id=str(conn.user_id),
+            )
+            return None
 
     async def _get_market_data(self, ticker: str) -> tuple[list[Bar], Decimal]:
         """Returns (bars, current_price). Falls back to empty on error."""
