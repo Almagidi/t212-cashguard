@@ -329,7 +329,7 @@ class PositionMonitor:
         if daily_loss_outcome is _DailyLossOutcome.BREACH_KILL_SWITCH:
             log.critical("position_monitor.daily_loss_halt")
             await activate_kill_switch(self.db, actor="position_monitor:daily_loss")
-            await alert_kill_switch_activated(self.db, actor="daily_loss_monitor")
+            await alert_kill_switch_activated(self.db, actor="position_monitor:daily_loss")
             return {**summary, "halted": "daily_loss_breach"}
 
         # Get all live strategies for context
