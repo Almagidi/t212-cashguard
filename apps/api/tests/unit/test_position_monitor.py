@@ -1,8 +1,10 @@
+# mypy: disable-error-code="no-untyped-def"
 """
 Unit tests for position_monitor.py.
 Covers early-exit branches, daily-loss halt, eod_flatten, and
 _check_daily_loss_with_unrealized logic.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -10,14 +12,12 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from app.core.config import settings
 from app.db.models import AppSettings, RiskProfile
-from app.services.position_monitor import PositionMonitor
-
+from app.services.position_monitor import PositionMonitor, _DailyLossOutcome
 
 # ── Shared broker mock ────────────────────────────────────────────────────────
+
 
 class _FakeBroker:
     """Async context-manager broker that returns configurable data."""
@@ -94,6 +94,7 @@ async def _make_risk_profile(db, max_daily_loss_pct: float = 3.0) -> RiskProfile
 
 # ── run() early-exit branches ─────────────────────────────────────────────────
 
+
 class TestRunEarlyExits:
     async def test_no_app_settings_returns_empty(self, db):
         monitor = PositionMonitor(db)
@@ -140,6 +141,7 @@ class TestRunEarlyExits:
 
 # ── run() daily-loss halt ─────────────────────────────────────────────────────
 
+
 class TestRunDailyLossHalt:
     async def test_daily_loss_breach_halts_and_fires_kill_switch(self, db):
         await _make_app_settings(db)
@@ -151,19 +153,125 @@ class TestRunDailyLossHalt:
             account={"total": 10_000},
         )
         monitor = PositionMonitor(db)
-        with patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=broker):
-            with patch(
+        with (
+            patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=broker),
+            patch(
                 "app.services.position_monitor.activate_kill_switch",
                 new_callable=AsyncMock,
-            ) as mock_ks:
-                with patch(
-                    "app.services.position_monitor.alert_kill_switch_activated",
-                    new_callable=AsyncMock,
-                ):
-                    result = await monitor.run()
+            ) as mock_ks,
+            patch(
+                "app.services.position_monitor.alert_kill_switch_activated",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await monitor.run()
 
         assert result.get("halted") == "daily_loss_breach"
         mock_ks.assert_called_once()
+
+    async def test_block_trading_snapshot_failure_halts_without_kill_switch(self, db, monkeypatch):
+        await _make_app_settings(db)
+        await _make_risk_profile(db, max_daily_loss_pct=3.0)
+        monkeypatch.setattr(
+            settings,
+            "POSITION_MONITOR_UNREALIZED_PNL_FAILURE_POLICY",
+            "block_trading",
+        )
+
+        class SnapshotFailureBroker(_FakeBroker):
+            def __init__(self):
+                super().__init__(
+                    positions=[{"ticker": "AAPL", "quantity": 10, "ppl": 0}],
+                    account={"total": 10_000},
+                )
+                self.position_calls = 0
+
+            async def get_positions(self):
+                self.position_calls += 1
+                if self.position_calls == 1:
+                    return self._positions
+                raise RuntimeError("snapshot unavailable")
+
+        broker = SnapshotFailureBroker()
+        monitor = PositionMonitor(db)
+        with (
+            patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=broker),
+            patch(
+                "app.services.position_monitor.activate_kill_switch",
+                new_callable=AsyncMock,
+            ) as mock_ks,
+            patch(
+                "app.services.position_monitor.alert_kill_switch_activated",
+                new_callable=AsyncMock,
+            ) as mock_alert,
+        ):
+            result = await monitor.run()
+
+        assert result.get("halted") == "unrealized_pnl_failure_block_trading"
+        assert result.get("failure_policy") == "block_trading"
+        assert result.get("fail_closed") is True
+        assert broker.position_calls == 2
+        mock_ks.assert_not_called()
+        mock_alert.assert_not_called()
+
+    async def test_activate_kill_switch_snapshot_failure_halts_with_single_policy_activation(
+        self, db, monkeypatch
+    ):
+        await _make_app_settings(db)
+        await _make_risk_profile(db, max_daily_loss_pct=3.0)
+        monkeypatch.setattr(
+            settings,
+            "POSITION_MONITOR_UNREALIZED_PNL_FAILURE_POLICY",
+            "activate_kill_switch",
+        )
+
+        class SnapshotFailureBroker(_FakeBroker):
+            def __init__(self):
+                super().__init__(
+                    positions=[{"ticker": "AAPL", "quantity": 10, "ppl": 0}],
+                    account={"total": 10_000},
+                )
+                self.position_calls = 0
+                self.write_calls = []
+
+            async def get_positions(self):
+                self.position_calls += 1
+                if self.position_calls == 1:
+                    return self._positions
+                raise RuntimeError("snapshot unavailable")
+
+            async def place_market_order(self, *args, **kwargs):
+                self.write_calls.append(("place_market_order", args, kwargs))
+                raise AssertionError("unexpected direct broker write")
+
+        broker = SnapshotFailureBroker()
+        monitor = PositionMonitor(db)
+        with (
+            patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=broker),
+            patch(
+                "app.services.position_monitor.activate_kill_switch",
+                new_callable=AsyncMock,
+            ) as mock_ks,
+            patch(
+                "app.services.position_monitor.alert_kill_switch_activated",
+                new_callable=AsyncMock,
+            ) as mock_alert,
+        ):
+            result = await monitor.run()
+
+        assert result.get("halted") == "unrealized_pnl_failure_kill_switch"
+        assert result.get("failure_policy") == "activate_kill_switch"
+        assert result.get("fail_closed") is True
+        assert broker.position_calls == 2
+        assert broker.write_calls == []
+        mock_ks.assert_awaited_once_with(
+            db,
+            actor="position_monitor:unrealized_pnl_failure",
+        )
+        mock_alert.assert_awaited_once_with(
+            db,
+            actor="position_monitor:unrealized_pnl_failure",
+        )
 
     async def test_daily_loss_within_limit_continues(self, db):
         await _make_app_settings(db)
@@ -175,15 +283,22 @@ class TestRunDailyLossHalt:
             account={"total": 10_000},
         )
         monitor = PositionMonitor(db)
-        with patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=broker):
-            with patch.object(monitor, "_monitor_position", new_callable=AsyncMock,
-                              return_value={"exits": 0, "partial": 0, "stops": 0, "tps": 0}):
-                result = await monitor.run()
+        with (
+            patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=broker),
+            patch.object(
+                monitor,
+                "_monitor_position",
+                new_callable=AsyncMock,
+                return_value={"exits": 0, "partial": 0, "stops": 0, "tps": 0},
+            ),
+        ):
+            result = await monitor.run()
 
         assert "halted" not in result
 
 
 # ── broker and market-data helpers ────────────────────────────────────────────
+
 
 class TestBrokerAndMarketDataHelpers:
     async def test_get_broker_returns_mock_adapter_in_mock_mode(self, db, monkeypatch):
@@ -263,13 +378,15 @@ class TestBrokerAndMarketDataHelpers:
     async def test_get_market_data_reads_sync_provider(self, db, monkeypatch):
         class SyncProvider:
             def get_ohlcv(self, *_args, **_kwargs):
-                return [{
-                    "open": "49",
-                    "high": "51",
-                    "low": "48",
-                    "close": "50",
-                    "volume": "500",
-                }]
+                return [
+                    {
+                        "open": "49",
+                        "high": "51",
+                        "low": "48",
+                        "close": "50",
+                        "volume": "500",
+                    }
+                ]
 
         monkeypatch.setattr("app.market_data.get_live_provider", lambda: SyncProvider())
 
@@ -292,30 +409,32 @@ class TestBrokerAndMarketDataHelpers:
 
 # ── _check_daily_loss_with_unrealized ────────────────────────────────────────
 
+
 class TestCheckDailyLoss:
     async def test_no_risk_profile_returns_false(self, db):
         # No RiskProfile in DB
         monitor = PositionMonitor(db)
         app_settings = AppSettings(
-            id=1, theme="dark", timezone="UTC",
-            auto_trading_enabled=True, kill_switch_active=False,
+            id=1,
+            theme="dark",
+            timezone="UTC",
+            auto_trading_enabled=True,
+            kill_switch_active=False,
             live_trading_unlocked=False,
         )
         broker = _FakeBroker(positions=[])
         result = await monitor._check_daily_loss_with_unrealized(
             app_settings, broker, Decimal("10000")
         )
-        assert result is False
+        assert result is _DailyLossOutcome.NO_BREACH
 
     async def test_zero_account_value_returns_false(self, db):
         await _make_risk_profile(db)
         monitor = PositionMonitor(db)
         app_settings = MagicMock()
         broker = _FakeBroker(positions=[])
-        result = await monitor._check_daily_loss_with_unrealized(
-            app_settings, broker, Decimal("0")
-        )
-        assert result is False
+        result = await monitor._check_daily_loss_with_unrealized(app_settings, broker, Decimal("0"))
+        assert result is _DailyLossOutcome.NO_BREACH
 
     async def test_breach_returns_true(self, db):
         await _make_risk_profile(db, max_daily_loss_pct=3.0)
@@ -326,7 +445,7 @@ class TestCheckDailyLoss:
         result = await monitor._check_daily_loss_with_unrealized(
             app_settings, broker, Decimal("10000")
         )
-        assert result is True
+        assert result is _DailyLossOutcome.BREACH_KILL_SWITCH
 
     async def test_within_limit_returns_false(self, db):
         await _make_risk_profile(db, max_daily_loss_pct=3.0)
@@ -337,7 +456,7 @@ class TestCheckDailyLoss:
         result = await monitor._check_daily_loss_with_unrealized(
             app_settings, broker, Decimal("10000")
         )
-        assert result is False
+        assert result is _DailyLossOutcome.NO_BREACH
 
     async def test_positive_pnl_returns_false(self, db):
         await _make_risk_profile(db, max_daily_loss_pct=3.0)
@@ -348,21 +467,27 @@ class TestCheckDailyLoss:
         result = await monitor._check_daily_loss_with_unrealized(
             app_settings, broker, Decimal("10000")
         )
-        assert result is False
+        assert result is _DailyLossOutcome.NO_BREACH
 
-    async def test_broker_error_defaults_unrealized_to_zero(self, db):
+    async def test_broker_error_defaults_to_fail_closed_block(self, db, monkeypatch):
         await _make_risk_profile(db, max_daily_loss_pct=3.0)
+        monkeypatch.setattr(
+            settings,
+            "POSITION_MONITOR_UNREALIZED_PNL_FAILURE_POLICY",
+            "block_trading",
+        )
         monitor = PositionMonitor(db)
         app_settings = MagicMock()
-        # Broker raises — unrealized defaults to 0, no breach
+        # Broker raises — default policy blocks trading instead of assuming zero
         broker = _FakeBroker(raise_on_fetch=RuntimeError("no data"))
         result = await monitor._check_daily_loss_with_unrealized(
             app_settings, broker, Decimal("10000")
         )
-        assert result is False
+        assert result is _DailyLossOutcome.POLICY_BLOCK_TRADING
 
 
 # ── eod_flatten ───────────────────────────────────────────────────────────────
+
 
 class TestEodFlatten:
     async def test_no_broker_returns_early(self, db):
@@ -374,12 +499,14 @@ class TestEodFlatten:
     async def test_no_positions_flattens_zero(self, db):
         broker = _FakeBroker(positions=[], account={"total": 10_000})
         monitor = PositionMonitor(db)
-        with patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=broker):
-            with patch("app.services.position_monitor.ExecutionEngine") as MockEngine:
-                instance = MockEngine.return_value
-                instance.create_order_intent = AsyncMock()
-                instance.submit_order = AsyncMock()
-                result = await monitor.eod_flatten()
+        with (
+            patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=broker),
+            patch("app.services.position_monitor.ExecutionEngine") as MockEngine,
+        ):
+            instance = MockEngine.return_value
+            instance.create_order_intent = AsyncMock()
+            instance.submit_order = AsyncMock()
+            result = await monitor.eod_flatten()
         assert result["flattened"] == 0
         instance.create_order_intent.assert_not_called()
 
@@ -395,19 +522,22 @@ class TestEodFlatten:
         mock_order.id = uuid.uuid4()
 
         monitor = PositionMonitor(db)
-        with patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=broker):
-            with patch("app.services.position_monitor.ExecutionEngine") as MockEngine:
-                instance = MockEngine.return_value
-                instance.create_order_intent = AsyncMock(return_value=mock_order)
-                instance.submit_order = AsyncMock(return_value=mock_order)
-                result = await monitor.eod_flatten()
+        with (
+            patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=broker),
+            patch("app.services.position_monitor.ExecutionEngine") as MockEngine,
+        ):
+            instance = MockEngine.return_value
+            instance.create_order_intent = AsyncMock(return_value=mock_order)
+            instance.submit_order = AsyncMock(return_value=mock_order)
+            result = await monitor.eod_flatten()
 
         assert result["flattened"] == 2  # AAPL + TSLA, ZERO skipped
         assert instance.create_order_intent.call_count == 2
 
     async def test_eod_flatten_writes_audit_log(self, db):
-        from app.db.models import AuditLog
         from sqlalchemy import select
+
+        from app.db.models import AuditLog
 
         broker = _FakeBroker(
             positions=[{"ticker": "SPY", "quantity": 3, "currentPrice": 500.0}],
@@ -417,16 +547,20 @@ class TestEodFlatten:
         mock_order.id = uuid.uuid4()
 
         monitor = PositionMonitor(db)
-        with patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=broker):
-            with patch("app.services.position_monitor.ExecutionEngine") as MockEngine:
-                instance = MockEngine.return_value
-                instance.create_order_intent = AsyncMock(return_value=mock_order)
-                instance.submit_order = AsyncMock(return_value=mock_order)
-                await monitor.eod_flatten()
+        with (
+            patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=broker),
+            patch("app.services.position_monitor.ExecutionEngine") as MockEngine,
+        ):
+            instance = MockEngine.return_value
+            instance.create_order_intent = AsyncMock(return_value=mock_order)
+            instance.submit_order = AsyncMock(return_value=mock_order)
+            await monitor.eod_flatten()
 
         await db.commit()
-        logs = (await db.execute(
-            select(AuditLog).where(AuditLog.action == "eod_flatten_executed")
-        )).scalars().all()
+        logs = (
+            (await db.execute(select(AuditLog).where(AuditLog.action == "eod_flatten_executed")))
+            .scalars()
+            .all()
+        )
         assert len(logs) == 1
         assert logs[0].payload["flattened"] == 1

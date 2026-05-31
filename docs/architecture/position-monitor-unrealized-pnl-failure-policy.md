@@ -1,15 +1,26 @@
 # PositionMonitor Unrealized P&L Failure Policy
 
-## Current Behaviour
+## Runtime Policy
 
-`PositionMonitor._check_daily_loss_with_unrealized(...)` includes unrealized P&L from broker positions in the daily-loss check. If broker position retrieval or unrealized P&L calculation fails, the current runtime behaviour is to:
+`PositionMonitor._check_daily_loss_with_unrealized(...)` includes unrealized P&L from broker positions in the daily-loss check. It returns a private typed outcome so `run()` can distinguish a normal daily-loss breach from an unrealized-P&L policy halt without relying on hidden instance state. If broker position retrieval or unrealized P&L calculation fails, the current runtime behaviour is to:
 
-- log `position_monitor.unrealized_pnl_error` at error level;
-- include `error=str(exc)`, `exc_info=True`, and `unrealized_assumed=0.0` in the log payload;
-- continue with `unrealized = 0.0`;
-- return `False` when realised P&L alone does not breach the daily-loss threshold.
+- read `POSITION_MONITOR_UNREALIZED_PNL_FAILURE_POLICY`;
+- default to `block_trading`;
+- fail closed for unrecognised policy values.
 
-This document intentionally does not change that behaviour. It records the current fail-open policy so a later runtime PR can change it with explicit acceptance criteria.
+Accepted values are:
+
+```text
+assume_zero | block_trading | activate_kill_switch
+```
+
+`assume_zero` preserves the legacy behaviour: log `position_monitor.unrealized_pnl_error` with `error=str(exc)`, `exc_info=True`, `unrealized_assumed=0.0`, and `failure_policy="assume_zero"`, then continue with `unrealized = 0.0`. This is available only for migration and test compatibility and is not suitable for live automation.
+
+`block_trading` is the default. It logs `position_monitor.unrealized_pnl_error` with `failure_policy="block_trading"` and `fail_closed=True`, logs `position_monitor.realized_pnl_skipped` with `reason="unrealized_pnl_failure_policy_halt"`, then returns the policy block outcome. The caller halts monitoring without activating the global kill switch and returns `halted="unrealized_pnl_failure_block_trading"` with `failure_policy="block_trading"` and `fail_closed=True`.
+
+`activate_kill_switch` logs `position_monitor.unrealized_pnl_error` with `failure_policy="activate_kill_switch"`, `fail_closed=True`, and `kill_switch_activated=True`; calls the existing `activate_kill_switch(...)` helper; calls `alert_kill_switch_activated(...)`; logs `position_monitor.realized_pnl_skipped`; and returns the policy kill-switch outcome. The caller returns `halted="unrealized_pnl_failure_kill_switch"` with policy metadata and does not activate the kill switch a second time.
+
+If the configured policy is invalid, PositionMonitor logs `position_monitor.unrealized_pnl_failure_policy_invalid` with `configured_policy`, `fallback_policy="block_trading"`, `fail_closed=True`, `error=str(exc)`, and `exc_info=True`, logs `position_monitor.realized_pnl_skipped`, and fails closed with the `block_trading` behaviour. The setting is also typed as a `Literal` for startup validation, while the runtime branch remains defensive for tests and later mutation.
 
 ## Why This Is Risky
 
@@ -22,40 +33,7 @@ The risk is highest when:
 - the account has little realised P&L for the day;
 - automated exits or strategy runners remain able to produce broker orders after the failed snapshot.
 
-## Recommended Future Behaviour
-
-Future live-capable automation should fail closed when the daily-loss monitor cannot obtain a trustworthy unrealized P&L snapshot. The exact response needs an explicit runtime policy decision because each safer option has operational trade-offs.
-
-## Proposed Fail-Closed Options
-
-### Option A: Return Breach On Snapshot Failure
-
-Treat unrealized P&L snapshot failure as `breach=True` from `_check_daily_loss_with_unrealized(...)`.
-
-This is the narrowest code change and keeps the decision local to the daily-loss check. It may create false-positive trading halts when the broker API is flaky, but it prevents a missing snapshot from silently weakening the loss gate.
-
-### Option B: Activate Kill Switch
-
-Activate the kill switch when broker snapshot retrieval or unrealized P&L calculation fails during the daily-loss check.
-
-This is safest for live automation because it blocks further automated trading until an operator reviews the system. It is also operationally disruptive: transient broker outages could halt trading and require manual recovery even when positions are healthy.
-
-### Option C: Configurable Failure Policy
-
-Introduce a policy setting such as:
-
-```text
-POSITION_MONITOR_UNREALIZED_PNL_FAILURE_POLICY =
-  "assume_zero" | "block_trading" | "activate_kill_switch"
-```
-
-`assume_zero` would preserve the current behaviour and is intended only for migration and test environments, not live automation. `block_trading` could return `True` from `_check_daily_loss_with_unrealized(...)`, blocking automated trading without activating the global kill switch. `activate_kill_switch` would take the strongest safety action.
-
-Config-driven behaviour needs careful defaults. A safer default should not be enabled for live automation until tests prove the selected app mode, live-trading flag, audit/log behaviour, and operator recovery semantics.
-
-## Acceptance Criteria For A Future Runtime PR
-
-A future runtime PR that changes this policy should meet all of these criteria:
+## Acceptance Criteria
 
 - no provider migration mixed into the policy change;
 - tests for `broker.get_positions()` failure;
@@ -68,25 +46,10 @@ A future runtime PR that changes this policy should meet all of these criteria:
 - updated safety and architecture docs;
 - CI checks pass.
 
-## Tests Required Before Changing Behaviour
-
-Before replacing the current `assume_zero` path, tests should explicitly cover:
-
-- current fail-open behaviour, including the error log payload and `unrealized_assumed=0.0`;
-- fail-closed behaviour for broker position snapshot failures;
-- fail-closed behaviour for malformed position payloads, such as non-numeric `ppl`;
-- realised-only breach behaviour with no broker snapshot failure;
-- realised-only non-breach behaviour with no broker snapshot failure;
-- behaviour when the kill switch is already active;
-- behaviour when auto-trading is disabled;
-- live-mode and non-live-mode defaults if policy is configurable;
-- absence of broker placement, cancellation, or modification calls in failure-policy tests.
-
 ## Non-Goals
 
-This policy design does not:
+This policy does not:
 
-- change `app/services/position_monitor.py` runtime behaviour;
 - migrate `PositionMonitor._get_broker`;
 - change broker provider or factory design;
 - change route schemas;
