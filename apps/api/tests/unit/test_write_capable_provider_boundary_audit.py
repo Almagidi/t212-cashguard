@@ -14,9 +14,9 @@ SCRIPTS_ROOT = API_ROOT / "scripts"
 
 TASKS_PATH = APP_ROOT / "workers" / "tasks.py"
 REMAINING_SERVICE_PATHS = {
-    "portfolio_execution_service": APP_ROOT / "services" / "portfolio_execution_service.py",
     "system_control": APP_ROOT / "services" / "system_control.py",
 }
+PORTFOLIO_EXECUTION_PATH = APP_ROOT / "services" / "portfolio_execution_service.py"
 STRATEGY_RUNNER_PATH = APP_ROOT / "services" / "strategy_runner.py"
 POSITION_MONITOR_PATH = APP_ROOT / "services" / "position_monitor.py"
 MANUAL_SMOKE_PATHS = {
@@ -140,13 +140,6 @@ def test_workers_tasks_direct_inventory_and_provider_call_sites_are_locked() -> 
     ("name", "path", "class_name", "write_evidence", "classification"),
     [
         (
-            "portfolio_execution_service",
-            REMAINING_SERVICE_PATHS["portfolio_execution_service"],
-            "PortfolioExecutionService",
-            {"create_order_intent", "submit_order"},
-            "mixed/write-capable",
-        ),
-        (
             "system_control",
             REMAINING_SERVICE_PATHS["system_control"],
             "SystemControlService",
@@ -179,6 +172,26 @@ def test_service_construction_paths_are_classified_by_write_surface(
         name,
         classification,
     )
+
+
+def test_portfolio_execution_is_provider_backed_but_still_mixed_write_capable_for_rebalance_orders() -> (
+    None
+):
+    tree = _parse(PORTFOLIO_EXECUTION_PATH)
+    service_class = _class_node(tree, "PortfolioExecutionService")
+    get_broker = _method_node(service_class, "_get_broker")
+    run_strategy_once = _method_node(service_class, "run_strategy_once")
+    source = PORTFOLIO_EXECUTION_PATH.read_text()
+
+    assert _zero_filled_adapter_counts(tree) == {"construct": 0, "import": 0}
+    assert _zero_filled_adapter_counts(get_broker) == {"construct": 0, "import": 0}
+    assert "create_trading212_provider_adapter" in _call_names(get_broker)
+    assert "BrokerProviderRequest" in source
+    assert "BrokerProviderCredentials" in source
+    assert "worker_portfolio_execution" in ast.unparse(get_broker)
+    assert {"get_account_summary", "get_positions"} <= _call_names(service_class)
+    assert {"create_order_intent", "submit_order"} <= _call_names(run_strategy_once)
+    assert _source_contains(run_strategy_once, "portfolio_rebalance_order")
 
 
 def test_position_monitor_is_provider_backed_and_write_capable_for_exits_and_eod_flatten() -> None:
@@ -236,7 +249,7 @@ def test_strategy_runner_is_write_capable_for_strategy_entries_and_exits() -> No
 
 
 def test_portfolio_execution_service_is_mixed_write_capable_for_rebalance_orders() -> None:
-    tree = _parse(REMAINING_SERVICE_PATHS["portfolio_execution_service"])
+    tree = _parse(PORTFOLIO_EXECUTION_PATH)
     service_class = _class_node(tree, "PortfolioExecutionService")
     run_strategy_once = _method_node(service_class, "run_strategy_once")
 

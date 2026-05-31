@@ -8,6 +8,7 @@ backtests into controlled automation:
   - live-broker execution only when the app is in live mode and the global
     live-trading readiness gates have already been unlocked elsewhere
 """
+
 from __future__ import annotations
 
 import inspect
@@ -15,7 +16,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import ROUND_DOWN, Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from sqlalchemy import select
@@ -26,6 +27,13 @@ from app.backtest.portfolio_strategies import (
     PORTFOLIO_STRATEGY_TYPES,
     get_portfolio_backtest_strategy,
     is_portfolio_strategy_type,
+)
+from app.broker.provider import (
+    BrokerProviderCredentials,
+    BrokerProviderRequest,
+    BrokerProviderValidationError,
+    BrokerRuntimeEnvironment,
+    create_trading212_provider_adapter,
 )
 from app.core.config import settings
 from app.db.models import AppSettings, AuditLog, BrokerConnection, Instrument, Signal, Strategy
@@ -78,7 +86,11 @@ class PortfolioExecutionService:
             return {"status": "skipped", "reason": "kill_switch"}
         if not app_cfg.auto_trading_enabled and not force:
             return {"status": "skipped", "reason": "auto_trading_off"}
-        if settings.APP_MODE == "live" and override_is_live is not False and not app_cfg.live_trading_unlocked:
+        if (
+            settings.APP_MODE == "live"
+            and override_is_live is not False
+            and not app_cfg.live_trading_unlocked
+        ):
             return {"status": "skipped", "reason": "live_not_unlocked"}
 
         result = await self.db.execute(
@@ -177,7 +189,11 @@ class PortfolioExecutionService:
                         allocator_state=allocation_state,
                     )
                 except Exception as exc:
-                    log.exception("portfolio_execution.strategy_failed", strategy=strategy.name, error=str(exc))
+                    log.exception(
+                        "portfolio_execution.strategy_failed",
+                        strategy=strategy.name,
+                        error=str(exc),
+                    )
                     summary["errors"].append(f"{strategy.name}: {exc}")
                     continue
 
@@ -216,6 +232,8 @@ class PortfolioExecutionService:
         override_is_live: bool | None = None,
         allocator_state: AllocationState | None = None,
     ) -> dict[str, Any]:
+        # The broker argument must come from _get_broker/provider construction
+        # and is expected to be the already-open, context-owned broker for this run.
         if not is_portfolio_strategy_type(strategy.type):
             return {"status": "skipped", "reason": "not_portfolio_strategy"}
 
@@ -230,7 +248,9 @@ class PortfolioExecutionService:
 
         config = get_portfolio_backtest_strategy(strategy.type)
         strategy_impl = config["strategy_class"](strategy.params or {})
-        min_history = max(int(config["min_history_bars"]), int(strategy.params.get("lookback_bars", 0))) + 5
+        min_history = (
+            max(int(config["min_history_bars"]), int(strategy.params.get("lookback_bars", 0))) + 5
+        )
 
         market_snapshot = await self._load_market_snapshot(strategy.allowed_tickers, min_history)
         if settings.APP_MODE == "live" and market_snapshot.provider_name == "polygon_delayed":
@@ -281,11 +301,15 @@ class PortfolioExecutionService:
             )
             return {"status": "skipped", "reason": "not_due"}
 
-        target_weights = strategy_impl.target_weights(aligned_history, as_of_index=len(next(iter(aligned_history.values()))) - 1)
+        target_weights = strategy_impl.target_weights(
+            aligned_history, as_of_index=len(next(iter(aligned_history.values()))) - 1
+        )
         is_live = strategy.is_live if override_is_live is None else override_is_live
         execute_live = is_live and settings.APP_MODE != "mock"
         if execute_live:
-            promotion_allowed, promotion_reason = await StrategyPromotionService(self.db).execution_gate(strategy)
+            promotion_allowed, promotion_reason = await StrategyPromotionService(
+                self.db
+            ).execution_gate(strategy)
             if not promotion_allowed:
                 await self._update_strategy_state(
                     strategy,
@@ -302,7 +326,8 @@ class PortfolioExecutionService:
         position_map = {
             str(position.get("ticker", "")).upper(): position
             for position in broker_positions
-            if str(position.get("ticker", "")).upper() in {ticker.upper() for ticker in strategy.allowed_tickers}
+            if str(position.get("ticker", "")).upper()
+            in {ticker.upper() for ticker in strategy.allowed_tickers}
         }
 
         plan = self._build_rebalance_plan(
@@ -322,7 +347,9 @@ class PortfolioExecutionService:
                 actor=actor,
                 decision_date=decision_date,
                 target_weights=target_weights,
-                current_weights=self._current_weights(position_map, market_snapshot.latest_prices, sleeve_value),
+                current_weights=self._current_weights(
+                    position_map, market_snapshot.latest_prices, sleeve_value
+                ),
                 mode="dry_run" if not execute_live else settings.APP_MODE,
             )
             return {
@@ -342,7 +369,13 @@ class PortfolioExecutionService:
         current_cash = available_cash
         current_positions = list(broker_positions)
         allocation_base_positions = list(broker_positions)
-        open_positions_count = len([position for position in current_positions if Decimal(str(position.get("quantity", 0))) > 0])
+        open_positions_count = len(
+            [
+                position
+                for position in current_positions
+                if Decimal(str(position.get("quantity", 0))) > 0
+            ]
+        )
         signals_created = 0
         orders_submitted = 0
         dry_run_orders = 0
@@ -454,7 +487,9 @@ class PortfolioExecutionService:
 
             signal.status = "approved" if order.is_dry_run else "executed"
             signal.executed_at = None if order.is_dry_run else datetime.now(UTC)
-            current_cash = self._advance_cash_balance(current_cash, order_plan["side"], order_plan["quantity"], order_plan["price"])
+            current_cash = self._advance_cash_balance(
+                current_cash, order_plan["side"], order_plan["quantity"], order_plan["price"]
+            )
             current_positions = self._advance_positions(
                 current_positions,
                 ticker=order_plan["ticker"],
@@ -462,7 +497,13 @@ class PortfolioExecutionService:
                 quantity=order_plan["quantity"],
                 price=order_plan["price"],
             )
-            open_positions_count = len([position for position in current_positions if Decimal(str(position.get("quantity", 0))) > 0])
+            open_positions_count = len(
+                [
+                    position
+                    for position in current_positions
+                    if Decimal(str(position.get("quantity", 0))) > 0
+                ]
+            )
 
             if order.is_dry_run:
                 dry_run_orders += 1
@@ -497,7 +538,8 @@ class PortfolioExecutionService:
                 {
                     str(position.get("ticker", "")).upper(): position
                     for position in current_positions
-                    if str(position.get("ticker", "")).upper() in {ticker.upper() for ticker in strategy.allowed_tickers}
+                    if str(position.get("ticker", "")).upper()
+                    in {ticker.upper() for ticker in strategy.allowed_tickers}
                 },
                 market_snapshot.latest_prices,
                 sleeve_value,
@@ -526,7 +568,9 @@ class PortfolioExecutionService:
         result = await self.db.execute(select(AppSettings).where(AppSettings.id == 1))
         return result.scalar_one_or_none()
 
-    async def _list_enabled_portfolio_strategies(self, *, strategy_id: uuid.UUID | None = None) -> list[Strategy]:
+    async def _list_enabled_portfolio_strategies(
+        self, *, strategy_id: uuid.UUID | None = None
+    ) -> list[Strategy]:
         stmt = (
             select(Strategy)
             .where(Strategy.is_enabled == True)  # noqa: E712
@@ -557,7 +601,6 @@ class PortfolioExecutionService:
         if not conn:
             return None
 
-        from app.broker.trading212 import Trading212Adapter
         from app.core.security import CredentialDecryptionError, decrypt_field
 
         try:
@@ -568,7 +611,7 @@ class PortfolioExecutionService:
                 self.db,
                 conn,
                 str(exc),
-                actor="portfolio_execution_service",
+                actor="portfolio_execution",
             )
             return None
 
@@ -577,7 +620,31 @@ class PortfolioExecutionService:
         except SafetyPolicyViolation:
             return None
 
-        return Trading212Adapter(api_key, api_secret, conn.environment)
+        try:
+            return create_trading212_provider_adapter(
+                BrokerProviderRequest(
+                    broker_id="trading212",
+                    environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                    purpose="worker_portfolio_execution",
+                    user_id=conn.user_id,
+                ),
+                BrokerProviderCredentials(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                ),
+                app_mode=settings.APP_MODE,
+                live_trading_enabled=bool(settings.LIVE_TRADING_ENABLED),
+            )
+        except BrokerProviderValidationError as exc:
+            log.error(
+                "portfolio_execution.provider_validation_error",
+                reason=str(exc),
+                broker_id="trading212",
+                environment=conn.environment,
+                purpose="worker_portfolio_execution",
+                user_id=str(conn.user_id),
+            )
+            return None
 
     async def _load_market_snapshot(self, tickers: list[str], bars_needed: int) -> MarketSnapshot:
         provider = get_live_provider()
@@ -586,7 +653,9 @@ class PortfolioExecutionService:
                 return await self._snapshot_from_provider(active_provider, tickers, bars_needed)
         return await self._snapshot_from_provider(provider, tickers, bars_needed)
 
-    async def _snapshot_from_provider(self, provider: Any, tickers: list[str], bars_needed: int) -> MarketSnapshot:
+    async def _snapshot_from_provider(
+        self, provider: Any, tickers: list[str], bars_needed: int
+    ) -> MarketSnapshot:
         histories: dict[str, tuple[list[Bar], list[datetime]]] = {}
         latest_prices: dict[str, Decimal] = {}
         latest_quote_times: dict[str, datetime] = {}
@@ -631,7 +700,9 @@ class PortfolioExecutionService:
             provider_name=get_provider_name(),
         )
 
-    async def _fetch_daily_bars(self, provider: Any, ticker: str, bars_needed: int) -> tuple[list[Bar], list[datetime]]:
+    async def _fetch_daily_bars(
+        self, provider: Any, ticker: str, bars_needed: int
+    ) -> tuple[list[Bar], list[datetime]]:
         if hasattr(provider, "get_bars"):
             raw_bars = await self._maybe_await(
                 provider.get_bars(
@@ -651,10 +722,7 @@ class PortfolioExecutionService:
                 )
                 for bar in raw_bars
             ]
-            bar_times = [
-                getattr(bar, "timestamp", datetime.now(UTC))
-                for bar in raw_bars
-            ]
+            bar_times = [getattr(bar, "timestamp", datetime.now(UTC)) for bar in raw_bars]
             return bars, bar_times
 
         raw = provider.get_ohlcv(ticker, interval_minutes=1440, bars=bars_needed)
@@ -668,10 +736,7 @@ class PortfolioExecutionService:
             )
             for bar in raw
         ]
-        bar_times = [
-            datetime.fromisoformat(str(bar["timestamp"]))
-            for bar in raw
-        ]
+        bar_times = [datetime.fromisoformat(str(bar["timestamp"])) for bar in raw]
         return bars, bar_times
 
     async def _load_regime_payload(self) -> dict[str, Any]:
@@ -683,7 +748,7 @@ class PortfolioExecutionService:
                 "detail": "Mock mode uses neutral allocator regime assumptions.",
             }
         try:
-            return await MarketRegimeService().evaluate()
+            return cast(dict[str, Any], await MarketRegimeService().evaluate())
         except Exception as exc:
             log.warning("portfolio_execution.regime_failed", error=str(exc))
             return {"regime": "unknown", "active_strategies": [], "suppressed_strategies": []}
@@ -709,8 +774,7 @@ class PortfolioExecutionService:
             return None, {}
 
         sliced_history = {
-            ticker: bars[: decision_index + 1]
-            for ticker, bars in aligned_history.items()
+            ticker: bars[: decision_index + 1] for ticker, bars in aligned_history.items()
         }
         return aligned_dates[decision_index], sliced_history
 
@@ -724,7 +788,9 @@ class PortfolioExecutionService:
         latest_prices: dict[str, Decimal],
         instruments: dict[str, Instrument],
     ) -> list[dict[str, Any]]:
-        min_trade_value = Decimal(str(strategy.params.get("min_trade_value", DEFAULT_MIN_TRADE_VALUE)))
+        min_trade_value = Decimal(
+            str(strategy.params.get("min_trade_value", DEFAULT_MIN_TRADE_VALUE))
+        )
         min_weight_delta_pct = Decimal(
             str(strategy.params.get("min_weight_delta_pct", DEFAULT_MIN_WEIGHT_DELTA_PCT))
         )
@@ -774,7 +840,9 @@ class PortfolioExecutionService:
         if instrument and instrument.buy_lot_size:
             lot = Decimal(str(instrument.buy_lot_size))
             if lot > 0:
-                normalized = ((normalized / lot).to_integral_value(rounding=ROUND_DOWN) * lot).quantize(
+                normalized = (
+                    (normalized / lot).to_integral_value(rounding=ROUND_DOWN) * lot
+                ).quantize(
                     SHARE_QUANT,
                     rounding=ROUND_DOWN,
                 )
@@ -798,8 +866,7 @@ class PortfolioExecutionService:
             suggested_quantity=order_plan["quantity"],
             confidence=Decimal("1.0"),
             reason=(
-                f"Portfolio rebalance toward target weight "
-                f"{order_plan['target_weight']:.4f}"
+                f"Portfolio rebalance toward target weight " f"{order_plan['target_weight']:.4f}"
             ),
             params_snapshot={
                 "strategy_type": strategy.type,
@@ -817,10 +884,7 @@ class PortfolioExecutionService:
         result = await self.db.execute(
             select(Instrument).where(Instrument.ticker.in_([ticker.upper() for ticker in tickers]))
         )
-        return {
-            instrument.ticker.upper(): instrument
-            for instrument in result.scalars().all()
-        }
+        return {instrument.ticker.upper(): instrument for instrument in result.scalars().all()}
 
     def _current_weights(
         self,
@@ -856,7 +920,9 @@ class PortfolioExecutionService:
         return max(Decimal("0"), min(raw, Decimal("1")))
 
     def _validate_capital_allocations(self, strategies: list[Strategy]) -> dict[str, Any] | None:
-        total = sum((self._strategy_capital_fraction(strategy) for strategy in strategies), Decimal("0"))
+        total = sum(
+            (self._strategy_capital_fraction(strategy) for strategy in strategies), Decimal("0")
+        )
         if total <= Decimal("1.0001"):
             return None
         return {
@@ -901,7 +967,9 @@ class PortfolioExecutionService:
             else:
                 new_qty = max(Decimal("0"), current_qty - quantity)
                 position["quantity"] = float(new_qty)
-            return [position for position in updated if Decimal(str(position.get("quantity", 0))) > 0]
+            return [
+                position for position in updated if Decimal(str(position.get("quantity", 0))) > 0
+            ]
 
         if side == "buy":
             updated.append(
@@ -940,9 +1008,13 @@ class PortfolioExecutionService:
         if reason is not None:
             state["last_reason"] = reason
         if decision_date is not None:
-            state["last_rebalance_signal_at"] = datetime.combine(decision_date, datetime.min.time(), tzinfo=UTC).isoformat()
+            state["last_rebalance_signal_at"] = datetime.combine(
+                decision_date, datetime.min.time(), tzinfo=UTC
+            ).isoformat()
         if target_weights is not None:
-            state["last_target_weights"] = {ticker: float(weight) for ticker, weight in target_weights.items()}
+            state["last_target_weights"] = {
+                ticker: float(weight) for ticker, weight in target_weights.items()
+            }
         if current_weights is not None:
             state["last_current_weights"] = current_weights
         if mode is not None:
