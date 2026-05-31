@@ -76,6 +76,7 @@ class FakeSession:
 class FakeAppSettings:
     auto_trading_enabled: bool = True
     kill_switch_active: bool = False
+    live_trading_unlocked: bool = True
 
 
 @dataclass(frozen=True)
@@ -416,7 +417,7 @@ async def _market_context(
     return bars, times, bars, times, Decimal("99"), "14:45"
 
 
-def test_strategy_runner_source_remains_direct_provider_unwired_and_mixed() -> None:
+def test_strategy_runner_source_is_provider_backed_and_mixed_write_capable() -> None:
     tree = _parse_strategy_runner()
     service = _service_class()
     get_broker = _method_node("_get_broker")
@@ -425,15 +426,17 @@ def test_strategy_runner_source_remains_direct_provider_unwired_and_mixed() -> N
     check_exit = _method_node("_check_exit")
     source = STRATEGY_RUNNER_PATH.read_text()
 
-    assert _adapter_counts(get_broker) == {"construct": 1, "import": 1}
-    assert _adapter_counts(tree) == {"construct": 1, "import": 1}
-    assert construction_inventory._trading212_adapter_references()[
-        "app/services/strategy_runner.py"
-    ] == {"construct": 1, "import": 1}
-    assert "create_trading212_provider_adapter" not in source
-    assert "app.broker.provider" not in source
-    assert "BrokerProviderRequest" not in source
-    assert "BrokerProviderCredentials" not in source
+    assert _adapter_counts(get_broker) == {"construct": 0, "import": 0}
+    assert _adapter_counts(tree) == {"construct": 0, "import": 0}
+    assert construction_inventory._trading212_adapter_references().get(
+        "app/services/strategy_runner.py",
+        {"construct": 0, "import": 0},
+    ) == {"construct": 0, "import": 0}
+    assert "create_trading212_provider_adapter" in source
+    assert "app.broker.provider" in source
+    assert "BrokerProviderRequest" in source
+    assert "BrokerProviderCredentials" in source
+    assert "worker_strategy_runner" in ast.unparse(get_broker)
 
     assert {"get_account_summary", "get_positions"} <= _call_names(run_all_enabled)
     assert {"create_order_intent", "submit_order"} <= _call_names(process_ticker)
@@ -528,6 +531,13 @@ async def test_get_broker_policy_rejection_happens_before_adapter_construction(
     monkeypatch.setattr(settings, "APP_MODE", "demo")
     monkeypatch.setattr(security_module, "decrypt_field", _decrypt)
     monkeypatch.setattr("app.broker.trading212.Trading212Adapter", _adapter_sentinel)
+    monkeypatch.setattr(
+        strategy_runner,
+        "create_trading212_provider_adapter",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not reach provider on policy rejection")
+        ),
+    )
     gate_calls: list[tuple[str, str]] = []
 
     def rejecting_gate(environment: str, *, action: str) -> None:
@@ -541,11 +551,10 @@ async def test_get_broker_policy_rejection_happens_before_adapter_construction(
     assert broker is None
     assert gate_calls == [("live", "strategy runner broker access")]
     assert RecordingTrading212Adapter.constructed == []
-    assert "create_trading212_provider_adapter" not in STRATEGY_RUNNER_PATH.read_text()
 
 
 @pytest.mark.asyncio
-async def test_get_broker_constructs_direct_adapter_after_lookup_decrypt_and_environment_gate(
+async def test_get_broker_calls_provider_after_lookup_decrypt_and_environment_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -562,20 +571,28 @@ async def test_get_broker_constructs_direct_adapter_after_lookup_decrypt_and_env
     def gate(environment: str, *, action: str) -> None:
         events.append(f"gate:{environment}:{action}")
 
-    original_init = RecordingTrading212Adapter.__init__
+    provider_calls: list[dict[str, Any]] = []
 
-    def adapter_init(
-        self: RecordingTrading212Adapter,
-        api_key: str,
-        api_secret: str,
-        environment: str,
-    ) -> None:
-        events.append(f"adapter:{environment}")
-        original_init(self, api_key, api_secret, environment)
+    def provider_adapter(
+        request: Any, credentials: Any, **kwargs: Any
+    ) -> RecordingTrading212Adapter:
+        events.append(f"provider:{request.environment}:{request.purpose}")
+        provider_calls.append(
+            {
+                "request": request,
+                "credentials": credentials,
+                "kwargs": kwargs,
+            }
+        )
+        return RecordingTrading212Adapter(
+            credentials.api_key,
+            credentials.api_secret,
+            request.environment,
+        )
 
     monkeypatch.setattr(security_module, "decrypt_field", decrypt)
     monkeypatch.setattr(strategy_runner, "require_broker_environment", gate)
-    monkeypatch.setattr(RecordingTrading212Adapter, "__init__", adapter_init)
+    monkeypatch.setattr(strategy_runner, "create_trading212_provider_adapter", provider_adapter)
 
     broker = await service._get_broker()
 
@@ -585,11 +602,63 @@ async def test_get_broker_constructs_direct_adapter_after_lookup_decrypt_and_env
         "decrypt:encrypted-live-key",
         "decrypt:encrypted-live-secret",
         "gate:live:strategy runner broker access",
-        "adapter:live",
+        "provider:live:worker_strategy_runner",
     ]
+    assert provider_calls[0]["request"].broker_id == "trading212"
+    assert provider_calls[0]["request"].environment == "live"
+    assert provider_calls[0]["request"].purpose == "worker_strategy_runner"
+    assert provider_calls[0]["request"].user_id == conn.user_id
+    assert provider_calls[0]["credentials"].api_key == "decrypted-live-key"
+    assert provider_calls[0]["credentials"].api_secret == "decrypted-live-secret"
+    assert provider_calls[0]["kwargs"] == {
+        "app_mode": "live",
+        "live_trading_enabled": True,
+    }
     assert RecordingTrading212Adapter.constructed == [
         ("decrypted-live-key", "decrypted-live-secret", "live")
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_broker_provider_validation_error_returns_none_and_logs_safe_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _connection(environment="demo")
+    db = FakeSession(results=[conn])
+    service = StrategyRunner(db)
+    logged: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeLogger:
+        def error(self, event: str, **kwargs: Any) -> None:
+            logged.append((event, kwargs))
+
+    def rejecting_provider(*_args: Any, **_kwargs: Any) -> object:
+        raise strategy_runner.BrokerProviderValidationError("demo mode may only request demo")
+
+    monkeypatch.setattr(security_module, "decrypt_field", _decrypt)
+    monkeypatch.setattr(strategy_runner, "create_trading212_provider_adapter", rejecting_provider)
+    monkeypatch.setattr(strategy_runner, "log", FakeLogger())
+
+    broker = await service._get_broker()
+
+    assert broker is None
+    assert logged == [
+        (
+            "strategy_runner.provider_validation_error",
+            {
+                "reason": "demo mode may only request demo",
+                "broker_id": "trading212",
+                "environment": "demo",
+                "purpose": "worker_strategy_runner",
+                "user_id": str(conn.user_id),
+            },
+        )
+    ]
+    rendered_log = repr(logged)
+    assert "decrypted-demo-key" not in rendered_log
+    assert "decrypted-demo-secret" not in rendered_log
+    assert conn.api_key_encrypted not in rendered_log
+    assert conn.api_secret_encrypted not in rendered_log
 
 
 @pytest.mark.asyncio
@@ -668,6 +737,69 @@ async def test_run_all_enabled_safety_gates_skip_before_broker_lookup(
     assert RecordingTrading212Adapter.constructed == []
     assert RecordingExecutionEngine.order_intents == []
     assert RecordingExecutionEngine.submitted_orders == []
+
+
+@pytest.mark.asyncio
+async def test_run_all_enabled_live_not_unlocked_skips_before_broker_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "live")
+    db = FakeSession(results=[FakeAppSettings(live_trading_unlocked=False)])
+    service = StrategyRunner(db)
+
+    async def get_broker() -> RecordingBroker:
+        raise AssertionError("live unlock gate must skip before broker lookup")
+
+    async def run_strategy(**_kwargs: Any) -> tuple[int, int, int]:
+        raise AssertionError("live unlock gate must skip before strategy execution")
+
+    monkeypatch.setattr(service, "_get_broker", get_broker)
+    monkeypatch.setattr(service, "_run_strategy", run_strategy)
+
+    summary = await service.run_all_enabled()
+
+    assert summary == {
+        "strategies_run": 0,
+        "signals_generated": 0,
+        "orders_submitted": 0,
+        "risk_blocks": 0,
+        "errors": [],
+        "skipped": "live_not_unlocked",
+    }
+    assert RecordingTrading212Adapter.constructed == []
+    assert RecordingExecutionEngine.order_intents == []
+    assert RecordingExecutionEngine.submitted_orders == []
+
+
+@pytest.mark.asyncio
+async def test_run_all_enabled_demo_is_not_blocked_by_live_unlock_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    broker = RecordingBroker()
+    db = FakeSession(results=[FakeAppSettings(live_trading_unlocked=False), []])
+    service = StrategyRunner(db)
+    broker_calls = 0
+
+    async def get_broker() -> RecordingBroker:
+        nonlocal broker_calls
+        broker_calls += 1
+        return broker
+
+    monkeypatch.setattr(service, "_get_broker", get_broker)
+
+    summary = await service.run_all_enabled()
+
+    assert summary == {
+        "strategies_run": 0,
+        "signals_generated": 0,
+        "orders_submitted": 0,
+        "risk_blocks": 0,
+        "errors": [],
+    }
+    # The enabled strategy list is empty, so broker lookup is unnecessary after
+    # demo mode passes the live-unlock gate.
+    assert broker_calls == 0
 
 
 @pytest.mark.asyncio
