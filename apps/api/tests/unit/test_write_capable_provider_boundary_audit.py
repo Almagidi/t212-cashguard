@@ -14,11 +14,11 @@ SCRIPTS_ROOT = API_ROOT / "scripts"
 
 TASKS_PATH = APP_ROOT / "workers" / "tasks.py"
 REMAINING_SERVICE_PATHS = {
-    "position_monitor": APP_ROOT / "services" / "position_monitor.py",
     "strategy_runner": APP_ROOT / "services" / "strategy_runner.py",
     "portfolio_execution_service": APP_ROOT / "services" / "portfolio_execution_service.py",
     "system_control": APP_ROOT / "services" / "system_control.py",
 }
+POSITION_MONITOR_PATH = APP_ROOT / "services" / "position_monitor.py"
 MANUAL_SMOKE_PATHS = {
     "readonly_smoke": SCRIPTS_ROOT / "t212_demo_readonly_smoke.py",
     "reconcile_order": SCRIPTS_ROOT / "t212_demo_reconcile_order.py",
@@ -65,6 +65,11 @@ def _adapter_counts(node: ast.AST) -> dict[str, int]:
         ):
             counts["construct"] += 1
     return dict(sorted(counts.items()))
+
+
+def _zero_filled_adapter_counts(node: ast.AST) -> dict[str, int]:
+    counts = _adapter_counts(node)
+    return {"construct": counts.get("construct", 0), "import": counts.get("import", 0)}
 
 
 def _call_names(node: ast.AST) -> set[str]:
@@ -135,13 +140,6 @@ def test_workers_tasks_direct_inventory_and_provider_call_sites_are_locked() -> 
     ("name", "path", "class_name", "write_evidence", "classification"),
     [
         (
-            "position_monitor",
-            REMAINING_SERVICE_PATHS["position_monitor"],
-            "PositionMonitor",
-            {"create_order_intent", "submit_order", "eod_flatten"},
-            "write-capable",
-        ),
-        (
             "strategy_runner",
             REMAINING_SERVICE_PATHS["strategy_runner"],
             "StrategyRunner",
@@ -164,7 +162,7 @@ def test_workers_tasks_direct_inventory_and_provider_call_sites_are_locked() -> 
         ),
     ],
 )
-def test_remaining_service_construction_paths_are_direct_and_classified_by_write_surface(
+def test_service_construction_paths_are_classified_by_write_surface(
     name: str,
     path: Path,
     class_name: str,
@@ -190,12 +188,20 @@ def test_remaining_service_construction_paths_are_direct_and_classified_by_write
     )
 
 
-def test_position_monitor_is_write_capable_for_exits_and_eod_flatten() -> None:
-    tree = _parse(REMAINING_SERVICE_PATHS["position_monitor"])
+def test_position_monitor_is_provider_backed_and_write_capable_for_exits_and_eod_flatten() -> None:
+    tree = _parse(POSITION_MONITOR_PATH)
     service_class = _class_node(tree, "PositionMonitor")
+    get_broker = _method_node(service_class, "_get_broker")
     monitor_position = _method_node(service_class, "_monitor_position")
     eod_flatten = _method_node(service_class, "eod_flatten")
+    source = POSITION_MONITOR_PATH.read_text()
 
+    assert _zero_filled_adapter_counts(tree) == {"construct": 0, "import": 0}
+    assert _zero_filled_adapter_counts(get_broker) == {"construct": 0, "import": 0}
+    assert "create_trading212_provider_adapter" in _call_names(get_broker)
+    assert "BrokerProviderRequest" in source
+    assert "BrokerProviderCredentials" in source
+    assert "worker_position_monitor" in ast.unparse(get_broker)
     assert {"create_order_intent", "submit_order"} <= _call_names(monitor_position)
     assert {"get_positions", "create_order_intent", "submit_order"} <= _call_names(eod_flatten)
     assert _source_contains(monitor_position, "side='sell'")

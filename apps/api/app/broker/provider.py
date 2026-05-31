@@ -25,6 +25,7 @@ BrokerProviderPurpose = Literal[
     "worker_cfd_funding",
     "worker_reconcile",
     "worker_cancel",
+    "worker_position_monitor",
 ]
 
 _SUPPORTED_BROKER_IDS: frozenset[str] = frozenset({"trading212"})
@@ -39,12 +40,19 @@ _SUPPORTED_PURPOSES: frozenset[str] = frozenset(
         "worker_cfd_funding",
         "worker_reconcile",
         "worker_cancel",
+        "worker_position_monitor",
     }
 )
 _DEMO_ONLY_PURPOSES: frozenset[str] = frozenset({"demo_reconciliation"})
 _LIVE_ONLY_PURPOSES: frozenset[str] = frozenset({"worker_cancel"})
 _USER_SCOPED_PURPOSES: frozenset[str] = frozenset(
-    {"worker_account_sync", "worker_cfd_funding", "worker_reconcile", "worker_cancel"}
+    {
+        "worker_account_sync",
+        "worker_cfd_funding",
+        "worker_reconcile",
+        "worker_cancel",
+        "worker_position_monitor",
+    }
 )
 
 

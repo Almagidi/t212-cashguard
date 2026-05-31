@@ -121,9 +121,6 @@ def test_runtime_trading212_adapter_construction_inventory_is_locked() -> None:
         # reads and possible order submission. Keep until write-capable paths
         # have separate provider acceptance tests.
         "app/services/portfolio_execution_service.py": {"construct": 1, "import": 1},
-        # Position monitoring can submit exits and EOD flatten orders, so it is
-        # intentionally not the first remaining provider migration target.
-        "app/services/position_monitor.py": {"construct": 1, "import": 1},
         # Strategy runner can submit strategy orders after its own gates.
         "app/services/strategy_runner.py": {"construct": 1, "import": 1},
         # System control has read-only status helpers and emergency cancel/flatten
