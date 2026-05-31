@@ -117,10 +117,6 @@ def test_runtime_trading212_adapter_construction_inventory_is_locked() -> None:
         # Canonical Trading 212 provider construction. This is the intended final
         # adapter constructor after caller-owned credential and safety decisions.
         "app/broker/provider.py": {"construct": 1, "import": 2},
-        # Portfolio rebalance helper still builds a broad broker for account
-        # reads and possible order submission. Keep until write-capable paths
-        # have separate provider acceptance tests.
-        "app/services/portfolio_execution_service.py": {"construct": 1, "import": 1},
         # System control has read-only status helpers and emergency cancel/flatten
         # operations sharing one broker helper.
         "app/services/system_control.py": {"construct": 1, "import": 1},
