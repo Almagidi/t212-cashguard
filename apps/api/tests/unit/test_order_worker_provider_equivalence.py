@@ -109,7 +109,9 @@ class RecordingTrading212Adapter:
     def __getattr__(self, name: str) -> Any:
         if name.startswith(("place_", "cancel_", "modify_", "submit_")):
             self.write_calls.append(name)
-            raise AssertionError(f"worker fake broker write method called directly: {name}")
+            raise AssertionError(
+                f"worker fake broker write method called directly: {name}"
+            )
         raise AttributeError(name)
 
 
@@ -147,8 +149,12 @@ def _reset_worker_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", True)
     monkeypatch.setattr(tasks, "_LOOP", None)
     monkeypatch.setattr("app.core.redis.task_lock", _acquired_task_lock)
-    monkeypatch.setattr("app.broker.trading212.Trading212Adapter", RecordingTrading212Adapter)
-    monkeypatch.setattr("app.execution.engine.ExecutionEngine", RecordingExecutionEngine)
+    monkeypatch.setattr(
+        "app.broker.trading212.Trading212Adapter", RecordingTrading212Adapter
+    )
+    monkeypatch.setattr(
+        "app.execution.engine.ExecutionEngine", RecordingExecutionEngine
+    )
 
 
 def _order(**overrides: Any) -> FakeOrder:
@@ -212,7 +218,9 @@ def _raise_adapter_sentinel(*_args: object, **_kwargs: object) -> object:
 
 
 def _install_adapter_sentinel(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("app.broker.trading212.Trading212Adapter", _raise_adapter_sentinel)
+    monkeypatch.setattr(
+        "app.broker.trading212.Trading212Adapter", _raise_adapter_sentinel
+    )
 
 
 def _install_provider_sentinel(
@@ -222,7 +230,9 @@ def _install_provider_sentinel(
         calls.append((args, kwargs))
         raise AssertionError("provider must not be called in this path")
 
-    monkeypatch.setattr("app.broker.provider.create_trading212_provider_adapter", provider_sentinel)
+    monkeypatch.setattr(
+        "app.broker.provider.create_trading212_provider_adapter", provider_sentinel
+    )
 
 
 def _assert_no_adapter_context_entered() -> None:
@@ -393,7 +403,9 @@ def test_order_workers_mark_reconnect_required_when_credential_decryption_fails(
     def fail_decrypt(_value: str) -> str:
         raise CredentialDecryptionError("cannot decrypt active worker credentials")
 
-    async def mark_reconnect(db: FakeSession, conn: Any, reason: str, *, actor: str) -> None:
+    async def mark_reconnect(
+        db: FakeSession, conn: Any, reason: str, *, actor: str
+    ) -> None:
         reconnect_calls.append((db, conn, reason, actor))
 
     monkeypatch.setattr("app.core.security.decrypt_field", fail_decrypt)
@@ -461,7 +473,9 @@ def test_order_workers_do_not_construct_adapter_when_environment_gate_rejects(
             decision_code="test_environment_block",
         )
 
-    monkeypatch.setattr("app.services.safety_policy.require_broker_environment", reject_environment)
+    monkeypatch.setattr(
+        "app.services.safety_policy.require_broker_environment", reject_environment
+    )
 
     assert run_task() == expected
 
@@ -531,7 +545,13 @@ def test_order_workers_do_not_construct_adapter_on_live_disabled_mismatch(
 
 
 @pytest.mark.parametrize(
-    ("environment", "app_mode", "live_trading_enabled", "expected_key", "expected_secret"),
+    (
+        "environment",
+        "app_mode",
+        "live_trading_enabled",
+        "expected_key",
+        "expected_secret",
+    ),
     [
         ("live", "live", True, "decrypted-live-key", "decrypted-live-secret"),
         ("demo", "demo", False, "decrypted-demo-key", "decrypted-demo-secret"),
@@ -545,7 +565,10 @@ def test_reconcile_pending_orders_calls_provider_after_all_gates_and_reconciles_
     expected_key: str,
     expected_secret: str,
 ) -> None:
-    selected_orders = [_order(broker_order_id="broker-1"), _order(broker_order_id="broker-2")]
+    selected_orders = [
+        _order(broker_order_id="broker-1"),
+        _order(broker_order_id="broker-2"),
+    ]
     conn = _active_conn(environment=environment)
     summaries: list[tuple[str, dict[str, Any]]] = []
     fake_db = FakeSession(results=[[], selected_orders, conn])
@@ -586,7 +609,9 @@ def test_reconcile_pending_orders_calls_provider_after_all_gates_and_reconciles_
         )
 
     monkeypatch.setattr("app.services.safety_policy.require_broker_environment", gate)
-    monkeypatch.setattr("app.broker.trading212.Trading212Adapter", RecordingTrading212Adapter)
+    monkeypatch.setattr(
+        "app.broker.trading212.Trading212Adapter", RecordingTrading212Adapter
+    )
     monkeypatch.setattr(
         "app.broker.provider.create_trading212_provider_adapter",
         recording_provider,
@@ -612,7 +637,9 @@ def test_reconcile_pending_orders_calls_provider_after_all_gates_and_reconciles_
             "live_trading_enabled": live_trading_enabled,
         }
     ]
-    assert RecordingTrading212Adapter.constructed == [(expected_key, expected_secret, environment)]
+    assert RecordingTrading212Adapter.constructed == [
+        (expected_key, expected_secret, environment)
+    ]
     assert RecordingTrading212Adapter.entered == 1
     assert RecordingTrading212Adapter.exited == 1
     assert len(RecordingExecutionEngine.brokers) == 1
@@ -628,7 +655,9 @@ def test_reconcile_pending_orders_provider_validation_error_uses_skipped_summary
 ) -> None:
     selected_orders = [_order(broker_order_id="broker-1")]
     summaries: list[tuple[str, dict[str, Any]]] = []
-    fake_db = FakeSession(results=[[], selected_orders, _active_conn(environment="live")])
+    fake_db = FakeSession(
+        results=[[], selected_orders, _active_conn(environment="live")]
+    )
     _install_session(monkeypatch, fake_db, summaries)
     _install_decrypt(monkeypatch)
     _install_adapter_sentinel(monkeypatch)
@@ -638,7 +667,9 @@ def test_reconcile_pending_orders_provider_validation_error_uses_skipped_summary
     def fail_provider(*_args: Any, **_kwargs: Any) -> RecordingTrading212Adapter:
         raise BrokerProviderValidationError("provider refused worker reconcile")
 
-    monkeypatch.setattr("app.broker.provider.create_trading212_provider_adapter", fail_provider)
+    monkeypatch.setattr(
+        "app.broker.provider.create_trading212_provider_adapter", fail_provider
+    )
 
     assert tasks.reconcile_pending_orders.run() == {
         "reconciled": 0,
@@ -663,7 +694,13 @@ def test_reconcile_pending_orders_provider_validation_error_uses_skipped_summary
 
 
 @pytest.mark.parametrize(
-    ("environment", "app_mode", "live_trading_enabled", "expected_key", "expected_secret"),
+    (
+        "environment",
+        "app_mode",
+        "live_trading_enabled",
+        "expected_key",
+        "expected_secret",
+    ),
     [
         ("live", "live", True, "decrypted-live-key", "decrypted-live-secret"),
         ("demo", "demo", False, "decrypted-demo-key", "decrypted-demo-secret"),
@@ -729,7 +766,10 @@ def test_cancel_timed_out_orders_calls_provider_after_all_gates_and_cancels_cand
     assert tasks.cancel_timed_out_orders.run() == {"cancelled": 2}
 
     assert fake_db.results == []
-    assert events == [f"gate:{environment}:worker timeout cancel", f"provider:{environment}"]
+    assert events == [
+        f"gate:{environment}:worker timeout cancel",
+        f"provider:{environment}",
+    ]
     assert provider_calls == [
         {
             "request": BrokerProviderRequest(
@@ -746,7 +786,9 @@ def test_cancel_timed_out_orders_calls_provider_after_all_gates_and_cancels_cand
             "live_trading_enabled": live_trading_enabled,
         }
     ]
-    assert RecordingTrading212Adapter.constructed == [(expected_key, expected_secret, environment)]
+    assert RecordingTrading212Adapter.constructed == [
+        (expected_key, expected_secret, environment)
+    ]
     assert RecordingTrading212Adapter.entered == 1
     assert RecordingTrading212Adapter.exited == 1
     assert len(RecordingExecutionEngine.brokers) == 1
@@ -770,7 +812,9 @@ def test_cancel_timed_out_orders_provider_validation_error_fails_closed(
     def fail_provider(*_args: Any, **_kwargs: Any) -> RecordingTrading212Adapter:
         raise BrokerProviderValidationError("provider refused timeout cancel")
 
-    monkeypatch.setattr("app.broker.provider.create_trading212_provider_adapter", fail_provider)
+    monkeypatch.setattr(
+        "app.broker.provider.create_trading212_provider_adapter", fail_provider
+    )
 
     assert tasks.cancel_timed_out_orders.run() == {
         "cancelled": 0,
@@ -806,7 +850,10 @@ def _adapter_counts(node: ast.AST) -> dict[str, int]:
     imports = 0
     constructs = 0
     for child in ast.walk(node):
-        if isinstance(child, ast.ImportFrom) and child.module == "app.broker.trading212":
+        if (
+            isinstance(child, ast.ImportFrom)
+            and child.module == "app.broker.trading212"
+        ):
             imports += sum(alias.name == "Trading212Adapter" for alias in child.names)
         elif isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
             constructs += int(child.func.id == "Trading212Adapter")
