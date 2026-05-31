@@ -14,10 +14,10 @@ SCRIPTS_ROOT = API_ROOT / "scripts"
 
 TASKS_PATH = APP_ROOT / "workers" / "tasks.py"
 REMAINING_SERVICE_PATHS = {
-    "strategy_runner": APP_ROOT / "services" / "strategy_runner.py",
     "portfolio_execution_service": APP_ROOT / "services" / "portfolio_execution_service.py",
     "system_control": APP_ROOT / "services" / "system_control.py",
 }
+STRATEGY_RUNNER_PATH = APP_ROOT / "services" / "strategy_runner.py"
 POSITION_MONITOR_PATH = APP_ROOT / "services" / "position_monitor.py"
 MANUAL_SMOKE_PATHS = {
     "readonly_smoke": SCRIPTS_ROOT / "t212_demo_readonly_smoke.py",
@@ -140,13 +140,6 @@ def test_workers_tasks_direct_inventory_and_provider_call_sites_are_locked() -> 
     ("name", "path", "class_name", "write_evidence", "classification"),
     [
         (
-            "strategy_runner",
-            REMAINING_SERVICE_PATHS["strategy_runner"],
-            "StrategyRunner",
-            {"create_order_intent", "submit_order"},
-            "mixed/write-capable",
-        ),
-        (
             "portfolio_execution_service",
             REMAINING_SERVICE_PATHS["portfolio_execution_service"],
             "PortfolioExecutionService",
@@ -208,8 +201,30 @@ def test_position_monitor_is_provider_backed_and_write_capable_for_exits_and_eod
     assert _source_contains(eod_flatten, "side='sell'")
 
 
+def test_strategy_runner_is_provider_backed_and_write_capable_for_entries_and_exits() -> None:
+    tree = _parse(STRATEGY_RUNNER_PATH)
+    service_class = _class_node(tree, "StrategyRunner")
+    get_broker = _method_node(service_class, "_get_broker")
+    process_ticker = _method_node(service_class, "_process_ticker")
+    check_exit = _method_node(service_class, "_check_exit")
+    run_all_enabled = _method_node(service_class, "run_all_enabled")
+    source = STRATEGY_RUNNER_PATH.read_text()
+
+    assert _zero_filled_adapter_counts(tree) == {"construct": 0, "import": 0}
+    assert _zero_filled_adapter_counts(get_broker) == {"construct": 0, "import": 0}
+    assert "create_trading212_provider_adapter" in _call_names(get_broker)
+    assert "BrokerProviderRequest" in source
+    assert "BrokerProviderCredentials" in source
+    assert "worker_strategy_runner" in ast.unparse(get_broker)
+    assert _source_contains(run_all_enabled, "live_trading_unlocked")
+    assert {"create_order_intent", "submit_order"} <= _call_names(process_ticker)
+    assert {"create_order_intent", "submit_order"} <= _call_names(check_exit)
+    assert _source_contains(process_ticker, "strategy_order_placed")
+    assert _source_contains(check_exit, "strategy_exit_placed")
+
+
 def test_strategy_runner_is_write_capable_for_strategy_entries_and_exits() -> None:
-    tree = _parse(REMAINING_SERVICE_PATHS["strategy_runner"])
+    tree = _parse(STRATEGY_RUNNER_PATH)
     service_class = _class_node(tree, "StrategyRunner")
     process_ticker = _method_node(service_class, "_process_ticker")
     check_exit = _method_node(service_class, "_check_exit")

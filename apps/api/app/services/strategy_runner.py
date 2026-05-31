@@ -34,12 +34,19 @@ import uuid
 from contextlib import suppress
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from sqlalchemy import desc, select
 
 from app.backtest.portfolio_strategies import is_portfolio_strategy_type
+from app.broker.provider import (
+    BrokerProviderCredentials,
+    BrokerProviderRequest,
+    BrokerProviderValidationError,
+    BrokerRuntimeEnvironment,
+    create_trading212_provider_adapter,
+)
 from app.core.config import settings
 from app.db.models import AppSettings, AuditLog, BrokerConnection, Signal, Strategy
 from app.db.repositories.venue_config_repo import VenueConfigRepository
@@ -90,7 +97,6 @@ class StrategyRunner:
         conn = r.scalar_one_or_none()
         if not conn:
             return None
-        from app.broker.trading212 import Trading212Adapter
         from app.core.security import CredentialDecryptionError, decrypt_field
 
         try:
@@ -110,11 +116,31 @@ class StrategyRunner:
         except SafetyPolicyViolation as exc:
             log.error("runner.broker_policy_block", reason=exc.reason)
             return None
-        return Trading212Adapter(
-            api_key,
-            api_secret,
-            conn.environment,
-        )
+        try:
+            return create_trading212_provider_adapter(
+                BrokerProviderRequest(
+                    broker_id="trading212",
+                    environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                    purpose="worker_strategy_runner",
+                    user_id=conn.user_id,
+                ),
+                BrokerProviderCredentials(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                ),
+                app_mode=settings.APP_MODE,
+                live_trading_enabled=bool(settings.LIVE_TRADING_ENABLED),
+            )
+        except BrokerProviderValidationError as exc:
+            log.error(
+                "strategy_runner.provider_validation_error",
+                reason=str(exc),
+                broker_id="trading212",
+                environment=conn.environment,
+                purpose="worker_strategy_runner",
+                user_id=str(conn.user_id),
+            )
+            return None
 
     def _parse_session_open(self, value: str) -> time:
         hours, minutes = map(int, value.split(":"))
@@ -463,6 +489,8 @@ class StrategyRunner:
             return {**summary, "skipped": "kill_switch"}
         if not app_cfg.auto_trading_enabled:
             return {**summary, "skipped": "auto_trading_off"}
+        if settings.APP_MODE == "live" and not app_cfg.live_trading_unlocked:
+            return {**summary, "skipped": "live_not_unlocked"}
 
         strategies = (
             (
