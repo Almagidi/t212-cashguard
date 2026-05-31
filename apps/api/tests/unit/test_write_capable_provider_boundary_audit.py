@@ -110,13 +110,15 @@ def _source_contains(node: ast.AST, text: str) -> bool:
     return text in ast.unparse(node)
 
 
-def test_cancel_timed_out_orders_remains_direct_provider_unwired_and_cancellation_capable() -> None:
+def test_cancel_timed_out_orders_is_provider_backed_and_cancellation_capable() -> None:
     tree = _parse(TASKS_PATH)
     cancel_node = _top_level_function(tree, "cancel_timed_out_orders")
 
-    assert _adapter_counts(cancel_node) == {"construct": 1, "import": 1}
-    assert "create_trading212_provider_adapter" not in _call_names(cancel_node)
-    assert "BrokerProviderRequest" not in ast.unparse(cancel_node)
+    assert _zero_filled_adapter_counts(cancel_node) == {"construct": 0, "import": 0}
+    assert "create_trading212_provider_adapter" in _call_names(cancel_node)
+    assert "BrokerProviderRequest" in ast.unparse(cancel_node)
+    assert "BrokerProviderCredentials" in ast.unparse(cancel_node)
+    assert "worker_cancel_timed_out_orders" in ast.unparse(cancel_node)
     assert "ExecutionEngine" in ast.unparse(cancel_node)
     assert "cancel_order" in _call_names(cancel_node)
 
@@ -124,15 +126,13 @@ def test_cancel_timed_out_orders_remains_direct_provider_unwired_and_cancellatio
 def test_workers_tasks_direct_inventory_and_provider_call_sites_are_locked() -> None:
     tree = _parse(TASKS_PATH)
 
-    assert construction_inventory._trading212_adapter_references()["app/workers/tasks.py"] == {
-        "construct": 1,
-        "import": 1,
-    }
-    assert _function_names_with_direct_adapter(tree) == {"cancel_timed_out_orders"}
+    assert "app/workers/tasks.py" not in construction_inventory._trading212_adapter_references()
+    assert _function_names_with_direct_adapter(tree) == set()
     assert _function_names_with_call(tree, "create_trading212_provider_adapter") == {
         "sync_account_snapshot",
         "track_cfd_funding",
         "reconcile_pending_orders",
+        "cancel_timed_out_orders",
     }
 
 

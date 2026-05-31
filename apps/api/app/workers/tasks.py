@@ -552,7 +552,13 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
 
         from sqlalchemy import select
 
-        from app.broker.trading212 import Trading212Adapter
+        from app.broker.provider import (
+            BrokerProviderCredentials,
+            BrokerProviderRequest,
+            BrokerProviderValidationError,
+            BrokerRuntimeEnvironment,
+            create_trading212_provider_adapter,
+        )
         from app.core.config import settings
         from app.core.security import CredentialDecryptionError, decrypt_field
         from app.db.models import BrokerConnection, Order
@@ -618,7 +624,33 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
                     "cancel_timed_out_orders",
                     {"cancelled": 0, "skipped": "credential_error"},
                 )
-            async with Trading212Adapter(api_key, api_secret, conn.environment) as broker:
+            try:
+                provider_broker = create_trading212_provider_adapter(
+                    BrokerProviderRequest(
+                        broker_id="trading212",
+                        environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                        purpose="worker_cancel_timed_out_orders",
+                        user_id=conn.user_id,
+                    ),
+                    BrokerProviderCredentials(
+                        api_key=api_key,
+                        api_secret=api_secret,
+                    ),
+                    app_mode=settings.APP_MODE,
+                    live_trading_enabled=bool(settings.LIVE_TRADING_ENABLED),
+                )
+            except BrokerProviderValidationError as exc:
+                return await _complete_task(
+                    db,
+                    "cancel_timed_out_orders",
+                    {
+                        "cancelled": 0,
+                        "skipped": "provider_validation_error",
+                        "reason": str(exc),
+                    },
+                )
+
+            async with provider_broker as broker:
                 engine = ExecutionEngine(db, broker)
                 for order in timed_out:
                     await engine.cancel_order(order)
