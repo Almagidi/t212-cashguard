@@ -11,7 +11,7 @@ import pytest
 from app.core.config import settings
 from app.db.models import Order, RiskProfile, Trade
 from app.services import position_monitor
-from app.services.position_monitor import PositionMonitor
+from app.services.position_monitor import PositionMonitor, _DailyLossOutcome
 
 
 class FakeBroker:
@@ -90,12 +90,16 @@ class RecordingLogger:
     def __init__(self) -> None:
         self.warnings: list[tuple[str, dict[str, Any]]] = []
         self.errors: list[tuple[str, dict[str, Any]]] = []
+        self.criticals: list[tuple[str, dict[str, Any]]] = []
 
     def warning(self, event: str, **kwargs: Any) -> None:
         self.warnings.append((event, kwargs))
 
     def error(self, event: str, **kwargs: Any) -> None:
         self.errors.append((event, kwargs))
+
+    def critical(self, event: str, **kwargs: Any) -> None:
+        self.criticals.append((event, kwargs))
 
 
 async def _make_risk_profile(db: Any, max_daily_loss_pct: str = "3.0") -> RiskProfile:
@@ -122,6 +126,12 @@ def _reset_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeExecutionEngine.order_intents.clear()
     FakeExecutionEngine.submitted_orders.clear()
     monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(
+        settings,
+        "POSITION_MONITOR_UNREALIZED_PNL_FAILURE_POLICY",
+        "block_trading",
+        raising=False,
+    )
 
 
 @pytest.mark.asyncio
@@ -160,34 +170,40 @@ async def test_daily_loss_uses_closed_trade_realized_pnl_not_order_cash_used(db:
     )
     await db.commit()
 
-    breached = await PositionMonitor(db)._check_daily_loss_with_unrealized(
+    outcome = await PositionMonitor(db)._check_daily_loss_with_unrealized(
         app_settings=object(),
         broker=FakeBroker(positions=[{"ticker": "AAPL", "ppl": "0"}]),
         account_value=Decimal("10000"),
     )
 
-    assert breached is True
+    assert outcome is _DailyLossOutcome.BREACH_KILL_SWITCH
 
 
 @pytest.mark.asyncio
-async def test_unrealized_pnl_failure_currently_logs_and_assumes_zero(
+async def test_unrealized_pnl_failure_assume_zero_remains_available(
     db: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     await _make_risk_profile(db, max_daily_loss_pct="3.0")
     logger = RecordingLogger()
     monkeypatch.setattr(position_monitor, "log", logger)
+    monkeypatch.setattr(
+        settings,
+        "POSITION_MONITOR_UNREALIZED_PNL_FAILURE_POLICY",
+        "assume_zero",
+        raising=False,
+    )
+    broker = FakeBroker(raise_on_positions=RuntimeError("broker snapshot unavailable"))
 
-    breached = await PositionMonitor(db)._check_daily_loss_with_unrealized(
+    outcome = await PositionMonitor(db)._check_daily_loss_with_unrealized(
         app_settings=object(),
-        broker=FakeBroker(raise_on_positions=RuntimeError("broker snapshot unavailable")),
+        broker=broker,
         account_value=Decimal("10000"),
     )
 
-    # Current policy is fail-open: the monitor records the snapshot failure,
-    # assumes unrealized P&L is zero, and continues because realised P&L alone
-    # does not breach the daily-loss limit.
-    assert breached is False
+    assert outcome is _DailyLossOutcome.NO_BREACH
+    assert broker.read_calls == ["get_positions"]
+    assert broker.write_calls == []
     assert logger.warnings == []
     assert logger.errors == [
         (
@@ -196,9 +212,200 @@ async def test_unrealized_pnl_failure_currently_logs_and_assumes_zero(
                 "error": "broker snapshot unavailable",
                 "exc_info": True,
                 "unrealized_assumed": 0.0,
+                "failure_policy": "assume_zero",
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_unrealized_pnl_failure_block_trading_fails_closed(
+    db: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _make_risk_profile(db, max_daily_loss_pct="3.0")
+    logger = RecordingLogger()
+    monkeypatch.setattr(position_monitor, "log", logger)
+    monkeypatch.setattr(
+        settings,
+        "POSITION_MONITOR_UNREALIZED_PNL_FAILURE_POLICY",
+        "block_trading",
+        raising=False,
+    )
+    broker = FakeBroker(raise_on_positions=RuntimeError("broker snapshot unavailable"))
+
+    outcome = await PositionMonitor(db)._check_daily_loss_with_unrealized(
+        app_settings=object(),
+        broker=broker,
+        account_value=Decimal("10000"),
+    )
+
+    assert outcome is _DailyLossOutcome.POLICY_BLOCK_TRADING
+    assert broker.read_calls == ["get_positions"]
+    assert broker.write_calls == []
+    assert logger.errors == [
+        (
+            "position_monitor.unrealized_pnl_error",
+            {
+                "error": "broker snapshot unavailable",
+                "exc_info": True,
+                "failure_policy": "block_trading",
+                "fail_closed": True,
+            },
+        )
+    ]
+    assert logger.warnings == [
+        (
+            "position_monitor.realized_pnl_skipped",
+            {
+                "reason": "unrealized_pnl_failure_policy_halt",
+                "failure_policy": "block_trading",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unrealized_pnl_failure_activate_kill_switch_fails_closed(
+    db: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _make_risk_profile(db, max_daily_loss_pct="3.0")
+    logger = RecordingLogger()
+    activated_by: list[str] = []
+    alerted_by: list[str] = []
+
+    async def fake_activate_kill_switch(_db: Any, *, actor: str = "system") -> None:
+        activated_by.append(actor)
+
+    async def fake_alert_kill_switch_activated(_db: Any, *, actor: str = "system") -> None:
+        alerted_by.append(actor)
+
+    monkeypatch.setattr(position_monitor, "log", logger)
+    monkeypatch.setattr(
+        settings,
+        "POSITION_MONITOR_UNREALIZED_PNL_FAILURE_POLICY",
+        "activate_kill_switch",
+        raising=False,
+    )
+    monkeypatch.setattr(position_monitor, "activate_kill_switch", fake_activate_kill_switch)
+    monkeypatch.setattr(
+        position_monitor,
+        "alert_kill_switch_activated",
+        fake_alert_kill_switch_activated,
+    )
+    broker = FakeBroker(raise_on_positions=RuntimeError("broker snapshot unavailable"))
+
+    outcome = await PositionMonitor(db)._check_daily_loss_with_unrealized(
+        app_settings=object(),
+        broker=broker,
+        account_value=Decimal("10000"),
+    )
+
+    assert outcome is _DailyLossOutcome.POLICY_KILL_SWITCH
+    assert activated_by == ["position_monitor:unrealized_pnl_failure"]
+    assert alerted_by == ["position_monitor:unrealized_pnl_failure"]
+    assert broker.write_calls == []
+    assert logger.errors == [
+        (
+            "position_monitor.unrealized_pnl_error",
+            {
+                "error": "broker snapshot unavailable",
+                "exc_info": True,
+                "failure_policy": "activate_kill_switch",
+                "fail_closed": True,
+                "kill_switch_activated": True,
+            },
+        )
+    ]
+    assert logger.warnings == [
+        (
+            "position_monitor.realized_pnl_skipped",
+            {
+                "reason": "unrealized_pnl_failure_policy_halt",
+                "failure_policy": "activate_kill_switch",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unrealized_pnl_failure_invalid_policy_fails_closed(
+    db: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _make_risk_profile(db, max_daily_loss_pct="3.0")
+    logger = RecordingLogger()
+    monkeypatch.setattr(position_monitor, "log", logger)
+    monkeypatch.setattr(
+        settings,
+        "POSITION_MONITOR_UNREALIZED_PNL_FAILURE_POLICY",
+        "unexpected_value",
+        raising=False,
+    )
+    broker = FakeBroker(raise_on_positions=RuntimeError("broker snapshot unavailable"))
+
+    outcome = await PositionMonitor(db)._check_daily_loss_with_unrealized(
+        app_settings=object(),
+        broker=broker,
+        account_value=Decimal("10000"),
+    )
+
+    assert outcome is _DailyLossOutcome.POLICY_BLOCK_TRADING
+    assert broker.write_calls == []
+    assert logger.errors == [
+        (
+            "position_monitor.unrealized_pnl_failure_policy_invalid",
+            {
+                "configured_policy": "unexpected_value",
+                "fallback_policy": "block_trading",
+                "fail_closed": True,
+                "error": "broker snapshot unavailable",
+                "exc_info": True,
+            },
+        )
+    ]
+    assert logger.warnings == [
+        (
+            "position_monitor.realized_pnl_skipped",
+            {
+                "reason": "unrealized_pnl_failure_policy_halt",
+                "failure_policy": "block_trading",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_malformed_unrealized_position_payload_block_trading_fails_closed(
+    db: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _make_risk_profile(db, max_daily_loss_pct="3.0")
+    logger = RecordingLogger()
+    monkeypatch.setattr(position_monitor, "log", logger)
+    monkeypatch.setattr(
+        settings,
+        "POSITION_MONITOR_UNREALIZED_PNL_FAILURE_POLICY",
+        "block_trading",
+        raising=False,
+    )
+    broker = FakeBroker(positions=[{"ticker": "AAPL", "ppl": "not-a-number"}])
+
+    outcome = await PositionMonitor(db)._check_daily_loss_with_unrealized(
+        app_settings=object(),
+        broker=broker,
+        account_value=Decimal("10000"),
+    )
+
+    assert outcome is _DailyLossOutcome.POLICY_BLOCK_TRADING
+    assert broker.read_calls == ["get_positions"]
+    assert broker.write_calls == []
+    assert logger.errors[0][0] == "position_monitor.unrealized_pnl_error"
+    payload = logger.errors[0][1]
+    assert payload["failure_policy"] == "block_trading"
+    assert payload["fail_closed"] is True
+    assert "not-a-number" in payload["error"]
 
 
 @pytest.mark.asyncio
@@ -237,13 +444,13 @@ async def test_daily_loss_handles_null_realized_pnl_as_zero(db: Any) -> None:
     )
     await db.commit()
 
-    breached = await PositionMonitor(db)._check_daily_loss_with_unrealized(
+    outcome = await PositionMonitor(db)._check_daily_loss_with_unrealized(
         app_settings=object(),
         broker=FakeBroker(positions=[]),
         account_value=Decimal("10000"),
     )
 
-    assert breached is False
+    assert outcome is _DailyLossOutcome.NO_BREACH
 
 
 @pytest.mark.asyncio

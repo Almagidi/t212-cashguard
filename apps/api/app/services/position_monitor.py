@@ -16,6 +16,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -42,6 +43,13 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 log = structlog.get_logger()
+
+
+class _DailyLossOutcome(Enum):
+    NO_BREACH = "no_breach"
+    BREACH_KILL_SWITCH = "breach_kill_switch"
+    POLICY_BLOCK_TRADING = "policy_block_trading"
+    POLICY_KILL_SWITCH = "policy_kill_switch"
 
 
 class PositionMonitor:
@@ -135,10 +143,10 @@ class PositionMonitor:
         app_settings: AppSettings,
         broker: Any,
         account_value: Decimal,
-    ) -> bool:
+    ) -> _DailyLossOutcome:
         """
         Check daily loss including unrealized P&L from open positions.
-        Returns True if limit breached (caller should halt).
+        Returns the halt/continue outcome for the caller.
         """
         from app.db.models import RiskProfile
 
@@ -147,7 +155,7 @@ class PositionMonitor:
         )
         rp = rp_result.scalar_one_or_none()
         if not rp or account_value <= 0:
-            return False
+            return _DailyLossOutcome.NO_BREACH
 
         # Get unrealized P&L from broker
         try:
@@ -155,13 +163,71 @@ class PositionMonitor:
                 positions = await b.get_positions()
             unrealized = sum(float(p.get("ppl", 0)) for p in positions)
         except Exception as exc:
-            log.error(
-                "position_monitor.unrealized_pnl_error",
-                error=str(exc),
-                exc_info=True,
-                unrealized_assumed=0.0,
+            configured_policy = getattr(
+                settings,
+                "POSITION_MONITOR_UNREALIZED_PNL_FAILURE_POLICY",
+                "block_trading",
             )
-            unrealized = 0.0
+            policy = str(configured_policy or "block_trading").strip().lower()
+
+            if policy == "assume_zero":
+                log.error(
+                    "position_monitor.unrealized_pnl_error",
+                    error=str(exc),
+                    exc_info=True,
+                    unrealized_assumed=0.0,
+                    failure_policy="assume_zero",
+                )
+                unrealized = 0.0
+            elif policy == "block_trading":
+                log.error(
+                    "position_monitor.unrealized_pnl_error",
+                    error=str(exc),
+                    exc_info=True,
+                    failure_policy="block_trading",
+                    fail_closed=True,
+                )
+                log.warning(
+                    "position_monitor.realized_pnl_skipped",
+                    reason="unrealized_pnl_failure_policy_halt",
+                    failure_policy="block_trading",
+                )
+                return _DailyLossOutcome.POLICY_BLOCK_TRADING
+            elif policy == "activate_kill_switch":
+                log.error(
+                    "position_monitor.unrealized_pnl_error",
+                    error=str(exc),
+                    exc_info=True,
+                    failure_policy="activate_kill_switch",
+                    fail_closed=True,
+                    kill_switch_activated=True,
+                )
+                await activate_kill_switch(self.db, actor="position_monitor:unrealized_pnl_failure")
+                await alert_kill_switch_activated(
+                    self.db,
+                    actor="position_monitor:unrealized_pnl_failure",
+                )
+                log.warning(
+                    "position_monitor.realized_pnl_skipped",
+                    reason="unrealized_pnl_failure_policy_halt",
+                    failure_policy="activate_kill_switch",
+                )
+                return _DailyLossOutcome.POLICY_KILL_SWITCH
+            else:
+                log.error(
+                    "position_monitor.unrealized_pnl_failure_policy_invalid",
+                    configured_policy=configured_policy,
+                    fallback_policy="block_trading",
+                    fail_closed=True,
+                    error=str(exc),
+                    exc_info=True,
+                )
+                log.warning(
+                    "position_monitor.realized_pnl_skipped",
+                    reason="unrealized_pnl_failure_policy_halt",
+                    failure_policy="block_trading",
+                )
+                return _DailyLossOutcome.POLICY_BLOCK_TRADING
 
         # Get today's realized P&L from closed trades; negative values mean losses.
         from sqlalchemy import func
@@ -186,9 +252,9 @@ class PositionMonitor:
                     loss_pct=loss_pct,
                     limit=float(rp.max_daily_loss_pct),
                 )
-                return True
+                return _DailyLossOutcome.BREACH_KILL_SWITCH
 
-        return False
+        return _DailyLossOutcome.NO_BREACH
 
     async def run(self) -> dict[str, Any]:
         """
@@ -233,10 +299,34 @@ class PositionMonitor:
         account_value = Decimal(str(account_data.get("total", 0)))
 
         # Check daily loss breach (including unrealized) — halt if exceeded
-        loss_breached = await self._check_daily_loss_with_unrealized(
+        daily_loss_outcome = await self._check_daily_loss_with_unrealized(
             app_settings, broker, account_value
         )
-        if loss_breached:
+        if daily_loss_outcome is _DailyLossOutcome.POLICY_BLOCK_TRADING:
+            log.critical(
+                "position_monitor.daily_loss_halt",
+                failure_policy="block_trading",
+                fail_closed=True,
+            )
+            return {
+                **summary,
+                "halted": "unrealized_pnl_failure_block_trading",
+                "failure_policy": "block_trading",
+                "fail_closed": True,
+            }
+        if daily_loss_outcome is _DailyLossOutcome.POLICY_KILL_SWITCH:
+            log.critical(
+                "position_monitor.daily_loss_halt",
+                failure_policy="activate_kill_switch",
+                fail_closed=True,
+            )
+            return {
+                **summary,
+                "halted": "unrealized_pnl_failure_kill_switch",
+                "failure_policy": "activate_kill_switch",
+                "fail_closed": True,
+            }
+        if daily_loss_outcome is _DailyLossOutcome.BREACH_KILL_SWITCH:
             log.critical("position_monitor.daily_loss_halt")
             await activate_kill_switch(self.db, actor="position_monitor:daily_loss")
             await alert_kill_switch_activated(self.db, actor="daily_loss_monitor")

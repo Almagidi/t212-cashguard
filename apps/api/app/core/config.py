@@ -133,6 +133,11 @@ class Settings(BaseSettings):
     # Safety — HARDCODED, NOT configurable via UI
     CASH_ONLY_MODE: bool = True
     LIVE_TRADING_ENABLED: bool = False
+    POSITION_MONITOR_UNREALIZED_PNL_FAILURE_POLICY: Literal[
+        "assume_zero",
+        "block_trading",
+        "activate_kill_switch",
+    ] = "block_trading"
 
     # Alerts
     SMTP_HOST: str = ""
