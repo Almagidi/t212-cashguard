@@ -132,6 +132,8 @@ def test_live_request_passes_when_live_trading_enabled() -> None:
         "worker_cancel_timed_out_orders",
         "worker_strategy_runner",
         "worker_portfolio_execution",
+        "operator_system_control_read",
+        "operator_system_control_emergency",
     ],
 )
 def test_live_worker_purposes_require_live_trading_flag(purpose: BrokerProviderPurpose) -> None:
@@ -380,6 +382,33 @@ def test_demo_app_mode_allows_worker_portfolio_execution_with_user_id() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "purpose",
+    [
+        "operator_system_control_read",
+        "operator_system_control_emergency",
+    ],
+)
+def test_demo_app_mode_allows_operator_system_control_purposes_with_user_id(
+    purpose: BrokerProviderPurpose,
+) -> None:
+    request = BrokerProviderRequest(
+        broker_id="trading212",
+        environment="demo",
+        purpose=purpose,
+        user_id=uuid.uuid4(),
+    )
+
+    assert (
+        validate_broker_provider_request(
+            request,
+            app_mode="demo",
+            live_trading_enabled=False,
+        )
+        is request
+    )
+
+
 def test_live_worker_position_monitor_requires_live_trading_flag() -> None:
     request = BrokerProviderRequest(
         broker_id="trading212",
@@ -458,6 +487,8 @@ def test_live_app_mode_rejects_demo_only_purpose() -> None:
         "worker_position_monitor",
         "worker_strategy_runner",
         "worker_portfolio_execution",
+        "operator_system_control_read",
+        "operator_system_control_emergency",
     ],
 )
 def test_user_scoped_purpose_requires_user_id(purpose: BrokerProviderPurpose) -> None:
@@ -473,6 +504,48 @@ def test_user_scoped_purpose_requires_user_id(purpose: BrokerProviderPurpose) ->
             app_mode="live",
             live_trading_enabled=True,
         )
+
+
+def test_operator_system_control_purposes_are_classified_by_read_write_surface() -> None:
+    assert "operator_system_control_read" in provider._READ_STATUS_PURPOSES
+    assert "operator_system_control_read" not in provider._WRITE_CAPABLE_PURPOSES
+
+    assert "operator_system_control_emergency" in provider._WRITE_CAPABLE_PURPOSES
+    assert "operator_system_control_emergency" not in provider._READ_STATUS_PURPOSES
+
+
+def test_existing_provider_purpose_classifications_are_not_weakened() -> None:
+    assert (
+        frozenset(
+            {
+                "dependency",
+                "credential_test",
+                "demo_reconciliation",
+                "worker_account_sync",
+                "worker_cfd_funding",
+                "worker_reconcile",
+                "operator_system_control_read",
+            }
+        )
+        == provider._READ_STATUS_PURPOSES
+    )
+    assert (
+        frozenset(
+            {
+                "worker_cancel",
+                "worker_cancel_timed_out_orders",
+                "worker_position_monitor",
+                "worker_strategy_runner",
+                "worker_portfolio_execution",
+                "operator_system_control_emergency",
+            }
+        )
+        == provider._WRITE_CAPABLE_PURPOSES
+    )
+    assert provider._READ_STATUS_PURPOSES.isdisjoint(provider._WRITE_CAPABLE_PURPOSES)
+    assert provider._SUPPORTED_PURPOSES == (
+        provider._READ_STATUS_PURPOSES | provider._WRITE_CAPABLE_PURPOSES
+    )
 
 
 def test_provider_request_scaffolding_exposes_no_write_methods() -> None:
