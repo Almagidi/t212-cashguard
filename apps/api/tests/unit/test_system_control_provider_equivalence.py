@@ -19,6 +19,27 @@ from tests.unit import test_trading212_construction_inventory as construction_in
 
 API_ROOT = Path(__file__).resolve().parents[2]
 SYSTEM_CONTROL_PATH = API_ROOT / "app" / "services" / "system_control.py"
+PROVIDER_TERMS = {
+    "BrokerProviderCredentials",
+    "BrokerProviderRequest",
+    "create_trading212_provider_adapter",
+}
+READ_STATUS_METHODS = ("get_snapshot", "get_positions_summary")
+RAW_BROKER_WRITE_METHODS = {
+    "cancel_order",
+    "modify_order",
+    "place_limit_order",
+    "place_market_order",
+    "place_order",
+    "place_stop_limit_order",
+    "place_stop_order",
+    "submit_order",
+}
+EXECUTION_ENGINE_WRITE_METHODS = {
+    "cancel_order",
+    "create_order_intent",
+    "submit_order",
+}
 
 
 class ScalarResult:
@@ -472,6 +493,9 @@ async def test_get_snapshot_uses_read_methods_only_and_preserves_summary_shape(
 
     assert broker.read_calls == ["get_account_summary", "get_positions"]
     assert broker.write_calls == []
+    assert RecordingExecutionEngine.brokers == []
+    assert RecordingExecutionEngine.cancel_calls == []
+    assert RecordingExecutionEngine.order_intents == []
     assert snapshot["broker_status"] == "connected"
     assert snapshot["pending_orders"] == 1
     assert snapshot["account"] == {
@@ -496,6 +520,9 @@ async def test_get_positions_summary_uses_positions_read_only(
     assert positions == [{"ticker": "MSFT", "quantity": 3}]
     assert broker.read_calls == ["get_positions"]
     assert broker.write_calls == []
+    assert RecordingExecutionEngine.brokers == []
+    assert RecordingExecutionEngine.cancel_calls == []
+    assert RecordingExecutionEngine.order_intents == []
 
 
 @pytest.mark.asyncio
@@ -580,10 +607,38 @@ def test_system_control_source_remains_direct_provider_unwired_and_mixed() -> No
     assert "ExecutionEngine" in ast.unparse(flatten_all)
 
 
+def test_system_control_read_status_methods_have_no_write_or_provider_surface() -> None:
+    for method_name in READ_STATUS_METHODS:
+        method = _method_node(method_name)
+        calls = _call_names(method)
+        source = ast.unparse(method)
+
+        assert {"get_account_summary", "get_positions"} & calls, method_name
+        assert "ExecutionEngine" not in source, method_name
+        assert EXECUTION_ENGINE_WRITE_METHODS.isdisjoint(calls), method_name
+        assert RAW_BROKER_WRITE_METHODS.isdisjoint(calls), method_name
+        assert all(provider_term not in source for provider_term in PROVIDER_TERMS), method_name
+
+
+def test_system_control_emergency_methods_are_write_capable_not_read_only() -> None:
+    cancel_all_pending = _method_node("cancel_all_pending")
+    flatten_all = _method_node("flatten_all")
+
+    assert "ExecutionEngine" in ast.unparse(cancel_all_pending)
+    assert "cancel_order" in _call_names(cancel_all_pending)
+    assert "get_account_summary" not in _call_names(cancel_all_pending)
+    assert "emergency_cancel_all" in ast.unparse(cancel_all_pending)
+
+    assert "ExecutionEngine" in ast.unparse(flatten_all)
+    assert {"create_order_intent", "submit_order"} <= _call_names(flatten_all)
+    assert "get_positions" in _call_names(flatten_all)
+    assert "get_account_summary" not in _call_names(flatten_all)
+    assert "emergency_flatten_all" in ast.unparse(flatten_all)
+
+
 def test_system_control_file_has_no_provider_request_or_provider_helper_mentions() -> None:
     source = SYSTEM_CONTROL_PATH.read_text()
 
-    assert "BrokerProviderRequest" not in source
-    assert "BrokerProviderCredentials" not in source
-    assert "create_trading212_provider_adapter" not in source
+    for provider_term in PROVIDER_TERMS:
+        assert provider_term not in source
     assert "app.broker.provider" not in source

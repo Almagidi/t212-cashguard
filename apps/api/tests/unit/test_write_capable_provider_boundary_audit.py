@@ -26,6 +26,18 @@ MANUAL_SMOKE_PATHS = {
         SCRIPTS_ROOT / "t212_demo_multi_order_reconciliation_smoke.py"
     ),
 }
+SYSTEM_CONTROL_READ_STATUS_METHODS = {"get_positions_summary", "get_snapshot"}
+SYSTEM_CONTROL_EMERGENCY_METHODS = {"cancel_all_pending", "flatten_all"}
+READ_ONLY_FORBIDDEN_CALLS = {
+    "cancel_order",
+    "create_order_intent",
+    "place_limit_order",
+    "place_market_order",
+    "place_order",
+    "place_stop_limit_order",
+    "place_stop_order",
+    "submit_order",
+}
 
 
 def _parse(path: Path) -> ast.Module:
@@ -262,12 +274,27 @@ def test_system_control_is_mixed_write_capable_for_emergency_cancel_and_flatten(
     tree = _parse(REMAINING_SERVICE_PATHS["system_control"])
     service_class = _class_node(tree, "SystemControlService")
     get_snapshot = _method_node(service_class, "get_snapshot")
+    get_positions_summary = _method_node(service_class, "get_positions_summary")
     cancel_all_pending = _method_node(service_class, "cancel_all_pending")
     flatten_all = _method_node(service_class, "flatten_all")
+    method_names = {
+        node.name
+        for node in service_class.body
+        if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef)
+    }
 
+    assert method_names >= SYSTEM_CONTROL_READ_STATUS_METHODS
+    assert method_names >= SYSTEM_CONTROL_EMERGENCY_METHODS
     assert {"get_account_summary", "get_positions"} <= _call_names(get_snapshot)
+    assert "get_positions" in _call_names(get_positions_summary)
+    assert READ_ONLY_FORBIDDEN_CALLS.isdisjoint(_call_names(get_snapshot))
+    assert READ_ONLY_FORBIDDEN_CALLS.isdisjoint(_call_names(get_positions_summary))
+    assert "ExecutionEngine" not in ast.unparse(get_snapshot)
+    assert "ExecutionEngine" not in ast.unparse(get_positions_summary)
     assert "cancel_order" in _call_names(cancel_all_pending)
     assert {"create_order_intent", "submit_order"} <= _call_names(flatten_all)
+    assert "ExecutionEngine" in ast.unparse(cancel_all_pending)
+    assert "ExecutionEngine" in ast.unparse(flatten_all)
     assert _source_contains(cancel_all_pending, "emergency_cancel_all")
     assert _source_contains(flatten_all, "emergency_flatten_all")
 
