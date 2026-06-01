@@ -45,6 +45,13 @@ class ExecuteResult:
             )
         return self.value
 
+    def scalar_one(self) -> Any:
+        if isinstance(self.value, list):
+            raise AssertionError(
+                "scalar_one() received a list result; fake query ordering is wrong"
+            )
+        return self.value
+
     def scalars(self) -> ScalarResult:
         return ScalarResult(self.value)
 
@@ -847,7 +854,7 @@ async def test_process_ticker_dry_run_persists_signal_without_execution_engine_o
 async def test_process_ticker_live_entry_routes_order_through_execution_engine_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db = FakeSession(results=[])
+    db = FakeSession(results=[Decimal("0")])
     service = StrategyRunner(db)
     strategy = _strategy(is_live=True)
     engine = FakeEntryEngine()
