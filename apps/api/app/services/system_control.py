@@ -1,14 +1,23 @@
 """
 Shared system-control operations used by both the web API and Telegram bot.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
+from app.broker.provider import (
+    BrokerProviderCredentials,
+    BrokerProviderPurpose,
+    BrokerProviderRequest,
+    BrokerProviderValidationError,
+    BrokerRuntimeEnvironment,
+    create_trading212_provider_adapter,
+)
 from app.core.config import settings
 from app.core.security import CredentialDecryptionError, decrypt_field
 from app.db.models import AppSettings, AuditLog, BrokerConnection
@@ -55,7 +64,7 @@ class SystemControlService:
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
 
-    async def _get_broker(self):
+    async def _get_broker(self, purpose: BrokerProviderPurpose) -> Any:
         if settings.APP_MODE == "mock":
             from app.broker.mock_adapter import MockBrokerAdapter
 
@@ -87,9 +96,20 @@ class SystemControlService:
             )
             raise SystemControlError(str(exc)) from exc
 
-        from app.broker.trading212 import Trading212Adapter
-
-        return Trading212Adapter(api_key, api_secret, conn.environment)
+        try:
+            return create_trading212_provider_adapter(
+                BrokerProviderRequest(
+                    broker_id="trading212",
+                    environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                    purpose=purpose,
+                    user_id=conn.user_id,
+                ),
+                BrokerProviderCredentials(api_key=api_key, api_secret=api_secret),
+                app_mode=settings.APP_MODE,
+                live_trading_enabled=bool(settings.LIVE_TRADING_ENABLED),
+            )
+        except BrokerProviderValidationError as exc:
+            raise SystemControlError(str(exc)) from exc
 
     async def get_snapshot(self) -> dict[str, Any]:
         app_settings = await self._get_settings()
@@ -106,7 +126,7 @@ class SystemControlService:
         }
 
         try:
-            broker = await self._get_broker()
+            broker = await self._get_broker("operator_system_control_read")
         except SystemControlError:
             return snapshot
 
@@ -125,9 +145,9 @@ class SystemControlService:
         return snapshot
 
     async def get_positions_summary(self) -> list[dict[str, Any]]:
-        broker = await self._get_broker()
+        broker = await self._get_broker("operator_system_control_read")
         async with broker as active_broker:
-            return await active_broker.get_positions()
+            return cast(list[dict[str, Any]], await active_broker.get_positions())
 
     async def pause_auto_trading(self, actor: str) -> str:
         app_settings = await self._get_settings()
@@ -152,12 +172,12 @@ class SystemControlService:
         if settings.APP_MODE == "live":
             readiness = await LiveReadinessService(self.db).evaluate()
             if not readiness["ready_for_live"]:
-                blocker = readiness["blockers"][0] if readiness["blockers"] else (
-                    "Live readiness checks are incomplete."
+                blocker = (
+                    readiness["blockers"][0]
+                    if readiness["blockers"]
+                    else ("Live readiness checks are incomplete.")
                 )
-                raise SystemControlError(
-                    f"Cannot enable live auto-trading yet. {blocker}"
-                )
+                raise SystemControlError(f"Cannot enable live auto-trading yet. {blocker}")
         if app_settings.auto_trading_enabled:
             return "Auto-trading is already enabled."
 
@@ -192,7 +212,7 @@ class SystemControlService:
         if not orders:
             return "No pending orders to cancel."
 
-        broker = await self._get_broker()
+        broker = await self._get_broker("operator_system_control_emergency")
         async with broker as active_broker:
             engine = ExecutionEngine(self.db, active_broker)
             for order in orders:
@@ -209,7 +229,7 @@ class SystemControlService:
         return f"Cancelled {len(orders)} pending orders."
 
     async def flatten_all(self, actor: str) -> str:
-        broker = await self._get_broker()
+        broker = await self._get_broker("operator_system_control_emergency")
         flattened = 0
         async with broker as active_broker:
             positions = await active_broker.get_positions()
@@ -224,7 +244,9 @@ class SystemControlService:
                     order_type="market",
                     quantity=qty,
                     is_dry_run=(settings.APP_MODE == "mock"),
-                    estimated_price=Decimal(str(position.get("currentPrice", 0) or position.get("averagePrice", 0) or 0)),
+                    estimated_price=Decimal(
+                        str(position.get("currentPrice", 0) or position.get("averagePrice", 0) or 0)
+                    ),
                 )
                 await engine.submit_order(order)
                 flattened += 1
@@ -241,6 +263,4 @@ class SystemControlService:
 
     @staticmethod
     def confirmation_expiry() -> datetime:
-        return datetime.now(UTC) + timedelta(
-            seconds=settings.TELEGRAM_CONFIRM_WINDOW_SECONDS
-        )
+        return datetime.now(UTC) + timedelta(seconds=settings.TELEGRAM_CONFIRM_WINDOW_SECONDS)
