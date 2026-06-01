@@ -29,12 +29,14 @@ BrokerProviderPurpose = Literal[
     "worker_position_monitor",
     "worker_strategy_runner",
     "worker_portfolio_execution",
+    "operator_system_control_read",
+    "operator_system_control_emergency",
 ]
 
 _SUPPORTED_BROKER_IDS: frozenset[str] = frozenset({"trading212"})
 _SUPPORTED_ENVIRONMENTS: frozenset[str] = frozenset({"demo", "live"})
 _SUPPORTED_APP_MODES: frozenset[str] = frozenset({"demo", "live", "mock", "paper"})
-_SUPPORTED_PURPOSES: frozenset[str] = frozenset(
+_READ_STATUS_PURPOSES: frozenset[str] = frozenset(
     {
         "dependency",
         "credential_test",
@@ -42,13 +44,20 @@ _SUPPORTED_PURPOSES: frozenset[str] = frozenset(
         "worker_account_sync",
         "worker_cfd_funding",
         "worker_reconcile",
+        "operator_system_control_read",
+    }
+)
+_WRITE_CAPABLE_PURPOSES: frozenset[str] = frozenset(
+    {
         "worker_cancel",
         "worker_cancel_timed_out_orders",
         "worker_position_monitor",
         "worker_strategy_runner",
         "worker_portfolio_execution",
+        "operator_system_control_emergency",
     }
 )
+_SUPPORTED_PURPOSES: frozenset[str] = _READ_STATUS_PURPOSES | _WRITE_CAPABLE_PURPOSES
 _DEMO_ONLY_PURPOSES: frozenset[str] = frozenset({"demo_reconciliation"})
 _LIVE_ONLY_PURPOSES: frozenset[str] = frozenset({"worker_cancel"})
 _USER_SCOPED_PURPOSES: frozenset[str] = frozenset(
@@ -61,6 +70,8 @@ _USER_SCOPED_PURPOSES: frozenset[str] = frozenset(
         "worker_position_monitor",
         "worker_strategy_runner",
         "worker_portfolio_execution",
+        "operator_system_control_read",
+        "operator_system_control_emergency",
     }
 )
 
