@@ -181,6 +181,7 @@ This audit covers the remaining direct `Trading212Adapter` construction/import p
 
 | Classification | Direct runtime references |
 | --- | --- |
+| Adapter implementation | `app/broker/trading212.py` |
 | Runtime production app paths | `app/broker/provider.py` |
 | Runtime scripts/smoke tools | `scripts/t212_demo_readonly_smoke.py`; `scripts/t212_demo_reconcile_order.py`; `scripts/t212_demo_multi_order_reconciliation_smoke.py` |
 | Tests/fakes/monkeypatching | Unit/integration tests import, instantiate, or monkeypatch `Trading212Adapter` for safety-policy, provider-equivalence, route-boundary, paper-execution, demo-boundary, and inventory tests. These are not runtime construction paths. |
@@ -209,6 +210,8 @@ This audit covers the remaining direct `Trading212Adapter` construction/import p
 | `apps/api/scripts/t212_demo_multi_order_reconciliation_smoke.py` | Manual terminal smoke. | Requires `APP_MODE=demo`, `T212_ENVIRONMENT=demo`, `LIVE_TRADING_ENABLED=false`, `DEMO_RECONCILIATION_WORKER_ENABLED=true`, and `DEMO_RECONCILIATION_SCHEDULER_ENABLED=false`. | No expected broker writes. `ReadOnlyBrokerGuard` blocks inventoried write methods if called. | Prefers `T212_DEMO_API_KEY` / `T212_DEMO_API_SECRET`; falls back to `T212_API_KEY` / `T212_API_SECRET`. | After read-only runtime workers. Keep the write guard and scheduler-disabled constraint. |
 
 These scripts are terminal-only/manual QA tools and should remain separate from production runtime migration decisions. They are manually gated, constrained to DEMO, and valuable as broker-specific evidence. They may remain Trading 212-specific longer than application workers, and they should not drive provider migration sequencing for production paths.
+
+After PR #80, the construction inventory test locks the post-migration operational paths as provider-backed: `sync_account_snapshot`, `track_cfd_funding`, `reconcile_pending_orders`, `cancel_timed_out_orders`, `PositionMonitor._get_broker`, `StrategyRunner._get_broker`, `PortfolioExecutionService._get_broker`, and `SystemControlService._get_broker` must have zero direct `Trading212Adapter` import/construction and exact `create_trading212_provider_adapter(...)` call counts. Any new runtime direct construction outside the classified adapter/provider/manual-smoke files is unexpected and should fail the inventory rather than be accepted implicitly.
 
 ### Test References
 
@@ -247,6 +250,8 @@ Worker provider migrations now lock these acceptance tests:
 The order-worker tests prove unsafe states return skipped summaries before provider/direct adapter construction: mock mode, no eligible orders, no active connection, credential-decryption failure with reconnect-required marking, policy rejection, and live-disabled mismatch. They also prove active encrypted `BrokerConnection` credentials for the current `settings.APP_MODE` are used, the constructed broker is handed to `ExecutionEngine`, and the engine receives exactly the selected orders.
 
 `cancel_timed_out_orders` remains write-capable through `ExecutionEngine.cancel_order(...)` even though final adapter construction is provider-backed. This PR does not change live trading, order placement, cancellation behaviour, credential storage/decryption, route schemas, frontend controls, or add Kraken/Alpaca support.
+
+Dependabot/frontend dependency PRs remain unrelated to this provider migration audit and should not be used as evidence for broker readiness.
 
 ### Current Write-Capable Boundary Lock
 
