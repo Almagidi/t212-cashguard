@@ -11,6 +11,45 @@ if TYPE_CHECKING:
 API_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = API_ROOT / "app"
 SCRIPTS_ROOT = API_ROOT / "scripts"
+TRADING212_ADAPTER_PATH = APP_ROOT / "broker" / "trading212.py"
+
+PROVIDER_BACKED_OPERATIONAL_PATHS = {
+    "app/workers/tasks.py": {
+        "provider_construct": 4,
+        "call_sites": {
+            "cancel_timed_out_orders",
+            "reconcile_pending_orders",
+            "sync_account_snapshot",
+            "track_cfd_funding",
+        },
+    },
+    "app/services/position_monitor.py": {
+        "provider_construct": 1,
+        "call_sites": {"PositionMonitor._get_broker"},
+    },
+    "app/services/portfolio_execution_service.py": {
+        "provider_construct": 1,
+        "call_sites": {"PortfolioExecutionService._get_broker"},
+    },
+    "app/services/strategy_runner.py": {
+        "provider_construct": 1,
+        "call_sites": {"StrategyRunner._get_broker"},
+    },
+    "app/services/system_control.py": {
+        "provider_construct": 1,
+        "call_sites": {"SystemControlService._get_broker"},
+    },
+}
+
+REMAINING_DIRECT_TRADING212_ADAPTER_PATHS = {
+    "app/broker/trading212.py": "adapter implementation",
+    "app/broker/provider.py": "canonical provider final-construction boundary",
+    "scripts/t212_demo_multi_order_reconciliation_smoke.py": (
+        "terminal-only manual DEMO smoke with read-only write guard"
+    ),
+    "scripts/t212_demo_readonly_smoke.py": "terminal-only manual DEMO read-only smoke",
+    "scripts/t212_demo_reconcile_order.py": ("terminal-only manual DEMO reconciliation script"),
+}
 
 
 def _runtime_source_paths() -> list[Path]:
@@ -83,6 +122,32 @@ def _trading212_adapter_references() -> dict[str, dict[str, int]]:
     return references
 
 
+def _provider_adapter_call_counts() -> dict[str, int]:
+    references: dict[str, int] = {}
+
+    for path in _runtime_source_paths():
+        tree = ast.parse(path.read_text(), filename=str(path))
+        provider_names: set[str] = set()
+        construct_count = 0
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "app.broker.provider":
+                for alias in node.names:
+                    if alias.name == "create_trading212_provider_adapter":
+                        provider_names.add(alias.asname or alias.name)
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in provider_names
+            ):
+                construct_count += 1
+
+        if construct_count:
+            references[_relative(path)] = construct_count
+
+    return references
+
+
 def test_runtime_inventory_counts_aliased_and_module_constructor_references(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -133,3 +198,27 @@ def test_runtime_trading212_adapter_construction_inventory_is_locked() -> None:
         "Trading212Adapter runtime inventory changed. "
         "Update docs/architecture/broker-interface-readiness-audit.md when adding or removing references."
     )
+
+
+def test_post_provider_migration_operational_paths_are_provider_backed() -> None:
+    direct_references = _trading212_adapter_references()
+    provider_call_counts = _provider_adapter_call_counts()
+
+    for path, expected in PROVIDER_BACKED_OPERATIONAL_PATHS.items():
+        assert (
+            path not in direct_references
+        ), f"{path} must stay provider-backed without direct Trading212Adapter import/construction"
+        assert provider_call_counts.get(path) == expected["provider_construct"], (
+            path,
+            expected["call_sites"],
+        )
+
+
+def test_remaining_direct_trading212_adapter_paths_are_precisely_classified() -> None:
+    actual_paths = set(_trading212_adapter_references()) | {_relative(TRADING212_ADAPTER_PATH)}
+
+    assert actual_paths == set(
+        REMAINING_DIRECT_TRADING212_ADAPTER_PATHS
+    ), "Remaining direct Trading212Adapter paths changed; classify any new path precisely."
+    assert TRADING212_ADAPTER_PATH.exists()
+    assert "class Trading212Adapter" in TRADING212_ADAPTER_PATH.read_text()
