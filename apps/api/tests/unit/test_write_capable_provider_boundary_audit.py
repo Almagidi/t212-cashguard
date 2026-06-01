@@ -13,9 +13,7 @@ APP_ROOT = API_ROOT / "app"
 SCRIPTS_ROOT = API_ROOT / "scripts"
 
 TASKS_PATH = APP_ROOT / "workers" / "tasks.py"
-REMAINING_SERVICE_PATHS = {
-    "system_control": APP_ROOT / "services" / "system_control.py",
-}
+SYSTEM_CONTROL_PATH = APP_ROOT / "services" / "system_control.py"
 PORTFOLIO_EXECUTION_PATH = APP_ROOT / "services" / "portfolio_execution_service.py"
 STRATEGY_RUNNER_PATH = APP_ROOT / "services" / "strategy_runner.py"
 POSITION_MONITOR_PATH = APP_ROOT / "services" / "position_monitor.py"
@@ -153,7 +151,7 @@ def test_workers_tasks_direct_inventory_and_provider_call_sites_are_locked() -> 
     [
         (
             "system_control",
-            REMAINING_SERVICE_PATHS["system_control"],
+            SYSTEM_CONTROL_PATH,
             "SystemControlService",
             {"cancel_all_pending", "flatten_all", "cancel_order", "submit_order"},
             "mixed/write-capable",
@@ -176,9 +174,11 @@ def test_service_construction_paths_are_classified_by_write_surface(
         if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef)
     }
 
-    assert _adapter_counts(get_broker) == {"construct": 1, "import": 1}, name
+    assert _zero_filled_adapter_counts(get_broker) == {"construct": 0, "import": 0}, name
     # Check the full service file, not just the service class, to catch helper-level wiring.
-    assert "create_trading212_provider_adapter" not in _call_names(tree), name
+    assert "create_trading212_provider_adapter" in _call_names(get_broker), name
+    assert "BrokerProviderRequest" in ast.unparse(get_broker), name
+    assert "BrokerProviderCredentials" in ast.unparse(get_broker), name
     # Classification labels document audit intent; write evidence is the asserted contract.
     assert write_evidence <= (_call_names(service_class) | service_method_names), (
         name,
@@ -271,8 +271,9 @@ def test_portfolio_execution_service_is_mixed_write_capable_for_rebalance_orders
 
 
 def test_system_control_is_mixed_write_capable_for_emergency_cancel_and_flatten() -> None:
-    tree = _parse(REMAINING_SERVICE_PATHS["system_control"])
+    tree = _parse(SYSTEM_CONTROL_PATH)
     service_class = _class_node(tree, "SystemControlService")
+    get_broker = _method_node(service_class, "_get_broker")
     get_snapshot = _method_node(service_class, "get_snapshot")
     get_positions_summary = _method_node(service_class, "get_positions_summary")
     cancel_all_pending = _method_node(service_class, "cancel_all_pending")
@@ -285,6 +286,12 @@ def test_system_control_is_mixed_write_capable_for_emergency_cancel_and_flatten(
 
     assert method_names >= SYSTEM_CONTROL_READ_STATUS_METHODS
     assert method_names >= SYSTEM_CONTROL_EMERGENCY_METHODS
+    assert _zero_filled_adapter_counts(tree) == {"construct": 0, "import": 0}
+    assert "create_trading212_provider_adapter" in _call_names(get_broker)
+    assert "operator_system_control_read" in ast.unparse(get_snapshot)
+    assert "operator_system_control_read" in ast.unparse(get_positions_summary)
+    assert "operator_system_control_emergency" in ast.unparse(cancel_all_pending)
+    assert "operator_system_control_emergency" in ast.unparse(flatten_all)
     assert {"get_account_summary", "get_positions"} <= _call_names(get_snapshot)
     assert "get_positions" in _call_names(get_positions_summary)
     assert READ_ONLY_FORBIDDEN_CALLS.isdisjoint(_call_names(get_snapshot))

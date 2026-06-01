@@ -10,6 +10,11 @@ from typing import Any, ClassVar
 import pytest
 from sqlalchemy.sql import visitors
 
+from app.broker.provider import (
+    BrokerProviderCredentials,
+    BrokerProviderRequest,
+    BrokerProviderValidationError,
+)
 from app.core.config import settings
 from app.core.security import CredentialDecryptionError
 from app.db.models import BrokerConnection
@@ -19,11 +24,6 @@ from tests.unit import test_trading212_construction_inventory as construction_in
 
 API_ROOT = Path(__file__).resolve().parents[2]
 SYSTEM_CONTROL_PATH = API_ROOT / "app" / "services" / "system_control.py"
-PROVIDER_TERMS = {
-    "BrokerProviderCredentials",
-    "BrokerProviderRequest",
-    "create_trading212_provider_adapter",
-}
 READ_STATUS_METHODS = ("get_snapshot", "get_positions_summary")
 RAW_BROKER_WRITE_METHODS = {
     "cancel_order",
@@ -237,8 +237,8 @@ def _adapter_sentinel(*_args: Any, **_kwargs: Any) -> object:
 
 
 def _broker_provider(broker: RecordingBroker) -> Any:
-    # SystemControlService currently awaits _get_broker(), then enters the returned broker.
-    async def get_broker() -> RecordingBroker:
+    # SystemControlService awaits _get_broker(purpose), then enters the returned broker.
+    async def get_broker(_purpose: str) -> RecordingBroker:
         return broker
 
     return get_broker
@@ -314,9 +314,10 @@ async def test_get_broker_mock_mode_returns_mock_adapter_without_trading212_cons
 ) -> None:
     monkeypatch.setattr(settings, "APP_MODE", "mock")
     monkeypatch.setattr("app.broker.trading212.Trading212Adapter", _adapter_sentinel)
+    monkeypatch.setattr(system_control, "create_trading212_provider_adapter", _adapter_sentinel)
     service = SystemControlService(FakeSession(results=[]))
 
-    broker = await service._get_broker()
+    broker = await service._get_broker("operator_system_control_read")
 
     assert type(broker).__name__ == "MockBrokerAdapter"
     assert RecordingTrading212Adapter.constructed == []
@@ -328,11 +329,12 @@ async def test_get_broker_rejects_unsafe_app_mode_before_connection_or_adapter(
 ) -> None:
     monkeypatch.setattr(settings, "APP_MODE", "paper")
     monkeypatch.setattr("app.broker.trading212.Trading212Adapter", _adapter_sentinel)
+    monkeypatch.setattr(system_control, "create_trading212_provider_adapter", _adapter_sentinel)
     db = FakeSession(results=[])
     service = SystemControlService(db)
 
     with pytest.raises(SystemControlError, match="APP_MODE=paper"):
-        await service._get_broker()
+        await service._get_broker("operator_system_control_read")
 
     assert db.executed == []
     assert RecordingTrading212Adapter.constructed == []
@@ -391,9 +393,10 @@ async def test_get_broker_marks_reconnect_required_and_commits_on_decrypt_failur
     monkeypatch.setattr(system_control, "decrypt_field", fail_decrypt)
     monkeypatch.setattr(system_control, "mark_broker_connection_reconnect_required", mark_reconnect)
     monkeypatch.setattr("app.broker.trading212.Trading212Adapter", _adapter_sentinel)
+    monkeypatch.setattr(system_control, "create_trading212_provider_adapter", _adapter_sentinel)
 
     with pytest.raises(SystemControlError, match="cannot decrypt system-control credentials"):
-        await service._get_broker()
+        await service._get_broker("operator_system_control_read")
 
     assert reconnect_calls == [
         (
@@ -408,7 +411,7 @@ async def test_get_broker_marks_reconnect_required_and_commits_on_decrypt_failur
 
 
 @pytest.mark.asyncio
-async def test_get_broker_constructs_direct_adapter_only_after_all_gates_and_decryption(
+async def test_get_broker_uses_provider_after_all_gates_and_decryption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -429,19 +432,28 @@ async def test_get_broker_constructs_direct_adapter_only_after_all_gates_and_dec
         events.append(f"decrypt:{value}")
         return _decrypt(value)
 
-    original_init = RecordingTrading212Adapter.__init__
+    provider_calls: list[tuple[BrokerProviderRequest, BrokerProviderCredentials, str, bool]] = []
 
-    def adapter_init(
-        self: RecordingTrading212Adapter, api_key: str, api_secret: str, environment: str
-    ) -> None:
-        events.append(f"adapter:{environment}")
-        original_init(self, api_key, api_secret, environment)
+    def provider_adapter(
+        request: BrokerProviderRequest,
+        credentials: BrokerProviderCredentials,
+        *,
+        app_mode: str,
+        live_trading_enabled: bool,
+    ) -> RecordingTrading212Adapter:
+        events.append(f"provider:{request.environment}:{request.purpose}")
+        provider_calls.append((request, credentials, app_mode, live_trading_enabled))
+        return RecordingTrading212Adapter(
+            credentials.api_key,
+            credentials.api_secret,
+            request.environment,
+        )
 
     monkeypatch.setattr(system_control, "require_broker_environment", gate)
     monkeypatch.setattr(system_control, "decrypt_field", decrypt)
-    monkeypatch.setattr(RecordingTrading212Adapter, "__init__", adapter_init)
+    monkeypatch.setattr(system_control, "create_trading212_provider_adapter", provider_adapter)
 
-    broker = await service._get_broker()
+    broker = await service._get_broker("operator_system_control_emergency")
 
     assert isinstance(broker, RecordingTrading212Adapter)
     assert events == [
@@ -450,11 +462,52 @@ async def test_get_broker_constructs_direct_adapter_only_after_all_gates_and_dec
         "gate2:live:system control broker access",
         "decrypt:encrypted-live-key",
         "decrypt:encrypted-live-secret",
-        "adapter:live",
+        "provider:live:operator_system_control_emergency",
+    ]
+    assert provider_calls == [
+        (
+            BrokerProviderRequest(
+                broker_id="trading212",
+                environment="live",
+                purpose="operator_system_control_emergency",
+                user_id=conn.user_id,
+            ),
+            BrokerProviderCredentials(
+                api_key="decrypted-live-key",
+                api_secret="decrypted-live-secret",
+            ),
+            "live",
+            True,
+        )
     ]
     assert RecordingTrading212Adapter.constructed == [
         ("decrypted-live-key", "decrypted-live-secret", "live")
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_broker_provider_validation_failure_fails_closed_without_direct_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _connection()
+    db = FakeSession(results=[conn])
+    service = SystemControlService(db)
+    provider_calls = 0
+
+    def rejecting_provider(*_args: Any, **_kwargs: Any) -> RecordingTrading212Adapter:
+        nonlocal provider_calls
+        provider_calls += 1
+        raise BrokerProviderValidationError("provider rejected system-control access")
+
+    monkeypatch.setattr(system_control, "decrypt_field", _decrypt)
+    monkeypatch.setattr(system_control, "create_trading212_provider_adapter", rejecting_provider)
+    monkeypatch.setattr("app.broker.trading212.Trading212Adapter", _adapter_sentinel)
+
+    with pytest.raises(SystemControlError, match="provider rejected system-control access"):
+        await service._get_broker("operator_system_control_read")
+
+    assert provider_calls == 1
+    assert RecordingTrading212Adapter.constructed == []
 
 
 @pytest.mark.asyncio
@@ -467,11 +520,63 @@ async def test_get_broker_scopes_active_connection_lookup_by_broker_user_id(
     service = SystemControlService(db, broker_user_id=user_id)
     monkeypatch.setattr(system_control, "decrypt_field", _decrypt)
 
-    await service._get_broker()
+    await service._get_broker("operator_system_control_read")
 
     assert _statement_has_user_id_filter(db.executed[0], user_id)
     assert RecordingTrading212Adapter.constructed == [
         ("decrypted-demo-key", "decrypted-demo-secret", "demo")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_read_and_emergency_methods_pass_distinct_provider_purposes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeMarketRegimeService:
+        async def evaluate(self) -> dict[str, str]:
+            return {"regime": "quiet"}
+
+    conn = _connection()
+    provider_purposes: list[str] = []
+
+    def provider_adapter(
+        request: BrokerProviderRequest,
+        credentials: BrokerProviderCredentials,
+        *,
+        app_mode: str,
+        live_trading_enabled: bool,
+    ) -> RecordingBroker:
+        provider_purposes.append(request.purpose)
+        assert request == BrokerProviderRequest(
+            broker_id="trading212",
+            environment="demo",
+            purpose=request.purpose,
+            user_id=conn.user_id,
+        )
+        assert credentials == BrokerProviderCredentials(
+            api_key="decrypted-demo-key",
+            api_secret="decrypted-demo-secret",
+        )
+        assert app_mode == "demo"
+        assert live_trading_enabled is False
+        return RecordingBroker(fail_on_write=False)
+
+    monkeypatch.setattr(system_control, "decrypt_field", _decrypt)
+    monkeypatch.setattr(system_control, "create_trading212_provider_adapter", provider_adapter)
+    monkeypatch.setattr(system_control, "MarketRegimeService", FakeMarketRegimeService)
+
+    await SystemControlService(FakeSession(results=[FakeAppSettings(), [], conn])).get_snapshot()
+    await SystemControlService(FakeSession(results=[conn])).get_positions_summary()
+    await SystemControlService(
+        FakeSession(results=[[FakeOrder(id=uuid.uuid4())], conn])
+    ).cancel_all_pending(actor="operator")
+    await SystemControlService(FakeSession(results=[conn])).flatten_all(actor="operator")
+
+    assert provider_purposes == [
+        "operator_system_control_read",
+        "operator_system_control_read",
+        "operator_system_control_emergency",
+        "operator_system_control_emergency",
     ]
 
 
@@ -582,7 +687,7 @@ async def test_flatten_all_uses_shared_broker_boundary_and_submits_sell_intents_
     assert db.added[0].payload == {"source": "system_control", "flattened": 1}
 
 
-def test_system_control_source_remains_direct_provider_unwired_and_mixed() -> None:
+def test_system_control_source_is_provider_backed_and_mixed_write_capable() -> None:
     tree = _parse_system_control()
     get_broker = _method_node("_get_broker")
     get_snapshot = _method_node("get_snapshot")
@@ -590,12 +695,18 @@ def test_system_control_source_remains_direct_provider_unwired_and_mixed() -> No
     cancel_all_pending = _method_node("cancel_all_pending")
     flatten_all = _method_node("flatten_all")
 
-    assert _adapter_counts(get_broker) == {"construct": 1, "import": 1}
-    assert "create_trading212_provider_adapter" not in _call_names(tree)
-    assert _adapter_counts(tree) == {"construct": 1, "import": 1}
-    assert construction_inventory._trading212_adapter_references()[
-        "app/services/system_control.py"
-    ] == {"construct": 1, "import": 1}
+    assert _adapter_counts(get_broker) == {"construct": 0, "import": 0}
+    assert "create_trading212_provider_adapter" in _call_names(get_broker)
+    assert "BrokerProviderRequest" in ast.unparse(get_broker)
+    assert "BrokerProviderCredentials" in ast.unparse(get_broker)
+    assert "operator_system_control_read" in ast.unparse(get_snapshot)
+    assert "operator_system_control_read" in ast.unparse(get_positions_summary)
+    assert "operator_system_control_emergency" in ast.unparse(cancel_all_pending)
+    assert "operator_system_control_emergency" in ast.unparse(flatten_all)
+    assert _adapter_counts(tree) == {"construct": 0, "import": 0}
+    assert "app/services/system_control.py" not in (
+        construction_inventory._trading212_adapter_references()
+    )
 
     assert {"get_account_summary", "get_positions"} <= _call_names(get_snapshot)
     assert "get_positions" in _call_names(get_positions_summary)
@@ -617,7 +728,6 @@ def test_system_control_read_status_methods_have_no_write_or_provider_surface() 
         assert "ExecutionEngine" not in source, method_name
         assert EXECUTION_ENGINE_WRITE_METHODS.isdisjoint(calls), method_name
         assert RAW_BROKER_WRITE_METHODS.isdisjoint(calls), method_name
-        assert all(provider_term not in source for provider_term in PROVIDER_TERMS), method_name
 
 
 def test_system_control_emergency_methods_are_write_capable_not_read_only() -> None:
@@ -636,9 +746,12 @@ def test_system_control_emergency_methods_are_write_capable_not_read_only() -> N
     assert "emergency_flatten_all" in ast.unparse(flatten_all)
 
 
-def test_system_control_file_has_no_provider_request_or_provider_helper_mentions() -> None:
+def test_system_control_file_uses_provider_request_and_helper_without_direct_adapter() -> None:
     source = SYSTEM_CONTROL_PATH.read_text()
 
-    for provider_term in PROVIDER_TERMS:
-        assert provider_term not in source
-    assert "app.broker.provider" not in source
+    assert "app.broker.provider" in source
+    assert "BrokerProviderRequest" in source
+    assert "BrokerProviderCredentials" in source
+    assert "create_trading212_provider_adapter" in source
+    assert "from app.broker.trading212 import Trading212Adapter" not in source
+    assert "Trading212Adapter(" not in source

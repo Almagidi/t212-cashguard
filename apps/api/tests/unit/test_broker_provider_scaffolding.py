@@ -848,6 +848,13 @@ def test_provider_function_is_only_referenced_from_approved_runtime_call_sites()
             "BrokerRuntimeEnvironment",
             "create_trading212_provider_adapter",
         },
+        "app/services/system_control.py": {
+            "BrokerProviderCredentials",
+            "BrokerProviderRequest",
+            "BrokerProviderValidationError",
+            "BrokerRuntimeEnvironment",
+            "create_trading212_provider_adapter",
+        },
         "app/workers/tasks.py": {
             "BrokerProviderCredentials",
             "BrokerProviderRequest",

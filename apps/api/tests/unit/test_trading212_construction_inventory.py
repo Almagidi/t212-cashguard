@@ -117,9 +117,6 @@ def test_runtime_trading212_adapter_construction_inventory_is_locked() -> None:
         # Canonical Trading 212 provider construction. This is the intended final
         # adapter constructor after caller-owned credential and safety decisions.
         "app/broker/provider.py": {"construct": 1, "import": 2},
-        # System control has read-only status helpers and emergency cancel/flatten
-        # operations sharing one broker helper.
-        "app/services/system_control.py": {"construct": 1, "import": 1},
         # Manual terminal-only DEMO reconciliation smoke with a write-method guard.
         "scripts/t212_demo_multi_order_reconciliation_smoke.py": {
             "construct": 1,
