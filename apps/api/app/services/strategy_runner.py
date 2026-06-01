@@ -37,7 +37,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, cast
 
 import structlog
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 
 from app.backtest.portfolio_strategies import is_portfolio_strategy_type
 from app.broker.provider import (
@@ -48,7 +48,7 @@ from app.broker.provider import (
     create_trading212_provider_adapter,
 )
 from app.core.config import settings
-from app.db.models import AppSettings, AuditLog, BrokerConnection, Signal, Strategy
+from app.db.models import AppSettings, AuditLog, BrokerConnection, Signal, Strategy, Trade
 from app.db.repositories.venue_config_repo import VenueConfigRepository
 from app.execution.engine import ExecutionEngine
 from app.risk.engine import RiskEngine, RiskViolation
@@ -82,6 +82,22 @@ class StrategyRunner:
     async def _get_settings(self) -> AppSettings | None:
         r = await self.db.execute(select(AppSettings).where(AppSettings.id == 1))
         return r.scalar_one_or_none()
+
+    async def _get_realized_pnl_today(self) -> Decimal:
+        today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        tomorrow_start = today_start + timedelta(days=1)
+        result = await self.db.execute(
+            select(func.sum(Trade.realized_pnl)).where(
+                Trade.closed_at >= today_start,
+                Trade.closed_at < tomorrow_start,
+                Trade.is_dry_run == False,  # noqa: E712
+                Trade.realized_pnl.isnot(None),
+            )
+        )
+        realized = result.scalar_one()
+        if realized is None:
+            return Decimal("0")
+        return Decimal(str(realized))
 
     async def _get_broker(self) -> Any | None:
         if settings.APP_MODE == "mock":
@@ -865,6 +881,19 @@ class StrategyRunner:
         # means the strategy will short, which requires a margin/CFD account).
         is_cfd = bool(strategy.params.get("allow_short", False))
         try:
+            realized_pnl_today = await self._get_realized_pnl_today()
+        except Exception as exc:
+            sig.status = "rejected"
+            sig.risk_rejected = True
+            sig.risk_rejection_reason = "realized_pnl_unavailable"
+            log.error(
+                "runner.realized_pnl_query_failed",
+                ticker=ticker,
+                error=str(exc),
+                exc_info=True,
+            )
+            return 1, 0, 1
+        try:
             await risk.run_all_checks(
                 ticker=ticker,
                 side=signal_obj.side,
@@ -872,7 +901,7 @@ class StrategyRunner:
                 estimated_price=price,
                 available_cash=cash,
                 account_value=total,
-                realized_pnl_today=Decimal("0"),
+                realized_pnl_today=realized_pnl_today,
                 current_open_positions=n_open,
                 signal_id=sig.id,
                 skip_auto_trading_check=True,
