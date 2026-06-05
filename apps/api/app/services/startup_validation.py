@@ -10,6 +10,20 @@ from app.core.config import settings
 from app.services.safety_policy import credentials_configured_status
 
 StartupStatus = Literal["pass", "warn", "fail"]
+STRICT_SECRET_MODES = {"demo", "paper", "live"}
+STRICT_NON_LIVE_SECRET_MODES = {"demo", "paper"}
+SECURITY_SECRET_CHECK_KEYS = {"secret_key", "master_key", "admin_password"}
+DEFAULT_SECRET_FRAGMENTS = ("change-me", "change_me", "changeme")
+DEFAULT_SECRET_VALUES = {
+    "admin",
+    "admin-password",
+    "admin_password",
+    "change-me",
+    "change_me",
+    "changeme",
+    "default",
+    "password",
+}
 
 
 def _check(
@@ -27,42 +41,70 @@ def _check(
     }
 
 
+def _uses_default_secret(value: str) -> bool:
+    normalized = value.strip().lower()
+    return normalized in DEFAULT_SECRET_VALUES or any(
+        fragment in normalized for fragment in DEFAULT_SECRET_FRAGMENTS
+    )
+
+
+def _secret_status(value: str) -> StartupStatus:
+    if not _uses_default_secret(value):
+        return "pass"
+    if settings.APP_MODE in STRICT_SECRET_MODES:
+        return "fail"
+    return "warn"
+
+
+def _failing_checks(report: dict[str, Any]) -> list[dict[str, str]]:
+    return [check for check in report["checks"] if check["status"] == "fail"]
+
+
+def _failing_security_secret_checks(report: dict[str, Any]) -> list[dict[str, str]]:
+    return [
+        check for check in _failing_checks(report) if check["key"] in SECURITY_SECRET_CHECK_KEYS
+    ]
+
+
 def build_startup_report() -> dict[str, Any]:
     checks: list[dict[str, str]] = []
 
+    secret_key_status = _secret_status(settings.SECRET_KEY)
     checks.append(
         _check(
             key="secret_key",
             label="JWT secret configured",
-            status="pass" if not settings.SECRET_KEY.startswith("CHANGE-ME-") else "warn",
+            status=secret_key_status,
             detail=(
                 "SECRET_KEY is not using the repository fallback value."
-                if not settings.SECRET_KEY.startswith("CHANGE-ME-")
-                else "SECRET_KEY is still using the built-in fallback and should be replaced."
+                if secret_key_status == "pass"
+                else "SECRET_KEY is still using a built-in or documented default and should be replaced."
             ),
         )
     )
+    master_key_status = _secret_status(settings.MASTER_KEY)
     checks.append(
         _check(
             key="master_key",
             label="Master key configured",
-            status="pass" if not settings.MASTER_KEY.startswith("CHANGE-ME-") else "warn",
+            status=master_key_status,
             detail=(
                 "MASTER_KEY is not using the repository fallback value."
-                if not settings.MASTER_KEY.startswith("CHANGE-ME-")
-                else "MASTER_KEY is still using the built-in fallback and should be replaced."
+                if master_key_status == "pass"
+                else "MASTER_KEY is still using a built-in or documented default and should be replaced."
             ),
         )
     )
+    admin_password_status = _secret_status(settings.ADMIN_PASSWORD)
     checks.append(
         _check(
             key="admin_password",
             label="Admin password changed from default",
-            status="pass" if settings.ADMIN_PASSWORD != "change-me" else "warn",
+            status=admin_password_status,
             detail=(
                 "Admin password differs from the documented default."
-                if settings.ADMIN_PASSWORD != "change-me"
-                else "Admin password is still the default `change-me`."
+                if admin_password_status == "pass"
+                else "ADMIN_PASSWORD is still using a documented default and should be replaced."
             ),
         )
     )
@@ -195,8 +237,11 @@ def build_startup_report() -> dict[str, Any]:
 def assert_startup_safe() -> dict[str, Any]:
     report = build_startup_report()
     if settings.APP_MODE == "live" and report["failures"] > 0:
-        details = "; ".join(
-            check["detail"] for check in report["checks"] if check["status"] == "fail"
-        )
-        raise RuntimeError(f"Unsafe live startup configuration: {details}")
+        details = "; ".join(check["detail"] for check in _failing_checks(report))
+        raise RuntimeError(f"Unsafe {settings.APP_MODE} startup configuration: {details}")
+    if settings.APP_MODE in STRICT_NON_LIVE_SECRET_MODES:
+        secret_failures = _failing_security_secret_checks(report)
+        if secret_failures:
+            details = "; ".join(check["detail"] for check in secret_failures)
+            raise RuntimeError(f"Unsafe {settings.APP_MODE} startup configuration: {details}")
     return report
