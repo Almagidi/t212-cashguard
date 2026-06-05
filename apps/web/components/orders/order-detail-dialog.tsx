@@ -216,9 +216,11 @@ export function OrderDetailDialog({ open, onClose, order, loading = false }: Ord
   }, [open, onClose])
 
   React.useEffect(() => {
-    setExpandedEventIds([])
-    setBaselineTargetId(null)
-    setCompareTargetId(null)
+    React.startTransition(() => {
+      setExpandedEventIds([])
+      setBaselineTargetId(null)
+      setCompareTargetId(null)
+    })
   }, [order?.id, open])
 
   const compareCandidates = React.useMemo<CompareCandidate[]>(() => {

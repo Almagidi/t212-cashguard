@@ -1,5 +1,5 @@
 'use client'
-import { use, useEffect, useMemo, useState } from 'react'
+import { startTransition, use, useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { ArrowLeft, Play, Pause, Save, Clock, TrendingUp, ArrowUpRight, ArrowDownRight, FlaskConical, ShieldCheck, CheckCircle2, AlertTriangle } from 'lucide-react'
 import {
@@ -63,7 +63,9 @@ export default function StrategyDetailPage({ params }: { params: Promise<{ id: s
 
   useEffect(() => {
     if (!strategy) return
-    setParamsText(JSON.stringify(strategy.params ?? {}, null, 2))
+    startTransition(() => {
+      setParamsText(JSON.stringify(strategy.params ?? {}, null, 2))
+    })
   }, [strategy])
 
   const onSubmit = async (data: any) => {

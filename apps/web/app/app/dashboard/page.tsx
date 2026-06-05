@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState, useMemo, type ReactNode } from 'react'
+import { useEffect, useState, useMemo, useSyncExternalStore, type ReactNode } from 'react'
 import {
   RefreshCw, TrendingUp, Wallet, BarChart2, AlertOctagon,
   Activity, ArrowUpRight, ArrowDownRight, Wifi, WifiOff,
@@ -21,11 +21,17 @@ import { RegimeBadge } from '@/components/dashboard/regime-badge'
 import api, { API_URL } from '@/services/api'
 import { StrategyPresetGrid } from '@/components/strategies/strategy-preset-grid'
 import type { AllocatorDecision } from '@/types'
+import Link from 'next/link'
 
 function allocationFromSnapshot(snapshot: Record<string, unknown> | null): AllocatorDecision | null {
   const allocation = snapshot?.allocation
   if (!allocation || typeof allocation !== 'object') return null
   return allocation as AllocatorDecision
+}
+
+function subscribeToTokenChanges(onStoreChange: () => void) {
+  window.addEventListener('storage', onStoreChange)
+  return () => window.removeEventListener('storage', onStoreChange)
 }
 
 // ── WS status pill ────────────────────────────────────────────────────────────
@@ -89,8 +95,7 @@ export default function DashboardPage() {
   }, [normalizedWidgetOrder, setWidgetOrder, widgetOrder])
 
   // Token from localStorage for WS auth
-  const [token, setToken] = useState<string | null>(null)
-  useEffect(() => { setToken(api.getToken()) }, [])
+  const token = useSyncExternalStore(subscribeToTokenChanges, () => api.getToken(), () => null)
 
   // Live WebSocket feed
   const { snapshot, status: wsStatus } = useWebSocket({ token, enabled: !!token })
@@ -508,7 +513,7 @@ export default function DashboardPage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <CardTitle>Recent Signals</CardTitle>
-                <a href="/app/strategies" className="text-xs text-primary hover:underline">Strategies →</a>
+                <Link href="/app/strategies" className="text-xs text-primary hover:underline">Strategies →</Link>
               </div>
             </CardHeader>
             <CardContent>
@@ -575,7 +580,7 @@ export default function DashboardPage() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle>Recent Orders</CardTitle>
-              <a href="/app/orders" className="text-xs text-primary hover:underline">View all</a>
+              <Link href="/app/orders" className="text-xs text-primary hover:underline">View all</Link>
             </div>
           </CardHeader>
           <CardContent className="p-0 overflow-x-auto">
@@ -633,7 +638,7 @@ export default function DashboardPage() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle>Portfolio Rebalance Monitor</CardTitle>
-              <a href="/app/strategies" className="text-xs text-primary hover:underline">Manage sleeves →</a>
+              <Link href="/app/strategies" className="text-xs text-primary hover:underline">Manage sleeves →</Link>
             </div>
           </CardHeader>
           <CardContent>

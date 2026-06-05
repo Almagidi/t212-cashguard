@@ -13,6 +13,14 @@ import type { Strategy } from '@/types'
 import Link from 'next/link'
 import { StrategyPresetGrid } from '@/components/strategies/strategy-preset-grid'
 
+function deterministicNoise(seed: string, index: number) {
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0
+  }
+  return ((Math.sin(hash + index * 97) + 1) / 2) - 0.5
+}
+
 const STRATEGY_DESCRIPTIONS: Record<string, string> = {
   orb: 'Opening Range Breakout — trades the first candle breakout at session open.',
   opening_fade: 'Gap-reversal day trade — fades large overnight shocks when the open starts to mean-revert.',
@@ -60,7 +68,7 @@ function StrategyCard({ strategy, perf }: { strategy: Strategy; perf?: StrategyP
     ? Array.from({ length: 12 }, (_, i) => {
         // Simulate a curve from the totals
         const baseline = (perf.total_pnl / 12) * i
-        return baseline + (Math.random() - 0.5) * Math.abs(perf.total_pnl / 6)
+        return baseline + deterministicNoise(strategy.id, i) * Math.abs(perf.total_pnl / 6)
       })
     : []
 

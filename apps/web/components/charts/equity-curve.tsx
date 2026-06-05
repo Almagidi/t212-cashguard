@@ -1,4 +1,5 @@
 'use client'
+import { useId } from 'react'
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, ReferenceLine,
@@ -122,10 +123,11 @@ interface SparklineProps {
 }
 
 export function Sparkline({ data, width = 80, height = 32, positive, className }: SparklineProps) {
+  const gradientId = useId().replace(/:/g, '')
   const pts = data.map((v, i) => ({ i, v }))
   const isPos = positive ?? (data[data.length - 1] ?? 0) >= (data[0] ?? 0)
   const color = isPos ? chartColors.positive : chartColors.negative
-  const fillId = `spark-${isPos ? 'g' : 'r'}-${Math.random().toString(36).slice(2, 6)}`
+  const fillId = `spark-${isPos ? 'g' : 'r'}-${gradientId}`
 
   if (!data.length) return null
 

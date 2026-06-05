@@ -126,6 +126,7 @@ export function useWebSocket(options: UseWebSocketOptions) {
   const heartbeatRef   = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastPingRef    = useRef<Date | null>(null);
   const unmountedRef   = useRef(false);
+  const connectRef     = useRef<() => void>(() => {});
   const qc             = useQueryClient();
 
   const getWsUrl = useCallback(() => {
@@ -242,9 +243,13 @@ export function useWebSocket(options: UseWebSocketOptions) {
       );
       retries.current += 1;
       setStatus("reconnecting");
-      timerRef.current = setTimeout(connect, delay);
+      timerRef.current = setTimeout(() => connectRef.current(), delay);
     };
   }, [token, getWsUrl, qc]);
+
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
 
   const disconnect = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);

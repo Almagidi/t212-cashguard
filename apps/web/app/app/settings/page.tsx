@@ -1,6 +1,6 @@
 'use client'
 import { useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { BellRing, CheckCircle2, Lock, MessageSquare, Monitor, Moon, Save, ShieldAlert, Sun, Unlock, XCircle } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { useLiveReadiness, useSettings, useTelegramStatus, useTelegramTestAlert, useUpdateLiveReadiness, useUpdateSettings } from '@/hooks/use-api'
@@ -32,7 +32,7 @@ export default function SettingsPage() {
   const [pendingAction, setPendingAction] = useState<LiveReadinessAction | null>(null)
   const { theme, setTheme } = useTheme()
 
-  const { register, handleSubmit, watch, setValue, formState: { isDirty } } = useForm<PreferencesForm>({
+  const { control, register, handleSubmit, setValue, formState: { isDirty } } = useForm<PreferencesForm>({
     values: settings ? {
       theme: settings.theme === 'light' ? 'light' : 'dark',
       timezone: settings.timezone,
@@ -40,7 +40,7 @@ export default function SettingsPage() {
     } : undefined,
   })
 
-  const formTheme = watch('theme')
+  const formTheme = useWatch({ control, name: 'theme' })
 
   const onSubmit = (data: PreferencesForm) => updateSettings.mutate(data)
 
