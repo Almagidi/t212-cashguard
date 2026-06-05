@@ -224,7 +224,11 @@ def run_position_monitor(self: Any) -> dict[str, Any]:
 
 
 @celery_app.task(
-    name="app.workers.tasks.reconcile_pending_orders", bind=True, max_retries=3, time_limit=60
+    name="app.workers.tasks.reconcile_pending_orders",
+    bind=True,
+    max_retries=3,
+    time_limit=60,
+    soft_time_limit=45,
 )
 def reconcile_pending_orders(self: Any) -> dict[str, Any]:
     async def _run() -> dict[str, Any]:
@@ -540,7 +544,12 @@ def daily_reset(self: Any) -> dict[str, Any]:
 # ── Order timeout (every 5 min) ───────────────────────────────────────────────
 
 
-@celery_app.task(name="app.workers.tasks.cancel_timed_out_orders", bind=True, time_limit=60)
+@celery_app.task(
+    name="app.workers.tasks.cancel_timed_out_orders",
+    bind=True,
+    time_limit=60,
+    soft_time_limit=45,
+)
 def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
     """
     Cancel working limit/stop orders that have been open longer than the timeout.
@@ -560,6 +569,7 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
             create_trading212_provider_adapter,
         )
         from app.core.config import settings
+        from app.core.redis import task_lock
         from app.core.security import CredentialDecryptionError, decrypt_field
         from app.db.models import BrokerConnection, Order
         from app.db.session import AsyncSessionLocal
@@ -568,101 +578,108 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
 
         ORDER_TIMEOUT_MINUTES = 60  # Cancel working orders after 1 hour
 
-        async with AsyncSessionLocal() as db:
-            cutoff = datetime.now(UTC) - timedelta(minutes=ORDER_TIMEOUT_MINUTES)
-            result = await db.execute(
-                select(Order).where(
-                    Order.status.in_(["accepted", "submitted"]),
-                    Order.order_type.in_(["limit", "stop", "stop_limit"]),
-                    Order.created_at < cutoff,
-                    Order.is_dry_run.is_(False),
-                    Order.broker_order_id.isnot(None),
-                )
-            )
-            timed_out = result.scalars().all()
-            if not timed_out or settings.APP_MODE == "mock":
-                return await _complete_task(db, "cancel_timed_out_orders", {"cancelled": 0})
+        async with task_lock("cancel_timed_out_orders", ttl_seconds=90) as acquired:
+            if not acquired:
+                log.debug("tasks.skipped_locked", task="cancel_timed_out_orders")
+                return {"skipped": True, "reason": "already_running"}
 
-            conn_result = await db.execute(
-                select(BrokerConnection)
-                .where(BrokerConnection.is_active)
-                .where(BrokerConnection.environment == settings.APP_MODE)
-                .limit(1)
-            )
-            conn = conn_result.scalar_one_or_none()
-            if not conn:
-                return await _complete_task(
-                    db,
-                    "cancel_timed_out_orders",
-                    {"cancelled": 0, "skipped": "no_connection"},
-                )
-            try:
-                require_broker_environment(conn.environment, action="worker timeout cancel")
-            except SafetyPolicyViolation as exc:
-                return await _complete_task(
-                    db,
-                    "cancel_timed_out_orders",
-                    {"cancelled": 0, "skipped": exc.decision_code, "reason": exc.reason},
-                )
-
-            count = 0
-            try:
-                api_key = decrypt_field(conn.api_key_encrypted)
-                api_secret = decrypt_field(conn.api_secret_encrypted)
-            except CredentialDecryptionError as exc:
-                log.warning(
-                    "tasks.credentials_invalid", task="cancel_timed_out_orders", error=str(exc)
-                )
-                await _mark_connection_reconnect_required(
-                    db,
-                    conn,
-                    str(exc),
-                    actor="worker:cancel_timed_out_orders",
-                )
-                return await _complete_task(
-                    db,
-                    "cancel_timed_out_orders",
-                    {"cancelled": 0, "skipped": "credential_error"},
-                )
-            try:
-                provider_broker = create_trading212_provider_adapter(
-                    BrokerProviderRequest(
-                        broker_id="trading212",
-                        environment=cast(BrokerRuntimeEnvironment, conn.environment),
-                        purpose="worker_cancel_timed_out_orders",
-                        user_id=conn.user_id,
-                    ),
-                    BrokerProviderCredentials(
-                        api_key=api_key,
-                        api_secret=api_secret,
-                    ),
-                    app_mode=settings.APP_MODE,
-                    live_trading_enabled=bool(settings.LIVE_TRADING_ENABLED),
-                )
-            except BrokerProviderValidationError as exc:
-                return await _complete_task(
-                    db,
-                    "cancel_timed_out_orders",
-                    {
-                        "cancelled": 0,
-                        "skipped": "provider_validation_error",
-                        "reason": str(exc),
-                    },
-                )
-
-            async with provider_broker as broker:
-                engine = ExecutionEngine(db, broker)
-                for order in timed_out:
-                    await engine.cancel_order(order)
-                    log.warning(
-                        "tasks.order_timeout_cancel",
-                        order_id=str(order.id),
-                        ticker=order.ticker,
-                        age_mins=ORDER_TIMEOUT_MINUTES,
+            async with AsyncSessionLocal() as db:
+                cutoff = datetime.now(UTC) - timedelta(minutes=ORDER_TIMEOUT_MINUTES)
+                result = await db.execute(
+                    select(Order).where(
+                        Order.status.in_(["accepted", "submitted"]),
+                        Order.order_type.in_(["limit", "stop", "stop_limit"]),
+                        Order.created_at < cutoff,
+                        Order.is_dry_run.is_(False),
+                        Order.broker_order_id.isnot(None),
                     )
-                    count += 1
+                )
+                timed_out = result.scalars().all()
+                if not timed_out or settings.APP_MODE == "mock":
+                    return await _complete_task(db, "cancel_timed_out_orders", {"cancelled": 0})
 
-            return await _complete_task(db, "cancel_timed_out_orders", {"cancelled": count})
+                conn_result = await db.execute(
+                    select(BrokerConnection)
+                    .where(BrokerConnection.is_active)
+                    .where(BrokerConnection.environment == settings.APP_MODE)
+                    .limit(1)
+                )
+                conn = conn_result.scalar_one_or_none()
+                if not conn:
+                    return await _complete_task(
+                        db,
+                        "cancel_timed_out_orders",
+                        {"cancelled": 0, "skipped": "no_connection"},
+                    )
+                try:
+                    require_broker_environment(conn.environment, action="worker timeout cancel")
+                except SafetyPolicyViolation as exc:
+                    return await _complete_task(
+                        db,
+                        "cancel_timed_out_orders",
+                        {"cancelled": 0, "skipped": exc.decision_code, "reason": exc.reason},
+                    )
+
+                count = 0
+                try:
+                    api_key = decrypt_field(conn.api_key_encrypted)
+                    api_secret = decrypt_field(conn.api_secret_encrypted)
+                except CredentialDecryptionError as exc:
+                    log.warning(
+                        "tasks.credentials_invalid",
+                        task="cancel_timed_out_orders",
+                        error=str(exc),
+                    )
+                    await _mark_connection_reconnect_required(
+                        db,
+                        conn,
+                        str(exc),
+                        actor="worker:cancel_timed_out_orders",
+                    )
+                    return await _complete_task(
+                        db,
+                        "cancel_timed_out_orders",
+                        {"cancelled": 0, "skipped": "credential_error"},
+                    )
+                try:
+                    provider_broker = create_trading212_provider_adapter(
+                        BrokerProviderRequest(
+                            broker_id="trading212",
+                            environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                            purpose="worker_cancel_timed_out_orders",
+                            user_id=conn.user_id,
+                        ),
+                        BrokerProviderCredentials(
+                            api_key=api_key,
+                            api_secret=api_secret,
+                        ),
+                        app_mode=settings.APP_MODE,
+                        live_trading_enabled=bool(settings.LIVE_TRADING_ENABLED),
+                    )
+                except BrokerProviderValidationError as exc:
+                    return await _complete_task(
+                        db,
+                        "cancel_timed_out_orders",
+                        {
+                            "cancelled": 0,
+                            "skipped": "provider_validation_error",
+                            "reason": str(exc),
+                        },
+                    )
+
+                async with provider_broker as broker:
+                    engine = ExecutionEngine(db, broker)
+                    for order in timed_out:
+                        await engine.cancel_order(order)
+                        log.warning(
+                            "tasks.order_timeout_cancel",
+                            order_id=str(order.id),
+                            ticker=order.ticker,
+                            age_mins=ORDER_TIMEOUT_MINUTES,
+                        )
+                        count += 1
+
+                return await _complete_task(db, "cancel_timed_out_orders", {"cancelled": count})
 
     return run_monitored_task("cancel_timed_out_orders", _run)
 

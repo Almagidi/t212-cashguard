@@ -134,6 +134,11 @@ async def _acquired_task_lock(*_args: Any, **_kwargs: Any) -> Any:
     yield True
 
 
+@asynccontextmanager
+async def _denied_task_lock(*_args: Any, **_kwargs: Any) -> Any:
+    yield False
+
+
 @pytest.fixture(autouse=True)
 def _reset_worker_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     RecordingTrading212Adapter.constructed.clear()
@@ -149,6 +154,52 @@ def _reset_worker_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.core.redis.task_lock", _acquired_task_lock)
     monkeypatch.setattr("app.broker.trading212.Trading212Adapter", RecordingTrading212Adapter)
     monkeypatch.setattr("app.execution.engine.ExecutionEngine", RecordingExecutionEngine)
+
+
+def test_order_worker_tasks_define_soft_time_limits() -> None:
+    assert tasks.reconcile_pending_orders.time_limit == 60
+    assert tasks.reconcile_pending_orders.soft_time_limit == 45
+    assert tasks.cancel_timed_out_orders.time_limit == 60
+    assert tasks.cancel_timed_out_orders.soft_time_limit == 45
+
+
+def test_cancel_timed_out_orders_uses_task_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    lock_calls: list[tuple[str, int]] = []
+
+    @asynccontextmanager
+    async def recording_task_lock(name: str, *, ttl_seconds: int) -> Any:
+        lock_calls.append((name, ttl_seconds))
+        yield True
+
+    summaries: list[tuple[str, dict[str, Any]]] = []
+    fake_db = FakeSession(results=[[]])
+    _install_session(monkeypatch, fake_db, summaries)
+    monkeypatch.setattr("app.core.redis.task_lock", recording_task_lock)
+
+    assert tasks.cancel_timed_out_orders.run() == {"cancelled": 0}
+
+    assert lock_calls == [("cancel_timed_out_orders", 90)]
+    assert summaries == [("cancel_timed_out_orders", {"cancelled": 0})]
+
+
+def test_cancel_timed_out_orders_skips_when_task_lock_not_acquired_without_provider_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    monkeypatch.setattr("app.core.redis.task_lock", _denied_task_lock)
+    _install_adapter_sentinel(monkeypatch)
+    _install_provider_sentinel(monkeypatch, provider_calls)
+
+    assert tasks.cancel_timed_out_orders.run() == {
+        "skipped": True,
+        "reason": "already_running",
+    }
+
+    assert provider_calls == []
+    assert RecordingTrading212Adapter.constructed == []
+    assert RecordingTrading212Adapter.write_calls == []
+    assert RecordingExecutionEngine.brokers == []
+    assert RecordingExecutionEngine.cancel_calls == []
 
 
 def _order(**overrides: Any) -> FakeOrder:
