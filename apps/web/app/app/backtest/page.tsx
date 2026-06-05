@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -72,6 +72,12 @@ type PortfolioFormValues = {
   to_date: string
   initial_capital: string
 }
+
+const DAY_MS = 86400000
+const defaultDateDaysAgo = (days: number) => new Date(Date.now() - days * DAY_MS).toISOString().split('T')[0]
+const DEFAULT_BACKTEST_FROM_DATE = defaultDateDaysAgo(180)
+const DEFAULT_PORTFOLIO_FROM_DATE = defaultDateDaysAgo(365 * 5)
+const DEFAULT_TO_DATE = defaultDateDaysAgo(1)
 
 const VERDICT_STYLES: Record<string, { color: string; icon: LucideIcon; label: string }> = {
   strong: { color: 'text-emerald-400', icon: CheckCircle2, label: 'Strong Edge' },
@@ -455,28 +461,28 @@ export default function BacktestPage() {
   const [portfolioForm, setPortfolioForm] = useState<PortfolioFormValues>({
     tickers: 'SPY, QQQ, IWM, EFA, GLD',
     strategy_type: 'buy_hold_core',
-    from_date: new Date(Date.now() - 365 * 5 * 86400000).toISOString().split('T')[0],
-    to_date: new Date(Date.now() - 86400000).toISOString().split('T')[0],
+    from_date: DEFAULT_PORTFOLIO_FROM_DATE,
+    to_date: DEFAULT_TO_DATE,
     initial_capital: '25000',
   })
 
   const {
+    control,
     register,
     handleSubmit,
-    watch,
   } = useForm<BacktestFormValues>({
     defaultValues: {
       ticker: 'AAPL',
       strategy_type: 'orb',
-      from_date: new Date(Date.now() - 180 * 86400000).toISOString().split('T')[0],
-      to_date: new Date(Date.now() - 86400000).toISOString().split('T')[0],
+      from_date: DEFAULT_BACKTEST_FROM_DATE,
+      to_date: DEFAULT_TO_DATE,
       initial_capital: '10000',
       run_walk_forward: false,
     },
   })
 
-  const selectedStrategyType = watch('strategy_type')
-  const runWalkForward = watch('run_walk_forward')
+  const selectedStrategyType = useWatch({ control, name: 'strategy_type' })
+  const runWalkForward = useWatch({ control, name: 'run_walk_forward' })
   const selectedStrategy = strategies.find((strategy) => strategy.type === selectedStrategyType)
 
   useEffect(() => {

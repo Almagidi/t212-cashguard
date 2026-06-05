@@ -560,7 +560,6 @@ class ApiClient {
       })
     ).data;
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async getPerformanceByStrategy(days = 30): Promise<any[]> {
     return (
       await this.client.get("/reports/performance/by-strategy", {
@@ -587,7 +586,6 @@ class ApiClient {
     ).data;
   }
   // Trade Journal
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async listTrades(params?: {
     page?: number;
     page_size?: number;
@@ -596,11 +594,9 @@ class ApiClient {
   }): Promise<any> {
     return (await this.client.get("/trades", { params })).data;
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async getTrade(id: string): Promise<any> {
     return (await this.client.get(`/trades/${id}`)).data;
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async updateTradeJournal(
     id: string,
     payload: {

@@ -1,6 +1,6 @@
 'use client'
 import { useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { CheckCircle2, XCircle, Plug, PlugZap, Unplug, AlertTriangle, ShieldAlert, KeyRound, Globe2 } from 'lucide-react'
@@ -109,12 +109,12 @@ export default function BrokerPage() {
   const [liveWarning, setLiveWarning] = useState(false)
   const [connectDiagnostics, setConnectDiagnostics] = useState<BrokerDiagnostics | null>(null)
 
-  const { register, handleSubmit, watch, formState: { errors } } = useForm<FormData>({
+  const { control, register, handleSubmit, formState: { errors } } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: { environment: 'demo' },
   })
 
-  const env = watch('environment')
+  const env = useWatch({ control, name: 'environment' })
   const testResult = testMutation.data as BrokerTestResult | undefined
   const isMockRuntime = (process.env.NEXT_PUBLIC_APP_MODE || 'mock') === 'mock' || status?.environment === 'mock'
 

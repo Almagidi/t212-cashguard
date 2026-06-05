@@ -11,6 +11,14 @@ import {
 import { ArrowUpRight, ArrowDownRight } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
 
+function deterministicUnit(seed: string, index: number) {
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0
+  }
+  return (Math.sin(hash + index * 101) + 1) / 2
+}
+
 const chartColors = {
   positive: 'hsl(var(--chart-positive))',
   negative: 'hsl(var(--chart-negative))',
@@ -246,12 +254,13 @@ export function CandlestickDemo({ ticker = 'AAPL', className }: { ticker?: strin
   for (let i = 0; i < 30; i++) {
     const t = new Date(now.getTime() + i * 15 * 60000)
     const label = t.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
-    const change = (Math.random() - 0.48) * 1.2
+    const change = (deterministicUnit(ticker, i * 4) - 0.48) * 1.2
     const open   = price
     const close  = Math.max(open + change, 1)
-    const high   = Math.max(open, close) + Math.random() * 0.5
-    const low    = Math.min(open, close) - Math.random() * 0.5
-    data.push({ date: label, open: +open.toFixed(2), high: +high.toFixed(2), low: +low.toFixed(2), close: +close.toFixed(2), volume: Math.floor(Math.random() * 50000 + 10000) })
+    const high   = Math.max(open, close) + deterministicUnit(ticker, i * 4 + 1) * 0.5
+    const low    = Math.min(open, close) - deterministicUnit(ticker, i * 4 + 2) * 0.5
+    const volume = Math.floor(deterministicUnit(ticker, i * 4 + 3) * 50000 + 10000)
+    data.push({ date: label, open: +open.toFixed(2), high: +high.toFixed(2), low: +low.toFixed(2), close: +close.toFixed(2), volume })
     price = close
   }
 
