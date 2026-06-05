@@ -28,8 +28,9 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
-  // Start the dev server automatically when running e2e tests locally
-  webServer: process.env.CI ? undefined : {
+  // Start the dev server automatically only when running locally
+  // with no CI flag and no externally provided BASE_URL.
+  webServer: process.env.CI || process.env.BASE_URL ? undefined : {
     command: `npx next dev -p ${webPort}`,
     url: webReadyUrl,
     reuseExistingServer: false,
