@@ -308,33 +308,32 @@ jobs:
       - name: Run mock E2E validation
         working-directory: apps/web
         run: |
-          (
-            cd ../api
-            uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/cashguard-api.log 2>&1
-          ) &
+          setsid bash -c 'cd ../api && uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/cashguard-api.log 2>&1' &
           API_PID=$!
-          npm run dev > /tmp/cashguard-web.log 2>&1 &
+          setsid npm run dev > /tmp/cashguard-web.log 2>&1 &
           WEB_PID=$!
           cleanup() {
             if [ -n "${WEB_PID:-}" ]; then
-              pgrep -P "$WEB_PID" 2>/dev/null | xargs -r kill 2>/dev/null || true
-              kill "$WEB_PID" 2>/dev/null || true
+              kill -- "-$WEB_PID" 2>/dev/null || true
               wait "$WEB_PID" 2>/dev/null || true
             fi
 
-            if lsof -tiTCP:3000 -sTCP:LISTEN >/dev/null 2>&1; then
-              echo "Port 3000 still occupied after WEB_PID cleanup; releasing CI-owned web server"
-              lsof -nP -iTCP:3000 -sTCP:LISTEN 2>/dev/null || true
-              lsof -tiTCP:3000 -sTCP:LISTEN 2>/dev/null | xargs -r kill 2>/dev/null || true
-              sleep 2
-              if lsof -tiTCP:3000 -sTCP:LISTEN >/dev/null 2>&1; then
-                lsof -tiTCP:3000 -sTCP:LISTEN 2>/dev/null | xargs -r kill -9 2>/dev/null || true
-              fi
+            if [ -n "${API_PID:-}" ]; then
+              kill -- "-$API_PID" 2>/dev/null || true
+              wait "$API_PID" 2>/dev/null || true
             fi
 
-            if [ -n "${API_PID:-}" ]; then
-              kill "$API_PID" 2>/dev/null || true
-              wait "$API_PID" 2>/dev/null || true
+            echo "lsof availability: $(command -v lsof || true)"
+            if command -v lsof >/dev/null 2>&1; then
+              if lsof -tiTCP:3000 -sTCP:LISTEN >/dev/null 2>&1; then
+                echo "Port 3000 still occupied after process-group cleanup; releasing port-3000 listener"
+                lsof -nP -iTCP:3000 -sTCP:LISTEN 2>/dev/null || true
+                lsof -tiTCP:3000 -sTCP:LISTEN 2>/dev/null | xargs -r kill 2>/dev/null || true
+                sleep 2
+                if lsof -tiTCP:3000 -sTCP:LISTEN >/dev/null 2>&1; then
+                  lsof -tiTCP:3000 -sTCP:LISTEN 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+                fi
+              fi
             fi
           }
           trap cleanup EXIT INT TERM
