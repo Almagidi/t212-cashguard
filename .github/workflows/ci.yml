@@ -316,10 +316,26 @@ jobs:
           npm run dev > /tmp/cashguard-web.log 2>&1 &
           WEB_PID=$!
           cleanup() {
-            kill "$WEB_PID" 2>/dev/null || true
-            wait "$WEB_PID" 2>/dev/null || true
-            kill "$API_PID" 2>/dev/null || true
-            wait "$API_PID" 2>/dev/null || true
+            if [ -n "${WEB_PID:-}" ]; then
+              pgrep -P "$WEB_PID" 2>/dev/null | xargs -r kill 2>/dev/null || true
+              kill "$WEB_PID" 2>/dev/null || true
+              wait "$WEB_PID" 2>/dev/null || true
+            fi
+
+            if lsof -tiTCP:3000 -sTCP:LISTEN >/dev/null 2>&1; then
+              echo "Port 3000 still occupied after WEB_PID cleanup; releasing CI-owned web server"
+              lsof -nP -iTCP:3000 -sTCP:LISTEN 2>/dev/null || true
+              lsof -tiTCP:3000 -sTCP:LISTEN 2>/dev/null | xargs -r kill 2>/dev/null || true
+              sleep 2
+              if lsof -tiTCP:3000 -sTCP:LISTEN >/dev/null 2>&1; then
+                lsof -tiTCP:3000 -sTCP:LISTEN 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+              fi
+            fi
+
+            if [ -n "${API_PID:-}" ]; then
+              kill "$API_PID" 2>/dev/null || true
+              wait "$API_PID" 2>/dev/null || true
+            fi
           }
           trap cleanup EXIT INT TERM
 
