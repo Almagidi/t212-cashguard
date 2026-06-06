@@ -312,7 +312,16 @@ jobs:
             cd ../api
             uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/cashguard-api.log 2>&1
           ) &
+          API_PID=$!
           npm run dev > /tmp/cashguard-web.log 2>&1 &
+          WEB_PID=$!
+          cleanup() {
+            kill "$WEB_PID" 2>/dev/null || true
+            wait "$WEB_PID" 2>/dev/null || true
+            kill "$API_PID" 2>/dev/null || true
+            wait "$API_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT INT TERM
 
           echo "Waiting for API to be ready..."
           for attempt in {1..30}; do
