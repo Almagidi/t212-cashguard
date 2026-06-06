@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
+from urllib.parse import urlparse
 
 import httpx
 import pytest
@@ -73,9 +74,14 @@ async def test_demo_adapter_http_request_uses_demo_url_and_fails_on_live(monkeyp
     async def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         seen_urls.append(url)
-        if "live.trading212.com" in url:
-            raise AssertionError(f"live Trading 212 endpoint was called: {url}")
-        assert url.startswith("https://demo.trading212.com/")
+        parsed_url = urlparse(url)
+        if parsed_url.hostname == "live.trading212.com":
+            raise AssertionError(
+                f"live Trading 212 endpoint was called: {parsed_url.scheme}://{parsed_url.netloc}"
+            )
+        assert parsed_url.scheme == "https"
+        assert parsed_url.hostname == "demo.trading212.com"
+        assert parsed_url.path == "/api/v0/equity/orders/market"
         return httpx.Response(200, json={"id": "DEMO-NETWORK-1", "status": "WORKING"})
 
     transport = httpx.MockTransport(handler)
