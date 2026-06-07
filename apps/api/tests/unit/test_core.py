@@ -97,7 +97,14 @@ class TestSecurity:
         from app.core.security import TokenDecodeError, create_access_token, decode_access_token
 
         token = create_access_token("user-123")
-        tampered = f"{token[:-1]}{'a' if token[-1] != 'a' else 'b'}"
+        header, payload, signature = token.split(".")
+        signature_bytes = bytearray(_b64url_decode(signature))
+        # Changing only the final base64url character can alter unused padding bits,
+        # so mutate the decoded signature bytes instead.
+        signature_bytes[0] ^= 0x01
+        tampered = ".".join([header, payload, _b64url_encode(bytes(signature_bytes))])
+
+        assert tampered != token
 
         with pytest.raises(TokenDecodeError):
             decode_access_token(tampered)
