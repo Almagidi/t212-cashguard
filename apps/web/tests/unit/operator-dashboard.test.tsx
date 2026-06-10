@@ -10,7 +10,7 @@ import type {
   PaperExecutionHistory,
 } from "@/types";
 
-const mockGet = jest.fn<() => Promise<{ data: unknown }>>();
+const mockGet = jest.fn<(url: string, config?: unknown) => Promise<{ data: unknown }>>();
 const mockPost = jest.fn();
 const mockPatch = jest.fn();
 const mockPut = jest.fn();
