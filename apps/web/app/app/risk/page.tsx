@@ -20,6 +20,7 @@ const schema = z.object({
   force_flat_eod: z.boolean(),
 })
 type FormData = z.infer<typeof schema>
+type FormValues = z.input<typeof schema>
 
 const RISK_EVENT_COLORS: Record<string, string> = {
   kill_switch_on: 'text-red-400', kill_switch_off: 'text-emerald-400',
@@ -37,7 +38,7 @@ export default function RiskPage() {
   const [showKillSwitch, setShowKillSwitch] = useState(false)
   const ksActive = settings?.kill_switch_active ?? false
 
-  const { register, handleSubmit, formState: { errors, isDirty } } = useForm<FormData>({
+  const { register, handleSubmit, formState: { errors, isDirty } } = useForm<FormValues, unknown, FormData>({
     resolver: zodResolver(schema),
     values: profile ? {
       max_risk_per_trade_pct: Number(profile.max_risk_per_trade_pct),
