@@ -361,6 +361,32 @@ test.describe('Operator dashboard readiness', () => {
     await expect(page.getByTestId('operator-execution-boundary')).toContainText('Triggers schedulers')
     await expect(page.getByTestId('operator-execution-boundary')).toContainText('Runs strategies')
 
+    // Safety flags — every flag from the API must render, including the
+    // live-trading lock state (env setting + app unlock) and missing
+    // venue config visibility.
+    const safetyFlags = page.getByTestId('operator-safety-flags')
+    await expect(safetyFlags).toBeVisible()
+    const expectedSafetyFlagLabels = [
+      'Endpoint read-only',
+      'Creates orders',
+      'Calls brokers',
+      'Triggers schedulers',
+      'Runs strategies',
+      'DCA runnable',
+      'DCA live enabled',
+      'Kraken live enabled',
+      'Live trading enabled (env setting)',
+      'Live trading unlocked (app)',
+      'Expected venue configs missing',
+      'Any venue kill switch active',
+      'Any venue degraded',
+      'Worker health known',
+      'Cash-only mode',
+    ]
+    for (const label of expectedSafetyFlagLabels) {
+      await expect(safetyFlags).toContainText(label)
+    }
+
     await expect(page.getByText('Worker heartbeat missing')).toBeVisible()
     await expect(page.getByText('Endpoint read-only')).toBeVisible()
     await expect(page.getByTestId('operator-execution-boundary')).toContainText('Creates orders')
