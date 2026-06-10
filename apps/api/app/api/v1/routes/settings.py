@@ -1,4 +1,5 @@
 """App settings routes."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -74,12 +75,14 @@ async def update_settings(
     for field, value in updates.items():
         setattr(s, field, value)
 
-    db.add(AuditLog(
-        action="settings_updated",
-        actor=current_user.email,
-        payload=body.model_dump(exclude_none=True),
-        occurred_at=datetime.now(UTC),
-    ))
+    db.add(
+        AuditLog(
+            action="settings_updated",
+            actor=current_user.email,
+            payload=body.model_dump(exclude_none=True),
+            occurred_at=datetime.now(UTC),
+        )
+    )
     await db.flush()
     await db.refresh(s)
     return s

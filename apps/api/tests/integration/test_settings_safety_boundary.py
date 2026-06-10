@@ -53,8 +53,7 @@ async def test_patch_settings_rejects_safety_gate_fields(
     resp = await client.patch("/v1/settings", json=payload, headers=auth_headers)
 
     assert resp.status_code == 422, (
-        f"Safety-gate payload {payload} must be rejected, got {resp.status_code}: "
-        f"{resp.text}"
+        f"Safety-gate payload {payload} must be rejected, got {resp.status_code}: " f"{resp.text}"
     )
 
     stored = await _stored_settings(db)
