@@ -93,6 +93,7 @@ class BrokerStatusOut(BaseSchema):
     environment: str
     is_active: bool
     credential_state: Literal["mock", "configured", "reconnect_required", "not_connected"]
+    credential_source: Literal["stored_connection", "environment_fallback", "none", "mock"]
     recovery_hint: str | None = None
     last_test_at: datetime | None
     last_test_ok: bool | None
