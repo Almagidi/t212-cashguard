@@ -79,6 +79,7 @@ Demo broker events use distinct action names (`demo_broker_order_attempt`, `demo
 - Frontend broker secrets are not supported.
 - Deposits and withdrawals are out of scope.
 - Kill-switch recovery cannot automatically resume auto-trading.
+- The generic `PATCH /v1/settings` route cannot write safety gates (`auto_trading_enabled`, `kill_switch_active`, `live_trading_unlocked`): its schema forbids unknown fields, the route checks an explicit field allowlist, and boundary tests pin both, so widening the schema without a deliberate review fails tests and the route fails closed.
 
 ## Future Work
 

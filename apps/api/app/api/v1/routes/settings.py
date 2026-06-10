@@ -24,6 +24,21 @@ if TYPE_CHECKING:
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
+# Fields the generic settings PATCH may write to the AppSettings row. The row
+# also stores safety gates (auto_trading_enabled, kill_switch_active,
+# live_trading_unlocked) that may only change via their dedicated, audited
+# flows (/v1/emergency/*, live-readiness checklist). Keep this in lockstep
+# with AppSettingsUpdate — tests/unit/test_settings_update_boundary.py
+# enforces both, so the route fails closed if the schema is widened.
+PATCHABLE_SETTINGS_FIELDS: frozenset[str] = frozenset(
+    {
+        "theme",
+        "timezone",
+        "market_data_provider",
+        "daily_stats_reset_time",
+    }
+)
+
 
 @router.get("", response_model=AppSettingsOut)
 async def get_settings(
@@ -48,7 +63,15 @@ async def update_settings(
     if not s:
         raise HTTPException(status_code=404, detail="Settings not initialised")
 
-    for field, value in body.model_dump(exclude_none=True).items():
+    updates = body.model_dump(exclude_none=True)
+    blocked_fields = sorted(set(updates) - PATCHABLE_SETTINGS_FIELDS)
+    if blocked_fields:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Settings fields not patchable via this route: {blocked_fields}",
+        )
+
+    for field, value in updates.items():
         setattr(s, field, value)
 
     db.add(AuditLog(

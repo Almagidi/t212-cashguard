@@ -1203,6 +1203,11 @@ class AppSettingsOut(BaseSchema):
 
 
 class AppSettingsUpdate(BaseModel):
+    # extra="forbid": this schema is mass-assigned onto the AppSettings row,
+    # which also stores safety gates (auto_trading_enabled, kill_switch_active,
+    # live_trading_unlocked). Unknown fields must be rejected, not ignored.
+    model_config = ConfigDict(extra="forbid")
+
     theme: Literal["dark", "light"] | None = None
     timezone: str | None = None
     market_data_provider: str | None = None
