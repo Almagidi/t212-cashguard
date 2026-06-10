@@ -13,6 +13,18 @@ function formatValue(value: unknown): string {
   return String(value);
 }
 
+const CREDENTIAL_SOURCE_LABELS: Record<string, string> = {
+  stored_connection: "Stored encrypted connection",
+  environment_fallback: "Environment fallback (T212_DEMO_*)",
+  none: "No credentials available",
+  mock: "Mock (credentials ignored)",
+};
+
+function credentialSourceLabel(value: unknown): string {
+  if (typeof value !== "string" || value === "") return "—";
+  return CREDENTIAL_SOURCE_LABELS[value] ?? value;
+}
+
 function maskAccountId(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
   const raw = String(value);
@@ -186,6 +198,15 @@ export function BrokerStatusPanel({
               <dt className="text-slate-400">Account currency</dt>
               <dd className="font-medium text-slate-100">
                 {formatValue(status?.account_currency)}
+              </dd>
+            </div>
+            <div
+              className="flex items-center justify-between gap-4 border-b border-slate-800 pb-2"
+              data-testid="broker-credential-source"
+            >
+              <dt className="text-slate-400">Credential source</dt>
+              <dd className="font-medium text-slate-100">
+                {credentialSourceLabel(status?.credential_source)}
               </dd>
             </div>
             <div className="flex items-center justify-between gap-4 border-b border-slate-800 pb-2">

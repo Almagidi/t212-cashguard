@@ -48,6 +48,11 @@ DEMO_CREDENTIALS_MISSING_HINT = (
     "APP_MODE=demo requires Trading 212 demo credentials or an active demo broker connection. "
     "Live credentials are ignored in demo mode."
 )
+DEMO_ENV_FALLBACK_HINT = (
+    "No stored demo broker connection exists. Broker-backed demo operations fall back to the "
+    "T212_DEMO_API_KEY/T212_DEMO_API_SECRET environment credentials. Connect a demo broker "
+    "account to use a stored, encrypted connection instead."
+)
 
 
 class _StatusBroker:
@@ -90,6 +95,7 @@ def _serialize_status(
             "environment": conn.environment,
             "is_active": conn.is_active,
             "credential_state": credential_state,
+            "credential_source": "stored_connection",
             "recovery_hint": recovery_hint,
             "last_test_at": conn.last_test_at,
             "last_test_ok": conn.last_test_ok,
@@ -110,6 +116,7 @@ def _mock_connect_status() -> BrokerStatusOut:
             "environment": "mock",
             "is_active": True,
             "credential_state": "mock",
+            "credential_source": "mock",
             "recovery_hint": MOCK_CREDENTIALS_IGNORED_HINT,
             "last_test_at": now,
             "last_test_ok": True,
@@ -123,6 +130,7 @@ def _mock_connect_status() -> BrokerStatusOut:
 
 def _demo_missing_credentials_status() -> BrokerStatusOut:
     now = datetime.now(UTC)
+    env_fallback_configured = bool(settings.T212_DEMO_API_KEY and settings.T212_DEMO_API_SECRET)
     return BrokerStatusOut.model_validate(
         {
             "id": uuid.uuid4(),
@@ -130,7 +138,10 @@ def _demo_missing_credentials_status() -> BrokerStatusOut:
             "environment": "demo",
             "is_active": False,
             "credential_state": "not_connected",
-            "recovery_hint": DEMO_CREDENTIALS_MISSING_HINT,
+            "credential_source": ("environment_fallback" if env_fallback_configured else "none"),
+            "recovery_hint": (
+                DEMO_ENV_FALLBACK_HINT if env_fallback_configured else DEMO_CREDENTIALS_MISSING_HINT
+            ),
             "last_test_at": None,
             "last_test_ok": False,
             "last_sync_at": None,

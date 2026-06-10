@@ -26,6 +26,11 @@ export type BrokerCredentialState =
   | "configured"
   | "reconnect_required"
   | "not_connected";
+export type BrokerCredentialSource =
+  | "stored_connection"
+  | "environment_fallback"
+  | "none"
+  | "mock";
 export type BrokerDiagnosticLikelihood = "likely" | "possible";
 export type BrokerDiagnosticKey =
   | "wrong_environment"
@@ -53,6 +58,7 @@ export interface BrokerStatus {
   environment: Environment;
   is_active: boolean;
   credential_state: BrokerCredentialState;
+  credential_source?: BrokerCredentialSource;
   recovery_hint: string | null;
   last_test_at: string | null;
   last_test_ok: boolean | null;

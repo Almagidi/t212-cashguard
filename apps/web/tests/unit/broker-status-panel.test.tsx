@@ -67,6 +67,42 @@ describe("BrokerStatusPanel", () => {
     expect(screen.getByText(/unknown/i)).toBeInTheDocument();
   });
 
+  it("labels the credential source for each path", () => {
+    render(
+      <BrokerStatusPanel
+        status={{ ...mockStatus, credential_source: "stored_connection" }}
+      />,
+    );
+    expect(
+      screen.getByText("Stored encrypted connection"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the environment fallback source without leaking values", () => {
+    render(
+      <BrokerStatusPanel
+        status={{
+          ...mockStatus,
+          is_active: false,
+          credential_state: "not_connected",
+          credential_source: "environment_fallback",
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText("Environment fallback (T212_DEMO_*)"),
+    ).toBeInTheDocument();
+  });
+
+  it("renders a placeholder when credential source is absent", () => {
+    render(<BrokerStatusPanel status={mockStatus} />);
+
+    const row = screen.getByTestId("broker-credential-source");
+    expect(row).toHaveTextContent("Credential source");
+    expect(row).toHaveTextContent("—");
+  });
+
   it("does not reveal full account id", () => {
     render(<BrokerStatusPanel status={mockStatus} />);
 
