@@ -947,7 +947,7 @@ function RecentActivity({ status }: { status: OperatorStatus }) {
 
 function SafetyFlags({ status }: { status: OperatorStatus }) {
   return (
-    <Card>
+    <Card data-testid="operator-safety-flags">
       <CardHeader>
         <CardTitle>Safety Flags</CardTitle>
       </CardHeader>
@@ -990,6 +990,21 @@ function SafetyFlags({ status }: { status: OperatorStatus }) {
           <FlagRow
             label="Kraken live enabled"
             value={status.safety_flags.kraken_live_enabled}
+            riskyWhenTrue
+          />
+          <FlagRow
+            label="Live trading enabled (env setting)"
+            value={status.safety_flags.live_trading_enabled_setting}
+            riskyWhenTrue
+          />
+          <FlagRow
+            label="Live trading unlocked (app)"
+            value={status.safety_flags.app_live_trading_unlocked}
+            riskyWhenTrue
+          />
+          <FlagRow
+            label="Expected venue configs missing"
+            value={status.safety_flags.missing_expected_venue_configs}
             riskyWhenTrue
           />
           <FlagRow

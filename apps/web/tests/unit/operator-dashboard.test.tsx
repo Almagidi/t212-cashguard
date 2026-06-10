@@ -362,6 +362,48 @@ describe("OperatorDashboard", () => {
     expect(boundary).toHaveTextContent("Live enabled anywhere");
   });
 
+  it("renders every safety flag including live trading lock state", () => {
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("operator-safety-flags");
+    const expectedFlagLabels = [
+      "Endpoint read-only",
+      "Creates orders",
+      "Calls brokers",
+      "Triggers schedulers",
+      "Runs strategies",
+      "DCA runnable",
+      "DCA live enabled",
+      "Kraken live enabled",
+      "Live trading enabled (env setting)",
+      "Live trading unlocked (app)",
+      "Expected venue configs missing",
+      "Any venue kill switch active",
+      "Any venue degraded",
+      "Worker health known",
+      "Cash-only mode",
+    ];
+
+    for (const label of expectedFlagLabels) {
+      expect(within(card).getByText(label)).toBeInTheDocument();
+    }
+  });
+
+  it("shows live trading as locked when env setting and app unlock are false", () => {
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("operator-safety-flags");
+    const liveSettingRow = within(card)
+      .getByText("Live trading enabled (env setting)")
+      .closest("div");
+    const liveUnlockRow = within(card)
+      .getByText("Live trading unlocked (app)")
+      .closest("div");
+
+    expect(liveSettingRow).toHaveTextContent("False");
+    expect(liveUnlockRow).toHaveTextContent("False");
+  });
+
   it("describes DCA scheduler registration as registered", () => {
     render(<OperatorDashboard status={operatorStatus()} />);
 
