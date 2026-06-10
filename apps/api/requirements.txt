@@ -16,7 +16,7 @@ passlib[bcrypt]==1.7.4
 cryptography==46.0.7
 structlog==24.4.0
 prometheus-client==0.21.1
-rich==13.9.4
+rich==15.0.0
 pytz==2024.2
 python-dateutil==2.9.0
 aiofiles==24.1.0
