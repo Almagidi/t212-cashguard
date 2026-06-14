@@ -20,6 +20,7 @@ from app.core.config import settings
 from app.db.models import AuditLog, Order, OrderEvent
 from app.execution.engine import _safe_broker_error_reason
 from app.execution.paper_engine import PAPER_EXECUTION_ENVIRONMENT
+from app.execution.state_machine import transition_order_status
 from app.services.execution_quality import (
     apply_order_execution_quality,
     milliseconds_between,
@@ -364,7 +365,11 @@ class DemoOrderReconciler:
         mapped_status: str,
     ) -> None:
         reconciled_at = datetime.now(UTC)
-        order.status = mapped_status
+        transition_order_status(
+            order,
+            mapped_status,
+            reason="demo history reconciliation status update",
+        )
         order.last_reconciled_at = reconciled_at
         order.broker_response = item
 

@@ -11,6 +11,7 @@ from sqlalchemy import select
 import app.services.execution_quality as _eq
 from app.db.models import Alert, AppSettings
 from app.execution.engine import ExecutionEngine
+from app.execution.state_machine import InvalidOrderTransition
 
 
 class DummyBroker:
@@ -64,7 +65,12 @@ class FilledOnReconcileBroker:
         return {"id": "B-FOR", "status": "WORKING", "filledQuantity": 0, "filledPrice": 0}
 
     async def get_order_by_id(self, broker_order_id):
-        return {"id": broker_order_id, "status": "FILLED", "filledQuantity": 10.0, "filledPrice": 101.5}
+        return {
+            "id": broker_order_id,
+            "status": "FILLED",
+            "filledQuantity": 10.0,
+            "filledPrice": 101.5,
+        }
 
     async def cancel_order(self, broker_order_id):
         pass
@@ -181,21 +187,24 @@ async def test_execution_engine_records_execution_quality_and_slippage_alert(db)
     assert order.fill_latency_ms is not None
 
     alert = (
-        await db.execute(
-            select(Alert).where(Alert.alert_type == "abnormal_slippage")
-        )
+        await db.execute(select(Alert).where(Alert.alert_type == "abnormal_slippage"))
     ).scalar_one()
     assert alert.payload["order_id"] == str(order.id)
 
 
 # ── submit_order branch coverage ──────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_submit_order_dry_run_fills_without_broker_call(db):
     engine = ExecutionEngine(db, DummyBroker())
     order = await engine.create_order_intent(
-        ticker="TSLA", side="buy", order_type="market",
-        quantity=Decimal("5"), estimated_price=Decimal("200"), is_dry_run=True,
+        ticker="TSLA",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("5"),
+        estimated_price=Decimal("200"),
+        is_dry_run=True,
     )
     order = await engine.submit_order(order)
     assert order.status == "filled"
@@ -207,8 +216,11 @@ async def test_submit_order_dry_run_fills_without_broker_call(db):
 async def test_submit_order_rejected_by_broker(db):
     engine = ExecutionEngine(db, RejectedBroker())
     order = await engine.create_order_intent(
-        ticker="AAPL", side="buy", order_type="market",
-        quantity=Decimal("3"), is_dry_run=False,
+        ticker="AAPL",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("3"),
+        is_dry_run=False,
     )
     order = await engine.submit_order(order)
     assert order.status == "rejected"
@@ -219,8 +231,11 @@ async def test_submit_order_rejected_by_broker(db):
 async def test_submit_order_cancelled_by_broker(db):
     engine = ExecutionEngine(db, CancelledBroker())
     order = await engine.create_order_intent(
-        ticker="MSFT", side="buy", order_type="market",
-        quantity=Decimal("2"), is_dry_run=False,
+        ticker="MSFT",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("2"),
+        is_dry_run=False,
     )
     order = await engine.submit_order(order)
     assert order.status == "cancelled"
@@ -231,8 +246,11 @@ async def test_submit_order_cancelled_by_broker(db):
 async def test_submit_order_working_becomes_accepted(db):
     engine = ExecutionEngine(db, WorkingBroker())
     order = await engine.create_order_intent(
-        ticker="GOOG", side="buy", order_type="market",
-        quantity=Decimal("1"), is_dry_run=False,
+        ticker="GOOG",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("1"),
+        is_dry_run=False,
     )
     order = await engine.submit_order(order)
     assert order.status == "accepted"
@@ -248,8 +266,11 @@ async def test_submit_order_broker_error_sets_error_status(db, monkeypatch):
 
     engine = ExecutionEngine(db, ErrorBroker())
     order = await engine.create_order_intent(
-        ticker="AMZN", side="buy", order_type="market",
-        quantity=Decimal("1"), is_dry_run=False,
+        ticker="AMZN",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("1"),
+        is_dry_run=False,
     )
     order = await engine.submit_order(order)
     assert order.status == "error"
@@ -260,8 +281,11 @@ async def test_submit_order_broker_error_sets_error_status(db, monkeypatch):
 async def test_submit_order_non_pending_intent_raises_value_error(db):
     engine = ExecutionEngine(db, WorkingBroker())
     order = await engine.create_order_intent(
-        ticker="NVDA", side="buy", order_type="market",
-        quantity=Decimal("1"), is_dry_run=False,
+        ticker="NVDA",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("1"),
+        is_dry_run=False,
     )
     order = await engine.submit_order(order)  # → accepted
     with pytest.raises(ValueError, match="Cannot submit order"):
@@ -272,8 +296,12 @@ async def test_submit_order_non_pending_intent_raises_value_error(db):
 async def test_submit_limit_order_becomes_accepted(db):
     engine = ExecutionEngine(db, LimitBroker())
     order = await engine.create_order_intent(
-        ticker="META", side="buy", order_type="limit",
-        quantity=Decimal("2"), limit_price=Decimal("300"), is_dry_run=False,
+        ticker="META",
+        side="buy",
+        order_type="limit",
+        quantity=Decimal("2"),
+        limit_price=Decimal("300"),
+        is_dry_run=False,
     )
     order = await engine.submit_order(order)
     assert order.status == "accepted"
@@ -282,12 +310,16 @@ async def test_submit_limit_order_becomes_accepted(db):
 
 # ── reconcile_order branch coverage ──────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_reconcile_order_fills_accepted(db):
     engine = ExecutionEngine(db, FilledOnReconcileBroker())
     order = await engine.create_order_intent(
-        ticker="META", side="buy", order_type="market",
-        quantity=Decimal("10"), is_dry_run=False,
+        ticker="META",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("10"),
+        is_dry_run=False,
     )
     order = await engine.submit_order(order)  # → accepted (WORKING)
     assert order.status == "accepted"
@@ -301,8 +333,12 @@ async def test_reconcile_order_fills_accepted(db):
 async def test_reconcile_order_skips_already_filled(db):
     engine = ExecutionEngine(db, FilledBroker())
     order = await engine.create_order_intent(
-        ticker="AAPL", side="buy", order_type="market",
-        quantity=Decimal("5"), estimated_price=Decimal("100"), is_dry_run=False,
+        ticker="AAPL",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("5"),
+        estimated_price=Decimal("100"),
+        is_dry_run=False,
     )
     order = await engine.submit_order(order)  # FilledBroker → filled immediately
     assert order.status == "filled"
@@ -312,12 +348,16 @@ async def test_reconcile_order_skips_already_filled(db):
 
 # ── cancel_order coverage ─────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_cancel_order_sets_cancelled_status(db):
     engine = ExecutionEngine(db, WorkingBroker())
     order = await engine.create_order_intent(
-        ticker="SPY", side="buy", order_type="market",
-        quantity=Decimal("3"), is_dry_run=False,
+        ticker="SPY",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("3"),
+        is_dry_run=False,
     )
     order = await engine.submit_order(order)  # → accepted
     order = await engine.cancel_order(order)
@@ -325,7 +365,27 @@ async def test_cancel_order_sets_cancelled_status(db):
     assert order.cancelled_at is not None
 
 
+@pytest.mark.asyncio
+async def test_cancel_order_rejects_already_filled_order(db):
+    engine = ExecutionEngine(db, FilledBroker())
+    order = await engine.create_order_intent(
+        ticker="SPY",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("3"),
+        is_dry_run=False,
+    )
+    order = await engine.submit_order(order)
+
+    with pytest.raises(InvalidOrderTransition):
+        await engine.cancel_order(order)
+
+    assert order.status == "filled"
+    assert order.cancelled_at is None
+
+
 # ── client_order_key idempotency ──────────────────────────────────────────────
+
 
 def test_client_order_key_deterministic_for_signal():
     engine = ExecutionEngine(None, None)
@@ -338,7 +398,9 @@ def test_client_order_key_deterministic_for_signal():
 def test_client_order_key_differs_by_ticker():
     engine = ExecutionEngine(None, None)
     sig_id = "sig-1"
-    assert engine._make_client_order_key("AAPL", "buy", sig_id) != engine._make_client_order_key("MSFT", "buy", sig_id)
+    assert engine._make_client_order_key("AAPL", "buy", sig_id) != engine._make_client_order_key(
+        "MSFT", "buy", sig_id
+    )
 
 
 def test_client_order_key_differs_with_different_salt():
