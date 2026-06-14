@@ -12,6 +12,7 @@ from app.broker.snapshots import BrokerOrderSnapshot
 from app.broker.trading212 import T212APIError, T212AuthError, T212RateLimitError
 from app.core.config import settings
 from app.db.models import AuditLog, Order
+from app.execution.state_machine import InvalidOrderTransition
 from app.services.demo_order_reconciliation import DemoOrderReconciler
 from app.services.safety_policy import SafetyPolicyViolation
 
@@ -503,6 +504,24 @@ async def test_unknown_broker_status_preserves_local_status_and_audits(db, monke
     assert result.new_status == "accepted"
     assert order.status == "accepted"
     assert "demo_order_reconciliation_unknown_status" in await _actions(db)
+
+
+@pytest.mark.asyncio
+async def test_demo_reconciliation_rejects_terminal_to_cancelled_transition(db, monkeypatch):
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
+    monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
+
+    order = _demo_order(status="filled")
+    db.add(order)
+    await db.flush()
+    broker = HistoryBroker({"items": [{"id": "48850886521", "status": "CANCELLED"}]})
+
+    with pytest.raises(InvalidOrderTransition):
+        await DemoOrderReconciler(db, broker).reconcile_order(order)
+
+    assert order.status == "filled"
+    assert broker.placement_calls == 0
 
 
 @pytest.mark.asyncio
