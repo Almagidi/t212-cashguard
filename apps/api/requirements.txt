@@ -18,7 +18,7 @@ structlog==24.4.0
 prometheus-client==0.21.1
 rich==15.0.0
 pytz==2024.2
-python-dateutil==2.9.0
+python-dateutil==2.9.0.post0
 aiofiles==24.1.0
 pytest==9.0.3
 pytest-asyncio==1.3.0
