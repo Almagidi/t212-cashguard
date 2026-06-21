@@ -1,11 +1,32 @@
 # Runbook
 
+## Repository And Safety Baseline
+
+Use the active working repo for day-to-day work:
+
+```bash
+cd /Users/Ameer/Desktop/t212-cashguard-codex
+```
+
+`/Users/Ameer/Desktop/t212-cashguard` is the git host repo for linked worktrees. Do not
+move or delete it.
+
+Current post-maintenance baseline:
+
+- audited main SHA: `0c429cb9237d5d3c223aee0418aa92116f73526f`
+- maintenance/security queue clear at audit time
+- Dependabot alert #58 for dev-only `js-yaml` fixed
+- no open PRs at audit time
+- project remains Trading 212 DEMO and paper-mode hardening
+- live trading remains disabled and not live-ready
+- Kraken/crypto trading has not started
+
 ## Daily Operations
 
 ### Starting the app
 
 ```bash
-cd t212-cashguard
+cd /Users/Ameer/Desktop/t212-cashguard-codex
 make up           # Full Docker stack
 # OR
 make dev          # Dev mode with hot reload
@@ -33,12 +54,18 @@ In the browser:
 
 ---
 
-## Enabling Auto-Trading
+## Mock/Demo Auto-Trading
+
+Auto-trading is not live trading. Keep live trading disabled unless a separate
+live-readiness milestone explicitly approves otherwise.
 
 1. Ensure kill switch is **inactive** (Emergency page → status shows "Inactive")
 2. Ensure at least one strategy is **enabled** (Strategies page)
 3. Dashboard → Auto Trading card → click "Enable" (or `POST /v1/emergency/auto-trading/on`)
 4. Monitor the Signals and Orders pages
+
+Do not use this runbook to enable live trading, bypass readiness gates, add frontend order
+controls, or weaken broker/provider/execution safety checks.
 
 ---
 
@@ -115,6 +142,7 @@ docker-compose exec -T postgres psql -U cashguard cashguard < backup_20240101.sq
 ## Upgrading
 
 ```bash
+cd /Users/Ameer/Desktop/t212-cashguard-codex
 git pull
 make down
 make up           # Rebuilds Docker images
@@ -139,6 +167,9 @@ docker-compose logs api | grep ERROR
 ---
 
 ## Common Recovery Procedures
+
+Prefer the operator dashboard and read-only status endpoints when diagnosing why trading is
+blocked. Do not clear safety gates just to make a status panel green.
 
 ### Stuck order (status = submitted but no broker response)
 
