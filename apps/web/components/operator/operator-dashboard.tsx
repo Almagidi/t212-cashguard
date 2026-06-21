@@ -35,6 +35,7 @@ import type {
   OperatorOverallStatus,
   PaperExecutionHistoryItem,
   OperatorRecentActivity,
+  OperatorSafetyFlags,
   OperatorStatus,
   OperatorVenueStatus,
   OperatorWorkerHealth,
@@ -945,6 +946,85 @@ function RecentActivity({ status }: { status: OperatorStatus }) {
   );
 }
 
+function failurePolicyExplanation(
+  policy: OperatorSafetyFlags["unrealized_pnl_failure_policy"],
+): string {
+  switch (policy) {
+    case "block_trading":
+      return "Trading is blocked until live P&L can be read again (fail-closed).";
+    case "activate_kill_switch":
+      return "The kill switch is activated, halting automation (fail-closed).";
+    case "assume_zero":
+      return "Live P&L is treated as zero and trading continues (fail-open).";
+    default:
+      return "Failure policy unknown — treat posture as unverified.";
+  }
+}
+
+function credentialSourceLabel(
+  source: OperatorSafetyFlags["credential_source"],
+): string {
+  switch (source) {
+    case "stored_connection":
+      return "Stored broker connection";
+    case "environment_fallback":
+      return "Environment configuration fallback";
+    case "mock":
+      return "Mock (offline simulation — no real broker)";
+    case "none":
+      return "None configured";
+    default:
+      return "Unknown";
+  }
+}
+
+function SafetyPosture({ status }: { status: OperatorStatus }) {
+  const flags = status.safety_flags;
+  const failClosed =
+    flags.unrealized_pnl_failure_policy === "block_trading" ||
+    flags.unrealized_pnl_failure_policy === "activate_kill_switch";
+
+  return (
+    <Card data-testid="operator-safety-posture">
+      <CardHeader>
+        <CardTitle>Safety Posture</CardTitle>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Plain-language view of how the system fails safe and which broker
+          credential source is active. Read-only — nothing here is configurable.
+        </p>
+      </CardHeader>
+      <CardContent>
+        <dl className="grid gap-x-6 md:grid-cols-2">
+          <InfoRow
+            label="If live P&L cannot be read"
+            value={failurePolicyExplanation(
+              flags.unrealized_pnl_failure_policy,
+            )}
+            valueClassName={failClosed ? "text-emerald-400" : "text-amber-400"}
+          />
+          <InfoRow
+            label="Unrealized-P&L failure policy"
+            value={flags.unrealized_pnl_failure_policy ?? "unknown"}
+          />
+          <InfoRow
+            label="Broker credentials configured"
+            value={flags.credentials_configured ? "Yes" : "No"}
+            valueClassName={boolTone(flags.credentials_configured)}
+          />
+          <InfoRow
+            label="Credential source in use"
+            value={credentialSourceLabel(flags.credential_source)}
+          />
+        </dl>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Credential status is metadata only: no API keys, secrets, encrypted
+          blobs, or stored values are ever shown here.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 function SafetyFlags({ status }: { status: OperatorStatus }) {
   return (
     <Card data-testid="operator-safety-flags">
@@ -1255,6 +1335,7 @@ export function OperatorDashboard({
       <PaperExecutionSummary status={status} />
       <PaperExecutionHistoryPanel />
       <SafetyFlags status={status} />
+      <SafetyPosture status={status} />
       <RecentActivity status={status} />
 
       <Card className="border-blue-500/20 bg-blue-500/5">

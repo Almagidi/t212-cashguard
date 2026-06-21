@@ -502,6 +502,15 @@ class OperatorSafetyFlagsOut(BaseModel):
     any_venue_degraded: bool
     missing_expected_venue_configs: bool
     worker_health_known: bool
+    # Read-only safety posture surfaced for operator visibility only.
+    # ``unrealized_pnl_failure_policy`` reflects the configured fail behaviour
+    # when an unrealized-P&L snapshot cannot be read; it is not changed here.
+    unrealized_pnl_failure_policy: Literal["assume_zero", "block_trading", "activate_kill_switch"]
+    # Safe, non-secret broker-credential metadata. No key, secret, encrypted
+    # blob, or decrypted value is ever exposed — only configured/not and a
+    # coarse source enum mirroring the runtime resolution order.
+    credentials_configured: bool
+    credential_source: Literal["stored_connection", "environment_fallback", "mock", "none"]
 
 
 class OperatorStatusOut(BaseModel):
