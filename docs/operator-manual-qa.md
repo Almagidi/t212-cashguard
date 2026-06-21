@@ -7,6 +7,16 @@ Use this gate to manually test the operator dashboard against a real FastAPI bac
 safe mock mode. It requires no Trading212 or Kraken credentials, makes no broker order
 calls, and must stay read-only.
 
+Post-maintenance baseline:
+
+- active repo: `/Users/Ameer/Desktop/t212-cashguard-codex`
+- git host repo for linked worktrees: `/Users/Ameer/Desktop/t212-cashguard`
+- audited main SHA: `0c429cb9237d5d3c223aee0418aa92116f73526f`
+- maintenance/security queue clear at audit time
+- Dependabot alert #58 for dev-only `js-yaml` fixed
+- live trading disabled and not live-ready
+- Kraken/crypto trading not started; Kraken content here is mock/read-only visibility only
+
 ## Modes
 
 The normal double-click launcher, `launcher/2. Start CashGuard.command`, loads root `.env`
@@ -24,7 +34,6 @@ switches are visible, and mutation controls are absent, before merging operator-
 ---
 
 ## How to run
-main
 
 ```bash
 make operator-manual
@@ -178,6 +187,9 @@ Kraken credentials.
 The normal dashboard may not show Kraken because it focuses on account, positions, orders,
 alerts, and Trading212 broker status from the normal app data. Kraken readiness is expected
 on the operator page and the Kraken DCA endpoints.
+
+This is visibility only. It does not mean Kraken/crypto trading has started, and it must
+not be used to add live crypto trading, real Kraken credentials, or mutation controls.
 
 ## Understanding Dashboard Runtime Diagnostics
 
@@ -564,4 +576,3 @@ You do not need:
 
 The SQLite database at `/tmp/t212_manual_qa.db` is ephemeral and re-created fresh every
 time you run `make operator-manual`.
-main
