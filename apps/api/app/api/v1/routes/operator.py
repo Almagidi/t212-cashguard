@@ -1,4 +1,5 @@
 """Read-only operator control tower status."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -26,6 +27,7 @@ from app.core.config import settings
 from app.db.models import (
     AppSettings,
     AuditLog,
+    BrokerConnection,
     DcaConfig,
     DcaPlanState,
     Order,
@@ -135,11 +137,7 @@ def _venue_status_from_row(row: VenueConfig | None, venue: str) -> OperatorVenue
 def _is_live_approved(strategy: Strategy) -> bool:
     params = strategy.params if isinstance(strategy.params, dict) else {}
     promotion = params.get("promotion")
-    live_approved_at = (
-        promotion.get("live_approved_at")
-        if isinstance(promotion, dict)
-        else None
-    )
+    live_approved_at = promotion.get("live_approved_at") if isinstance(promotion, dict) else None
     return bool(strategy.is_live or live_approved_at)
 
 
@@ -198,6 +196,38 @@ async def _count_orders(
     return int((await db.execute(query)).scalar_one())
 
 
+async def _resolve_credential_source(
+    db: AsyncSession,
+    app_mode: str,
+) -> Literal["stored_connection", "environment_fallback", "mock", "none"]:
+    """Safe, read-only summary of which broker-credential source the runtime
+    would use for the active ``APP_MODE``.
+
+    Returns a coarse enum only — never a key, secret, encrypted blob, or
+    decrypted value. The resolution order mirrors ``app.api.deps.get_broker``
+    (mock → stored active connection → environment fallback → none) without
+    performing any broker call or credential read, so this stays purely
+    informational and changes no trading, provider, or auth behaviour.
+    """
+    if app_mode == "mock":
+        return "mock"
+    stored_connection_id = (
+        await db.execute(
+            select(BrokerConnection.id)
+            .where(BrokerConnection.is_active.is_(True))
+            .where(BrokerConnection.environment == app_mode)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if stored_connection_id is not None:
+        return "stored_connection"
+    if app_mode == "demo" and settings.T212_DEMO_API_KEY and settings.T212_DEMO_API_SECRET:
+        return "environment_fallback"
+    if app_mode == "live" and settings.T212_LIVE_API_KEY and settings.T212_LIVE_API_SECRET:
+        return "environment_fallback"
+    return "none"
+
+
 @router.get("/status", response_model=OperatorStatusOut)
 async def operator_status(
     audit_limit: int = Query(20, ge=1, le=100),
@@ -210,8 +240,7 @@ async def operator_status(
     venue_rows = list(await VenueConfigRepository(db).list_all())
     venues_by_name = {row.venue: row for row in venue_rows}
     venue_statuses = [
-        _venue_status_from_row(venues_by_name.get(venue), venue)
-        for venue in _EXPECTED_VENUES
+        _venue_status_from_row(venues_by_name.get(venue), venue) for venue in _EXPECTED_VENUES
     ]
 
     strategy_rows = list((await db.execute(select(Strategy))).scalars().all())
@@ -220,10 +249,7 @@ async def operator_status(
 
     latest_t212_order = (
         await db.execute(
-            select(Order)
-            .where(Order.venue == "t212")
-            .order_by(desc(Order.created_at))
-            .limit(1)
+            select(Order).where(Order.venue == "t212").order_by(desc(Order.created_at)).limit(1)
         )
     ).scalar_one_or_none()
 
@@ -242,7 +268,9 @@ async def operator_status(
                 .where(AuditLog.action == "dca_paper_decision")
                 .order_by(desc(AuditLog.occurred_at))
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
 
     decision_counts: dict[str, int] = {}
@@ -267,13 +295,9 @@ async def operator_status(
     heartbeat_last_seen_at = heartbeat.last_seen_at if heartbeat is not None else None
 
     recent_audit_rows = list(
-        (
-            await db.execute(
-                select(AuditLog)
-                .order_by(desc(AuditLog.occurred_at))
-                .limit(audit_limit)
-            )
-        ).scalars().all()
+        (await db.execute(select(AuditLog).order_by(desc(AuditLog.occurred_at)).limit(audit_limit)))
+        .scalars()
+        .all()
     )
 
     app_settings = (
@@ -284,15 +308,12 @@ async def operator_status(
     )
 
     any_venue_kill_switch_active = any(
-        status.kill_switch_active is True
-        for status in venue_statuses
+        status.kill_switch_active is True for status in venue_statuses
     )
-    any_venue_degraded = any(
-        status.degraded_mode_active is True
-        for status in venue_statuses
-    )
+    any_venue_degraded = any(status.degraded_mode_active is True for status in venue_statuses)
     missing_expected_venue_configs = any(not status.present for status in venue_statuses)
     worker_health_known = worker_health == "healthy"
+    credential_source = await _resolve_credential_source(db, settings.APP_MODE)
     kraken_live_enabled = False
     dca_runnable = KrakenDCAPlanner.RUNNABLE is True
     dca_live_enabled = False
@@ -374,14 +395,10 @@ async def operator_status(
             decision_count_total=len(dca_audits),
             buy_due_count=decision_counts.get("BUY_DUE", 0),
             blocked_count=sum(
-                count
-                for code, count in decision_counts.items()
-                if code.startswith("BLOCKED_")
+                count for code, count in decision_counts.items() if code.startswith("BLOCKED_")
             ),
             skipped_count=sum(
-                count
-                for code, count in decision_counts.items()
-                if code.startswith("SKIP_")
+                count for code, count in decision_counts.items() if code.startswith("SKIP_")
             ),
             total_paper_allocated_usd=sum(
                 (state.total_allocated_usd for state in dca_states),
@@ -393,15 +410,15 @@ async def operator_status(
             runnable=False,
             live_enabled=dca_live_enabled,
             paper_only=True,
-            tickers=sorted({
-                *(config.ticker for config in dca_configs),
-                *(state.ticker for state in dca_states),
-                *audit_tickers,
-            }),
+            tickers=sorted(
+                {
+                    *(config.ticker for config in dca_configs),
+                    *(state.ticker for state in dca_states),
+                    *audit_tickers,
+                }
+            ),
         ),
-        paper_execution=OperatorPaperExecutionStatusOut(
-            **(await paper_execution_summary(db))
-        ),
+        paper_execution=OperatorPaperExecutionStatusOut(**(await paper_execution_summary(db))),
         schedulers=OperatorSchedulersStatusOut(
             dca_paper_evaluate_registered=scheduler_registered,
             dca_paper_evaluate_cadence=scheduler_cadence,
@@ -440,5 +457,8 @@ async def operator_status(
             any_venue_degraded=any_venue_degraded,
             missing_expected_venue_configs=missing_expected_venue_configs,
             worker_health_known=worker_health_known,
+            unrealized_pnl_failure_policy=settings.POSITION_MONITOR_UNREALIZED_PNL_FAILURE_POLICY,
+            credentials_configured=credential_source != "none",
+            credential_source=credential_source,
         ),
     )

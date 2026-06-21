@@ -912,6 +912,16 @@ export interface OperatorSafetyFlags {
   any_venue_degraded: boolean;
   missing_expected_venue_configs: boolean;
   worker_health_known: boolean;
+  unrealized_pnl_failure_policy:
+    | "assume_zero"
+    | "block_trading"
+    | "activate_kill_switch";
+  credentials_configured: boolean;
+  credential_source:
+    | "stored_connection"
+    | "environment_fallback"
+    | "mock"
+    | "none";
 }
 
 export interface OperatorStatus {

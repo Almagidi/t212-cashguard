@@ -124,6 +124,9 @@ const operatorStatus = {
     any_venue_degraded: true,
     missing_expected_venue_configs: false,
     worker_health_known: false,
+    unrealized_pnl_failure_policy: 'block_trading',
+    credentials_configured: true,
+    credential_source: 'mock',
   },
 }
 
@@ -386,6 +389,17 @@ test.describe('Operator dashboard readiness', () => {
     for (const label of expectedSafetyFlagLabels) {
       await expect(safetyFlags).toContainText(label)
     }
+
+    // Safety posture card — read-only failure policy + safe credential source.
+    const safetyPosture = page.getByTestId('operator-safety-posture')
+    await expect(safetyPosture).toBeVisible()
+    await expect(safetyPosture).toContainText(
+      'Trading is blocked until live P&L can be read again (fail-closed).',
+    )
+    await expect(safetyPosture).toContainText('Broker credentials configured')
+    await expect(safetyPosture).toContainText(
+      'Mock (offline simulation — no real broker)',
+    )
 
     await expect(page.getByText('Worker heartbeat missing')).toBeVisible()
     await expect(page.getByText('Endpoint read-only')).toBeVisible()

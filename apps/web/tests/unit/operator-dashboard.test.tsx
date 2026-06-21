@@ -195,6 +195,9 @@ function operatorStatus(
       any_venue_degraded: true,
       missing_expected_venue_configs: false,
       worker_health_known: false,
+      unrealized_pnl_failure_policy: "block_trading",
+      credentials_configured: true,
+      credential_source: "mock",
     },
   };
 
@@ -387,6 +390,80 @@ describe("OperatorDashboard", () => {
     for (const label of expectedFlagLabels) {
       expect(within(card).getByText(label)).toBeInTheDocument();
     }
+  });
+
+  it("renders the safety posture card with failure policy and credential source", () => {
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("operator-safety-posture");
+    expect(within(card).getByText("Safety Posture")).toBeInTheDocument();
+    // Plain-language explanation of the fail-closed P&L policy.
+    expect(
+      within(card).getByText(
+        "Trading is blocked until live P&L can be read again (fail-closed).",
+      ),
+    ).toBeInTheDocument();
+    // Credential metadata is shown in operator-friendly wording.
+    const credsRow = within(card)
+      .getByText("Broker credentials configured")
+      .closest("div");
+    expect(credsRow).toHaveTextContent("Yes");
+    expect(
+      within(card).getByText("Mock (offline simulation — no real broker)"),
+    ).toBeInTheDocument();
+  });
+
+  it("explains a fail-open P&L policy distinctly from fail-closed", () => {
+    const status = operatorStatus();
+    render(
+      <OperatorDashboard
+        status={{
+          ...status,
+          safety_flags: {
+            ...status.safety_flags,
+            unrealized_pnl_failure_policy: "assume_zero",
+            credentials_configured: false,
+            credential_source: "none",
+          },
+        }}
+      />,
+    );
+
+    const card = screen.getByTestId("operator-safety-posture");
+    expect(
+      within(card).getByText(
+        "Live P&L is treated as zero and trading continues (fail-open).",
+      ),
+    ).toBeInTheDocument();
+    const credsRow = within(card)
+      .getByText("Broker credentials configured")
+      .closest("div");
+    expect(credsRow).toHaveTextContent("No");
+    expect(within(card).getByText("None configured")).toBeInTheDocument();
+  });
+
+  it("shows credential metadata only as a mapped safe label, never a raw value", () => {
+    const status = operatorStatus();
+    render(
+      <OperatorDashboard
+        status={{
+          ...status,
+          safety_flags: {
+            ...status.safety_flags,
+            credential_source: "stored_connection",
+          },
+        }}
+      />,
+    );
+
+    const card = screen.getByTestId("operator-safety-posture");
+    // The coarse enum is mapped to a human-readable label, and the raw token
+    // is never passed through. The card only ever shows safe metadata — there
+    // is no field on the status that could carry a key, secret, or blob.
+    expect(
+      within(card).getByText("Stored broker connection"),
+    ).toBeInTheDocument();
+    expect(within(card).queryByText("stored_connection")).toBeNull();
   });
 
   it("shows live trading as locked when env setting and app unlock are false", () => {

@@ -1,4 +1,5 @@
 """API tests for the unified read-only operator status endpoint."""
+
 from __future__ import annotations
 
 import uuid
@@ -255,8 +256,7 @@ async def test_operator_status_returns_control_tower_summary(
     assert body["safety_flags"]["worker_health_known"] is False
 
     dca_activity = [
-        item for item in body["recent_activity"]
-        if item["action"] == "dca_paper_decision"
+        item for item in body["recent_activity"] if item["action"] == "dca_paper_decision"
     ]
     assert len(dca_activity) == 3
     assert dca_activity[0]["payload_summary"]["ticker"] == "BTC/USD"
@@ -269,11 +269,13 @@ async def test_operator_status_reports_recent_persisted_heartbeat_as_healthy(
     auth_headers,
     db,
 ):
-    db.add_all([
-        _venue("t212"),
-        _venue("kraken"),
-        _heartbeat(last_seen_at=datetime.now(UTC)),
-    ])
+    db.add_all(
+        [
+            _venue("t212"),
+            _venue("kraken"),
+            _heartbeat(last_seen_at=datetime.now(UTC)),
+        ]
+    )
     await db.commit()
 
     response = await client.get("/v1/operator/status", headers=auth_headers)
@@ -294,11 +296,13 @@ async def test_operator_status_reports_old_persisted_heartbeat_as_stale(
     auth_headers,
     db,
 ):
-    db.add_all([
-        _venue("t212"),
-        _venue("kraken"),
-        _heartbeat(last_seen_at=datetime.now(UTC) - timedelta(seconds=181)),
-    ])
+    db.add_all(
+        [
+            _venue("t212"),
+            _venue("kraken"),
+            _heartbeat(last_seen_at=datetime.now(UTC) - timedelta(seconds=181)),
+        ]
+    )
     await db.commit()
 
     response = await client.get("/v1/operator/status", headers=auth_headers)
@@ -467,10 +471,12 @@ async def test_operator_status_kill_switch_blocks_and_missing_venues_degrade(
     auth_headers,
     db,
 ):
-    db.add_all([
-        _venue("t212", kill_switch_active=True),
-        _venue("kraken"),
-    ])
+    db.add_all(
+        [
+            _venue("t212", kill_switch_active=True),
+            _venue("kraken"),
+        ]
+    )
     await db.commit()
 
     blocked = await client.get("/v1/operator/status", headers=auth_headers)
@@ -554,24 +560,26 @@ async def test_operator_status_includes_paper_execution_summary(
     order = _order(venue="paper", status="filled", created_at=BASE_TIME)
     order.is_dry_run = True
     order.execution_environment = PAPER_EXECUTION_ENVIRONMENT
-    db.add_all([
-        _venue("t212"),
-        _venue("kraken"),
-        connection,
-        order,
-        PositionSnapshot(
-            id=uuid.uuid4(),
-            connection_id=connection.id,
-            ticker="PAPERXYZ",
-            quantity=Decimal("2"),
-            avg_price=Decimal("10"),
-            current_price=Decimal("10"),
-            unrealized_pnl=Decimal("0"),
-            quantity_available=Decimal("2"),
-            raw={"paper_only": True},
-            snapshotted_at=BASE_TIME,
-        ),
-    ])
+    db.add_all(
+        [
+            _venue("t212"),
+            _venue("kraken"),
+            connection,
+            order,
+            PositionSnapshot(
+                id=uuid.uuid4(),
+                connection_id=connection.id,
+                ticker="PAPERXYZ",
+                quantity=Decimal("2"),
+                avg_price=Decimal("10"),
+                current_price=Decimal("10"),
+                unrealized_pnl=Decimal("0"),
+                quantity_available=Decimal("2"),
+                raw={"paper_only": True},
+                snapshotted_at=BASE_TIME,
+            ),
+        ]
+    )
     await db.commit()
 
     response = await client.get("/v1/operator/status", headers=auth_headers)
@@ -583,3 +591,171 @@ async def test_operator_status_includes_paper_execution_summary(
     assert paper["last_paper_execution_status"] == "filled"
     assert paper["open_paper_positions_count"] == 1
     assert "No broker order sent." in paper["safety_notes"]
+
+
+# ─── Operator safety-visibility metadata (PR 2) ───────────────────────────────
+#
+# These cover the read-only safety posture surfaced for operator visibility:
+# the configured unrealized-P&L failure policy and a safe, non-secret
+# broker-credential source/status. They assert the values are accurate AND that
+# no secret material ever reaches the response.
+
+
+def _safety_flags(response) -> dict:
+    assert response.status_code == 200
+    return response.json()["safety_flags"]
+
+
+@pytest.mark.asyncio
+async def test_operator_status_exposes_pnl_failure_policy_and_mock_credential_source(
+    client,
+    auth_headers,
+    db,
+):
+    db.add_all([_venue("t212"), _venue("kraken")])
+    await db.commit()
+
+    flags = _safety_flags(await client.get("/v1/operator/status", headers=auth_headers))
+
+    # Default test runtime is APP_MODE=mock with the fail-closed P&L policy.
+    assert flags["unrealized_pnl_failure_policy"] == "block_trading"
+    assert flags["credential_source"] == "mock"
+    assert flags["credentials_configured"] is True
+
+
+@pytest.mark.asyncio
+async def test_operator_status_credential_source_stored_connection(
+    client,
+    auth_headers,
+    db,
+    monkeypatch,
+):
+    from app.core.config import settings
+    from app.db.models import BrokerConnection, User
+
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    user = (await db.execute(select(User))).scalars().first()
+    assert user is not None
+    db.add_all(
+        [
+            _venue("t212"),
+            _venue("kraken"),
+            BrokerConnection(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                broker="trading212",
+                environment="demo",
+                api_key_encrypted="ENC-DEMO-KEY",
+                api_secret_encrypted="ENC-DEMO-SECRET",
+                is_active=True,
+            ),
+        ]
+    )
+    await db.commit()
+
+    flags = _safety_flags(await client.get("/v1/operator/status", headers=auth_headers))
+    assert flags["credential_source"] == "stored_connection"
+    assert flags["credentials_configured"] is True
+
+
+@pytest.mark.asyncio
+async def test_operator_status_credential_source_environment_fallback(
+    client,
+    auth_headers,
+    db,
+    monkeypatch,
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(settings, "T212_DEMO_API_KEY", "env-demo-key")
+    monkeypatch.setattr(settings, "T212_DEMO_API_SECRET", "env-demo-secret")
+    db.add_all([_venue("t212"), _venue("kraken")])
+    await db.commit()
+
+    flags = _safety_flags(await client.get("/v1/operator/status", headers=auth_headers))
+    assert flags["credential_source"] == "environment_fallback"
+    assert flags["credentials_configured"] is True
+
+
+@pytest.mark.asyncio
+async def test_operator_status_credential_source_none_when_unconfigured(
+    client,
+    auth_headers,
+    db,
+    monkeypatch,
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(settings, "T212_DEMO_API_KEY", "")
+    monkeypatch.setattr(settings, "T212_DEMO_API_SECRET", "")
+    db.add_all([_venue("t212"), _venue("kraken")])
+    await db.commit()
+
+    flags = _safety_flags(await client.get("/v1/operator/status", headers=auth_headers))
+    assert flags["credential_source"] == "none"
+    assert flags["credentials_configured"] is False
+
+
+@pytest.mark.asyncio
+async def test_operator_status_safety_metadata_exposes_no_secret_values(
+    client,
+    auth_headers,
+    db,
+    monkeypatch,
+):
+    from app.core.config import settings
+    from app.db.models import BrokerConnection, User
+
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(settings, "T212_DEMO_API_KEY", "RAW-ENV-DEMO-KEY")
+    monkeypatch.setattr(settings, "T212_DEMO_API_SECRET", "RAW-ENV-DEMO-SECRET")
+    user = (await db.execute(select(User))).scalars().first()
+    assert user is not None
+    db.add_all(
+        [
+            _venue("t212"),
+            _venue("kraken"),
+            BrokerConnection(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                broker="trading212",
+                environment="demo",
+                api_key_encrypted="ENCRYPTED-KEY-BLOB",
+                api_secret_encrypted="ENCRYPTED-SECRET-BLOB",
+                is_active=True,
+            ),
+        ]
+    )
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+    assert response.status_code == 200
+
+    # No credential value (stored encrypted blob or env-configured secret) may
+    # appear anywhere in the serialized response.
+    raw = response.text
+    for secret in (
+        "ENCRYPTED-KEY-BLOB",
+        "ENCRYPTED-SECRET-BLOB",
+        "RAW-ENV-DEMO-KEY",
+        "RAW-ENV-DEMO-SECRET",
+    ):
+        assert secret not in raw
+
+    flags = response.json()["safety_flags"]
+    # Only safe, coarse metadata is surfaced.
+    assert flags["credential_source"] in {
+        "stored_connection",
+        "environment_fallback",
+        "mock",
+        "none",
+    }
+    assert flags["credential_source"] == "stored_connection"
+    assert isinstance(flags["credentials_configured"], bool)
+    assert flags["unrealized_pnl_failure_policy"] in {
+        "assume_zero",
+        "block_trading",
+        "activate_kill_switch",
+    }
