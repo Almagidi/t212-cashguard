@@ -23,15 +23,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from fastapi.routing import APIRoute
 
 from app.api.deps import get_current_admin, get_current_user
 from app.main import app
+from tests.smoke.route_introspection import build_http_route_map
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from fastapi.dependencies.models import Dependant
+    from fastapi.routing import APIRoute
 
 # Routes that are intentionally reachable without authentication.
 # Adding a route here requires explicit review: it widens the
@@ -107,13 +108,11 @@ def _dependency_calls(dependant: Dependant) -> set[Callable[..., object]]:
 
 
 def _http_routes() -> dict[tuple[str, str], APIRoute]:
-    routes: dict[tuple[str, str], APIRoute] = {}
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
-        for method in route.methods - _IGNORED_METHODS:
-            routes[(method, route.path)] = route
-    return routes
+    # Delegates to the shared, version-aware helper. It returns the live
+    # ``APIRoute`` objects keyed by full external path, so the dependency-tree
+    # auth assertions below keep working unchanged on both FastAPI <=0.136.x
+    # (flat ``app.routes``) and 0.137.x (deferred ``_IncludedRouter`` wrappers).
+    return build_http_route_map(app, ignored_methods=_IGNORED_METHODS)
 
 
 ROUTES = _http_routes()
