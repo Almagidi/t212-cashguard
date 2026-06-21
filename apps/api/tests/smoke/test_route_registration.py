@@ -6,6 +6,7 @@ database, or requiring broker credentials.
 
 Fails fast if a router is accidentally removed from app/main.py.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from app.main import app
+from tests.smoke.route_introspection import registered_route_methods
 
 # The four routes introduced in T-OPS-006 that must never silently disappear.
 REQUIRED_ROUTES: list[tuple[str, str]] = [
@@ -24,14 +26,10 @@ REQUIRED_ROUTES: list[tuple[str, str]] = [
 
 
 def _registered_routes() -> set[tuple[str, str]]:
-    result: set[tuple[str, str]] = set()
-    for route in app.routes:
-        methods = getattr(route, "methods", None) or set()
-        path = getattr(route, "path", None)
-        if path:
-            for method in methods:
-                result.add((method, path))
-    return result
+    # Delegates to the shared, version-aware helper so this scan resolves full
+    # paths through FastAPI 0.137.x deferred ``_IncludedRouter`` wrappers while
+    # remaining identical to the old flat ``app.routes`` scan on <=0.136.x.
+    return registered_route_methods(app)
 
 
 @pytest.mark.parametrize("method,path", REQUIRED_ROUTES, ids=[p for _, p in REQUIRED_ROUTES])
