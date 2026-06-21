@@ -26,6 +26,6 @@ pytest-cov==6.3.0
 anyio==4.7.0
 faker==40.23.0
 hypothesis==6.155.2
-sentry-sdk[fastapi]==2.19.2
+sentry-sdk[fastapi]==2.63.0
 ruff==0.8.4
 mypy==1.13.0
