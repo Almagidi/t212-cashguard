@@ -15,7 +15,7 @@ tenacity==9.0.0
 passlib[bcrypt]==1.7.4
 cryptography==48.0.1
 structlog==26.1.0
-prometheus-client==0.21.1
+prometheus-client==0.25.0
 rich==15.0.0
 pytz==2024.2
 python-dateutil==2.9.0.post0
