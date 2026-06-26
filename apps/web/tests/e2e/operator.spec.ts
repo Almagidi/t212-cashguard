@@ -13,6 +13,18 @@ const operatorStatus = {
   mode: 'read_only_status',
   generated_at: '2026-05-05T09:30:00Z',
   overall_status: 'degraded',
+  why_blocked: [
+    {
+      code: 'kill_switch_active',
+      severity: 'blocked',
+      message: 'A venue kill switch is active. Trading is blocked until it is cleared.',
+    },
+    {
+      code: 'venue_degraded',
+      severity: 'degraded',
+      message: 'At least one venue is reporting degraded mode.',
+    },
+  ],
   live_trading_possible: false,
   live_trading_enabled_anywhere: false,
   venues: [
@@ -363,6 +375,15 @@ test.describe('Operator dashboard readiness', () => {
     await expect(page.getByTestId('operator-execution-boundary')).toContainText('Calls brokers')
     await expect(page.getByTestId('operator-execution-boundary')).toContainText('Triggers schedulers')
     await expect(page.getByTestId('operator-execution-boundary')).toContainText('Runs strategies')
+
+    // Why-blocked reasons — the read-only explanation of overall_status must
+    // be visible near the top, not just the raw "degraded" badge.
+    const whyBlocked = page.getByTestId('why-blocked-reasons')
+    await expect(whyBlocked).toBeVisible()
+    await expect(whyBlocked).toContainText(
+      'A venue kill switch is active. Trading is blocked until it is cleared.',
+    )
+    await expect(whyBlocked).toContainText('At least one venue is reporting degraded mode.')
 
     // Safety flags — every flag from the API must render, including the
     // live-trading lock state (env setting + app unlock) and missing

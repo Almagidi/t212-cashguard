@@ -896,6 +896,12 @@ export interface OperatorRecentActivity {
   payload_summary: Record<string, unknown>;
 }
 
+export interface OperatorBlockingReason {
+  code: string;
+  severity: "blocked" | "degraded";
+  message: string;
+}
+
 export interface OperatorSafetyFlags {
   endpoint_read_only: boolean;
   creates_orders: boolean;
@@ -929,6 +935,7 @@ export interface OperatorStatus {
   mode: "read_only_status";
   generated_at: string | null;
   overall_status: OperatorOverallStatus;
+  why_blocked: OperatorBlockingReason[];
   live_trading_possible: boolean;
   live_trading_enabled_anywhere: boolean;
   venues: OperatorVenueStatus[];
