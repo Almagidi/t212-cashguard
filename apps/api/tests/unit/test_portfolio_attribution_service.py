@@ -205,6 +205,12 @@ async def test_portfolio_attribution_replays_rebalance_orders(db, monkeypatch):
     assert attribution.ticker_attribution[0].ticker == "SPY"
     assert {row.ticker for row in attribution.ticker_attribution} == {"SPY", "QQQ"}
 
+    caveats = " ".join(attribution.coverage_caveats).lower()
+    assert "slippage" in caveats
+    assert "fee" in caveats
+    assert "rejected" in caveats or "cancelled" in caveats
+    assert "reconcil" in caveats
+
 
 # ─── Shared helpers for the focused live-service coverage below ────────────────
 #
@@ -359,6 +365,7 @@ async def test_empty_strategy_returns_zeroed_attribution(db, monkeypatch):
     assert result.recent_timeline == []
     assert result.ticker_attribution == []
     assert result.rebalance_events == []
+    assert len(result.coverage_caveats) > 0
 
 
 @pytest.mark.asyncio
@@ -769,6 +776,7 @@ async def test_build_summary_matches_detail_scalars(db, monkeypatch):
     assert summary.order_count == detail.order_count
     assert summary.rebalance_days == detail.rebalance_days
     assert summary.recent_timeline == detail.recent_timeline
+    assert summary.coverage_caveats == detail.coverage_caveats
 
 
 # ─── Pure helper math (static methods) ────────────────────────────────────────

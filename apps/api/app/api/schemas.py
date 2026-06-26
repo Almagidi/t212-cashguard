@@ -948,6 +948,20 @@ class PortfolioRebalanceEventOut(BaseModel):
     weights: list[PortfolioRebalanceWeightChangeOut] = Field(default_factory=list)
 
 
+# Static disclosure of known gaps between what this attribution replays and what
+# a fully execution-quality-adjusted attribution would include. See
+# docs/architecture/backtest-execution-quality-parity-investigation.md.
+PORTFOLIO_ATTRIBUTION_COVERAGE_CAVEATS: list[str] = [
+    "Slippage between signal price and actual fill price is not separately "
+    "itemized in this attribution.",
+    "Trading fees and commissions are not currently tracked and are not "
+    "deducted from these figures.",
+    "Rejected and cancelled rebalance orders are excluded; only filled "
+    "rebalance orders are replayed.",
+    "Orders still pending broker reconciliation may not yet be reflected in " "this attribution.",
+]
+
+
 class PortfolioStrategyAttributionSummaryOut(BaseModel):
     strategy_id: uuid.UUID
     strategy_name: str
@@ -970,6 +984,9 @@ class PortfolioStrategyAttributionSummaryOut(BaseModel):
     rebalance_days: int
     order_count: int
     recent_timeline: list[PortfolioTimelinePointOut] = Field(default_factory=list)
+    coverage_caveats: list[str] = Field(
+        default_factory=lambda: list(PORTFOLIO_ATTRIBUTION_COVERAGE_CAVEATS)
+    )
 
 
 class PortfolioStrategyAttributionOut(PortfolioStrategyAttributionSummaryOut):
@@ -1312,6 +1329,19 @@ class AuditLogList(BaseModel):
 # ─── Reports ─────────────────────────────────────────────────────────────────
 
 
+# Static disclosure of known gaps between what this report computes and what a
+# fully execution-quality-adjusted report would include. See
+# docs/architecture/backtest-execution-quality-parity-investigation.md.
+PERFORMANCE_REPORT_COVERAGE_CAVEATS: list[str] = [
+    "Slippage between expected and executed price is not joined into these "
+    "figures; totals reflect raw realized P&L only.",
+    "Trading fees and commissions are not currently tracked and are not "
+    "deducted from these figures.",
+    "Rejected and cancelled orders are excluded; only fully closed trades " "are counted.",
+    "Orders still pending broker reconciliation are not reflected in these " "totals.",
+]
+
+
 class PerformanceReport(BaseModel):
     total_trades: int
     winning_trades: int
@@ -1324,6 +1354,9 @@ class PerformanceReport(BaseModel):
     max_drawdown: float
     sharpe_ratio: float | None
     daily_pnl: list[dict[str, Any]]
+    coverage_caveats: list[str] = Field(
+        default_factory=lambda: list(PERFORMANCE_REPORT_COVERAGE_CAVEATS)
+    )
 
 
 class ExecutionQualitySummary(BaseModel):
