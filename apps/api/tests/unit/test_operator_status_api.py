@@ -921,9 +921,7 @@ async def test_operator_status_missing_app_settings_has_degraded_readiness_reaso
     )
     await db.commit()
 
-    app_settings = (
-        await db.execute(select(AppSettings).where(AppSettings.id == 1))
-    ).scalar_one()
+    app_settings = (await db.execute(select(AppSettings).where(AppSettings.id == 1))).scalar_one()
     await db.delete(app_settings)
     await db.commit()
 
