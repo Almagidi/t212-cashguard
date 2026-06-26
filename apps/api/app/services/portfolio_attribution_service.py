@@ -5,6 +5,7 @@ Builds sleeve-level PnL and attribution directly from recorded rebalance orders
 so portfolio automation can be reviewed with the same evidence trail used for
 execution.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -153,7 +154,9 @@ class PortfolioAttributionService:
                     prior_cost = ledger.avg_cost * ledger.quantity
                     new_quantity = ledger.quantity + executed_quantity
                     if new_quantity > QUANTITY_EPSILON:
-                        ledger.avg_cost = (prior_cost + (executed_quantity * fill.price)) / new_quantity
+                        ledger.avg_cost = (
+                            prior_cost + (executed_quantity * fill.price)
+                        ) / new_quantity
                     ledger.quantity = new_quantity
                     notional = executed_quantity * fill.price
                     cash_balance -= notional
@@ -187,7 +190,9 @@ class PortfolioAttributionService:
                         order_count=order_count,
                         turnover_notional=self._to_float(turnover_today),
                         total_pnl_after=0.0,
-                        weights=self._build_weight_changes(before_weights, after_weights, fills_today),
+                        weights=self._build_weight_changes(
+                            before_weights, after_weights, fills_today
+                        ),
                     )
                 )
 
@@ -209,7 +214,9 @@ class PortfolioAttributionService:
                 sleeve_peak_value = sleeve_value
             drawdown_pct = ZERO
             if sleeve_peak_value > ZERO and sleeve_value < sleeve_peak_value:
-                drawdown_pct = ((sleeve_peak_value - sleeve_value) / sleeve_peak_value) * Decimal("100")
+                drawdown_pct = ((sleeve_peak_value - sleeve_value) / sleeve_peak_value) * Decimal(
+                    "100"
+                )
 
             benchmark_value = benchmark_cash
             for ticker, shares in benchmark_positions.items():
@@ -218,7 +225,9 @@ class PortfolioAttributionService:
                 benchmark_peak_value = benchmark_value
             benchmark_drawdown_pct = ZERO
             if benchmark_peak_value > ZERO and benchmark_value < benchmark_peak_value:
-                benchmark_drawdown_pct = ((benchmark_peak_value - benchmark_value) / benchmark_peak_value) * Decimal("100")
+                benchmark_drawdown_pct = (
+                    (benchmark_peak_value - benchmark_value) / benchmark_peak_value
+                ) * Decimal("100")
             benchmark_pnl = benchmark_value - capital_base
             timeline.append(
                 PortfolioTimelinePointOut(
@@ -268,7 +277,9 @@ class PortfolioAttributionService:
 
         for row in ticker_rows:
             if latest_market_value > ZERO:
-                row.weight_pct = self._to_float((Decimal(str(row.market_value)) / latest_market_value) * Decimal("100"))
+                row.weight_pct = self._to_float(
+                    (Decimal(str(row.market_value)) / latest_market_value) * Decimal("100")
+                )
 
         ticker_rows.sort(key=lambda row: row.total_pnl, reverse=True)
         total_pnl = cash_balance + latest_market_value
@@ -281,8 +292,12 @@ class PortfolioAttributionService:
         if capital_base > ZERO:
             total_return_pct = (total_pnl / capital_base) * Decimal("100")
             benchmark_return_pct = (benchmark_pnl / capital_base) * Decimal("100")
-        max_drawdown_pct = max((Decimal(str(point.drawdown_pct)) for point in timeline), default=ZERO)
-        benchmark_max_drawdown_pct = max((Decimal(str(point.benchmark_drawdown_pct)) for point in timeline), default=ZERO)
+        max_drawdown_pct = max(
+            (Decimal(str(point.drawdown_pct)) for point in timeline), default=ZERO
+        )
+        benchmark_max_drawdown_pct = max(
+            (Decimal(str(point.benchmark_drawdown_pct)) for point in timeline), default=ZERO
+        )
         return PortfolioStrategyAttributionOut(
             strategy_id=strategy.id,
             strategy_name=strategy.name,
@@ -400,8 +415,7 @@ class PortfolioAttributionService:
             if not bars:
                 continue
             history[ticker] = {
-                bar_time.date(): bar.close
-                for bar, bar_time in zip(bars, bar_times, strict=True)
+                bar_time.date(): bar.close for bar, bar_time in zip(bars, bar_times, strict=True)
             }
         return history
 
@@ -425,10 +439,7 @@ class PortfolioAttributionService:
                 )
                 for bar in raw_bars
             ]
-            bar_times = [
-                getattr(bar, "timestamp", datetime.now(UTC))
-                for bar in raw_bars
-            ]
+            bar_times = [getattr(bar, "timestamp", datetime.now(UTC)) for bar in raw_bars]
             return bars, bar_times
 
         raw = provider.get_ohlcv(ticker, interval_minutes=1440, bars=limit)
@@ -466,14 +477,20 @@ class PortfolioAttributionService:
             return ZERO
         first_date = fills[0].occurred_at.date()
         initial_buys = sum(
-            (fill.quantity * fill.price)
-            for fill in fills
-            if fill.occurred_at.date() == first_date and fill.side == "buy"
+            (
+                fill.quantity * fill.price
+                for fill in fills
+                if fill.occurred_at.date() == first_date and fill.side == "buy"
+            ),
+            start=ZERO,
         )
         initial_sells = sum(
-            (fill.quantity * fill.price)
-            for fill in fills
-            if fill.occurred_at.date() == first_date and fill.side == "sell"
+            (
+                fill.quantity * fill.price
+                for fill in fills
+                if fill.occurred_at.date() == first_date and fill.side == "sell"
+            ),
+            start=ZERO,
         )
         capital_base = initial_buys - initial_sells
         if capital_base <= ZERO:
@@ -535,9 +552,7 @@ class PortfolioAttributionService:
         fills: list[RebalanceFill],
     ) -> list[PortfolioRebalanceWeightChangeOut]:
         target_weights = {
-            fill.ticker: fill.target_weight
-            for fill in fills
-            if fill.target_weight is not None
+            fill.ticker: fill.target_weight for fill in fills if fill.target_weight is not None
         }
         tickers = sorted(set(before_weights) | set(after_weights) | set(target_weights))
         rows: list[PortfolioRebalanceWeightChangeOut] = []
