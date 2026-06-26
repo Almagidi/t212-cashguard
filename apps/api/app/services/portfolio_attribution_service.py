@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import aliased
 
 from app.api.schemas import (
+    PORTFOLIO_ATTRIBUTION_COVERAGE_CAVEATS,
     PortfolioRebalanceEventOut,
     PortfolioRebalanceWeightChangeOut,
     PortfolioStrategyAttributionOut,
@@ -92,6 +93,7 @@ class PortfolioAttributionService:
                 timeline=[],
                 ticker_attribution=[],
                 rebalance_events=[],
+                coverage_caveats=PORTFOLIO_ATTRIBUTION_COVERAGE_CAVEATS,
             )
 
         fill_dates = sorted({fill.occurred_at.date() for fill in fills})
@@ -306,6 +308,7 @@ class PortfolioAttributionService:
             timeline=timeline,
             ticker_attribution=ticker_rows,
             rebalance_events=rebalance_events,
+            coverage_caveats=PORTFOLIO_ATTRIBUTION_COVERAGE_CAVEATS,
         )
 
     async def build_summary(
@@ -335,6 +338,7 @@ class PortfolioAttributionService:
             rebalance_days=detail.rebalance_days,
             order_count=detail.order_count,
             recent_timeline=detail.recent_timeline,
+            coverage_caveats=detail.coverage_caveats,
         )
 
     async def _load_rebalance_fills(self, strategy_id: uuid.UUID) -> list[RebalanceFill]:

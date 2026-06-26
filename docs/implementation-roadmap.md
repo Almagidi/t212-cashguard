@@ -82,32 +82,34 @@ Validation:
 
 ### 2. Performance Attribution Slippage Caveats
 
-Status: `[Planned]`
+Status: `[Done]` — read-only disclosure landed via PR1 from
+`docs/architecture/backtest-execution-quality-parity-investigation.md`
+(`feat/report-attribution-caveats`).
 
-Autonomy level: Level B or Level C depending on implementation.
+Autonomy level: Level B.
 
-Goal:
+What landed:
 
-- make reports explicit when performance attribution is not fully net of slippage/fees
-- connect existing execution-quality analytics to attribution caveats before promotion work
-- avoid changing trading behavior
+- `PerformanceReport` and `PortfolioStrategyAttributionSummaryOut` (and the
+  inherited `PortfolioStrategyAttributionOut`) now carry a `coverage_caveats`
+  field stating plainly that slippage, fees, rejected/cancelled orders, and
+  reconciliation delay are not joined into those figures.
+- No numeric calculation, order path, or trading behavior changed.
 
-Why this matters:
+Still open (separately approved Level C work, not started here):
 
-- execution-quality analytics exist
-- performance attribution still has a known slippage integration gap
-- strategy quality should not be overstated while that gap remains
+- joining real slippage data into `symbol_attribution()`
+  (`apps/api/app/services/performance_attribution.py`, currently hardcoded to
+  `0.0`)
+- backtest assumption metadata (PR3 in the parity investigation doc)
 
-Likely files:
+Files touched:
 
-- `apps/api/app/services/performance_attribution.py`
+- `apps/api/app/api/schemas.py`
 - `apps/api/app/api/v1/routes/reports.py`
-- report and attribution tests
-
-Validation:
-
-- tests proving caveats appear when slippage data is missing or incomplete
-- tests proving no order path changes
+- `apps/api/app/services/portfolio_attribution_service.py`
+- `apps/api/tests/integration/test_reports_caveats.py`
+- `apps/api/tests/unit/test_portfolio_attribution_service.py`
 
 ### 3. Legacy Portfolio Attribution Deletion Proof
 

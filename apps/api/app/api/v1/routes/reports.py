@@ -14,7 +14,12 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.api.schemas import ExecutionQualityReport, OrderOut, PerformanceReport
+from app.api.schemas import (
+    PERFORMANCE_REPORT_COVERAGE_CAVEATS,
+    ExecutionQualityReport,
+    OrderOut,
+    PerformanceReport,
+)
 from app.db.models import Order, Signal, Strategy, Trade, User
 from app.db.session import get_db
 from app.services.execution_quality import ExecutionQualityService
@@ -45,6 +50,7 @@ async def get_performance(
             win_rate=0.0, total_pnl=0.0, avg_win=0.0, avg_loss=0.0,
             profit_factor=0.0, max_drawdown=0.0, sharpe_ratio=None,
             daily_pnl=[],
+            coverage_caveats=PERFORMANCE_REPORT_COVERAGE_CAVEATS,
         )
 
     pnls = [float(realized_pnl or 0) for _, realized_pnl in trades]
@@ -93,6 +99,7 @@ async def get_performance(
         max_drawdown=round(max_dd, 2),
         sharpe_ratio=sharpe,
         daily_pnl=[{"date": d, "pnl": round(p, 2)} for d, p in sorted(daily.items())],
+        coverage_caveats=PERFORMANCE_REPORT_COVERAGE_CAVEATS,
     )
 
 
