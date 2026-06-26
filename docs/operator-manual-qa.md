@@ -410,6 +410,22 @@ Work through each item in order. Mark each ✅ pass or ❌ fail.
 - [ ] Both venues show a status (e.g. "ready", "mock", "degraded") — the exact label is
       acceptable as long as it is present and not an unhandled exception.
 
+### 3a. Why blocked / degraded panel
+
+- [ ] Near the **Overall** status badge at the top of the page, a "Why blocked / degraded"
+      panel is visible.
+- [ ] When `overall_status` is `blocked` or `degraded`, the panel lists one or more
+      plain-English reasons (e.g. "A venue kill switch is active...", "At least one venue
+      is reporting degraded mode..."), each tagged `blocked` or `degraded`.
+- [ ] When `overall_status` is `ok`, the panel shows "No active blockers." instead of
+      stale reason text.
+- [ ] In the **Trading212 Summary** card, a "Readiness checklist" section lists each
+      individual readiness check (e.g. "Server in live mode", "Kill switch currently
+      clear") with its own pass/fail badge and detail text — not collapsed into a single
+      line.
+- [ ] This panel is purely informational: it must never appear alongside a trading
+      control, and must not change behavior when refreshed.
+
 ### 4. DCA section
 
 - [ ] A DCA (Dollar-Cost Averaging) section is visible.

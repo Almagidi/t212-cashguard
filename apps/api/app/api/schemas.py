@@ -486,6 +486,12 @@ class OperatorRecentActivityOut(BaseModel):
     payload_summary: dict[str, Any]
 
 
+class OperatorBlockingReasonOut(BaseModel):
+    code: str
+    severity: Literal["blocked", "degraded"]
+    message: str
+
+
 class OperatorSafetyFlagsOut(BaseModel):
     endpoint_read_only: bool
     creates_orders: bool
@@ -518,6 +524,7 @@ class OperatorStatusOut(BaseModel):
     mode: Literal["read_only_status"]
     generated_at: datetime
     overall_status: Literal["ok", "degraded", "blocked"]
+    why_blocked: list[OperatorBlockingReasonOut]
     live_trading_possible: bool
     live_trading_enabled_anywhere: bool
     venues: list[OperatorVenueStatusOut]

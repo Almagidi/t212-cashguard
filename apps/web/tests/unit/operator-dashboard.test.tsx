@@ -84,6 +84,18 @@ function operatorStatus(
     mode: "read_only_status",
     generated_at: "2026-05-01T09:30:00Z",
     overall_status: "degraded",
+    why_blocked: [
+      {
+        code: "kill_switch_active",
+        severity: "blocked",
+        message: "A venue kill switch is active. Trading is blocked until it is cleared.",
+      },
+      {
+        code: "venue_degraded",
+        severity: "degraded",
+        message: "At least one venue is reporting degraded mode.",
+      },
+    ],
     live_trading_possible: false,
     live_trading_enabled_anywhere: false,
     venues: [
@@ -656,6 +668,89 @@ describe("OperatorDashboard", () => {
     expect(within(card).getByText("Rate limited/backing off.")).toBeInTheDocument();
     expect(within(card).getByText("2")).toBeInTheDocument();
     expect(within(card).getByText("4")).toBeInTheDocument();
+  });
+
+  it("renders why_blocked reasons for a blocked/degraded status", () => {
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const reasons = screen.getByTestId("why-blocked-reasons");
+    expect(
+      within(reasons).getByText(
+        "A venue kill switch is active. Trading is blocked until it is cleared.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(reasons).getByText("At least one venue is reporting degraded mode."),
+    ).toBeInTheDocument();
+    expect(within(reasons).getByText("blocked")).toBeInTheDocument();
+    expect(within(reasons).getByText("degraded")).toBeInTheDocument();
+  });
+
+  it("does not show stale blocker reasons when overall_status is ok", () => {
+    const okStatus: OperatorStatus = {
+      ...operatorStatus(),
+      overall_status: "ok",
+      why_blocked: [],
+    };
+
+    render(<OperatorDashboard status={okStatus} />);
+
+    expect(screen.getByTestId("why-blocked-empty")).toHaveTextContent(
+      "No active blockers.",
+    );
+    expect(screen.queryByTestId("why-blocked-reasons")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "A venue kill switch is active. Trading is blocked until it is cleared.",
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders individual live_readiness_status checks with label, status, and detail", () => {
+    const statusWithReadiness: OperatorStatus = {
+      ...operatorStatus(),
+      trading212: {
+        ...operatorStatus().trading212,
+        live_readiness_status: {
+          mode: "demo",
+          live_execution_enabled: false,
+          live_trading_unlocked: false,
+          eligible_for_unlock: false,
+          ready_for_live: false,
+          blockers: ["Server in live mode is not satisfied."],
+          checks: [
+            {
+              key: "app_mode_live",
+              label: "Server in live mode",
+              status: "fail",
+              detail: "`APP_MODE` must be `live` before the app can place real orders.",
+              verified_at: null,
+            },
+            {
+              key: "kill_switch_clear",
+              label: "Kill switch currently clear",
+              status: "pass",
+              detail: "Kill switch is not active.",
+              verified_at: null,
+            },
+          ],
+        },
+      },
+    };
+
+    render(<OperatorDashboard status={statusWithReadiness} />);
+
+    const checklist = screen.getByTestId("live-readiness-checks");
+    expect(within(checklist).getByText("Server in live mode")).toBeInTheDocument();
+    expect(
+      within(checklist).getByText(
+        "`APP_MODE` must be `live` before the app can place real orders.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(checklist).getByText("Kill switch currently clear")).toBeInTheDocument();
+    expect(within(checklist).getByText("Kill switch is not active.")).toBeInTheDocument();
+    expect(within(checklist).getByText("fail")).toBeInTheDocument();
+    expect(within(checklist).getByText("pass")).toBeInTheDocument();
   });
 });
 

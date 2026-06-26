@@ -759,3 +759,207 @@ async def test_operator_status_safety_metadata_exposes_no_secret_values(
         "block_trading",
         "activate_kill_switch",
     }
+
+
+# ─── Operator "why blocked" readiness detail ──────────────────────────────────
+#
+# These cover a read-only, additive aggregation of the exact same booleans
+# already used to compute ``overall_status``. ``why_blocked`` must never
+# diverge from ``overall_status``: it explains it, it does not replace or
+# duplicate its logic.
+
+
+@pytest.mark.asyncio
+async def test_operator_status_ok_has_no_blocking_reasons(
+    client,
+    auth_headers,
+    db,
+):
+    db.add_all(
+        [
+            _venue("t212"),
+            _venue("kraken"),
+            _heartbeat(last_seen_at=datetime.now(UTC)),
+        ]
+    )
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["overall_status"] == "ok"
+    assert body["why_blocked"] == []
+
+
+@pytest.mark.asyncio
+async def test_operator_status_kill_switch_active_has_blocked_reason(
+    client,
+    auth_headers,
+    db,
+):
+    db.add_all([_venue("t212", kill_switch_active=True), _venue("kraken")])
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["overall_status"] == "blocked"
+    reasons = {reason["code"]: reason for reason in body["why_blocked"]}
+    assert "kill_switch_active" in reasons
+    assert reasons["kill_switch_active"]["severity"] == "blocked"
+    assert reasons["kill_switch_active"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_operator_status_cash_only_mode_disabled_has_blocked_reason(
+    client,
+    auth_headers,
+    db,
+    monkeypatch,
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "CASH_ONLY_MODE", False)
+    db.add_all([_venue("t212"), _venue("kraken")])
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["overall_status"] == "blocked"
+    reasons = {reason["code"]: reason for reason in body["why_blocked"]}
+    assert "cash_only_mode_disabled" in reasons
+    assert reasons["cash_only_mode_disabled"]["severity"] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_operator_status_missing_venue_config_has_degraded_reason(
+    client,
+    auth_headers,
+    db,
+):
+    db.add_all([_venue("t212")])
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["overall_status"] == "degraded"
+    reasons = {reason["code"]: reason for reason in body["why_blocked"]}
+    assert "missing_venue_config" in reasons
+    assert reasons["missing_venue_config"]["severity"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_operator_status_venue_degraded_has_degraded_reason(
+    client,
+    auth_headers,
+    db,
+):
+    db.add_all(
+        [
+            _venue("t212"),
+            _venue("kraken", degraded_mode_active=True, note="Kraken degraded mode active."),
+            _heartbeat(last_seen_at=datetime.now(UTC)),
+        ]
+    )
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["overall_status"] == "degraded"
+    reasons = {reason["code"]: reason for reason in body["why_blocked"]}
+    assert "venue_degraded" in reasons
+    assert reasons["venue_degraded"]["severity"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_operator_status_stale_worker_health_has_degraded_reason(
+    client,
+    auth_headers,
+    db,
+):
+    db.add_all(
+        [
+            _venue("t212"),
+            _venue("kraken"),
+            _heartbeat(last_seen_at=datetime.now(UTC) - timedelta(seconds=181)),
+        ]
+    )
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["overall_status"] == "degraded"
+    reasons = {reason["code"]: reason for reason in body["why_blocked"]}
+    assert "worker_health_unknown" in reasons
+    assert reasons["worker_health_unknown"]["severity"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_operator_status_missing_app_settings_has_degraded_readiness_reason(
+    client,
+    auth_headers,
+    db,
+):
+    from app.db.models import AppSettings
+
+    db.add_all(
+        [
+            _venue("t212"),
+            _venue("kraken"),
+            _heartbeat(last_seen_at=datetime.now(UTC)),
+        ]
+    )
+    await db.commit()
+
+    app_settings = (await db.execute(select(AppSettings).where(AppSettings.id == 1))).scalar_one()
+    await db.delete(app_settings)
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["trading212"]["live_readiness_status"] is None
+    assert body["overall_status"] == "degraded"
+    reasons = {reason["code"]: reason for reason in body["why_blocked"]}
+    assert "live_readiness_unavailable" in reasons
+    assert reasons["live_readiness_unavailable"]["severity"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_operator_status_why_blocked_does_not_call_side_effect_paths(
+    client,
+    auth_headers,
+    db,
+    monkeypatch,
+):
+    """The why_blocked aggregation must remain part of the existing read-only
+    boundary: it must not introduce any broker, execution, or scheduler calls."""
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("why_blocked computation must not call this path")
+
+    monkeypatch.setattr(ExecutionEngine, "create_order_intent", _fail)
+    monkeypatch.setattr(ExecutionEngine, "submit_order", _fail)
+    monkeypatch.setattr(KrakenAdapter, "place_market_order", _fail)
+    monkeypatch.setattr(Trading212Adapter, "place_market_order", _fail)
+    monkeypatch.setattr(tasks_dca.evaluate_due_plans_task, "delay", _fail)
+    monkeypatch.setattr(tasks_dca.evaluate_due_plans_task, "apply_async", _fail)
+
+    db.add_all([_venue("t212", kill_switch_active=True), _venue("kraken")])
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["why_blocked"]

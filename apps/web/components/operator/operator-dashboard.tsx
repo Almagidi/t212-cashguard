@@ -32,6 +32,7 @@ import {
 import type {
   DemoReconciliationSchedulerStatus,
   DemoReconciliationWorkerStatus,
+  OperatorBlockingReason,
   OperatorOverallStatus,
   PaperExecutionHistoryItem,
   OperatorRecentActivity,
@@ -105,6 +106,40 @@ function InfoRow({
         {value}
       </dd>
     </div>
+  );
+}
+
+function WhyBlockedPanel({ reasons }: { reasons: OperatorBlockingReason[] }) {
+  if (reasons.length === 0) {
+    return (
+      <p
+        className="text-xs text-muted-foreground"
+        data-testid="why-blocked-empty"
+      >
+        No active blockers.
+      </p>
+    );
+  }
+
+  return (
+    <ul className="space-y-2" data-testid="why-blocked-reasons">
+      {reasons.map((reason) => (
+        <li
+          key={reason.code}
+          className={cn(
+            "flex items-start gap-2 rounded-md border px-3 py-2 text-xs",
+            reason.severity === "blocked"
+              ? "border-red-500/30 bg-red-500/5 text-red-100"
+              : "border-amber-500/30 bg-amber-500/5 text-amber-100",
+          )}
+        >
+          <TextBadge tone={reason.severity === "blocked" ? "destructive" : "warning"}>
+            {reason.severity}
+          </TextBadge>
+          <span>{reason.message}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -219,6 +254,12 @@ function TopSafetySummary({ status }: { status: OperatorStatus }) {
             {generatedMissing && (
               <TextBadge tone="warning">Timestamp unknown</TextBadge>
             )}
+          </div>
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Why blocked / degraded
+            </p>
+            <WhyBlockedPanel reasons={status.why_blocked} />
           </div>
           <div className="grid gap-3 md:grid-cols-3">
             <StatCard
@@ -442,6 +483,33 @@ function Trading212Summary({ status }: { status: OperatorStatus }) {
             }
           />
         </dl>
+        {readiness && (
+          <div className="mt-3" data-testid="live-readiness-checks">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Readiness checklist
+            </p>
+            <ul className="space-y-1.5">
+              {readiness.checks.map((check) => (
+                <li
+                  key={check.key}
+                  className="flex items-start justify-between gap-3 text-xs"
+                >
+                  <span className="text-muted-foreground">{check.label}</span>
+                  <span className="flex flex-col items-end gap-0.5 text-right">
+                    <TextBadge
+                      tone={check.status === "pass" ? "success" : "warning"}
+                    >
+                      {check.status}
+                    </TextBadge>
+                    <span className="text-muted-foreground">
+                      {check.detail}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
           {status.trading212.safety_notes.map((note) => (
             <li key={note}>{note}</li>

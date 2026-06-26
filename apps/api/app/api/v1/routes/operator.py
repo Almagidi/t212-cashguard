@@ -13,6 +13,7 @@ from sqlalchemy import desc, func, select
 from app.api.deps import get_current_user
 from app.api.schemas import (
     LiveReadinessStatus,
+    OperatorBlockingReasonOut,
     OperatorDcaStatusOut,
     OperatorKrakenStatusOut,
     OperatorPaperExecutionStatusOut,
@@ -110,6 +111,74 @@ def _evaluate_worker_health(
     if now - last_seen_at <= timedelta(seconds=HEARTBEAT_STALE_AFTER_SECONDS):
         return "healthy"
     return "stale"
+
+
+def _compute_blocking_reasons(
+    *,
+    cash_only_mode: bool,
+    any_venue_kill_switch_active: bool,
+    missing_expected_venue_configs: bool,
+    any_venue_degraded: bool,
+    live_readiness_status: LiveReadinessStatus | None,
+    worker_health_known: bool,
+) -> list[OperatorBlockingReasonOut]:
+    """Read-only explanation of ``overall_status``.
+
+    Mirrors the exact boolean inputs the route already uses to compute
+    ``overall_status`` (see the if/elif chain below in ``operator_status``).
+    This must never introduce a condition that isn't already part of that
+    computation, so the two can never drift apart.
+    """
+    reasons: list[OperatorBlockingReasonOut] = []
+    if not cash_only_mode:
+        reasons.append(
+            OperatorBlockingReasonOut(
+                code="cash_only_mode_disabled",
+                severity="blocked",
+                message="CASH_ONLY_MODE is disabled. Trading is blocked until cash-only mode is restored.",
+            )
+        )
+    if any_venue_kill_switch_active:
+        reasons.append(
+            OperatorBlockingReasonOut(
+                code="kill_switch_active",
+                severity="blocked",
+                message="A venue kill switch is active. Trading is blocked until it is cleared.",
+            )
+        )
+    if missing_expected_venue_configs:
+        reasons.append(
+            OperatorBlockingReasonOut(
+                code="missing_venue_config",
+                severity="degraded",
+                message="One or more expected venue configs are missing. Status is fail-closed/degraded.",
+            )
+        )
+    if any_venue_degraded:
+        reasons.append(
+            OperatorBlockingReasonOut(
+                code="venue_degraded",
+                severity="degraded",
+                message="At least one venue is reporting degraded mode.",
+            )
+        )
+    if live_readiness_status is None:
+        reasons.append(
+            OperatorBlockingReasonOut(
+                code="live_readiness_unavailable",
+                severity="degraded",
+                message="Live readiness status could not be evaluated.",
+            )
+        )
+    if not worker_health_known:
+        reasons.append(
+            OperatorBlockingReasonOut(
+                code="worker_health_unknown",
+                severity="degraded",
+                message="Background worker health is not confirmed healthy (stale, missing, or unknown).",
+            )
+        )
+    return reasons
 
 
 def _venue_status_from_row(row: VenueConfig | None, venue: str) -> OperatorVenueStatusOut:
@@ -342,11 +411,21 @@ async def operator_status(
     else:
         overall_status = "ok"
 
+    why_blocked = _compute_blocking_reasons(
+        cash_only_mode=settings.CASH_ONLY_MODE,
+        any_venue_kill_switch_active=any_venue_kill_switch_active,
+        missing_expected_venue_configs=missing_expected_venue_configs,
+        any_venue_degraded=any_venue_degraded,
+        live_readiness_status=live_readiness_status,
+        worker_health_known=worker_health_known,
+    )
+
     return OperatorStatusOut(
         subsystem="operator",
         mode="read_only_status",
         generated_at=now,
         overall_status=overall_status,
+        why_blocked=why_blocked,
         live_trading_possible=live_trading_possible,
         live_trading_enabled_anywhere=live_trading_enabled_anywhere,
         venues=venue_statuses,
