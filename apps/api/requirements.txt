@@ -4,7 +4,7 @@ uvicorn[standard]==0.32.1
 sqlalchemy[asyncio]==2.0.50
 asyncpg==0.31.0
 alembic==1.18.4
-aiosqlite==0.20.0
+aiosqlite==0.22.1
 redis[hiredis]==5.2.1
 celery[redis]==5.4.0
 pydantic==2.13.4
