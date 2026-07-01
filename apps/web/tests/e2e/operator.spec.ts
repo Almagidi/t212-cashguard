@@ -438,8 +438,7 @@ test.describe('Operator dashboard readiness', () => {
     await expect(cashGuardCard).toContainText('Available to trade')
     await expect(cashGuardCard).toContainText('Currency')
     await expect(cashGuardCard).toContainText('USD')
-    await expect(cashGuardCard).not.toContainText('buy')
-    await expect(cashGuardCard).not.toContainText('sell')
+    // No buy/sell/order controls — assert by role, not by text (footer mentions the words in the safety note)
     await expect(page.getByRole('button', { name: /buy|sell|order|deposit/i })).toHaveCount(0)
 
     await expect(page.getByText('Worker heartbeat missing')).toBeVisible()
