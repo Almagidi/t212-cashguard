@@ -321,6 +321,13 @@ test.describe('Operator dashboard readiness', () => {
         '/v1/kraken/dca/activity': dcaActivity,
         '/v1/kraken/dca/configs': dcaConfigs,
         '/v1/orders/paper': paperExecutionHistory,
+        '/v1/account/cash-guard': {
+          available_to_trade: 4285.0,
+          reserved: 215.0,
+          total_cash: 4500.0,
+          cash_only_mode: true,
+          currency: 'USD',
+        },
       }
 
       if (path in bodyForPath) {
@@ -421,6 +428,18 @@ test.describe('Operator dashboard readiness', () => {
     await expect(safetyPosture).toContainText(
       'Mock (offline simulation — no real broker)',
     )
+
+    // CashGuard card — read-only cash visibility, no order controls.
+    const cashGuardCard = page.getByTestId('operator-cashguard-card')
+    await expect(cashGuardCard).toBeVisible()
+    await expect(cashGuardCard).toContainText('CashGuard')
+    await expect(cashGuardCard).toContainText('Read-only')
+    await expect(cashGuardCard).toContainText('No order controls')
+    await expect(cashGuardCard).toContainText('Available to trade')
+    await expect(cashGuardCard).toContainText('Currency')
+    await expect(cashGuardCard).toContainText('USD')
+    // No buy/sell/order controls — assert by role, not by text (footer mentions the words in the safety note)
+    await expect(page.getByRole('button', { name: /buy|sell|order|deposit/i })).toHaveCount(0)
 
     await expect(page.getByText('Worker heartbeat missing')).toBeVisible()
     await expect(page.getByText('Endpoint read-only')).toBeVisible()
