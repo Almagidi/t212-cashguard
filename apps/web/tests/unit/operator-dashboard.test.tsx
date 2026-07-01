@@ -33,6 +33,29 @@ let demoSchedulerState: {
   isLoading: false,
   error: null,
 };
+let cashGuardState: {
+  data:
+    | {
+        available_to_trade: number;
+        reserved: number;
+        total_cash: number;
+        cash_only_mode: boolean;
+        currency: string;
+      }
+    | undefined;
+  isLoading: boolean;
+  isError: boolean;
+} = {
+  data: {
+    available_to_trade: 4285.0,
+    reserved: 215.0,
+    total_cash: 4500.0,
+    cash_only_mode: true,
+    currency: "USD",
+  },
+  isLoading: false,
+  isError: false,
+};
 
 jest.mock("@/hooks/use-api", () => ({
   __esModule: true,
@@ -41,6 +64,7 @@ jest.mock("@/hooks/use-api", () => ({
     isLoading: false,
     error: null,
   }),
+  useCashGuard: () => cashGuardState,
   useDemoReconciliationStatus: () => ({
     data: null,
     isLoading: false,
@@ -318,10 +342,26 @@ function setSchedulerStatus(state: Partial<typeof demoSchedulerState>) {
   };
 }
 
+function setCashGuard(state: Partial<typeof cashGuardState>) {
+  cashGuardState = {
+    data: {
+      available_to_trade: 4285.0,
+      reserved: 215.0,
+      total_cash: 4500.0,
+      cash_only_mode: true,
+      currency: "USD",
+    },
+    isLoading: false,
+    isError: false,
+    ...state,
+  };
+}
+
 describe("OperatorDashboard", () => {
   beforeEach(() => {
     setPaperHistory({});
     setSchedulerStatus({});
+    setCashGuard({});
   });
 
   it("renders loading state", () => {
@@ -751,6 +791,123 @@ describe("OperatorDashboard", () => {
     expect(within(checklist).getByText("Kill switch is not active.")).toBeInTheDocument();
     expect(within(checklist).getByText("fail")).toBeInTheDocument();
     expect(within(checklist).getByText("pass")).toBeInTheDocument();
+  });
+});
+
+describe("CashGuardCard", () => {
+  beforeEach(() => {
+    setPaperHistory({});
+    setSchedulerStatus({});
+    setCashGuard({});
+  });
+
+  it("renders loading skeleton while cash data is fetching", () => {
+    setCashGuard({ data: undefined, isLoading: true, isError: false });
+
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("operator-cashguard-card");
+    expect(card).toBeInTheDocument();
+    expect(within(card).getByLabelText("Loading CashGuard status")).toBeInTheDocument();
+  });
+
+  it("renders unavailable state when cash snapshot errors", () => {
+    setCashGuard({ data: undefined, isLoading: false, isError: true });
+
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("operator-cashguard-card");
+    expect(within(card).getByText("Cash snapshot unavailable")).toBeInTheDocument();
+    expect(within(card).getByText("No order controls")).toBeInTheDocument();
+  });
+
+  it("renders available, reserved, and total cash with currency when data is present", () => {
+    setCashGuard({
+      data: {
+        available_to_trade: 4285.0,
+        reserved: 215.0,
+        total_cash: 4500.0,
+        cash_only_mode: true,
+        currency: "USD",
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("operator-cashguard-card");
+    expect(within(card).getByText("Available to trade")).toBeInTheDocument();
+    expect(within(card).getByText("Reserved")).toBeInTheDocument();
+    expect(within(card).getByText("Total cash")).toBeInTheDocument();
+    expect(within(card).getByText("Currency")).toBeInTheDocument();
+    expect(within(card).getByText("USD")).toBeInTheDocument();
+  });
+
+  it("shows blocked badge when operator overall_status is blocked", () => {
+    const status = operatorStatus({
+      overall_status: "blocked",
+      safety_flags: {
+        ...operatorStatus().safety_flags,
+        any_venue_kill_switch_active: true,
+      },
+    });
+
+    render(<OperatorDashboard status={status} />);
+
+    const card = screen.getByTestId("operator-cashguard-card");
+    expect(within(card).getByText("Blocked")).toBeInTheDocument();
+  });
+
+  it("shows degraded badge when operator overall_status is degraded and no kill switch", () => {
+    const status = operatorStatus({
+      overall_status: "degraded",
+      safety_flags: {
+        ...operatorStatus().safety_flags,
+        any_venue_kill_switch_active: false,
+      },
+    });
+
+    render(<OperatorDashboard status={status} />);
+
+    const card = screen.getByTestId("operator-cashguard-card");
+    expect(within(card).getByText("Degraded")).toBeInTheDocument();
+  });
+
+  it("shows ok badge when overall_status is ok and cash data is present", () => {
+    const status = operatorStatus({
+      overall_status: "ok",
+      why_blocked: [],
+      safety_flags: {
+        ...operatorStatus().safety_flags,
+        any_venue_kill_switch_active: false,
+        any_venue_degraded: false,
+      },
+    });
+
+    render(<OperatorDashboard status={status} />);
+
+    const card = screen.getByTestId("operator-cashguard-card");
+    expect(within(card).getByText("OK")).toBeInTheDocument();
+  });
+
+  it("does not render buy, sell, order, execute, or deposit controls inside the card", () => {
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("operator-cashguard-card");
+    expect(within(card).queryByRole("button", { name: /buy/i })).toBeNull();
+    expect(within(card).queryByRole("button", { name: /sell/i })).toBeNull();
+    expect(within(card).queryByRole("button", { name: /order/i })).toBeNull();
+    expect(within(card).queryByRole("button", { name: /execute/i })).toBeNull();
+    expect(within(card).queryByRole("button", { name: /deposit/i })).toBeNull();
+  });
+
+  it("shows the read-only and no-order-controls badges", () => {
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("operator-cashguard-card");
+    expect(within(card).getByText("Read-only")).toBeInTheDocument();
+    expect(within(card).getByText("No order controls")).toBeInTheDocument();
   });
 });
 

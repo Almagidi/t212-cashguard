@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  Banknote,
   Clock3,
   Eye,
   FileText,
@@ -25,6 +26,7 @@ import { cn, formatCurrency, formatDate } from "@/lib/utils";
 import { BrokerStatusPanel } from "./broker-status-panel";
 import {
   useBrokerStatus,
+  useCashGuard,
   useDemoReconciliationSchedulerStatus,
   useDemoReconciliationStatus,
   usePaperExecutionHistory,
@@ -1359,6 +1361,121 @@ function DemoReconciliationStatusCard({
   );
 }
 
+function CashGuardCard({ status }: { status: OperatorStatus }) {
+  const cashGuardQuery = useCashGuard();
+  const flags = status.safety_flags;
+
+  type DisplayStatus = "loading" | "unavailable" | "ok" | "degraded" | "blocked";
+  const displayStatus: DisplayStatus = cashGuardQuery.isLoading
+    ? "loading"
+    : cashGuardQuery.isError
+      ? "unavailable"
+      : flags.any_venue_kill_switch_active || status.overall_status === "blocked"
+        ? "blocked"
+        : status.overall_status === "degraded"
+          ? "degraded"
+          : "ok";
+
+  return (
+    <Card
+      className={cn(
+        displayStatus === "blocked" && "border-red-500/40 bg-red-500/5",
+        displayStatus === "degraded" && "border-amber-500/40 bg-amber-500/5",
+        displayStatus === "unavailable" && "border-amber-500/30",
+      )}
+      data-testid="operator-cashguard-card"
+    >
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Banknote className="h-4 w-4 text-muted-foreground" />
+            <CardTitle>CashGuard</CardTitle>
+          </div>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {displayStatus === "loading" && (
+              <TextBadge tone="outline">Loading</TextBadge>
+            )}
+            {displayStatus === "blocked" && (
+              <TextBadge tone="destructive">Blocked</TextBadge>
+            )}
+            {displayStatus === "degraded" && (
+              <TextBadge tone="warning">Degraded</TextBadge>
+            )}
+            {displayStatus === "ok" && (
+              <TextBadge tone="success">OK</TextBadge>
+            )}
+            {displayStatus === "unavailable" && (
+              <TextBadge tone="warning">Unavailable</TextBadge>
+            )}
+            <TextBadge tone="info">Read-only</TextBadge>
+            <TextBadge tone="success">No order controls</TextBadge>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {displayStatus === "loading" ? (
+          <div className="space-y-3" aria-label="Loading CashGuard status">
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="h-20 w-full" />
+          </div>
+        ) : displayStatus === "unavailable" ? (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+            <div className="flex items-start gap-3 text-amber-100">
+              <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-300" />
+              <div>
+                <p className="text-sm font-semibold">Cash snapshot unavailable</p>
+                <p className="mt-1 text-xs leading-relaxed text-amber-100/80">
+                  CashGuard cash figures are unavailable from the broker
+                  snapshot. Operator status remains visible. This panel is
+                  read-only and provides no order controls.
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <dl>
+            <InfoRow
+              label="Cash-only mode"
+              value={boolLabel(flags.cash_only_mode)}
+              valueClassName={boolTone(flags.cash_only_mode)}
+            />
+            <InfoRow
+              label="Kill switch"
+              value={boolLabel(flags.any_venue_kill_switch_active)}
+              valueClassName={boolTone(flags.any_venue_kill_switch_active, true)}
+            />
+            {cashGuardQuery.data && (
+              <>
+                <InfoRow
+                  label="Available to trade"
+                  value={formatCurrency(cashGuardQuery.data.available_to_trade)}
+                  valueClassName="text-emerald-400"
+                />
+                <InfoRow
+                  label="Reserved"
+                  value={formatCurrency(cashGuardQuery.data.reserved)}
+                />
+                <InfoRow
+                  label="Total cash"
+                  value={formatCurrency(cashGuardQuery.data.total_cash)}
+                />
+                <InfoRow
+                  label="Currency"
+                  value={cashGuardQuery.data.currency}
+                />
+              </>
+            )}
+          </dl>
+        )}
+        <p className="text-xs text-muted-foreground">
+          Cash figures from broker account snapshot only. This panel is
+          read-only and provides no order, buy, sell, or execution controls.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function OperatorDashboard({
   status,
   isLoading = false,
@@ -1374,6 +1491,7 @@ export function OperatorDashboard({
     <div className="space-y-5">
       <TopSafetySummary status={status} />
       <ExecutionBoundary status={status} />
+      <CashGuardCard status={status} />
 
       <section className="grid gap-4 xl:grid-cols-2" aria-label="Venue status">
         {status.venues.map((venue) => (
