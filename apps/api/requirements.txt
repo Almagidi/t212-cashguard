@@ -22,7 +22,7 @@ python-dateutil==2.9.0.post0
 aiofiles==24.1.0
 pytest==9.0.3
 pytest-asyncio==1.4.0
-pytest-cov==6.3.0
+pytest-cov==7.1.0
 anyio==4.7.0
 faker==40.23.0
 hypothesis==6.155.7
