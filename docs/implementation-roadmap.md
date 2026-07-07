@@ -53,32 +53,43 @@ Autonomy levels:
 
 ### 1. Operator "Why Blocked" Readiness Detail
 
-Status: `[Planned]`
+Status: `[Done]` — landed via PR #147 (`feat/operator-why-blocked-readiness`).
 
 Autonomy level: Level B
 
-Goal:
+What landed:
 
-- show the clearest current reason live/demo/order paths are blocked
-- keep the operator endpoint read-only
-- avoid broker calls, scheduler triggers, strategy runs, or mutation controls
+- `_compute_blocking_reasons()` in `apps/api/app/api/v1/routes/operator.py` returns
+  structured `OperatorBlockingReasonOut` items with `code`, `severity`, and `message`.
+- `WhyBlockedPanel` in `operator-dashboard.tsx` renders reasons near the top of
+  the operator page.
+- `why_blocked` is now part of `OperatorStatusOut` and surfaced in unit and
+  Playwright E2E tests.
 
-Why this matters:
+No broker calls, scheduler triggers, strategy runs, or mutation controls added.
 
-- the operator dashboard already surfaces safety visibility
-- the next safety improvement is explaining blockers without expanding capability
+### 1b. Operator CashGuard Card
 
-Likely files:
+Status: `[Done]` — landed via PR #160 (`feat/operator-cashguard-card`).
 
-- `apps/api/app/api/v1/routes/operator.py`
-- `apps/web/components/operator/operator-dashboard.tsx`
-- operator API/UI tests
+Autonomy level: Level B
 
-Validation:
+What landed:
 
-- API tests for sanitized blocker payloads
-- frontend tests for blocker rendering
-- operator Playwright smoke where appropriate
+- `CashGuardCard` component added to `apps/web/components/operator/operator-dashboard.tsx`.
+- Placed between `ExecutionBoundary` and the venue cards section.
+- Calls the existing `useCashGuard()` hook (which hits `/api/v1/account/cash-guard`)
+  for cash figures. No backend changes made.
+- Displays: cash-only mode, kill switch state, available cash, reserved cash,
+  total cash, currency, operator blockers, and a read-only safety note.
+- Handles loading, error/unavailable, ok, degraded, and blocked states.
+- `data-testid="operator-cashguard-card"` for test targeting.
+- Unit tests added to `apps/web/tests/unit/operator-dashboard.test.tsx`.
+- E2E mock route for `/v1/account/cash-guard` and assertions added to
+  `apps/web/tests/e2e/operator.spec.ts`.
+
+No backend changes, no new endpoints, no broker calls from the operator page,
+no order controls, no safety-gate modifications, no live trading changes.
 
 ### 2. Performance Attribution Slippage Caveats
 
