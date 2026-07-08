@@ -25,6 +25,38 @@ const operatorStatus = {
       message: 'At least one venue is reporting degraded mode.',
     },
   ],
+  protective_stops: {
+    status: 'triggered',
+    global_kill_switch_active: true,
+    global_auto_trading_enabled: false,
+    last_kill_switch_event: {
+      event_type: 'kill_switch_on',
+      occurred_at: '2026-05-05T09:15:00Z',
+      message: 'Kill switch activated by circuit_breaker:trading212',
+      ticker: null,
+      actor: 'circuit_breaker:trading212',
+    },
+    recent_events: [
+      {
+        event_type: 'kill_switch_on',
+        occurred_at: '2026-05-05T09:15:00Z',
+        message: 'Kill switch activated by circuit_breaker:trading212',
+        ticker: null,
+        actor: 'circuit_breaker:trading212',
+      },
+      {
+        event_type: 'cash_guard_block',
+        occurred_at: '2026-05-05T09:10:00Z',
+        message: 'Cash guard: estimated cost exceeds available cash',
+        ticker: 'AAPL',
+        actor: null,
+      },
+    ],
+    safety_notes: [
+      'Read-only surface. No reset, clear, enable, or disable controls exist here.',
+      "Circuit-breaker activations appear as kill-switch events with actor 'circuit_breaker:<name>'.",
+    ],
+  },
   live_trading_possible: false,
   live_trading_enabled_anywhere: false,
   venues: [
@@ -382,6 +414,16 @@ test.describe('Operator dashboard readiness', () => {
     await expect(page.getByTestId('operator-execution-boundary')).toContainText('Calls brokers')
     await expect(page.getByTestId('operator-execution-boundary')).toContainText('Triggers schedulers')
     await expect(page.getByTestId('operator-execution-boundary')).toContainText('Runs strategies')
+
+    // Protective stops — persisted global kill switch and risk-event trigger
+    // history must be visible, read-only, with no reset/clear/enable controls.
+    const protectiveStops = page.getByTestId('operator-protective-stops')
+    await expect(protectiveStops).toBeVisible()
+    await expect(page.getByTestId('protective-stops-status')).toContainText('Triggered')
+    await expect(protectiveStops).toContainText('Global kill switch')
+    await expect(protectiveStops).toContainText('circuit_breaker:trading212')
+    await expect(protectiveStops).toContainText('cash_guard_block')
+    await expect(protectiveStops.getByRole('button')).toHaveCount(0)
 
     // Why-blocked reasons — the read-only explanation of overall_status must
     // be visible near the top, not just the raw "degraded" badge.

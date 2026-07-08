@@ -902,6 +902,23 @@ export interface OperatorBlockingReason {
   message: string;
 }
 
+export interface OperatorProtectiveStopEvent {
+  event_type: string;
+  occurred_at: string;
+  message: string | null;
+  ticker: string | null;
+  actor: string | null;
+}
+
+export interface OperatorProtectiveStops {
+  status: "ok" | "triggered" | "unknown";
+  global_kill_switch_active: boolean | null;
+  global_auto_trading_enabled: boolean | null;
+  last_kill_switch_event: OperatorProtectiveStopEvent | null;
+  recent_events: OperatorProtectiveStopEvent[];
+  safety_notes: string[];
+}
+
 export interface OperatorSafetyFlags {
   endpoint_read_only: boolean;
   creates_orders: boolean;
@@ -936,6 +953,7 @@ export interface OperatorStatus {
   generated_at: string | null;
   overall_status: OperatorOverallStatus;
   why_blocked: OperatorBlockingReason[];
+  protective_stops: OperatorProtectiveStops;
   live_trading_possible: boolean;
   live_trading_enabled_anywhere: boolean;
   venues: OperatorVenueStatus[];
