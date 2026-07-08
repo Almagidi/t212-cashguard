@@ -120,6 +120,16 @@ function operatorStatus(
         message: "At least one venue is reporting degraded mode.",
       },
     ],
+    protective_stops: {
+      status: "ok",
+      global_kill_switch_active: false,
+      global_auto_trading_enabled: false,
+      last_kill_switch_event: null,
+      recent_events: [],
+      safety_notes: [
+        "Read-only surface. No reset, clear, enable, or disable controls exist here.",
+      ],
+    },
     live_trading_possible: false,
     live_trading_enabled_anywhere: false,
     venues: [
@@ -908,6 +918,98 @@ describe("CashGuardCard", () => {
     const card = screen.getByTestId("operator-cashguard-card");
     expect(within(card).getByText("Read-only")).toBeInTheDocument();
     expect(within(card).getByText("No order controls")).toBeInTheDocument();
+  });
+});
+
+describe("ProtectiveStopsCard", () => {
+  it("renders ok state with read-only wording and no recorded events", () => {
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("operator-protective-stops");
+    expect(within(card).getByTestId("protective-stops-status")).toHaveTextContent("OK");
+    expect(within(card).getByText("Read-only")).toBeInTheDocument();
+    expect(within(card).getByText("No controls")).toBeInTheDocument();
+    expect(within(card).getByTestId("protective-stops-events-empty")).toBeInTheDocument();
+    expect(within(card).getByText("None recorded")).toBeInTheDocument();
+  });
+
+  it("renders triggered state with last kill-switch event and actor", () => {
+    const status = operatorStatus({
+      protective_stops: {
+        status: "triggered",
+        global_kill_switch_active: true,
+        global_auto_trading_enabled: false,
+        last_kill_switch_event: {
+          event_type: "kill_switch_on",
+          occurred_at: "2026-05-01T09:15:00Z",
+          message: "Kill switch activated by circuit_breaker:trading212",
+          ticker: null,
+          actor: "circuit_breaker:trading212",
+        },
+        recent_events: [
+          {
+            event_type: "kill_switch_on",
+            occurred_at: "2026-05-01T09:15:00Z",
+            message: "Kill switch activated by circuit_breaker:trading212",
+            ticker: null,
+            actor: "circuit_breaker:trading212",
+          },
+          {
+            event_type: "cash_guard_block",
+            occurred_at: "2026-05-01T09:10:00Z",
+            message: "Cash guard: estimated cost exceeds available cash",
+            ticker: "AAPL",
+            actor: null,
+          },
+        ],
+        safety_notes: ["Read-only surface."],
+      },
+    });
+
+    render(<OperatorDashboard status={status} />);
+
+    const card = screen.getByTestId("operator-protective-stops");
+    expect(within(card).getByTestId("protective-stops-status")).toHaveTextContent(
+      "Triggered",
+    );
+    expect(within(card).getByText("Triggered by")).toBeInTheDocument();
+    expect(
+      within(card).getAllByText("circuit_breaker:trading212").length,
+    ).toBeGreaterThan(0);
+    const events = within(card).getByTestId("protective-stops-events");
+    expect(within(events).getByText(/cash_guard_block/)).toBeInTheDocument();
+    expect(within(events).getByText(/AAPL/)).toBeInTheDocument();
+  });
+
+  it("renders unknown state when persisted app settings are unavailable", () => {
+    const status = operatorStatus({
+      protective_stops: {
+        status: "unknown",
+        global_kill_switch_active: null,
+        global_auto_trading_enabled: null,
+        last_kill_switch_event: null,
+        recent_events: [],
+        safety_notes: ["Read-only surface."],
+      },
+    });
+
+    render(<OperatorDashboard status={status} />);
+
+    const card = screen.getByTestId("operator-protective-stops");
+    expect(within(card).getByTestId("protective-stops-status")).toHaveTextContent(
+      "Unknown",
+    );
+  });
+
+  it("does not render reset, clear, enable, or disable controls", () => {
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("operator-protective-stops");
+    expect(within(card).queryAllByRole("button")).toHaveLength(0);
+    expect(within(card).queryByRole("button", { name: /reset/i })).toBeNull();
+    expect(within(card).queryByRole("button", { name: /clear/i })).toBeNull();
+    expect(within(card).queryByRole("button", { name: /enable/i })).toBeNull();
+    expect(within(card).queryByRole("button", { name: /disable/i })).toBeNull();
   });
 });
 

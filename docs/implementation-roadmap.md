@@ -91,6 +91,42 @@ What landed:
 No backend changes, no new endpoints, no broker calls from the operator page,
 no order controls, no safety-gate modifications, no live trading changes.
 
+### 1c. Operator Protective Stops Visibility
+
+Status: `[In review]` — `feat/operator-circuit-breaker-visibility`.
+
+Autonomy level: Level B
+
+Key repo evidence gathered before implementation:
+
+- The in-process `CircuitBreaker` singletons in `apps/api/app/broker/circuit_breaker.py`
+  are not wired into any live broker call path (referenced only by tests and a
+  never-updated Prometheus gauge). Their in-memory state is not a reliable
+  protection signal and is intentionally NOT surfaced as one.
+- The reliable, persisted protective-stop state was invisible to operators:
+  `AppSettings.kill_switch_active` / `auto_trading_enabled` (set by the
+  emergency endpoint, the risk engine, and the circuit breaker's auto-kill
+  path) and the `RiskEvent` trigger history (`kill_switch_on/off`,
+  `kill_switch_block`, `cash_guard_block`, …). An active GLOBAL kill switch
+  did not affect `overall_status`, which only checked per-venue kill switches.
+
+What landed:
+
+- `protective_stops` object added to `GET /v1/operator/status`
+  (`OperatorProtectiveStopsOut`): status ok/triggered/unknown, global kill
+  switch and auto-trading flags, last kill-switch event, and a sanitized
+  allowlist-filtered list of recent protective `RiskEvent`s (no raw payloads).
+- `overall_status` now also reports `blocked` when the persisted global kill
+  switch is active (fail-closed direction only), mirrored by a new
+  `global_kill_switch_active` entry in `why_blocked`.
+- `ProtectiveStopsCard` added to `operator-dashboard.tsx`
+  (`data-testid="operator-protective-stops"`), read-only, no
+  reset/clear/enable/disable controls.
+- Backend unit tests, frontend unit tests, and operator E2E assertions added.
+
+No new enforcement logic, no kill-switch or safety-policy behavior change, no
+broker calls from the operator endpoint, no mutation endpoints, no controls.
+
 ### 2. Performance Attribution Slippage Caveats
 
 Status: `[Done]` — read-only disclosure landed via PR1 from

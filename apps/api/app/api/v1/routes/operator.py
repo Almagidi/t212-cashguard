@@ -17,6 +17,8 @@ from app.api.schemas import (
     OperatorDcaStatusOut,
     OperatorKrakenStatusOut,
     OperatorPaperExecutionStatusOut,
+    OperatorProtectiveStopEventOut,
+    OperatorProtectiveStopsOut,
     OperatorRecentActivityOut,
     OperatorSafetyFlagsOut,
     OperatorSchedulersStatusOut,
@@ -32,6 +34,7 @@ from app.db.models import (
     DcaConfig,
     DcaPlanState,
     Order,
+    RiskEvent,
     Strategy,
     User,
     VenueConfig,
@@ -60,6 +63,34 @@ _DCA_TASK = "app.workers.tasks_dca.evaluate_due_plans_task"
 _HEARTBEAT_BEAT_KEY = "worker-heartbeat"
 _HEARTBEAT_TASK = "app.workers.tasks_heartbeat.record_worker_heartbeat_task"
 _EXPECTED_VENUES = ("t212", "kraken")
+
+# Persisted RiskEvent types that represent protective-stop activity. This is a
+# read-only allowlist for operator visibility — surfacing an event here changes
+# no enforcement behaviour. Kept explicit so unrelated event types are never
+# leaked through the operator surface by accident.
+_PROTECTIVE_RISK_EVENT_TYPES = (
+    "kill_switch_on",
+    "kill_switch_off",
+    "kill_switch_block",
+    "cash_guard_block",
+    "daily_loss_breach",
+    "consecutive_loss",
+    "duplicate_order_block",
+    "stale_data",
+    "cooldown_block",
+    "eod_flatten",
+    "max_positions_block",
+    "position_size_block",
+    "max_trades_block",
+    "sector_limit_block",
+    "correlation_block",
+    "cfd_size_block",
+    "cfd_daily_loss_block",
+    "cfd_leverage_block",
+    "cfd_margin_block",
+)
+_KILL_SWITCH_EVENT_TYPES = ("kill_switch_on", "kill_switch_off")
+_PROTECTIVE_EVENT_LIMIT = 10
 
 
 def _beat_entry(key: str, task: str) -> dict[str, Any] | None:
@@ -117,6 +148,7 @@ def _compute_blocking_reasons(
     *,
     cash_only_mode: bool,
     any_venue_kill_switch_active: bool,
+    global_kill_switch_active: bool | None,
     missing_expected_venue_configs: bool,
     any_venue_degraded: bool,
     live_readiness_status: LiveReadinessStatus | None,
@@ -144,6 +176,17 @@ def _compute_blocking_reasons(
                 code="kill_switch_active",
                 severity="blocked",
                 message="A venue kill switch is active. Trading is blocked until it is cleared.",
+            )
+        )
+    if global_kill_switch_active is True:
+        reasons.append(
+            OperatorBlockingReasonOut(
+                code="global_kill_switch_active",
+                severity="blocked",
+                message=(
+                    "The global kill switch is active. All trading is blocked "
+                    "until it is cleared from Emergency Controls."
+                ),
             )
         )
     if missing_expected_venue_configs:
@@ -179,6 +222,23 @@ def _compute_blocking_reasons(
             )
         )
     return reasons
+
+
+def _protective_event_out(event: RiskEvent) -> OperatorProtectiveStopEventOut:
+    """Sanitized, read-only projection of a persisted RiskEvent.
+
+    Only coarse display fields are exposed — never the raw payload, which may
+    carry position sizes or cash amounts beyond what the operator card needs.
+    """
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    actor = payload.get("actor")
+    return OperatorProtectiveStopEventOut(
+        event_type=event.event_type,
+        occurred_at=event.occurred_at,
+        message=event.message,
+        ticker=event.ticker,
+        actor=actor if isinstance(actor, str) and actor else None,
+    )
 
 
 def _venue_status_from_row(row: VenueConfig | None, venue: str) -> OperatorVenueStatusOut:
@@ -375,6 +435,40 @@ async def operator_status(
     app_live_trading_unlocked = bool(
         app_settings.live_trading_unlocked if app_settings is not None else False
     )
+    global_kill_switch_active = (
+        bool(app_settings.kill_switch_active) if app_settings is not None else None
+    )
+    global_auto_trading_enabled = (
+        bool(app_settings.auto_trading_enabled) if app_settings is not None else None
+    )
+
+    recent_protective_events = list(
+        (
+            await db.execute(
+                select(RiskEvent)
+                .where(RiskEvent.event_type.in_(_PROTECTIVE_RISK_EVENT_TYPES))
+                .order_by(desc(RiskEvent.occurred_at))
+                .limit(_PROTECTIVE_EVENT_LIMIT)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    last_kill_switch_event = (
+        await db.execute(
+            select(RiskEvent)
+            .where(RiskEvent.event_type.in_(_KILL_SWITCH_EVENT_TYPES))
+            .order_by(desc(RiskEvent.occurred_at))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if global_kill_switch_active is None:
+        protective_stops_status: Literal["ok", "triggered", "unknown"] = "unknown"
+    elif global_kill_switch_active:
+        protective_stops_status = "triggered"
+    else:
+        protective_stops_status = "ok"
 
     any_venue_kill_switch_active = any(
         status.kill_switch_active is True for status in venue_statuses
@@ -399,7 +493,11 @@ async def operator_status(
         or any(status.auto_trading_enabled is True for status in venue_statuses)
     )
 
-    if not settings.CASH_ONLY_MODE or any_venue_kill_switch_active:
+    if (
+        not settings.CASH_ONLY_MODE
+        or any_venue_kill_switch_active
+        or global_kill_switch_active is True
+    ):
         overall_status: Literal["ok", "degraded", "blocked"] = "blocked"
     elif (
         missing_expected_venue_configs
@@ -414,6 +512,7 @@ async def operator_status(
     why_blocked = _compute_blocking_reasons(
         cash_only_mode=settings.CASH_ONLY_MODE,
         any_venue_kill_switch_active=any_venue_kill_switch_active,
+        global_kill_switch_active=global_kill_switch_active,
         missing_expected_venue_configs=missing_expected_venue_configs,
         any_venue_degraded=any_venue_degraded,
         live_readiness_status=live_readiness_status,
@@ -426,6 +525,25 @@ async def operator_status(
         generated_at=now,
         overall_status=overall_status,
         why_blocked=why_blocked,
+        protective_stops=OperatorProtectiveStopsOut(
+            status=protective_stops_status,
+            global_kill_switch_active=global_kill_switch_active,
+            global_auto_trading_enabled=global_auto_trading_enabled,
+            last_kill_switch_event=(
+                _protective_event_out(last_kill_switch_event)
+                if last_kill_switch_event is not None
+                else None
+            ),
+            recent_events=[_protective_event_out(event) for event in recent_protective_events],
+            safety_notes=[
+                "Read-only surface. No reset, clear, enable, or disable controls exist here.",
+                "Global kill switch is persisted app state; per-venue kill switches are "
+                "shown separately in the venue cards.",
+                "Circuit-breaker activations appear as kill-switch events with actor "
+                "'circuit_breaker:<name>'. In-process circuit state is not persisted "
+                "and is not shown.",
+            ],
+        ),
         live_trading_possible=live_trading_possible,
         live_trading_enabled_anywhere=live_trading_enabled_anywhere,
         venues=venue_statuses,

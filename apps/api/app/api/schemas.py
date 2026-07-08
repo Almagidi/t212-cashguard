@@ -492,6 +492,28 @@ class OperatorBlockingReasonOut(BaseModel):
     message: str
 
 
+class OperatorProtectiveStopEventOut(BaseModel):
+    # Sanitized projection of a persisted RiskEvent. Raw payloads are never
+    # exposed through the operator surface — only the coarse fields below.
+    event_type: str
+    occurred_at: datetime
+    message: str | None
+    ticker: str | None
+    actor: str | None
+
+
+class OperatorProtectiveStopsOut(BaseModel):
+    # Read-only visibility over persisted protective-stop state (global kill
+    # switch + risk-event trigger history). Reports existing state only; adds
+    # no enforcement logic and no controls.
+    status: Literal["ok", "triggered", "unknown"]
+    global_kill_switch_active: bool | None
+    global_auto_trading_enabled: bool | None
+    last_kill_switch_event: OperatorProtectiveStopEventOut | None
+    recent_events: list[OperatorProtectiveStopEventOut]
+    safety_notes: list[str]
+
+
 class OperatorSafetyFlagsOut(BaseModel):
     endpoint_read_only: bool
     creates_orders: bool
@@ -525,6 +547,7 @@ class OperatorStatusOut(BaseModel):
     generated_at: datetime
     overall_status: Literal["ok", "degraded", "blocked"]
     why_blocked: list[OperatorBlockingReasonOut]
+    protective_stops: OperatorProtectiveStopsOut
     live_trading_possible: bool
     live_trading_enabled_anywhere: bool
     venues: list[OperatorVenueStatusOut]

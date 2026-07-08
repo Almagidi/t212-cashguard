@@ -963,3 +963,184 @@ async def test_operator_status_why_blocked_does_not_call_side_effect_paths(
     assert response.status_code == 200
     body = response.json()
     assert body["why_blocked"]
+
+
+# ─── Protective stops visibility ──────────────────────────────────────────────
+
+
+def _risk_event(
+    *,
+    event_type: str,
+    occurred_at: datetime,
+    message: str | None = None,
+    ticker: str | None = None,
+    payload: dict | None = None,
+):
+    from app.db.models import RiskEvent
+
+    return RiskEvent(
+        event_type=event_type,
+        ticker=ticker,
+        message=message,
+        payload=payload,
+        occurred_at=occurred_at,
+    )
+
+
+@pytest.mark.asyncio
+async def test_operator_status_protective_stops_ok_state(
+    client,
+    auth_headers,
+    db,
+):
+    db.add_all(
+        [
+            _venue("t212"),
+            _venue("kraken"),
+            _heartbeat(last_seen_at=datetime.now(UTC)),
+        ]
+    )
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+
+    stops = body["protective_stops"]
+    assert stops["status"] == "ok"
+    assert stops["global_kill_switch_active"] is False
+    assert stops["global_auto_trading_enabled"] is False
+    assert stops["last_kill_switch_event"] is None
+    assert stops["recent_events"] == []
+    assert stops["safety_notes"]
+    assert body["overall_status"] == "ok"
+    assert body["why_blocked"] == []
+
+
+@pytest.mark.asyncio
+async def test_operator_status_global_kill_switch_blocks_and_shows_trigger(
+    client,
+    auth_headers,
+    db,
+):
+    from app.db.models import AppSettings
+
+    db.add_all(
+        [
+            _venue("t212"),
+            _venue("kraken"),
+            _heartbeat(last_seen_at=datetime.now(UTC)),
+            _risk_event(
+                event_type="kill_switch_on",
+                occurred_at=BASE_TIME,
+                message="Kill switch activated by circuit_breaker:trading212",
+                payload={"actor": "circuit_breaker:trading212"},
+            ),
+        ]
+    )
+    await db.commit()
+
+    app_settings = (await db.execute(select(AppSettings).where(AppSettings.id == 1))).scalar_one()
+    app_settings.kill_switch_active = True
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["overall_status"] == "blocked"
+    reasons = {reason["code"]: reason for reason in body["why_blocked"]}
+    assert "global_kill_switch_active" in reasons
+    assert reasons["global_kill_switch_active"]["severity"] == "blocked"
+    assert reasons["global_kill_switch_active"]["message"]
+
+    stops = body["protective_stops"]
+    assert stops["status"] == "triggered"
+    assert stops["global_kill_switch_active"] is True
+    last_event = stops["last_kill_switch_event"]
+    assert last_event["event_type"] == "kill_switch_on"
+    assert last_event["actor"] == "circuit_breaker:trading212"
+    assert last_event["message"] == "Kill switch activated by circuit_breaker:trading212"
+
+
+@pytest.mark.asyncio
+async def test_operator_status_protective_stops_unknown_when_app_settings_missing(
+    client,
+    auth_headers,
+    db,
+):
+    from app.db.models import AppSettings
+
+    db.add_all(
+        [
+            _venue("t212"),
+            _venue("kraken"),
+            _heartbeat(last_seen_at=datetime.now(UTC)),
+        ]
+    )
+    await db.commit()
+
+    app_settings = (await db.execute(select(AppSettings).where(AppSettings.id == 1))).scalar_one()
+    await db.delete(app_settings)
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+
+    stops = body["protective_stops"]
+    assert stops["status"] == "unknown"
+    assert stops["global_kill_switch_active"] is None
+    assert stops["global_auto_trading_enabled"] is None
+    reasons = {reason["code"] for reason in body["why_blocked"]}
+    assert "global_kill_switch_active" not in reasons
+
+
+@pytest.mark.asyncio
+async def test_operator_status_protective_stops_events_filtered_bounded_and_sanitized(
+    client,
+    auth_headers,
+    db,
+):
+    events = [
+        _risk_event(
+            event_type="cash_guard_block",
+            occurred_at=BASE_TIME - timedelta(minutes=index),
+            message=f"cash guard block {index}",
+            ticker="AAPL",
+            payload={"actor": "system", "estimated_cost": "12345.67"},
+        )
+        for index in range(12)
+    ]
+    events.append(
+        _risk_event(
+            event_type="not_a_protective_event",
+            occurred_at=BASE_TIME + timedelta(minutes=1),
+            message="should not appear",
+        )
+    )
+    db.add_all(
+        [
+            _venue("t212"),
+            _venue("kraken"),
+            _heartbeat(last_seen_at=datetime.now(UTC)),
+            *events,
+        ]
+    )
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+
+    stops = body["protective_stops"]
+    recent = stops["recent_events"]
+    assert len(recent) == 10
+    assert all(event["event_type"] == "cash_guard_block" for event in recent)
+    assert recent[0]["message"] == "cash guard block 0"
+    assert recent[0]["ticker"] == "AAPL"
+    assert recent[0]["actor"] == "system"
+    # Raw payloads must never be exposed through the operator surface.
+    assert all("payload" not in event for event in recent)
+    # Protective blocks alone do not flip the protective-stop status.
+    assert stops["status"] == "ok"

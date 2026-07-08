@@ -36,6 +36,7 @@ import type {
   DemoReconciliationWorkerStatus,
   OperatorBlockingReason,
   OperatorOverallStatus,
+  OperatorProtectiveStopEvent,
   PaperExecutionHistoryItem,
   OperatorRecentActivity,
   OperatorSafetyFlags,
@@ -1476,6 +1477,128 @@ function CashGuardCard({ status }: { status: OperatorStatus }) {
   );
 }
 
+function protectiveEventLabel(event: OperatorProtectiveStopEvent) {
+  const parts = [event.event_type];
+  if (event.ticker) parts.push(event.ticker);
+  return parts.join(" · ");
+}
+
+function ProtectiveStopsCard({ status }: { status: OperatorStatus }) {
+  const stops = status.protective_stops;
+  const lastEvent = stops.last_kill_switch_event;
+
+  return (
+    <Card
+      className={cn(
+        stops.status === "triggered" && "border-red-500/40 bg-red-500/5",
+        stops.status === "unknown" && "border-amber-500/40 bg-amber-500/5",
+      )}
+      data-testid="operator-protective-stops"
+    >
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <ShieldAlert className="h-4 w-4 text-muted-foreground" />
+            <CardTitle>Protective Stops</CardTitle>
+          </div>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {stops.status === "triggered" && (
+              <TextBadge tone="destructive" testId="protective-stops-status">
+                Triggered
+              </TextBadge>
+            )}
+            {stops.status === "unknown" && (
+              <TextBadge tone="warning" testId="protective-stops-status">
+                Unknown
+              </TextBadge>
+            )}
+            {stops.status === "ok" && (
+              <TextBadge tone="success" testId="protective-stops-status">
+                OK
+              </TextBadge>
+            )}
+            <TextBadge tone="info">Read-only</TextBadge>
+            <TextBadge tone="success">No controls</TextBadge>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <dl>
+          <InfoRow
+            label="Global kill switch"
+            value={boolLabel(stops.global_kill_switch_active)}
+            valueClassName={boolTone(stops.global_kill_switch_active, true)}
+          />
+          <InfoRow
+            label="Global auto-trading"
+            value={boolLabel(stops.global_auto_trading_enabled)}
+            valueClassName={boolTone(stops.global_auto_trading_enabled, true)}
+          />
+          <InfoRow
+            label="Last kill-switch event"
+            value={
+              lastEvent
+                ? `${protectiveEventLabel(lastEvent)} — ${formatDate(lastEvent.occurred_at)}`
+                : "None recorded"
+            }
+          />
+          {lastEvent?.actor && (
+            <InfoRow label="Triggered by" value={lastEvent.actor} />
+          )}
+        </dl>
+
+        {stops.recent_events.length > 0 ? (
+          <div data-testid="protective-stops-events">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Recent protective events
+            </p>
+            <ul className="mt-2 space-y-2">
+              {stops.recent_events.map((event, index) => (
+                <li
+                  key={`${event.event_type}-${event.occurred_at}-${index}`}
+                  className="rounded-lg border border-border/60 p-2.5 text-xs"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-medium">
+                      {protectiveEventLabel(event)}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {formatDate(event.occurred_at)}
+                    </span>
+                  </div>
+                  {event.message && (
+                    <p className="mt-1 text-muted-foreground">{event.message}</p>
+                  )}
+                  {event.actor && (
+                    <p className="mt-1 text-muted-foreground">
+                      Actor: {event.actor}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <p
+            className="text-xs text-muted-foreground"
+            data-testid="protective-stops-events-empty"
+          >
+            No protective-stop events recorded.
+          </p>
+        )}
+
+        <div className="space-y-1">
+          {stops.safety_notes.map((note) => (
+            <p key={note} className="text-xs text-muted-foreground">
+              {note}
+            </p>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function OperatorDashboard({
   status,
   isLoading = false,
@@ -1492,6 +1615,7 @@ export function OperatorDashboard({
       <TopSafetySummary status={status} />
       <ExecutionBoundary status={status} />
       <CashGuardCard status={status} />
+      <ProtectiveStopsCard status={status} />
 
       <section className="grid gap-4 xl:grid-cols-2" aria-label="Venue status">
         {status.venues.map((venue) => (
