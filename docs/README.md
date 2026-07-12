@@ -17,6 +17,7 @@ index only — every link points to a file that already exists in `docs/`.
 | [Demo RC Checklist](DEMO_RC_CHECKLIST.md) | Release-candidate checklist for the demo build. |
 | [Manual Demo RC Runbook](MANUAL_DEMO_RC_RUNBOOK.md) | Step-by-step manual demo release-candidate runbook. |
 | [Live Smoke Test Runbook](LIVE_SMOKE_TEST_RUNBOOK.md) | Future tiny supervised live-money smoke test procedure — **do not run yet**. |
+| [Live-Readiness Recency and Attestation Expiry Proposal](live-readiness-recency-expiry-proposal.md) | Docs-only proposal for future live-readiness freshness and attestation expiry policy. |
 | [Security](security.md) | Security posture, controls, and review notes. |
 
 ## Architecture
