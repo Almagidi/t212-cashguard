@@ -63,7 +63,7 @@
     "eslint-config-next": "16.2.9",
     "jest": "30.4.2",
     "jest-environment-jsdom": "30.4.1",
-    "postcss": "8.5.15",
+    "postcss": "8.5.17",
     "prettier": "3.8.3",
     "prettier-plugin-tailwindcss": "0.8.0",
     "tailwindcss": "3.4.17",
@@ -72,7 +72,7 @@
   "overrides": {
     "@tootallnate/once": "2.0.1",
     "js-yaml": "4.2.0",
-    "postcss": "8.5.15",
+    "postcss": "8.5.17",
     "ws": "8.21.0"
   }
 }
