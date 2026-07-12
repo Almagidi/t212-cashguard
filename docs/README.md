@@ -16,6 +16,7 @@ index only — every link points to a file that already exists in `docs/`.
 | [Release Readiness](RELEASE_READINESS.md) | Readiness criteria before a release candidate. |
 | [Demo RC Checklist](DEMO_RC_CHECKLIST.md) | Release-candidate checklist for the demo build. |
 | [Manual Demo RC Runbook](MANUAL_DEMO_RC_RUNBOOK.md) | Step-by-step manual demo release-candidate runbook. |
+| [Live Smoke Test Runbook](LIVE_SMOKE_TEST_RUNBOOK.md) | Future tiny supervised live-money smoke test procedure — **do not run yet**. |
 | [Security](security.md) | Security posture, controls, and review notes. |
 
 ## Architecture
