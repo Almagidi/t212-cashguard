@@ -57,6 +57,36 @@ Autonomy levels:
 
 ## Recommended Next Targets
 
+### Test specification added in PR #167
+
+Status: `[In review]` — `test/live-readiness-expiry-spec`.
+
+Autonomy level: Level A
+
+PR #167 is tests/docs only. It locks current live-readiness recency behavior
+and documents future attestation-expiry behavior without changing readiness
+gates, safety behavior, broker/provider/execution behavior, live trading state,
+or Kraken/crypto code.
+
+Active current-behavior tests added in
+`apps/api/tests/unit/test_live_readiness.py`:
+
+- broker tests older than 24 hours fail `live_broker_test_recent`
+- broker tests within 24 hours pass `live_broker_test_recent`
+- old manual attestations remain accepted under current behavior
+- stale broker recency is not offset by `broker_test_attested`
+- the global kill switch blocks readiness
+
+Skipped future-policy tests to activate during the later approved Level C
+expiry-enforcement PR:
+
+- broker-test attestation expires after 24 hours
+- Telegram attestation expires after 24 hours
+- kill-switch drill expires before a live smoke test
+- demo validation requires fresh reconciliation evidence
+- final live unlock acknowledgement is session-scoped
+- expired attestations surface expired/stale reason codes
+
 ### 1. Operator "Why Blocked" Readiness Detail
 
 Status: `[Done]` — landed via PR #147 (`feat/operator-why-blocked-readiness`).
