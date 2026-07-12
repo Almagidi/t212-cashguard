@@ -37,6 +37,12 @@ The roadmap must not be used as approval to:
 - delete quarantined folders permanently
 - delete legacy attribution code without a separately approved Level C cleanup PR
 
+The no-trading-controls invariant is enforced by regression tests:
+`apps/web/tests/e2e/safety-invariants.spec.ts` sweeps every app page for
+order-placement controls and verifies the paper order form only reaches
+`/orders/paper`, and `apps/web/tests/unit/no-trading-controls-source.test.ts`
+statically proves the live order-placement client method has no UI call sites.
+
 ## How To Choose Work
 
 Prefer small PR-sized targets. Keep docs/tests/investigation separate from runtime-adjacent
