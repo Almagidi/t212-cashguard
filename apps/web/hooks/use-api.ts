@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import api from "@/services/api";
 import type {
-  CreateOrderPayload,
   CreatePaperOrderPayload,
   CreateStrategyPayload,
   CreateStrategyPresetPayload,
@@ -386,19 +385,6 @@ export const usePaperOrderAudit = (
     enabled: Boolean(id) && (options?.enabled ?? true),
     refetchInterval: 30_000,
   });
-
-export const usePlaceOrder = () => {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (p: CreateOrderPayload) => api.placeOrder(p),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["orders"] });
-      qc.invalidateQueries({ queryKey: ["positions"] });
-      toast.success("Order placed");
-    },
-    onError: (e: any) => toast.error(extractErrorMessage(e, "Order failed")),
-  });
-};
 
 export const usePlacePaperOrder = () => {
   const qc = useQueryClient();

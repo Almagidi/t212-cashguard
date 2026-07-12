@@ -1,12 +1,14 @@
 /**
  * Static safety audit — no unauthorized order-placement call sites in UI source.
  *
- * The API plumbing tier (services/api.ts and hooks/use-api.ts) pre-dates this
- * guard and legitimately defines placeOrder() / usePlaceOrder() for the
- * backend's order endpoint. Until live trading is explicitly approved, no UI
- * code (pages, components, stores, lib, other hooks) may consume them or
- * reach the placement endpoint directly. The only permitted UI order
- * mutation is the paper-only flow via placePaperOrder() -> POST /orders/paper.
+ * The API client tier (services/api.ts) pre-dates this guard and legitimately
+ * defines placeOrder() for the backend's live order endpoint. Its dormant
+ * react-query wrapper (usePlaceOrder in hooks/use-api.ts) was removed on
+ * 2026-07-12. Until live trading is explicitly approved, no UI code (pages,
+ * components, stores, lib, hooks) may mention the live placement method,
+ * reintroduce a wrapper for it, or reach the placement endpoint directly.
+ * The only permitted UI order mutation is the paper-only flow via
+ * placePaperOrder() -> POST /orders/paper.
  */
 import { describe, expect, test } from '@jest/globals'
 import fs from 'node:fs'
@@ -15,13 +17,9 @@ import path from 'node:path'
 const WEB_ROOT = path.resolve(__dirname, '..', '..')
 const UI_SOURCE_DIRS = ['app', 'components', 'hooks', 'stores', 'lib']
 
-// The API client and its react-query wrapper are the only files allowed to
-// mention the live order-placement method. Everything else is UI tier.
-const API_PLUMBING_FILES = new Set([
-  path.join(WEB_ROOT, 'services', 'api.ts'),
-  path.join(WEB_ROOT, 'hooks', 'use-api.ts'),
-])
-
+// The API client (services/api.ts) is the only file allowed to mention the
+// live order-placement method. It lives outside UI_SOURCE_DIRS, so every
+// scanned file — including hooks/use-api.ts — must stay clean.
 function collectSourceFiles(dir: string): string[] {
   if (!fs.existsSync(dir)) return []
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -33,9 +31,7 @@ function collectSourceFiles(dir: string): string[] {
   })
 }
 
-const uiFiles = UI_SOURCE_DIRS.flatMap((dir) => collectSourceFiles(path.join(WEB_ROOT, dir))).filter(
-  (file) => !API_PLUMBING_FILES.has(file),
-)
+const uiFiles = UI_SOURCE_DIRS.flatMap((dir) => collectSourceFiles(path.join(WEB_ROOT, dir)))
 
 function offendersMatching(pattern: RegExp): string[] {
   return uiFiles.filter((file) => pattern.test(fs.readFileSync(file, 'utf8')))
@@ -53,7 +49,7 @@ describe('no order-placement call sites in UI source', () => {
     expect(offenders).toEqual([])
   })
 
-  test('the dormant usePlaceOrder mutation hook stays unconsumed', () => {
+  test('the removed usePlaceOrder hook is not reintroduced in UI source', () => {
     const offenders = offendersMatching(/\busePlaceOrder\b/)
     expect(offenders).toEqual([])
   })
