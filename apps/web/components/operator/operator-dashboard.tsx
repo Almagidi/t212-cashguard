@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import {
   AlertTriangle,
   Banknote,
@@ -1182,6 +1183,19 @@ function SafetyFlags({ status }: { status: OperatorStatus }) {
   );
 }
 
+const RECONCILIATION_STALE_INTERVAL_MULTIPLIER = 3;
+const RECONCILIATION_STALE_FLOOR_MS = 5 * 60 * 1000;
+const NOW_REFRESH_MS = 30_000;
+
+function useNow(refreshMs: number = NOW_REFRESH_MS): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), refreshMs);
+    return () => clearInterval(id);
+  }, [refreshMs]);
+  return now;
+}
+
 function DemoReconciliationStatusCard({
   status,
   schedulerStatus,
@@ -1197,12 +1211,14 @@ function DemoReconciliationStatusCard({
   error?: unknown;
   schedulerError?: unknown;
 }) {
+  const now = useNow();
   const latest = status?.last_run_summary as
     | {
         outcome?: string;
         candidates_found?: number;
         attempted?: number;
         succeeded?: number;
+        missing?: number;
         failed?: number;
         rate_limited?: number;
       }
@@ -1213,6 +1229,7 @@ function DemoReconciliationStatusCard({
         candidates_found?: number;
         attempted?: number;
         succeeded?: number;
+        missing?: number;
         failed?: number;
         rate_limited?: number;
       }
@@ -1223,10 +1240,29 @@ function DemoReconciliationStatusCard({
   const rateLimited =
     Number(schedulerLatest?.rate_limited ?? latest?.rate_limited ?? 0) > 0 ||
     schedulerStatus?.last_run_outcome === "rate_limited";
+  const lastRunAt =
+    schedulerStatus?.last_run_finished_at ?? status?.last_run_at ?? null;
+  const staleAfterMs = Math.max(
+    (schedulerStatus?.interval_seconds ?? 0) *
+      RECONCILIATION_STALE_INTERVAL_MULTIPLIER *
+      1000,
+    RECONCILIATION_STALE_FLOOR_MS,
+  );
+  const isStale = Boolean(
+    schedulerStatus?.enabled &&
+      lastRunAt &&
+      now - new Date(lastRunAt).getTime() > staleAfterMs,
+  );
   const schedulerWarnings = [
     ...(schedulerStatus?.enabled === false ? ["Scheduler disabled by config."] : []),
     ...(schedulerStatus?.worker_enabled === false ? ["Worker disabled by config."] : []),
     ...(backingOff ? ["Rate limited/backing off."] : []),
+    ...(isStale
+      ? ["Last reconciliation run is older than the expected cadence."]
+      : []),
+    ...(schedulerStatus?.last_error_message
+      ? [`Last error: ${schedulerStatus.last_error_message}`]
+      : []),
     ...((schedulerStatus?.warnings ?? []).map((warning) => `Unsafe config: ${warning}`)),
   ];
 
@@ -1268,6 +1304,11 @@ function DemoReconciliationStatusCard({
               <TextBadge tone={backingOff || rateLimited ? "warning" : "info"}>
                 {backingOff ? "Backing off" : rateLimited ? "Rate limited" : "Read-only"}
               </TextBadge>
+              {isStale && (
+                <TextBadge tone="warning" testId="reconciliation-stale-badge">
+                  Stale
+                </TextBadge>
+              )}
             </div>
             <dl className="grid gap-2 text-sm">
               <InfoRow
@@ -1329,7 +1370,7 @@ function DemoReconciliationStatusCard({
                 </ul>
               </div>
             )}
-            <div className="grid grid-cols-4 gap-2 text-center text-xs">
+            <div className="grid grid-cols-3 gap-2 text-center text-xs sm:grid-cols-6">
               <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
                 <p className="text-slate-500">Found</p>
                 <p className="mt-1 font-semibold text-slate-100">
@@ -1349,12 +1390,36 @@ function DemoReconciliationStatusCard({
                 </p>
               </div>
               <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
+                <p className="text-slate-500">Missing</p>
+                <p
+                  className="mt-1 font-semibold text-amber-300"
+                  data-testid="reconciliation-missing-count"
+                >
+                  {latestCounts?.missing ?? 0}
+                </p>
+              </div>
+              <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
+                <p className="text-slate-500">Failed</p>
+                <p
+                  className="mt-1 font-semibold text-red-300"
+                  data-testid="reconciliation-failed-count"
+                >
+                  {latestCounts?.failed ?? 0}
+                </p>
+              </div>
+              <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
                 <p className="text-slate-500">Limited</p>
                 <p className="mt-1 font-semibold text-amber-300">
                   {latestCounts?.rate_limited ?? 0}
                 </p>
               </div>
             </div>
+            <p className="text-xs text-muted-foreground">
+              Missing means a local order was not found in broker history — a
+              broker/local mismatch to investigate. Broker checks are
+              read-only; no broker order is sent and no reconciliation
+              controls exist here.
+            </p>
           </>
         )}
       </CardContent>

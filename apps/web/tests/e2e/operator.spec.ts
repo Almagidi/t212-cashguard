@@ -263,6 +263,71 @@ const dcaConfigs = [
   },
 ]
 
+const demoReconciliationStatus = {
+  enabled: true,
+  app_mode: 'demo',
+  broker_environment: 'demo',
+  live_trading_enabled: false,
+  batch_size: 10,
+  min_interval_seconds: 60,
+  lookback_hours: 48,
+  max_attempts_per_run: 10,
+  history_limit: 50,
+  last_run_at: '2026-05-05T09:20:00Z',
+  last_run_summary: {
+    outcome: 'completed_with_failures',
+    candidates_found: 5,
+    attempted: 5,
+    succeeded: 2,
+    missing: 2,
+    failed: 1,
+    rate_limited: 0,
+  },
+  safety_state: 'safe',
+  warnings: [],
+}
+
+const demoReconciliationSchedulerStatus = {
+  enabled: true,
+  running: true,
+  app_mode: 'demo',
+  broker_environment: 'demo',
+  live_trading_enabled: false,
+  worker_enabled: true,
+  interval_seconds: 120,
+  backoff_seconds: 300,
+  initial_delay_seconds: 10,
+  run_on_startup: false,
+  last_run_started_at: '2026-05-05T09:19:58Z',
+  // Deliberately far in the past relative to any real test-run clock, so the
+  // read-only staleness derivation is deterministically visible in E2E.
+  last_run_finished_at: '2026-05-05T09:20:00Z',
+  last_run_duration_ms: 2000,
+  last_run_outcome: 'completed_with_failures',
+  last_run_summary: {
+    candidates_found: 5,
+    attempted: 5,
+    succeeded: 2,
+    missing: 2,
+    failed: 1,
+    rate_limited: 0,
+    skipped: 0,
+  },
+  next_run_at: '2026-05-05T09:22:00Z',
+  next_run_not_before: null,
+  consecutive_failures: 0,
+  consecutive_rate_limits: 0,
+  total_runs: 12,
+  total_successful_runs: 11,
+  total_failed_runs: 1,
+  total_rate_limited_runs: 0,
+  last_error_message: null,
+  safety_state: 'safe',
+  warnings: [],
+  no_broker_order_sent: true,
+  read_only_broker_calls: true,
+}
+
 const paperExecutionHistory = {
   total: 1,
   limit: 25,
@@ -353,6 +418,9 @@ test.describe('Operator dashboard readiness', () => {
         '/v1/kraken/dca/activity': dcaActivity,
         '/v1/kraken/dca/configs': dcaConfigs,
         '/v1/orders/paper': paperExecutionHistory,
+        '/v1/broker/trading212/reconciliation/status': demoReconciliationStatus,
+        '/v1/broker/trading212/reconciliation/scheduler/status':
+          demoReconciliationSchedulerStatus,
         '/v1/account/cash-guard': {
           available_to_trade: 4285.0,
           reserved: 215.0,
@@ -470,6 +538,26 @@ test.describe('Operator dashboard readiness', () => {
     await expect(safetyPosture).toContainText(
       'Mock (offline simulation — no real broker)',
     )
+
+    // Demo reconciliation — broker/local reconciliation state must be visible,
+    // read-only, with mismatch (missing/failed) counts and staleness surfaced.
+    const reconciliationCard = page.getByTestId('demo-reconciliation-status')
+    await expect(reconciliationCard).toBeVisible()
+    await expect(reconciliationCard).toContainText('Trading 212 Demo Reconciliation')
+    await expect(reconciliationCard).toContainText('Worker enabled')
+    await expect(reconciliationCard).toContainText('Scheduler enabled')
+    await expect(reconciliationCard).toContainText('Live disabled')
+    await expect(reconciliationCard).toContainText('Missing')
+    await expect(reconciliationCard).toContainText('Failed')
+    await expect(page.getByTestId('reconciliation-missing-count')).toHaveText('2')
+    await expect(page.getByTestId('reconciliation-failed-count')).toHaveText('1')
+    // Fixture last run is fixed in the past, so the staleness derivation is deterministic.
+    await expect(page.getByTestId('reconciliation-stale-badge')).toContainText('Stale')
+    await expect(reconciliationCard).toContainText(
+      'Last reconciliation run is older than the expected cadence.',
+    )
+    await expect(reconciliationCard).toContainText('no reconciliation controls')
+    await expect(reconciliationCard.getByRole('button')).toHaveCount(0)
 
     // CashGuard card — read-only cash visibility, no order controls.
     const cashGuardCard = page.getByTestId('operator-cashguard-card')

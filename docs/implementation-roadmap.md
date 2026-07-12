@@ -127,6 +127,36 @@ What landed:
 No new enforcement logic, no kill-switch or safety-policy behavior change, no
 broker calls from the operator endpoint, no mutation endpoints, no controls.
 
+### 1d. Operator Reconciliation Visibility / E2E Hardening
+
+Status: `[In review]` — `feat/operator-reconciliation-visibility`.
+
+Autonomy level: Level B
+
+Key repo evidence gathered before implementation:
+
+- `GET /v1/broker/trading212/reconciliation/status` and
+  `GET /v1/broker/trading212/reconciliation/scheduler/status` already expose
+  worker/scheduler state, and `DemoReconciliationStatusCard` already renders it,
+  but the operator Playwright E2E never mocked those endpoints — the card
+  silently rendered its error state in E2E with zero assertions.
+- The existing run summaries already carry `missing` (local order not found in
+  broker history — a broker/local mismatch signal) and `failed` counts, but the
+  card hid them; staleness and `last_error_message` were also not surfaced.
+
+What landed (frontend + tests only, no backend changes):
+
+- `DemoReconciliationStatusCard` now shows Missing/Failed counts, a derived
+  read-only `Stale` badge (last finished run older than 3× the scheduler
+  interval, 5-minute floor), the scheduler's `last_error_message`, and explicit
+  read-only/no-reconciliation-controls wording.
+- Unit tests for the new states; operator E2E now mocks both reconciliation
+  endpoints and asserts card content, mismatch counts, staleness, and zero
+  buttons inside the card.
+
+No reconciliation algorithm, broker call, execution, or safety-enforcement
+changes. No mutation endpoints or controls added.
+
 ### 2. Performance Attribution Slippage Caveats
 
 Status: `[Done]` — read-only disclosure landed via PR1 from

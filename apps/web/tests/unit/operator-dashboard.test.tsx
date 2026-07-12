@@ -720,6 +720,107 @@ describe("OperatorDashboard", () => {
     expect(within(card).getByText("4")).toBeInTheDocument();
   });
 
+  it("shows missing and failed reconciliation counts from the latest run", () => {
+    setSchedulerStatus({
+      data: schedulerStatus({
+        enabled: true,
+        running: true,
+        last_run_outcome: "completed_with_failures",
+        last_run_finished_at: new Date(Date.now() - 30_000).toISOString(),
+        last_run_summary: {
+          candidates_found: 5,
+          attempted: 5,
+          succeeded: 2,
+          missing: 2,
+          failed: 1,
+          rate_limited: 0,
+        },
+      }),
+    });
+
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("demo-reconciliation-status");
+    expect(within(card).getByText("Missing")).toBeInTheDocument();
+    expect(within(card).getByText("Failed")).toBeInTheDocument();
+    expect(
+      within(card).getByTestId("reconciliation-missing-count"),
+    ).toHaveTextContent("2");
+    expect(
+      within(card).getByTestId("reconciliation-failed-count"),
+    ).toHaveTextContent("1");
+    expect(
+      within(card).getByText(/not found in broker history/i),
+    ).toBeInTheDocument();
+  });
+
+  it("flags a stale reconciliation when the last run is much older than the interval", () => {
+    setSchedulerStatus({
+      data: schedulerStatus({
+        enabled: true,
+        running: true,
+        interval_seconds: 120,
+        last_run_outcome: "completed",
+        last_run_finished_at: "2026-01-01T00:00:00Z",
+      }),
+    });
+
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("demo-reconciliation-status");
+    expect(
+      within(card).getByTestId("reconciliation-stale-badge"),
+    ).toHaveTextContent("Stale");
+    expect(
+      within(card).getByText(/older than the expected cadence/i),
+    ).toBeInTheDocument();
+  });
+
+  it("does not flag stale for a recent reconciliation run", () => {
+    setSchedulerStatus({
+      data: schedulerStatus({
+        enabled: true,
+        running: true,
+        interval_seconds: 120,
+        last_run_outcome: "completed",
+        last_run_finished_at: new Date(Date.now() - 30_000).toISOString(),
+      }),
+    });
+
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("demo-reconciliation-status");
+    expect(
+      within(card).queryByTestId("reconciliation-stale-badge"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the scheduler's last error message when present", () => {
+    setSchedulerStatus({
+      data: schedulerStatus({
+        enabled: true,
+        last_error_message: "Worker run timed out after 60s.",
+      }),
+    });
+
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("demo-reconciliation-status");
+    expect(
+      within(card).getByText(/Last error: Worker run timed out after 60s\./),
+    ).toBeInTheDocument();
+  });
+
+  it("declares the reconciliation card read-only with no controls", () => {
+    render(<OperatorDashboard status={operatorStatus()} />);
+
+    const card = screen.getByTestId("demo-reconciliation-status");
+    expect(
+      within(card).getByText(/no reconciliation controls/i),
+    ).toBeInTheDocument();
+    expect(within(card).queryAllByRole("button")).toHaveLength(0);
+  });
+
   it("renders why_blocked reasons for a blocked/degraded status", () => {
     render(<OperatorDashboard status={operatorStatus()} />);
 
