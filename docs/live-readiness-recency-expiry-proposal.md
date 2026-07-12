@@ -120,6 +120,37 @@ Missing coverage:
 - No frontend test covers expired readiness visibility, because the API does
   not expose it.
 
+## Test specification added in PR #167
+
+PR #167 adds `apps/api/tests/unit/test_live_readiness.py` as a tests/docs-only
+specification for the current recency behavior and future attestation-expiry
+policy. It does not change readiness behavior, safety-gate behavior,
+broker/provider/execution behavior, live trading state, or Kraken/crypto code.
+
+Active current-behavior tests added:
+
+- `test_live_broker_test_older_than_24_hours_fails_recency`
+- `test_live_broker_test_within_24_hours_passes_recency`
+- `test_old_manual_attestations_remain_accepted_currently`
+- `test_stale_broker_test_is_not_offset_by_broker_attestation`
+- `test_global_kill_switch_blocks_readiness`
+
+Skipped future-policy tests added:
+
+- `test_future_broker_test_attestation_expires_after_24h`
+- `test_future_telegram_attestation_expires_after_24h`
+- `test_future_kill_switch_drill_expires_before_live_smoke`
+- `test_future_demo_validation_requires_fresh_reconciliation_evidence`
+- `test_future_live_unlock_acknowledgement_is_session_scoped`
+- `test_future_expired_attestations_surface_expired_reason_codes`
+
+During the later approved Level C expiry-enforcement PR, activate the skipped
+tests above and update their assertions to verify the implemented TTL metadata,
+expired/stale reason codes, and fail-closed readiness behavior. The active
+current-behavior tests should either remain as historical characterization with
+renamed expectations or be intentionally updated in the same PR that changes
+readiness semantics.
+
 ## Risk Assessment
 
 Level A, docs/tests only:
