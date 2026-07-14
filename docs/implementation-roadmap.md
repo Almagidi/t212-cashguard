@@ -57,9 +57,40 @@ Autonomy levels:
 
 ## Recommended Next Targets
 
+### Live-readiness attestation expiry enforcement (PR #168)
+
+Status: `[In review]` — `feat/live-readiness-attestation-expiry`.
+
+Autonomy level: Level C
+
+Implements the fail-closed expiry policy approved in the #166 proposal and
+specified by the #167 tests. `LiveReadinessService.evaluate()` now enforces a
+24-hour TTL (`_ATTESTATION_MAX_AGE`) on the manual attestations:
+
+- `demo_validated`
+- `broker_test_attested`
+- `telegram_test_attested`
+- `kill_switch_tested`
+- `live_unlock_acknowledged` (conservative 24-hour expiry; true same-session
+  scoping deferred because no server-side session identity exists yet)
+
+Fail-closed rules: missing, malformed, or future-skewed timestamps fail the
+check. `ready_for_live` now additionally requires a fresh unlock
+acknowledgement, not just the persisted `live_trading_unlocked` flag.
+`live_broker_test_recent` keeps its existing 24-hour recency window and a
+stale broker test is still not offset by `broker_test_attested`. No schema,
+migration, frontend, or execution-path changes.
+
+Deferred to later PRs:
+
+- reconciliation-backed demo validation evidence
+- same-session `live_unlock_acknowledged` semantics
+- machine-readable freshness/reason-code fields in the readiness API and
+  operator/settings UI visibility
+
 ### Test specification added in PR #167
 
-Status: `[In review]` — `test/live-readiness-expiry-spec`.
+Status: `[Done]` — merged via PR #167 (`test/live-readiness-expiry-spec`).
 
 Autonomy level: Level A
 
@@ -86,6 +117,12 @@ expiry-enforcement PR:
 - demo validation requires fresh reconciliation evidence
 - final live unlock acknowledgement is session-scoped
 - expired attestations surface expired/stale reason codes
+
+PR #168 activated the 24-hour expiry tests (including demo validation and a
+conservative 24-hour unlock-acknowledgement expiry) and updated the
+characterization tests to the new fail-closed behavior. The
+reconciliation-backed demo evidence, same-session unlock, and reason-code
+tests remain skipped with explicit deferral reasons.
 
 ### 1. Operator "Why Blocked" Readiness Detail
 
