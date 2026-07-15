@@ -46,12 +46,21 @@ Do not schedule a test date until every item below is true:
   - `live_broker_connected` — an active live Trading 212 connection exists
   - `live_broker_test_recent` — successful live connection test in the
     last 24 hours (recency is enforced by the backend)
-  - `telegram_ready`, `telegram_test_attested` — supervision alerts proven
-  - `demo_validated` — demo soak reviewed and recorded
-  - `broker_test_attested` — live broker test manually reviewed
-  - `kill_switch_tested` — a kill-switch drill recorded (section 4)
+  - `telegram_ready`, `telegram_test_attested` — supervision alerts proven,
+    with the alert review recorded in the last 24 hours
+  - `demo_validated` — demo soak reviewed and recorded in the last 24 hours
+  - `broker_test_attested` — live broker test manually reviewed in the last
+    24 hours
+  - `kill_switch_tested` — a kill-switch drill recorded in the last 24 hours
+    (section 4)
   - `kill_switch_clear` — kill switch currently inactive
-  - `live_unlock_acknowledged` — explicit admin unlock recorded
+  - `live_unlock_acknowledged` — explicit admin unlock recorded in the last
+    24 hours
+
+  All manual attestations and the final unlock acknowledgement expire 24
+  hours after recording. The backend enforces this fail-closed: missing,
+  malformed, or stale timestamps block readiness, so evidence must be
+  re-recorded on the day of the test.
 - [ ] The demo reconciliation worker and scheduler have run cleanly for at
       least one full week: `GET /v1/broker/trading212/reconciliation/status`
       and `.../reconciliation/scheduler/status` show no unexplained
