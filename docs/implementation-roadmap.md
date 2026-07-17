@@ -400,6 +400,12 @@ The following are intentionally not part of routine roadmap work:
 
 ## Recently Completed Maintenance
 
+- Ruff 0.15 compatibility cleanup — Batch 1: tests-only lint cleanup (I001 import
+  order, F401 unused imports, TC003/TC006 typing-import hygiene, UP017
+  `datetime.UTC`) across 10 test files plus pinned-formatter alignment. Ruff
+  0.15.22 debt reduced 374 → 339 findings. No runtime behaviour changed.
+  Dependabot #175 (ruff 0.15.22) stays open until the remaining Ruff 0.15 debt
+  is cleared in follow-up batches.
 - #118 FastAPI 0.137.2 compatibility update
 - #119 Next.js 16.2.9 update
 - #122 OpenTelemetry lockfile update

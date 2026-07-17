@@ -636,7 +636,7 @@ def test_reconcile_pending_orders_calls_provider_after_all_gates_and_reconciles_
             }
         )
         return cast(
-            RecordingTrading212Adapter,
+            "RecordingTrading212Adapter",
             create_trading212_provider_adapter(
                 request,
                 credentials,
@@ -660,7 +660,7 @@ def test_reconcile_pending_orders_calls_provider_after_all_gates_and_reconciles_
         {
             "request": BrokerProviderRequest(
                 broker_id="trading212",
-                environment=cast(BrokerRuntimeEnvironment, environment),
+                environment=cast("BrokerRuntimeEnvironment", environment),
                 purpose="worker_reconcile",
                 user_id=conn.user_id,
             ),
@@ -777,7 +777,7 @@ def test_cancel_timed_out_orders_calls_provider_after_all_gates_and_cancels_cand
             }
         )
         return cast(
-            RecordingTrading212Adapter,
+            "RecordingTrading212Adapter",
             create_trading212_provider_adapter(
                 request,
                 credentials,
@@ -803,7 +803,7 @@ def test_cancel_timed_out_orders_calls_provider_after_all_gates_and_cancels_cand
         {
             "request": BrokerProviderRequest(
                 broker_id="trading212",
-                environment=cast(BrokerRuntimeEnvironment, environment),
+                environment=cast("BrokerRuntimeEnvironment", environment),
                 purpose="worker_cancel_timed_out_orders",
                 user_id=conn.user_id,
             ),

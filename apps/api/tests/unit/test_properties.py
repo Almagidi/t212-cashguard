@@ -3,17 +3,20 @@ Property-based tests using Hypothesis.
 These tests find edge cases that hand-crafted tests miss by
 generating thousands of random inputs and checking invariants.
 """
+
 from __future__ import annotations
 
 import hashlib
 from decimal import Decimal
 
-from hypothesis import assume, given, settings as h_settings
+from hypothesis import assume, given
+from hypothesis import settings as h_settings
 from hypothesis import strategies as st
 
 from app.broker.trading212 import make_sell_quantity
 
 # ── Cash guard invariants ─────────────────────────────────────────────────────
+
 
 def cash_guard_check(quantity: Decimal, price: Decimal, available: Decimal) -> bool:
     """True = order allowed, False = blocked. Side is always buy here."""
@@ -24,9 +27,13 @@ def cash_guard_check(quantity: Decimal, price: Decimal, available: Decimal) -> b
 
 
 @given(
-    quantity=st.decimals(min_value="0.01", max_value="10000", allow_nan=False, allow_infinity=False),
+    quantity=st.decimals(
+        min_value="0.01", max_value="10000", allow_nan=False, allow_infinity=False
+    ),
     price=st.decimals(min_value="0.01", max_value="100000", allow_nan=False, allow_infinity=False),
-    available=st.decimals(min_value="0", max_value="1000000", allow_nan=False, allow_infinity=False),
+    available=st.decimals(
+        min_value="0", max_value="1000000", allow_nan=False, allow_infinity=False
+    ),
 )
 @h_settings(max_examples=500)
 def test_cash_guard_never_overspends(quantity, price, available):
@@ -39,13 +46,15 @@ def test_cash_guard_never_overspends(quantity, price, available):
     cost = quantity * price
     if allowed:
         # If allowed, cost must not exceed available (with tiny fp tolerance)
-        assert cost <= available + Decimal("0.000001"), (
-            f"VIOLATION: allowed order with cost={cost} > available={available}"
-        )
+        assert cost <= available + Decimal(
+            "0.000001"
+        ), f"VIOLATION: allowed order with cost={cost} > available={available}"
 
 
 @given(
-    quantity=st.decimals(min_value="-10000", max_value="-0.01", allow_nan=False, allow_infinity=False),
+    quantity=st.decimals(
+        min_value="-10000", max_value="-0.01", allow_nan=False, allow_infinity=False
+    ),
     price=st.decimals(min_value="0.01", max_value="100000", allow_nan=False, allow_infinity=False),
     available=st.decimals(min_value="0", max_value="0", allow_nan=False, allow_infinity=False),
 )
@@ -56,14 +65,13 @@ def test_sell_never_blocked_by_cash_guard(quantity, price, available):
     Cash is needed to BUY. To SELL you already hold the position.
     """
     allowed = cash_guard_check(quantity, price, available)
-    assert allowed, (
-        f"VIOLATION: sell blocked by cash guard (qty={quantity}, available={available})"
-    )
+    assert allowed, f"VIOLATION: sell blocked by cash guard (qty={quantity}, available={available})"
 
 
 @given(
-    q=st.decimals(min_value="-100000", max_value="100000", allow_nan=False, allow_infinity=False)
-      .filter(lambda x: x != 0),
+    q=st.decimals(
+        min_value="-100000", max_value="100000", allow_nan=False, allow_infinity=False
+    ).filter(lambda x: x != 0),
 )
 @h_settings(max_examples=500)
 def test_sell_quantity_always_negative(q):
@@ -88,12 +96,11 @@ def test_sell_quantity_magnitude_preserved(q):
     """
     result = make_sell_quantity(q)
     magnitude = result.copy_abs()
-    assert magnitude == q, (
-        f"VIOLATION: abs(make_sell_quantity({q})) = {magnitude} != {q}"
-    )
+    assert magnitude == q, f"VIOLATION: abs(make_sell_quantity({q})) = {magnitude} != {q}"
 
 
 # ── ORB quantity sizing invariants ────────────────────────────────────────────
+
 
 def calc_orb_quantity(
     entry: Decimal,
@@ -114,8 +121,12 @@ def calc_orb_quantity(
 @given(
     entry=st.decimals(min_value="1", max_value="10000", allow_nan=False, allow_infinity=False),
     stop=st.decimals(min_value="0.5", max_value="9999", allow_nan=False, allow_infinity=False),
-    account_value=st.decimals(min_value="100", max_value="1000000", allow_nan=False, allow_infinity=False),
-    available_cash=st.decimals(min_value="0", max_value="1000000", allow_nan=False, allow_infinity=False),
+    account_value=st.decimals(
+        min_value="100", max_value="1000000", allow_nan=False, allow_infinity=False
+    ),
+    available_cash=st.decimals(
+        min_value="0", max_value="1000000", allow_nan=False, allow_infinity=False
+    ),
     risk_pct=st.decimals(min_value="0.1", max_value="5.0", allow_nan=False, allow_infinity=False),
 )
 @h_settings(max_examples=500)
@@ -130,16 +141,20 @@ def test_orb_quantity_never_exceeds_cash(entry, stop, account_value, available_c
     qty = calc_orb_quantity(entry, stop, account_value, available_cash, risk_pct)
     cost = qty * entry
 
-    assert cost <= available_cash + Decimal("0.000001"), (
-        f"VIOLATION: calculated qty={qty} costs {cost} > available_cash={available_cash}"
-    )
+    assert cost <= available_cash + Decimal(
+        "0.000001"
+    ), f"VIOLATION: calculated qty={qty} costs {cost} > available_cash={available_cash}"
 
 
 @given(
     entry=st.decimals(min_value="1", max_value="10000", allow_nan=False, allow_infinity=False),
     stop=st.decimals(min_value="0.5", max_value="9999", allow_nan=False, allow_infinity=False),
-    account_value=st.decimals(min_value="100", max_value="1000000", allow_nan=False, allow_infinity=False),
-    available_cash=st.decimals(min_value="1", max_value="1000000", allow_nan=False, allow_infinity=False),
+    account_value=st.decimals(
+        min_value="100", max_value="1000000", allow_nan=False, allow_infinity=False
+    ),
+    available_cash=st.decimals(
+        min_value="1", max_value="1000000", allow_nan=False, allow_infinity=False
+    ),
     risk_pct=st.decimals(min_value="0.1", max_value="5.0", allow_nan=False, allow_infinity=False),
 )
 @h_settings(max_examples=500)
@@ -148,6 +163,8 @@ def test_orb_quantity_non_negative(entry, stop, account_value, available_cash, r
     assume(entry > stop)
     qty = calc_orb_quantity(entry, stop, account_value, available_cash, risk_pct)
     assert qty >= 0, f"VIOLATION: negative quantity {qty}"
+
+
 # ── Dedup key invariants ──────────────────────────────────────────────────────
 
 
@@ -178,6 +195,4 @@ def test_dedup_key_buy_sell_differ(ticker):
     assume(len(ticker) > 0)
     buy_key = make_client_key("sig-1", ticker, "buy")
     sell_key = make_client_key("sig-1", ticker, "sell")
-    assert buy_key != sell_key, (
-        f"VIOLATION: buy and sell produce same key for {ticker}"
-    )
+    assert buy_key != sell_key, f"VIOLATION: buy and sell produce same key for {ticker}"

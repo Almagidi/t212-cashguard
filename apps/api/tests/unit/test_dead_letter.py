@@ -1,9 +1,8 @@
 """Unit tests for the Celery dead-letter queue handler."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from app.workers.dead_letter import _DLQ_KEY, _DLQ_MAX, handle_task_failure
 
@@ -27,6 +26,7 @@ def _call_handler(sender, *, task_id="t-1", exception=None):
 
 
 # ── Retry-skip logic ──────────────────────────────────────────────────────────
+
 
 def test_skips_when_retries_remain():
     sender = _make_sender("app.workers.tasks.reconcile_pending_orders", max_retries=3, retries=1)
@@ -66,6 +66,7 @@ def test_dead_letters_zero_retry_task():
 
 # ── Payload content ───────────────────────────────────────────────────────────
 
+
 def test_payload_contains_expected_fields():
     import json
 
@@ -74,8 +75,10 @@ def test_payload_contains_expected_fields():
 
     def fake_redis():
         r = MagicMock()
+
         def lpush(key, payload):
             captured["payload"] = json.loads(payload)
+
         r.lpush.side_effect = lpush
         return r
 
@@ -91,6 +94,7 @@ def test_payload_contains_expected_fields():
 
 
 # ── Resilience ────────────────────────────────────────────────────────────────
+
 
 def test_redis_unavailability_does_not_raise():
     sender = _make_sender("my.task", max_retries=0, retries=0)
@@ -109,6 +113,7 @@ def test_prometheus_unavailability_does_not_raise():
 
 
 # ── Prometheus counter ────────────────────────────────────────────────────────
+
 
 def test_prometheus_counter_incremented():
     sender = _make_sender("my.task", max_retries=0, retries=0)
