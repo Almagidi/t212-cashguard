@@ -188,7 +188,7 @@ class Trading212Adapter:
         result = await self._request(method, path, **kwargs)
         if not isinstance(result, dict):
             raise ValueError("Trading 212 returned an unexpected response shape")
-        return cast(dict[str, Any], result)
+        return cast("dict[str, Any]", result)
 
     async def get_account_summary(self) -> dict[str, Any]:
         """
