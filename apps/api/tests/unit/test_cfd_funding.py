@@ -4,6 +4,7 @@ Unit tests for the CFD overnight funding cost service.
 All DB interactions are mocked via AsyncMock — no live database required.
 The ORM model (CFDFundingCost) is instantiated in-memory; no real DB needed.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -18,8 +19,8 @@ from app.services.cfd_funding import (
     track_cfd_funding,
 )
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
+
 
 def _make_db():
     db = MagicMock()
@@ -35,6 +36,7 @@ def _pos(ticker="AAPL", quantity=10, price=150.0, **kwargs):
 
 
 # ── track_cfd_funding ─────────────────────────────────────────────────────────
+
 
 class TestTrackCFDFunding:
     @pytest.mark.asyncio
@@ -95,7 +97,9 @@ class TestTrackCFDFunding:
     @pytest.mark.asyncio
     async def test_symbol_field_accepted_as_ticker(self):
         db = _make_db()
-        result = await track_cfd_funding(db, [{"symbol": "NVDA", "quantity": 3, "currentPrice": 500}])
+        result = await track_cfd_funding(
+            db, [{"symbol": "NVDA", "quantity": 3, "currentPrice": 500}]
+        )
         assert len(result) == 1
         assert result[0].ticker == "NVDA"
 
@@ -172,7 +176,9 @@ class TestTrackCFDFunding:
     @pytest.mark.asyncio
     async def test_ticker_absent_from_strategy_map_gives_none(self):
         db = _make_db()
-        result = await track_cfd_funding(db, [_pos(ticker="AAPL")], strategy_map={"TSLA": str(uuid.uuid4())})
+        result = await track_cfd_funding(
+            db, [_pos(ticker="AAPL")], strategy_map={"TSLA": str(uuid.uuid4())}
+        )
         assert result[0].strategy_id is None
 
     @pytest.mark.asyncio
@@ -233,7 +239,7 @@ class TestTrackCFDFunding:
         positions = [
             _pos("AAPL"),
             {"quantity": 5, "currentPrice": 100},  # no ticker → skip
-            _pos("TSLA", quantity=0),                # qty=0 → skip
+            _pos("TSLA", quantity=0),  # qty=0 → skip
             _pos("MSFT"),
         ]
         result = await track_cfd_funding(db, positions)
@@ -242,6 +248,7 @@ class TestTrackCFDFunding:
 
 
 # ── get_funding_costs_summary ─────────────────────────────────────────────────
+
 
 class TestGetFundingCostsSummary:
     @pytest.mark.asyncio

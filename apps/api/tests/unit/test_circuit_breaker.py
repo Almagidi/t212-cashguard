@@ -5,11 +5,11 @@ All tests use unittest.mock to avoid the DB/kill-switch side-effect;
 the _activate_kill_switch path is tested by asserting it is called
 when auto_kill_switch=True and skipped when False.
 """
+
 from __future__ import annotations
 
 import asyncio
-import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -21,8 +21,8 @@ from app.broker.circuit_breaker import (
     get_market_data_circuit,
 )
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
+
 
 async def _ok(*_a, **_kw) -> str:
     return "ok"
@@ -49,6 +49,7 @@ def _make(
 
 # ── initial state ─────────────────────────────────────────────────────────────
 
+
 class TestInitialState:
     def test_starts_closed(self):
         cb = _make()
@@ -61,6 +62,7 @@ class TestInitialState:
 
 
 # ── success path ──────────────────────────────────────────────────────────────
+
 
 class TestSuccessPath:
     @pytest.mark.asyncio
@@ -85,6 +87,7 @@ class TestSuccessPath:
 
 
 # ── failure accumulation ──────────────────────────────────────────────────────
+
 
 class TestFailureAccumulation:
     @pytest.mark.asyncio
@@ -135,6 +138,7 @@ class TestFailureAccumulation:
 
 # ── recovery / half-open ──────────────────────────────────────────────────────
 
+
 class TestRecovery:
     @pytest.mark.asyncio
     async def test_half_open_after_timeout(self):
@@ -178,6 +182,7 @@ class TestRecovery:
 
 # ── manual reset ──────────────────────────────────────────────────────────────
 
+
 class TestManualReset:
     @pytest.mark.asyncio
     async def test_reset_closes_open_circuit(self):
@@ -200,6 +205,7 @@ class TestManualReset:
 
 
 # ── auto kill-switch ──────────────────────────────────────────────────────────
+
 
 class TestAutoKillSwitch:
     @pytest.mark.asyncio
@@ -242,6 +248,7 @@ class TestAutoKillSwitch:
 
 # ── kwargs forwarding ──────────────────────────────────────────────────────────
 
+
 class TestCallForwarding:
     @pytest.mark.asyncio
     async def test_args_and_kwargs_forwarded_to_func(self):
@@ -258,6 +265,7 @@ class TestCallForwarding:
 
 
 # ── singleton accessors ───────────────────────────────────────────────────────
+
 
 class TestSingletons:
     def test_get_broker_circuit_returns_circuit_breaker(self):

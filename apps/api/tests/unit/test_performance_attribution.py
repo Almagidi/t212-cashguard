@@ -4,11 +4,12 @@ Unit tests for the performance attribution service.
 DB-touching methods are tested via AsyncMock sessions returning lightweight
 fake ORM objects. The _hour_to_session helper is tested purely.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -20,8 +21,8 @@ from app.services.performance_attribution import (
     _hour_to_session,
 )
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
+
 
 def _db_returning(rows):
     """Return a mock AsyncSession whose execute() yields ``rows`` via .all()."""
@@ -49,7 +50,7 @@ def _fake_order(**kwargs):
     o.side = "buy"
     o.quantity = Decimal("10")
     o.avg_fill_price = Decimal("150.00")
-    o.created_at = datetime(2024, 1, 15, 10, 0, tzinfo=timezone.utc)
+    o.created_at = datetime(2024, 1, 15, 10, 0, tzinfo=UTC)
     o.is_dry_run = False
     for k, v in kwargs.items():
         setattr(o, k, v)
@@ -68,8 +69,8 @@ def _fake_trade(**kwargs):
     t = MagicMock()
     t.ticker = "AAPL"
     t.realized_pnl = Decimal("100.00")
-    t.opened_at = datetime(2024, 1, 15, 9, 30, tzinfo=timezone.utc)
-    t.closed_at = datetime(2024, 1, 15, 15, 0, tzinfo=timezone.utc)
+    t.opened_at = datetime(2024, 1, 15, 9, 30, tzinfo=UTC)
+    t.closed_at = datetime(2024, 1, 15, 15, 0, tzinfo=UTC)
     t.is_dry_run = False
     for k, v in kwargs.items():
         setattr(t, k, v)
@@ -77,6 +78,7 @@ def _fake_trade(**kwargs):
 
 
 # ── _hour_to_session ──────────────────────────────────────────────────────────
+
 
 class TestHourToSession:
     def test_opening_session_hour_9(self):
@@ -111,6 +113,7 @@ class TestHourToSession:
 
 
 # ── slippage_report ───────────────────────────────────────────────────────────
+
 
 class TestSlippageReport:
     @pytest.mark.asyncio
@@ -195,10 +198,7 @@ class TestSlippageReport:
 
     @pytest.mark.asyncio
     async def test_multiple_valid_records(self):
-        rows = [
-            (_fake_order(id=f"o{i}", ticker="AAPL"), _fake_signal())
-            for i in range(3)
-        ]
+        rows = [(_fake_order(id=f"o{i}", ticker="AAPL"), _fake_signal()) for i in range(3)]
         db = _db_returning(rows)
         svc = PerformanceAttributor(db)
         records = await svc.slippage_report()
@@ -214,6 +214,7 @@ class TestSlippageReport:
 
 
 # ── symbol_attribution ────────────────────────────────────────────────────────
+
 
 class TestSymbolAttribution:
     @pytest.mark.asyncio
@@ -302,6 +303,7 @@ class TestSymbolAttribution:
 
 # ── time_of_day_attribution ───────────────────────────────────────────────────
 
+
 class TestTimeOfDayAttribution:
     @pytest.mark.asyncio
     async def test_empty_trades_returns_empty(self):
@@ -314,11 +316,11 @@ class TestTimeOfDayAttribution:
     async def test_groups_by_et_hour(self):
         # 14:30 UTC = 09:30 ET (during summer DST)
         t1 = _fake_trade(
-            opened_at=datetime(2024, 6, 15, 14, 30, tzinfo=timezone.utc),
+            opened_at=datetime(2024, 6, 15, 14, 30, tzinfo=UTC),
             realized_pnl=Decimal("100"),
         )
         t2 = _fake_trade(
-            opened_at=datetime(2024, 6, 15, 15, 30, tzinfo=timezone.utc),
+            opened_at=datetime(2024, 6, 15, 15, 30, tzinfo=UTC),
             realized_pnl=Decimal("50"),
         )
         db = _db_returning_scalars([t1, t2])
@@ -332,11 +334,11 @@ class TestTimeOfDayAttribution:
     @pytest.mark.asyncio
     async def test_win_rate_calculated(self):
         winning = _fake_trade(
-            opened_at=datetime(2024, 6, 15, 14, 0, tzinfo=timezone.utc),
+            opened_at=datetime(2024, 6, 15, 14, 0, tzinfo=UTC),
             realized_pnl=Decimal("100"),
         )
         losing = _fake_trade(
-            opened_at=datetime(2024, 6, 15, 14, 30, tzinfo=timezone.utc),
+            opened_at=datetime(2024, 6, 15, 14, 30, tzinfo=UTC),
             realized_pnl=Decimal("-50"),
         )
         db = _db_returning_scalars([winning, losing])
@@ -349,11 +351,11 @@ class TestTimeOfDayAttribution:
     @pytest.mark.asyncio
     async def test_best_period_flagged(self):
         t1 = _fake_trade(
-            opened_at=datetime(2024, 6, 15, 14, 0, tzinfo=timezone.utc),
+            opened_at=datetime(2024, 6, 15, 14, 0, tzinfo=UTC),
             realized_pnl=Decimal("100"),
         )
         t2 = _fake_trade(
-            opened_at=datetime(2024, 6, 15, 19, 0, tzinfo=timezone.utc),
+            opened_at=datetime(2024, 6, 15, 19, 0, tzinfo=UTC),
             realized_pnl=Decimal("10"),
         )
         db = _db_returning_scalars([t1, t2])
@@ -365,7 +367,7 @@ class TestTimeOfDayAttribution:
     @pytest.mark.asyncio
     async def test_returns_time_attribution_instances(self):
         t = _fake_trade(
-            opened_at=datetime(2024, 6, 15, 14, 0, tzinfo=timezone.utc),
+            opened_at=datetime(2024, 6, 15, 14, 0, tzinfo=UTC),
             realized_pnl=Decimal("50"),
         )
         db = _db_returning_scalars([t])
@@ -375,6 +377,7 @@ class TestTimeOfDayAttribution:
 
 
 # ── mfe_mae_analysis ──────────────────────────────────────────────────────────
+
 
 class TestMfeMaeAnalysis:
     @pytest.mark.asyncio
@@ -403,6 +406,7 @@ class TestMfeMaeAnalysis:
 
 
 # ── full_report ───────────────────────────────────────────────────────────────
+
 
 class TestFullReport:
     @pytest.mark.asyncio

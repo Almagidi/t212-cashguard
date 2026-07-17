@@ -2,13 +2,17 @@
 Test fixtures.
 Uses SQLite in-memory database so tests run without PostgreSQL.
 """
+
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 import os
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 import pytest_asyncio
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -29,7 +33,6 @@ os.environ["TELEGRAM_WEBHOOK_SECRET"] = "test-telegram-secret"
 
 from app.db.session import Base, get_db
 from app.main import _login_attempts, _login_lockouts, app
-
 
 # ─── Test DB ─────────────────────────────────────────────────────────────────
 
@@ -66,6 +69,7 @@ async def db() -> AsyncGenerator[AsyncSession, None]:
 @pytest_asyncio.fixture
 async def client(db: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     """FastAPI test client with DB override."""
+
     async def override_get_db():
         yield db
 
@@ -126,10 +130,13 @@ async def admin_token(client: AsyncClient, db: AsyncSession) -> str:
     await db.commit()
 
     # Login
-    resp = await client.post("/v1/auth/login", json={
-        "email": "admin@test.com",
-        "password": "testpassword123",
-    })
+    resp = await client.post(
+        "/v1/auth/login",
+        json={
+            "email": "admin@test.com",
+            "password": "testpassword123",
+        },
+    )
     assert resp.status_code == 200, f"Login failed: {resp.text}"
     return resp.json()["access_token"]
 

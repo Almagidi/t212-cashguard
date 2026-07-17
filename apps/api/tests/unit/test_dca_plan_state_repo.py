@@ -15,6 +15,7 @@ Coverage:
 Mock-based tests verify the interface without a real DB.
 DB-backed tests (using the conftest 'db' fixture) verify actual persistence.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -27,8 +28,8 @@ from sqlalchemy.exc import IntegrityError
 from app.db.models import DcaPlanState
 from app.db.repositories.dca_plan_state_repo import DcaPlanStateRepository, dca_state_from_row
 
-
 # ── Mock helpers (mirrors test_repositories.py pattern) ───────────────────────
+
 
 def _db_with_result(result: MagicMock) -> MagicMock:
     db = MagicMock()
@@ -53,6 +54,7 @@ def _scalars_result(values):
 
 
 # ── Mock-based interface tests ─────────────────────────────────────────────────
+
 
 class TestDcaPlanStateRepositoryMock:
     @pytest.mark.asyncio
@@ -114,6 +116,7 @@ class TestDcaPlanStateRepositoryMock:
 
 # ── DB-backed persistence tests (uses conftest 'db' SQLite fixture) ────────────
 
+
 class TestDcaPlanStateRepositoryDB:
     @pytest.mark.asyncio
     async def test_create_and_fetch_round_trip(self, db):
@@ -164,24 +167,32 @@ class TestDcaPlanStateRepositoryDB:
     async def test_upsert_updates_all_fields_on_existing_row(self, db):
         repo = DcaPlanStateRepository(db)
 
-        await repo.upsert("ETH/USD", "kraken", {
-            "total_allocated_usd": Decimal("100"),
-            "executions_count": 1,
-            "last_buy_at": date(2026, 4, 22),
-            "last_decision_at": date(2026, 4, 22),
-            "last_decision_code": "BUY_DUE",
-            "last_reason": "First buy",
-        })
+        await repo.upsert(
+            "ETH/USD",
+            "kraken",
+            {
+                "total_allocated_usd": Decimal("100"),
+                "executions_count": 1,
+                "last_buy_at": date(2026, 4, 22),
+                "last_decision_at": date(2026, 4, 22),
+                "last_decision_code": "BUY_DUE",
+                "last_reason": "First buy",
+            },
+        )
         await db.commit()
 
-        await repo.upsert("ETH/USD", "kraken", {
-            "last_buy_at": date(2026, 4, 29),
-            "last_decision_at": date(2026, 4, 29),
-            "total_allocated_usd": Decimal("200"),
-            "executions_count": 2,
-            "last_decision_code": "BUY_DUE",
-            "last_reason": "Second buy",
-        })
+        await repo.upsert(
+            "ETH/USD",
+            "kraken",
+            {
+                "last_buy_at": date(2026, 4, 29),
+                "last_decision_at": date(2026, 4, 29),
+                "total_allocated_usd": Decimal("200"),
+                "executions_count": 2,
+                "last_decision_code": "BUY_DUE",
+                "last_reason": "Second buy",
+            },
+        )
         await db.commit()
 
         fetched = await repo.get_by_ticker_venue("ETH/USD", "kraken")
@@ -197,27 +208,35 @@ class TestDcaPlanStateRepositoryDB:
     async def test_upsert_skip_decision_does_not_change_last_buy_at(self, db):
         repo = DcaPlanStateRepository(db)
 
-        await repo.upsert("BTC/USD", "kraken", {
-            "last_buy_at": date(2026, 4, 22),
-            "last_decision_at": date(2026, 4, 22),
-            "total_allocated_usd": Decimal("100"),
-            "executions_count": 1,
-            "last_decision_code": "BUY_DUE",
-            "last_reason": "First buy",
-        })
+        await repo.upsert(
+            "BTC/USD",
+            "kraken",
+            {
+                "last_buy_at": date(2026, 4, 22),
+                "last_decision_at": date(2026, 4, 22),
+                "total_allocated_usd": Decimal("100"),
+                "executions_count": 1,
+                "last_decision_code": "BUY_DUE",
+                "last_reason": "First buy",
+            },
+        )
         await db.commit()
 
         # Skip evaluation — only decision metadata updated, last_buy_at not in updates dict
-        await repo.upsert("BTC/USD", "kraken", {
-            "last_decision_at": date(2026, 4, 25),
-            "last_decision_code": "SKIP_ALREADY_BOUGHT_THIS_WINDOW",
-            "last_reason": "Next scheduled buy is 2026-04-29 (4 days away)",
-        })
+        await repo.upsert(
+            "BTC/USD",
+            "kraken",
+            {
+                "last_decision_at": date(2026, 4, 25),
+                "last_decision_code": "SKIP_ALREADY_BOUGHT_THIS_WINDOW",
+                "last_reason": "Next scheduled buy is 2026-04-29 (4 days away)",
+            },
+        )
         await db.commit()
 
         fetched = await repo.get_by_ticker_venue("BTC/USD", "kraken")
-        assert fetched.last_buy_at == date(2026, 4, 22)       # unchanged
-        assert fetched.executions_count == 1                   # unchanged
+        assert fetched.last_buy_at == date(2026, 4, 22)  # unchanged
+        assert fetched.executions_count == 1  # unchanged
         assert fetched.total_allocated_usd == Decimal("100")  # unchanged
         assert fetched.last_decision_at == date(2026, 4, 25)
         assert fetched.last_decision_code == "SKIP_ALREADY_BOUGHT_THIS_WINDOW"
@@ -227,10 +246,14 @@ class TestDcaPlanStateRepositoryDB:
         repo = DcaPlanStateRepository(db)
         precise_amount = Decimal("12345.67890123")
 
-        await repo.upsert("BTC/USD", "kraken", {
-            "total_allocated_usd": precise_amount,
-            "executions_count": 0,
-        })
+        await repo.upsert(
+            "BTC/USD",
+            "kraken",
+            {
+                "total_allocated_usd": precise_amount,
+                "executions_count": 0,
+            },
+        )
         await db.commit()
 
         fetched = await repo.get_by_ticker_venue("BTC/USD", "kraken")
@@ -297,6 +320,7 @@ class TestDcaPlanStateRepositoryDB:
 
 
 # ── dca_state_from_row conversion helper ──────────────────────────────────────
+
 
 class TestDcaStateFromRow:
     def test_converts_orm_row_to_dca_state_dataclass(self):
@@ -370,13 +394,16 @@ class TestDcaStateFromRow:
 
 # ── Architecture guards: DCA non-runnability after this pass ──────────────────
 
+
 class TestDcaRemainsNonRunnable:
     def test_runnable_flag_is_false(self):
         from app.strategies.kraken_dca_planner import KrakenDCAPlanner
+
         assert KrakenDCAPlanner.RUNNABLE is False
 
     def test_only_dedicated_paper_scheduler_in_beat_schedule(self):
         from app.workers.celery_app import celery_app
+
         for key, cfg in celery_app.conf.beat_schedule.items():
             task_path = cfg.get("task", "")
             if "dca" in task_path.lower():
@@ -385,11 +412,12 @@ class TestDcaRemainsNonRunnable:
 
     def test_dca_not_constructible_via_make_engine(self):
         from app.services.strategy_runner import StrategyRunner
+
         runner = StrategyRunner(MagicMock())
         for type_name in ("kraken_dca_planner", "kraken_dca", "dca"):
             strategy = MagicMock()
             strategy.type = type_name
             strategy.params = {}
-            assert runner._make_engine(strategy) is None, (
-                f"_make_engine must return None for type {type_name!r}"
-            )
+            assert (
+                runner._make_engine(strategy) is None
+            ), f"_make_engine must return None for type {type_name!r}"

@@ -217,7 +217,7 @@ def test_unknown_app_mode_fails_closed() -> None:
 
 def test_invalid_broker_id_fails_closed() -> None:
     request = BrokerProviderRequest(
-        broker_id=cast(BrokerId, "alpaca"),
+        broker_id=cast("BrokerId", "alpaca"),
         environment="demo",
         purpose="dependency",
     )
@@ -232,8 +232,8 @@ def test_invalid_broker_id_fails_closed() -> None:
 
 def test_unsupported_broker_id_error_precedes_unsupported_environment() -> None:
     request = BrokerProviderRequest(
-        broker_id=cast(BrokerId, "alpaca"),
-        environment=cast(BrokerRuntimeEnvironment, "sandbox"),
+        broker_id=cast("BrokerId", "alpaca"),
+        environment=cast("BrokerRuntimeEnvironment", "sandbox"),
         purpose="dependency",
     )
 
@@ -249,7 +249,7 @@ def test_unsupported_broker_id_error_precedes_unsupported_environment() -> None:
 def test_invalid_real_broker_environment_fails_closed(environment: str) -> None:
     request = BrokerProviderRequest(
         broker_id="trading212",
-        environment=cast(BrokerRuntimeEnvironment, environment),
+        environment=cast("BrokerRuntimeEnvironment", environment),
         purpose="dependency",
     )
 
@@ -265,7 +265,7 @@ def test_invalid_provider_purpose_fails_closed() -> None:
     request = BrokerProviderRequest(
         broker_id="trading212",
         environment="demo",
-        purpose=cast(BrokerProviderPurpose, "strategy_trading"),
+        purpose=cast("BrokerProviderPurpose", "strategy_trading"),
     )
 
     with pytest.raises(BrokerProviderValidationError, match="Unsupported provider purpose"):
@@ -678,7 +678,7 @@ def test_live_adapter_construction_succeeds_with_live_trading_flag(
     [
         (
             BrokerProviderRequest(
-                broker_id=cast(BrokerId, "alpaca"),
+                broker_id=cast("BrokerId", "alpaca"),
                 environment="demo",
                 purpose="dependency",
             ),
@@ -688,7 +688,7 @@ def test_live_adapter_construction_succeeds_with_live_trading_flag(
         (
             BrokerProviderRequest(
                 broker_id="trading212",
-                environment=cast(BrokerRuntimeEnvironment, "sandbox"),
+                environment=cast("BrokerRuntimeEnvironment", "sandbox"),
                 purpose="dependency",
             ),
             "demo",
