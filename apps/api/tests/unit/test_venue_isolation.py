@@ -2,10 +2,11 @@
 Venue isolation test suite — 12 tests covering kill-switch gating,
 degraded mode, auto-trading gate, order venue tagging, and seed correctness.
 
-T1 –T6, T12: mock VenueConfigRepository; never hit the DB.
-T7 –T9:     use the in-memory SQLite `db` fixture.
-T10–T11:    structural / static tests.
+T1 -T6, T12: mock VenueConfigRepository; never hit the DB.
+T7 -T9:     use the in-memory SQLite `db` fixture.
+T10-T11:    structural / static tests.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -15,12 +16,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from app.api.schemas import StrategyCreate, StrategyPresetCreate, _KRAKEN_STRATEGY_TYPES
+from app.api.schemas import _KRAKEN_STRATEGY_TYPES, StrategyCreate, StrategyPresetCreate
 from app.execution.engine import ExecutionEngine
 from app.services.strategy_runner import StrategyRunner
 
-
 # ── shared helpers ────────────────────────────────────────────────────────────
+
 
 def _venue_cfg(
     *,
@@ -74,6 +75,7 @@ async def _call_run_strategy(runner: StrategyRunner, strategy: MagicMock) -> tup
 
 # ── T1 ────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_kraken_kill_switch_blocks_kraken_strategy():
     """T1: venue_cfg.kill_switch_active=True for 'kraken' → _run_strategy returns (0,0,0)."""
@@ -91,6 +93,7 @@ async def test_kraken_kill_switch_blocks_kraken_strategy():
 
 
 # ── T2 ────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_kraken_kill_switch_does_not_block_t212_strategy():
@@ -114,6 +117,7 @@ async def test_kraken_kill_switch_does_not_block_t212_strategy():
 
 # ── T3 ────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_t212_kill_switch_does_not_block_kraken_strategy():
     """T3: T212 kill switch active, but Kraken strategy runs — venue gate queries 'kraken' only."""
@@ -133,6 +137,7 @@ async def test_t212_kill_switch_does_not_block_kraken_strategy():
 
 
 # ── T4 ────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_degraded_mode_blocks_target_venue_only():
@@ -156,14 +161,13 @@ async def test_degraded_mode_blocks_target_venue_only():
         MockRepo2.return_value.get_by_venue = AsyncMock(
             return_value=_venue_cfg(degraded_mode_active=False)
         )
-        await _call_run_strategy(
-            runner_t, _strategy(type_="orb", is_live=False, venue="t212")
-        )
+        await _call_run_strategy(runner_t, _strategy(type_="orb", is_live=False, venue="t212"))
     MockRepo2.return_value.get_by_venue.assert_called_once_with("t212")
     runner_t._get_tickers.assert_called_once()
 
 
 # ── T5 ────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_auto_trading_off_blocks_live_strategy_only():
@@ -194,6 +198,7 @@ async def test_auto_trading_off_blocks_live_strategy_only():
 
 # ── T6 ────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_missing_venue_config_blocks_safely():
     """T6: None from get_by_venue → strategy is blocked (fail-closed); _get_tickers never reached."""
@@ -212,6 +217,7 @@ async def test_missing_venue_config_blocks_safely():
 
 # ── T7 ────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_order_venue_set_from_strategy_venue_t212(db):
     """T7: create_order_intent(venue='t212') → order.venue == 't212'."""
@@ -227,6 +233,7 @@ async def test_order_venue_set_from_strategy_venue_t212(db):
 
 
 # ── T8 ────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_order_venue_set_from_strategy_venue_kraken(db):
@@ -244,6 +251,7 @@ async def test_order_venue_set_from_strategy_venue_kraken(db):
 
 # ── T9 ────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_order_venue_default_is_t212(db):
     """T9: create_order_intent() without venue= defaults to 't212' (backward-compat)."""
@@ -258,6 +266,7 @@ async def test_order_venue_default_is_t212(db):
 
 
 # ── T10 ───────────────────────────────────────────────────────────────────────
+
 
 def test_seed_orb_strategy_has_explicit_t212_venue():
     """T10: seed.py Strategy() call for 'ORB Demo Strategy' has explicit venue='t212'."""
@@ -291,6 +300,7 @@ def test_seed_orb_strategy_has_explicit_t212_venue():
 
 # ── T11 ───────────────────────────────────────────────────────────────────────
 
+
 def test_kraken_strategy_venue_attribute_propagated_to_engine():
     """T11: _make_engine for each kraken type returns engine with VENUE == 'kraken'."""
     runner = StrategyRunner(MagicMock())
@@ -301,12 +311,13 @@ def test_kraken_strategy_venue_attribute_propagated_to_engine():
         strategy.params = {}
         engine = runner._make_engine(strategy)
         assert engine is not None, f"_make_engine returned None for type={type_!r}"
-        assert engine.VENUE == "kraken", (
-            f"engine for {type_!r} must have VENUE='kraken', got {engine.VENUE!r}"
-        )
+        assert (
+            engine.VENUE == "kraken"
+        ), f"engine for {type_!r} must have VENUE='kraken', got {engine.VENUE!r}"
 
 
 # ── T12 ───────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_venue_gating_uses_engine_venue_not_strategy_db_field():
@@ -334,16 +345,17 @@ async def test_venue_gating_uses_engine_venue_not_strategy_db_field():
     MockRepo.return_value.get_by_venue.assert_called_once_with("kraken")
 
 
-# ── Venue hardening — schema validation tests (H1–H5) ────────────────────────
+# ── Venue hardening — schema validation tests (H1-H5) ────────────────────────
+
 
 def test_invalid_venue_value_rejected():
     """H1: StrategyCreate rejects any venue value outside {'t212', 'kraken'}."""
     with pytest.raises(ValidationError) as exc_info:
         StrategyCreate(name="bad", type="orb", venue="foo")
     errors = exc_info.value.errors()
-    assert any(e["loc"] == ("venue",) for e in errors), (
-        f"Expected a venue field error, got: {errors}"
-    )
+    assert any(
+        e["loc"] == ("venue",) for e in errors
+    ), f"Expected a venue field error, got: {errors}"
 
 
 def test_kraken_type_with_t212_venue_rejected():
@@ -352,20 +364,26 @@ def test_kraken_type_with_t212_venue_rejected():
         with pytest.raises(ValidationError) as exc_info:
             StrategyCreate(name="bad", type=kraken_type, venue="t212")
         errors = exc_info.value.errors()
-        assert any("venue" in str(e).lower() or "kraken" in str(e).lower() for e in errors), (
-            f"Expected venue/type mismatch error for {kraken_type!r}, got: {errors}"
-        )
+        assert any(
+            "venue" in str(e).lower() or "kraken" in str(e).lower() for e in errors
+        ), f"Expected venue/type mismatch error for {kraken_type!r}, got: {errors}"
 
 
 def test_t212_type_with_kraken_venue_rejected():
     """H3: T212 strategy types must not be created with venue='kraken'."""
-    for t212_type in ("orb", "opening_fade", "vwap_reclaim", "closing_momentum", "intraday_periodicity"):
+    for t212_type in (
+        "orb",
+        "opening_fade",
+        "vwap_reclaim",
+        "closing_momentum",
+        "intraday_periodicity",
+    ):
         with pytest.raises(ValidationError) as exc_info:
             StrategyCreate(name="bad", type=t212_type, venue="kraken")
         errors = exc_info.value.errors()
-        assert any("venue" in str(e).lower() or "kraken" in str(e).lower() for e in errors), (
-            f"Expected venue/type mismatch error for {t212_type!r}, got: {errors}"
-        )
+        assert any(
+            "venue" in str(e).lower() or "kraken" in str(e).lower() for e in errors
+        ), f"Expected venue/type mismatch error for {t212_type!r}, got: {errors}"
 
 
 def test_valid_kraken_type_kraken_venue_accepted():
@@ -378,13 +396,20 @@ def test_valid_kraken_type_kraken_venue_accepted():
 
 def test_valid_t212_type_t212_venue_accepted():
     """H5: Valid T212 type + venue='t212' passes StrategyCreate validation."""
-    for t212_type in ("orb", "opening_fade", "vwap_reclaim", "closing_momentum", "intraday_periodicity"):
+    for t212_type in (
+        "orb",
+        "opening_fade",
+        "vwap_reclaim",
+        "closing_momentum",
+        "intraday_periodicity",
+    ):
         sc = StrategyCreate(name="ok", type=t212_type, venue="t212")
         assert sc.venue == "t212"
         assert sc.type == t212_type
 
 
-# ── Preset-path structural tests (P1–P3) ─────────────────────────────────────
+# ── Preset-path structural tests (P1-P3) ─────────────────────────────────────
+
 
 def test_preset_create_schema_has_no_venue_field():
     """P1: StrategyPresetCreate has no venue field — callers cannot inject a venue value.
@@ -425,8 +450,7 @@ def test_preset_route_sets_explicit_t212_venue():
     import ast
 
     route_path = (
-        pathlib.Path(__file__).parents[2]
-        / "app" / "api" / "v1" / "routes" / "strategies.py"
+        pathlib.Path(__file__).parents[2] / "app" / "api" / "v1" / "routes" / "strategies.py"
     )
     source = route_path.read_text()
     tree = ast.parse(source)
@@ -451,15 +475,15 @@ def test_preset_route_sets_explicit_t212_venue():
         # This is the preset Strategy() call — check for explicit venue="t212"
         found_preset_strategy_call = True
         venue_kws = [k for k in node.keywords if k.arg == "venue"]
-        assert venue_kws, (
-            "create_strategy_from_preset Strategy() constructor must set venue='t212' explicitly"
-        )
+        assert (
+            venue_kws
+        ), "create_strategy_from_preset Strategy() constructor must set venue='t212' explicitly"
         assert isinstance(venue_kws[0].value, ast.Constant)
-        assert venue_kws[0].value.value == "t212", (
-            f"Expected venue='t212', got {venue_kws[0].value.value!r}"
-        )
+        assert (
+            venue_kws[0].value.value == "t212"
+        ), f"Expected venue='t212', got {venue_kws[0].value.value!r}"
         break
 
-    assert found_preset_strategy_call, (
-        "Did not find the preset Strategy() constructor call in strategies.py"
-    )
+    assert (
+        found_preset_strategy_call
+    ), "Did not find the preset Strategy() constructor call in strategies.py"

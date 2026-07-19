@@ -3,29 +3,27 @@ Unit tests for the Opening Range Breakout (production) strategy.
 
 All functions are pure Python — no DB, no broker, no I/O.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from decimal import Decimal
-
-import pytest
 
 from app.strategies.indicators import Bar
 from app.strategies.orb_production import (
     DEFAULT_PARAMS,
+    OpeningRangeBreakoutStrategy,
     ORBSignal,
     ORBState,
-    OpeningRangeBreakoutStrategy,
 )
-
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _bar(o=100, h=105, l=98, c=102, v=10_000):
+
+def _bar(o=100, h=105, low=98, c=102, v=10_000):
     return Bar(
         open=Decimal(str(o)),
         high=Decimal(str(h)),
-        low=Decimal(str(l)),
+        low=Decimal(str(low)),
         close=Decimal(str(c)),
         volume=Decimal(str(v)),
     )
@@ -66,9 +64,12 @@ CASH = Decimal("50000")
 
 # ── _compute_opening_range ────────────────────────────────────────────────────
 
+
 class TestComputeOpeningRange:
     def _svc(self):
-        return OpeningRangeBreakoutStrategy(params={**DEFAULT_PARAMS, "orb_minutes": 15, "candle_interval_minutes": 5})
+        return OpeningRangeBreakoutStrategy(
+            params={**DEFAULT_PARAMS, "orb_minutes": 15, "candle_interval_minutes": 5}
+        )
 
     def test_not_enough_bars_returns_none(self):
         svc = self._svc()
@@ -78,9 +79,9 @@ class TestComputeOpeningRange:
     def test_exact_orb_bars_returns_high_low(self):
         svc = self._svc()
         orb_bars = [
-            _bar(h=110, l=95),
-            _bar(h=108, l=97),
-            _bar(h=112, l=93),  # highest high, lowest low
+            _bar(h=110, low=95),
+            _bar(h=108, low=97),
+            _bar(h=112, low=93),  # highest high, lowest low
         ]
         extra = _flat_bars(5)
         bars = orb_bars + extra
@@ -90,8 +91,8 @@ class TestComputeOpeningRange:
 
     def test_uses_first_n_bars_for_orb(self):
         svc = self._svc()
-        orb_bars = [_bar(h=105, l=96)] * 3
-        later_bars = [_bar(h=200, l=50)] * 10  # extreme — should not affect ORB
+        orb_bars = [_bar(h=105, low=96)] * 3
+        later_bars = [_bar(h=200, low=50)] * 10  # extreme — should not affect ORB
         bars = orb_bars + later_bars
         high, low = svc._compute_opening_range(bars)
         assert high == Decimal("105")
@@ -100,13 +101,14 @@ class TestComputeOpeningRange:
 
 # ── _validate_range ───────────────────────────────────────────────────────────
 
+
 class TestValidateRange:
     def _svc(self):
         return OpeningRangeBreakoutStrategy()
 
     def test_zero_ref_price_returns_false(self):
         svc = self._svc()
-        ok, reason = svc._validate_range(Decimal("105"), Decimal("95"), Decimal("0"))
+        ok, _reason = svc._validate_range(Decimal("105"), Decimal("95"), Decimal("0"))
         assert ok is False
 
     def test_range_too_narrow_returns_false(self):
@@ -132,13 +134,14 @@ class TestValidateRange:
 
 # ── _check_filters ─────────────────────────────────────────────────────────────
 
+
 class TestCheckFilters:
     def _svc(self, **extra):
         return OpeningRangeBreakoutStrategy(params={**RELAXED, **extra})
 
     def test_no_bars_returns_false(self):
         svc = self._svc()
-        ok, reason = svc._check_filters([], VALID_TIME, None)
+        ok, _reason = svc._check_filters([], VALID_TIME, None)
         assert ok is False
 
     def test_price_below_min_returns_false(self):
@@ -178,24 +181,27 @@ class TestCheckFilters:
     def test_atr_too_low_returns_false(self):
         svc = self._svc(min_atr_pct=10.0)
         bars = _flat_bars(25, volume=30_000)  # flat bars → tiny ATR
-        ok, reason = svc._check_filters(bars, VALID_TIME, None)
+        ok, _reason = svc._check_filters(bars, VALID_TIME, None)
         assert ok is False
 
     def test_require_trend_no_uptrend_returns_false(self):
-        svc = OpeningRangeBreakoutStrategy(params={
-            **RELAXED,
-            "require_trend": True,
-            "trend_ema_fast": 9,
-            "trend_ema_slow": 21,
-        })
+        svc = OpeningRangeBreakoutStrategy(
+            params={
+                **RELAXED,
+                "require_trend": True,
+                "trend_ema_fast": 9,
+                "trend_ema_slow": 21,
+            }
+        )
         # Trending bars that avoid choppy regime (large step, low variance)
         bars = _trending_bars(50, start=50, step=5, volume=30_000)
-        ok, reason = svc._check_filters(bars, VALID_TIME, None)
+        ok, _reason = svc._check_filters(bars, VALID_TIME, None)
         # Either fails due to no uptrend or passes — just verify it runs
         assert isinstance(ok, bool)
 
 
 # ── _check_filters_short ──────────────────────────────────────────────────────
+
 
 class TestCheckFiltersShort:
     def _svc(self, **extra):
@@ -203,13 +209,13 @@ class TestCheckFiltersShort:
 
     def test_no_bars_returns_false(self):
         svc = self._svc()
-        ok, reason = svc._check_filters_short([], VALID_TIME, None)
+        ok, _reason = svc._check_filters_short([], VALID_TIME, None)
         assert ok is False
 
     def test_price_below_min_returns_false(self):
         svc = self._svc(min_price=10.0)
         bars = _flat_bars(25, price=3)
-        ok, reason = svc._check_filters_short(bars, VALID_TIME, None)
+        ok, _reason = svc._check_filters_short(bars, VALID_TIME, None)
         assert ok is False
 
     def test_all_short_filters_pass(self):
@@ -219,22 +225,25 @@ class TestCheckFiltersShort:
         assert ok is True
 
     def test_require_trend_no_downtrend_returns_false(self):
-        svc = OpeningRangeBreakoutStrategy(params={
-            **RELAXED,
-            "require_trend": True,
-        })
+        svc = OpeningRangeBreakoutStrategy(
+            params={
+                **RELAXED,
+                "require_trend": True,
+            }
+        )
         bars = _flat_bars(40, volume=30_000)  # flat — no downtrend
-        ok, reason = svc._check_filters_short(bars, VALID_TIME, None)
+        ok, _reason = svc._check_filters_short(bars, VALID_TIME, None)
         assert ok is False  # fails — either choppy or no downtrend
 
     def test_gap_too_large_short_returns_false(self):
         svc = self._svc(max_gap_pct=2.0)
         bars = _flat_bars(25, price=90)
-        ok, reason = svc._check_filters_short(bars, VALID_TIME, Decimal("100"))
+        ok, _reason = svc._check_filters_short(bars, VALID_TIME, Decimal("100"))
         assert ok is False
 
 
 # ── _build_signal ─────────────────────────────────────────────────────────────
+
 
 class TestBuildSignal:
     def _svc(self, **extra):
@@ -247,10 +256,16 @@ class TestBuildSignal:
         svc = self._svc()
         bars = self._bars_for_signal()
         result = svc._build_signal(
-            ticker="AAPL", side="buy", bars=bars,
-            account_value=ACCOUNT, available_cash=CASH,
-            orb_high=Decimal("103"), orb_low=Decimal("97"),
-            atr_val=Decimal("2"), rvol=Decimal("2"), regime="trending_up",
+            ticker="AAPL",
+            side="buy",
+            bars=bars,
+            account_value=ACCOUNT,
+            available_cash=CASH,
+            orb_high=Decimal("103"),
+            orb_low=Decimal("97"),
+            atr_val=Decimal("2"),
+            rvol=Decimal("2"),
+            regime="trending_up",
         )
         assert result is not None
         assert result.side == "buy"
@@ -260,10 +275,16 @@ class TestBuildSignal:
         svc = self._svc()
         bars = self._bars_for_signal(price=95)
         result = svc._build_signal(
-            ticker="TSLA", side="sell", bars=bars,
-            account_value=ACCOUNT, available_cash=CASH,
-            orb_high=Decimal("103"), orb_low=Decimal("97"),
-            atr_val=Decimal("2"), rvol=Decimal("2"), regime="trending_down",
+            ticker="TSLA",
+            side="sell",
+            bars=bars,
+            account_value=ACCOUNT,
+            available_cash=CASH,
+            orb_high=Decimal("103"),
+            orb_low=Decimal("97"),
+            atr_val=Decimal("2"),
+            rvol=Decimal("2"),
+            regime="trending_down",
         )
         assert result is not None
         assert result.side == "sell"
@@ -272,10 +293,16 @@ class TestBuildSignal:
         svc = self._svc()
         bars = self._bars_for_signal()
         result = svc._build_signal(
-            ticker="AAPL", side="buy", bars=bars,
-            account_value=ACCOUNT, available_cash=CASH,
-            orb_high=Decimal("103"), orb_low=Decimal("97"),
-            atr_val=Decimal("2"), rvol=Decimal("2"), regime="trending_up",
+            ticker="AAPL",
+            side="buy",
+            bars=bars,
+            account_value=ACCOUNT,
+            available_cash=CASH,
+            orb_high=Decimal("103"),
+            orb_low=Decimal("97"),
+            atr_val=Decimal("2"),
+            rvol=Decimal("2"),
+            regime="trending_up",
         )
         if result is not None:
             assert result.stop_price < result.entry_price
@@ -284,10 +311,16 @@ class TestBuildSignal:
         svc = self._svc()
         bars = self._bars_for_signal(price=95)
         result = svc._build_signal(
-            ticker="TSLA", side="sell", bars=bars,
-            account_value=ACCOUNT, available_cash=CASH,
-            orb_high=Decimal("103"), orb_low=Decimal("97"),
-            atr_val=Decimal("2"), rvol=Decimal("2"), regime="trending_down",
+            ticker="TSLA",
+            side="sell",
+            bars=bars,
+            account_value=ACCOUNT,
+            available_cash=CASH,
+            orb_high=Decimal("103"),
+            orb_low=Decimal("97"),
+            atr_val=Decimal("2"),
+            rvol=Decimal("2"),
+            regime="trending_down",
         )
         if result is not None:
             assert result.stop_price > result.entry_price
@@ -296,22 +329,38 @@ class TestBuildSignal:
         svc = self._svc()
         bars = self._bars_for_signal()
         result = svc._build_signal(
-            ticker="AAPL", side="buy", bars=bars,
-            account_value=Decimal("0"), available_cash=Decimal("0"),
-            orb_high=Decimal("103"), orb_low=Decimal("97"),
-            atr_val=Decimal("2"), rvol=Decimal("2"), regime="trending_up",
+            ticker="AAPL",
+            side="buy",
+            bars=bars,
+            account_value=Decimal("0"),
+            available_cash=Decimal("0"),
+            orb_high=Decimal("103"),
+            orb_low=Decimal("97"),
+            atr_val=Decimal("2"),
+            rvol=Decimal("2"),
+            regime="trending_up",
         )
         assert result is None
 
     def test_kelly_overlay_applied_when_enabled(self):
-        svc = OpeningRangeBreakoutStrategy(params={**RELAXED, "use_kelly": True, "kelly_fraction": 0.25})
+        svc = OpeningRangeBreakoutStrategy(
+            params={**RELAXED, "use_kelly": True, "kelly_fraction": 0.25}
+        )
         bars = self._bars_for_signal()
         result = svc._build_signal(
-            ticker="AAPL", side="buy", bars=bars,
-            account_value=ACCOUNT, available_cash=CASH,
-            orb_high=Decimal("103"), orb_low=Decimal("97"),
-            atr_val=Decimal("2"), rvol=Decimal("2"), regime="trending_up",
-            win_rate=0.6, avg_win_pct=0.02, avg_loss_pct=0.01,
+            ticker="AAPL",
+            side="buy",
+            bars=bars,
+            account_value=ACCOUNT,
+            available_cash=CASH,
+            orb_high=Decimal("103"),
+            orb_low=Decimal("97"),
+            atr_val=Decimal("2"),
+            rvol=Decimal("2"),
+            regime="trending_up",
+            win_rate=0.6,
+            avg_win_pct=0.02,
+            avg_loss_pct=0.01,
         )
         # Should not crash; just verify result is valid or None
         assert result is None or isinstance(result, ORBSignal)
@@ -320,17 +369,27 @@ class TestBuildSignal:
         svc = self._svc()
         bars = self._bars_for_signal()
         result_high = svc._build_signal(
-            ticker="AAPL", side="buy", bars=bars,
-            account_value=ACCOUNT, available_cash=CASH,
-            orb_high=Decimal("103"), orb_low=Decimal("97"),
-            atr_val=Decimal("2"), rvol=Decimal("2.5"),  # high rvol
+            ticker="AAPL",
+            side="buy",
+            bars=bars,
+            account_value=ACCOUNT,
+            available_cash=CASH,
+            orb_high=Decimal("103"),
+            orb_low=Decimal("97"),
+            atr_val=Decimal("2"),
+            rvol=Decimal("2.5"),  # high rvol
             regime="trending_up",
         )
         result_low = svc._build_signal(
-            ticker="AAPL", side="buy", bars=bars,
-            account_value=ACCOUNT, available_cash=CASH,
-            orb_high=Decimal("103"), orb_low=Decimal("97"),
-            atr_val=Decimal("2"), rvol=Decimal("1.2"),  # low rvol
+            ticker="AAPL",
+            side="buy",
+            bars=bars,
+            account_value=ACCOUNT,
+            available_cash=CASH,
+            orb_high=Decimal("103"),
+            orb_low=Decimal("97"),
+            atr_val=Decimal("2"),
+            rvol=Decimal("1.2"),  # low rvol
             regime="neutral",
         )
         if result_high and result_low:
@@ -340,10 +399,16 @@ class TestBuildSignal:
         svc = self._svc()
         bars = self._bars_for_signal()
         result = svc._build_signal(
-            ticker="AAPL", side="buy", bars=bars,
-            account_value=ACCOUNT, available_cash=CASH,
-            orb_high=Decimal("103"), orb_low=Decimal("97"),
-            atr_val=Decimal("2"), rvol=Decimal("2"), regime="trending_up",
+            ticker="AAPL",
+            side="buy",
+            bars=bars,
+            account_value=ACCOUNT,
+            available_cash=CASH,
+            orb_high=Decimal("103"),
+            orb_low=Decimal("97"),
+            atr_val=Decimal("2"),
+            rvol=Decimal("2"),
+            regime="trending_up",
         )
         if result is not None:
             snap = result.params_snapshot
@@ -357,10 +422,16 @@ class TestBuildSignal:
         # Price well above ORB high → confidence boost
         bars = _flat_bars(25, price=110, volume=30_000)
         result = svc._build_signal(
-            ticker="AAPL", side="buy", bars=bars,
-            account_value=ACCOUNT, available_cash=CASH,
-            orb_high=Decimal("103"), orb_low=Decimal("97"),
-            atr_val=Decimal("2"), rvol=Decimal("2"), regime="trending_up",
+            ticker="AAPL",
+            side="buy",
+            bars=bars,
+            account_value=ACCOUNT,
+            available_cash=CASH,
+            orb_high=Decimal("103"),
+            orb_low=Decimal("97"),
+            atr_val=Decimal("2"),
+            rvol=Decimal("2"),
+            regime="trending_up",
         )
         if result is not None:
             # price=110 >> buffer=103*1.005=103.5 → boost
@@ -368,6 +439,7 @@ class TestBuildSignal:
 
 
 # ── generate_signal ───────────────────────────────────────────────────────────
+
 
 class TestGenerateSignal:
     def _svc(self, **extra):
@@ -431,20 +503,21 @@ class TestGenerateSignal:
 
 # ── check_exit_conditions ─────────────────────────────────────────────────────
 
+
 def _make_state(**kwargs):
-    defaults = dict(
-        ticker="AAPL",
-        strategy_id="strategy-001",
-        side="buy",
-        entry_price=Decimal("100"),
-        quantity=Decimal("10"),
-        remaining_quantity=Decimal("10"),
-        initial_stop=Decimal("95"),
-        current_stop=Decimal("95"),
-        take_profit_1r=Decimal("105"),
-        take_profit_2r=Decimal("110"),
-        atr_at_entry=Decimal("2"),
-    )
+    defaults = {
+        "ticker": "AAPL",
+        "strategy_id": "strategy-001",
+        "side": "buy",
+        "entry_price": Decimal("100"),
+        "quantity": Decimal("10"),
+        "remaining_quantity": Decimal("10"),
+        "initial_stop": Decimal("95"),
+        "current_stop": Decimal("95"),
+        "take_profit_1r": Decimal("105"),
+        "take_profit_2r": Decimal("110"),
+        "atr_at_entry": Decimal("2"),
+    }
     defaults.update(kwargs)
     return ORBState(**defaults)
 

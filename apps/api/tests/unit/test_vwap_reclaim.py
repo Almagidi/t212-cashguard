@@ -3,24 +3,23 @@ Unit tests for the VWAP Reclaim strategy.
 
 All tests use synthetic Bar sequences — no DB, no broker, no I/O.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
-
-from app.strategies.indicators import Bar, vwap
+from app.strategies.indicators import Bar
 from app.strategies.vwap_reclaim import DEFAULT_VWAP_PARAMS, VWAPReclaimStrategy, VWAPSignal
-
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _bar(o=100, h=105, l=98, c=102, v=10_000, volume=None):
+
+def _bar(o=100, h=105, low=98, c=102, v=10_000, volume=None):
     vol = volume if volume is not None else v
     return Bar(
         open=Decimal(str(o)),
         high=Decimal(str(h)),
-        low=Decimal(str(l)),
+        low=Decimal(str(low)),
         close=Decimal(str(c)),
         volume=Decimal(str(vol)),
     )
@@ -91,11 +90,13 @@ class TestVWAPReclaimFilters:
 
     def test_outside_trading_time_returns_none(self):
         bars = _build_reclaim_bars()
-        strict = VWAPReclaimStrategy(params={
-            **DEFAULT_VWAP_PARAMS,
-            "avoid_first_minutes": 120,
-            "avoid_last_minutes": 120,
-        })
+        strict = VWAPReclaimStrategy(
+            params={
+                **DEFAULT_VWAP_PARAMS,
+                "avoid_first_minutes": 120,
+                "avoid_last_minutes": 120,
+            }
+        )
         result = strict.generate_signal("AAPL", bars, self.account, self.cash, "14:30")
         assert result is None
 
