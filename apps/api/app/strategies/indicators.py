@@ -5,6 +5,7 @@ All functions are pure — no side effects, fully testable.
 Used by all strategy implementations.
 Inputs are lists of dicts with OHLCV keys.
 """
+
 from __future__ import annotations
 
 import math
@@ -21,6 +22,7 @@ class Bar(NamedTuple):
 
 
 # ── ATR (Average True Range) ──────────────────────────────────────────────────
+
 
 def true_range(bar: Bar, prev_close: Decimal | None) -> Decimal:
     """Single true range value."""
@@ -46,9 +48,9 @@ def atr(bars: list[Bar], period: int = 14) -> Decimal:
         trs.append(true_range(bars[i], bars[i - 1].close))
 
     # Wilder's smoothing: first ATR = simple mean of first N TRs
-    atr_val: Decimal = sum(trs[:period]) / Decimal(period)  # type: ignore[assignment]
+    atr_val: Decimal = sum(trs[:period]) / Decimal(period)
     for tr in trs[period:]:
-        atr_val = (atr_val * (Decimal(period) - 1) + tr) / Decimal(period)  # type: ignore[assignment, operator]
+        atr_val = (atr_val * (Decimal(period) - 1) + tr) / Decimal(period)
 
     return Decimal(str(round(float(atr_val), 8)))
 
@@ -66,6 +68,7 @@ def atr_pct(bars: list[Bar], period: int = 14) -> Decimal:
 
 # ── EMA (Exponential Moving Average) ─────────────────────────────────────────
 
+
 def ema(values: list[Decimal], period: int) -> list[Decimal]:
     """
     EMA of a series. Returns same-length list (first period-1 values are 0).
@@ -77,7 +80,7 @@ def ema(values: list[Decimal], period: int) -> list[Decimal]:
     k = Decimal(str(2)) / Decimal(str(period + 1))
 
     # Seed with simple mean of first period
-    seed = sum(values[:period]) / Decimal(period)  # type: ignore[assignment]
+    seed = sum(values[:period]) / Decimal(period)
     result.append(seed)
 
     for v in values[period:]:
@@ -95,6 +98,7 @@ def ema_of_closes(bars: list[Bar], period: int) -> Decimal:
 
 # ── VWAP (Volume-Weighted Average Price) ──────────────────────────────────────
 
+
 def vwap(bars: list[Bar]) -> Decimal:
     """
     Session VWAP from a list of intraday bars (same session).
@@ -111,7 +115,9 @@ def vwap(bars: list[Bar]) -> Decimal:
     return (cum_tp_vol / cum_vol).quantize(Decimal("0.0001"))
 
 
-def vwap_bands(bars: list[Bar], std_multiplier: Decimal = Decimal("1.5")) -> tuple[Decimal, Decimal, Decimal]:
+def vwap_bands(
+    bars: list[Bar], std_multiplier: Decimal = Decimal("1.5")
+) -> tuple[Decimal, Decimal, Decimal]:
     """
     VWAP with upper and lower standard deviation bands.
     Returns (vwap, upper_band, lower_band).
@@ -138,12 +144,13 @@ def vwap_bands(bars: list[Bar], std_multiplier: Decimal = Decimal("1.5")) -> tup
 
 # ── Volume analysis ───────────────────────────────────────────────────────────
 
+
 def volume_sma(bars: list[Bar], period: int = 20) -> Decimal:
     """Simple moving average of volume over last N bars."""
     if len(bars) < period:
         return Decimal("0")
     vols = [b.volume for b in bars[-period:]]
-    return sum(vols) / Decimal(len(vols))  # type: ignore[return-value]
+    return sum(vols) / Decimal(len(vols))
 
 
 def relative_volume(bars: list[Bar], period: int = 20) -> Decimal:
@@ -169,6 +176,7 @@ def is_volume_breakout(bars: list[Bar], min_rvol: float = 1.5) -> bool:
 
 
 # ── Trend / regime detection ──────────────────────────────────────────────────
+
 
 def is_trending_up(bars: list[Bar], fast: int = 9, slow: int = 21) -> bool:
     """
@@ -212,7 +220,7 @@ def market_regime(bars: list[Bar], atr_period: int = 14) -> str:
     n = min(14, len(bars))
     recent = bars[-n:]
     highest = max(b.high for b in recent)
-    lowest  = min(b.low for b in recent)
+    lowest = min(b.low for b in recent)
     price_range = highest - lowest
     atr_val = atr(bars, atr_period)
 
@@ -231,6 +239,7 @@ def market_regime(bars: list[Bar], atr_period: int = 14) -> str:
 
 
 # ── Gap detection ─────────────────────────────────────────────────────────────
+
 
 def gap_pct(prev_close: Decimal, today_open: Decimal) -> Decimal:
     """
@@ -252,6 +261,7 @@ def is_clean_open(prev_close: Decimal, today_open: Decimal, max_gap_pct: float =
 
 
 # ── ATR-based position sizing ─────────────────────────────────────────────────
+
 
 def atr_position_size(
     account_value: Decimal,
@@ -318,19 +328,20 @@ def trailing_stop_price(
 
 # ── Choppiness Index (standalone) ────────────────────────────────────────────
 
+
 def choppiness_index(bars: list[Bar], period: int = 14) -> Decimal:
     """
     Choppiness Index over `period` bars.
-    Range: 0–100.
+    Range: 0-100.
       > 61.8  →  choppy / ranging (avoid breakout strategies)
       < 38.2  →  strongly trending (favour momentum / ORB)
-    Formula: 100 × ATR(n) × √n / (highest_high − lowest_low)
+    Formula: 100 * ATR(n) * √n / (highest_high - lowest_low)
     """
     if len(bars) < period + 1:
         return Decimal("50")  # neutral default when not enough data
     recent = bars[-period:]
     highest = max(b.high for b in recent)
-    lowest  = min(b.low  for b in recent)
+    lowest = min(b.low for b in recent)
     price_range = highest - lowest
     atr_val = atr(bars, period)
     if price_range <= 0 or atr_val <= 0:
@@ -340,6 +351,7 @@ def choppiness_index(bars: list[Bar], period: int = 14) -> Decimal:
 
 
 # ── Adaptive ATR multiplier ───────────────────────────────────────────────────
+
 
 def adaptive_atr_multiplier(
     bars: list[Bar],
@@ -355,7 +367,7 @@ def adaptive_atr_multiplier(
       • Wider stops in high-volatility regimes  (fewer whipsaw stop-outs)
       • Tighter stops in calm trending regimes  (faster profit lock-in)
 
-    Formula:  mult = base × (current_atr / avg_atr_lookback)
+    Formula:  mult = base * (current_atr / avg_atr_lookback)
     Clamped to [floor, ceiling].
 
     Academic basis: Kaufman (1995) Adaptive Moving Average; Wilder ATR scaling.
@@ -387,6 +399,7 @@ def adaptive_atr_multiplier(
 
 # ── Fractional Kelly position sizing ─────────────────────────────────────────
 
+
 def kelly_fraction(
     win_rate: float,
     avg_win: float,
@@ -396,30 +409,30 @@ def kelly_fraction(
     """
     Fractional Kelly criterion — optimal bet size as a fraction of bankroll.
 
-    Full Kelly:  f* = (b·p − q) / b  where b = avg_win/avg_loss, p = win_rate, q = 1−p
-    Fractional:  f  = fraction × f*
+    Full Kelly:  f* = (b·p - q) / b  where b = avg_win/avg_loss, p = win_rate, q = 1-p
+    Fractional:  f  = fraction * f*
 
     Returns a value in [0, 1] representing the fraction of capital to risk.
     Returns 0 if the edge is negative (do not trade).
 
     Arguments:
-        win_rate  – historical win rate (0.0–1.0)
-        avg_win   – average winning trade return (positive, e.g. 0.015 for 1.5%)
-        avg_loss  – average losing trade return (positive magnitude, e.g. 0.008)
-        fraction  – Kelly fraction to use (0.25 = quarter Kelly; conservative)
+        win_rate  - historical win rate (0.0-1.0)
+        avg_win   - average winning trade return (positive, e.g. 0.015 for 1.5%)
+        avg_loss  - average losing trade return (positive magnitude, e.g. 0.008)
+        fraction  - Kelly fraction to use (0.25 = quarter Kelly; conservative)
 
     Academic reference: Kelly (1956); MacLean, Thorp & Ziemba (2011).
     """
     if avg_loss <= 0 or win_rate <= 0 or avg_win <= 0:
         return 0.0
 
-    b = avg_win / avg_loss           # win/loss ratio
+    b = avg_win / avg_loss  # win/loss ratio
     p = win_rate
     q = 1.0 - win_rate
     full_kelly = (b * p - q) / b
 
     if full_kelly <= 0:
-        return 0.0                   # negative edge — do not trade
+        return 0.0  # negative edge — do not trade
 
     return float(min(fraction * full_kelly, 1.0))
 
@@ -461,6 +474,7 @@ def kelly_position_size(
 
 # ── Bollinger Bands ───────────────────────────────────────────────────────────
 
+
 def bollinger_bands(
     bars: list[Bar],
     period: int = 20,
@@ -468,21 +482,22 @@ def bollinger_bands(
 ) -> tuple[Decimal, Decimal, Decimal]:
     """
     Bollinger Bands: (upper, middle, lower).
-    middle = SMA(period), bands = middle ± std_multiplier × std_dev(period).
+    middle = SMA(period), bands = middle ± std_multiplier * std_dev(period).
     Returns (price, price, price) when there is insufficient data.
     """
     if len(bars) < period:
         price = bars[-1].close if bars else Decimal("0")
         return price, price, price
     closes = [b.close for b in bars[-period:]]
-    middle: Decimal = sum(closes) / Decimal(period)  # type: ignore[assignment]
-    variance: Decimal = sum((c - middle) ** 2 for c in closes) / Decimal(period)  # type: ignore[assignment]
+    middle: Decimal = sum(closes) / Decimal(period)
+    variance: Decimal = sum((c - middle) ** 2 for c in closes) / Decimal(period)
     std_dev = Decimal(str(math.sqrt(float(variance))))
     mult = Decimal(str(std_multiplier))
     return middle + mult * std_dev, middle, middle - mult * std_dev
 
 
 # ── Donchian Channel ──────────────────────────────────────────────────────────
+
 
 def donchian_channel(bars: list[Bar], period: int = 20) -> tuple[Decimal, Decimal]:
     """
@@ -498,9 +513,10 @@ def donchian_channel(bars: list[Bar], period: int = 20) -> tuple[Decimal, Decima
 
 # ── RSI (Relative Strength Index) ────────────────────────────────────────────
 
+
 def rsi(bars: list[Bar], period: int = 14) -> Decimal:
     """
-    Wilder's RSI.  Range 0–100.  Returns 50 (neutral) when insufficient data.
+    Wilder's RSI.  Range 0-100.  Returns 50 (neutral) when insufficient data.
     """
     if len(bars) < period + 1:
         return Decimal("50")
@@ -515,8 +531,8 @@ def rsi(bars: list[Bar], period: int = 14) -> Decimal:
         else:
             gains.append(Decimal("0"))
             losses.append(-diff)
-    avg_gain: Decimal = sum(gains[:period]) / Decimal(period)  # type: ignore[assignment]
-    avg_loss: Decimal = sum(losses[:period]) / Decimal(period)  # type: ignore[assignment]
+    avg_gain: Decimal = sum(gains[:period]) / Decimal(period)
+    avg_loss: Decimal = sum(losses[:period]) / Decimal(period)
     for i in range(period, len(gains)):
         avg_gain = (avg_gain * (Decimal(period) - 1) + gains[i]) / Decimal(period)
         avg_loss = (avg_loss * (Decimal(period) - 1) + losses[i]) / Decimal(period)
@@ -528,9 +544,10 @@ def rsi(bars: list[Bar], period: int = 14) -> Decimal:
 
 # ── Session time filters ──────────────────────────────────────────────────────
 
+
 def is_tradeable_time(
     current_time_utc_hhmm: str,
-    session_open_utc: str = "14:30",   # 09:30 ET in UTC
+    session_open_utc: str = "14:30",  # 09:30 ET in UTC
     session_close_utc: str = "21:00",  # 16:00 ET in UTC
     avoid_first_minutes: int = 5,
     avoid_last_minutes: int = 30,
@@ -547,7 +564,7 @@ def is_tradeable_time(
 
     open_h, open_m = map(int, session_open_utc.split(":"))
     close_h, close_m = map(int, session_close_utc.split(":"))
-    open_mins  = open_h * 60 + open_m
+    open_mins = open_h * 60 + open_m
     close_mins = close_h * 60 + close_m
 
     # Outside session
@@ -563,8 +580,4 @@ def is_tradeable_time(
         return False
 
     # Lunch chop: 17:00-18:30 UTC = 12:00-13:30 ET
-    if avoid_lunch:
-        if 17 * 60 <= current_mins < 18 * 60 + 30:
-            return False
-
-    return True
+    return not (avoid_lunch and 17 * 60 <= current_mins < 18 * 60 + 30)
