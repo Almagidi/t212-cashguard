@@ -400,6 +400,18 @@ The following are intentionally not part of routine roadmap work:
 
 ## Recently Completed Maintenance
 
+- Ruff 0.15 compatibility cleanup — Batch 4: first runtime-code batch, cleaning
+  `app/strategies/indicators.py` (RUF002 docstring Unicode normalisation of
+  en-dash/minus-sign/multiplication-sign characters, SIM102/SIM103 mechanical
+  restructure of the `is_tradeable_time` lunch-window tail into an equivalent
+  single return expression, removal of 8 stale `# type: ignore` comments
+  flagged as unused-ignore by mypy 1.13, plus pinned-formatter alignment of
+  the touched file). Ruff 0.15.22 debt reduced 259 → 243 findings. The file
+  is lint-, format-, and mypy-clean under both pinned Ruff 0.8.4 and Ruff
+  0.15.22. No indicator formulas, thresholds, constants, defaults, public
+  signatures, or return shapes changed; the `is_tradeable_time` truth table
+  was verified identical at every session/lunch boundary. Dependabot #175
+  stays open until the remaining Ruff 0.15 debt is cleared.
 - Ruff 0.15 compatibility cleanup — Batch 3: tests-only cleanup of
   `tests/unit/test_alert_service.py` (SIM117 nested-`with` combination into
   single parenthesized `with` statements, F401 unused imports, I001 import
