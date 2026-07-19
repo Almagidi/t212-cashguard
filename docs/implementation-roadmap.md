@@ -400,6 +400,19 @@ The following are intentionally not part of routine roadmap work:
 
 ## Recently Completed Maintenance
 
+- Ruff 0.15 compatibility cleanup — Batch 2: tests-only full-file cleanup (I001
+  import order, F401 unused imports, RUF059 unused unpacked variables, E741
+  ambiguous `l` parameter renames, C408 dict-literal rewrites, F841 unused
+  locals, RUF002/RUF003 en-dash normalisation, SIM222/SIM300 trivial rewrites)
+  across 9 unit-test files: test_correlation, test_dca_planner,
+  test_execution_quality, test_indicators, test_opening_fade,
+  test_orb_production, test_portfolio_attribution, test_venue_isolation,
+  test_vwap_reclaim. Ruff 0.15.22 debt reduced 339 → 277 findings. All nine
+  files lint-clean under both pinned Ruff 0.8.4 and Ruff 0.15.22. Note: the
+  Ruff 0.15 formatter's new assert-message style diverges from 0.8.4 on two
+  files (pre-existing blocks, untouched by this batch); reformatting belongs to
+  the #175 migration itself. No runtime behaviour changed. Dependabot #175
+  stays open until the remaining Ruff 0.15 debt is cleared.
 - Ruff 0.15 compatibility cleanup — Batch 1: tests-only lint cleanup (I001 import
   order, F401 unused imports, TC003/TC006 typing-import hygiene, UP017
   `datetime.UTC`) across 10 test files plus pinned-formatter alignment. Ruff

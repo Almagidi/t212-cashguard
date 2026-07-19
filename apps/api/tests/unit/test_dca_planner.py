@@ -8,6 +8,7 @@ not constructible via _make_engine, not in beat_schedule).
 The legacy evaluate() API is covered in test_kraken_strategies.py.
 This file tests the typed evaluate_plan(config, state, ...) primary interface.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -23,13 +24,13 @@ from app.strategies.kraken_dca_planner import (
     DCAConfig,
     DCADecision,
     DCADecisionCode,
-    DCAState,
     DcaSchedulerContract,
+    DCAState,
     KrakenDCAPlanner,
 )
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
 
 def _bar(close: float, *, volume: float = 1000.0) -> Bar:
     c = Decimal(str(close))
@@ -43,35 +44,35 @@ def _bar(close: float, *, volume: float = 1000.0) -> Bar:
 
 
 def _config(**overrides) -> DCAConfig:
-    defaults: dict = dict(
-        ticker="BTC/USD",
-        cadence_days=7,
-        base_allocation_usd=Decimal("100"),
-        enable_dip_enhancement=True,
-        dip_threshold_pct=5.0,
-        dip_multiplier=2.0,
-        dip_ema_period=20,
-        min_cash_reserve_usd=Decimal("500"),
-        max_position_pct=25.0,
-        paper_only=True,
-        enabled=True,
-        venue="kraken",
-    )
+    defaults: dict = {
+        "ticker": "BTC/USD",
+        "cadence_days": 7,
+        "base_allocation_usd": Decimal("100"),
+        "enable_dip_enhancement": True,
+        "dip_threshold_pct": 5.0,
+        "dip_multiplier": 2.0,
+        "dip_ema_period": 20,
+        "min_cash_reserve_usd": Decimal("500"),
+        "max_position_pct": 25.0,
+        "paper_only": True,
+        "enabled": True,
+        "venue": "kraken",
+    }
     defaults.update(overrides)
     return DCAConfig(**defaults)
 
 
 def _state(**overrides) -> DCAState:
-    defaults: dict = dict(
-        ticker="BTC/USD",
-        venue="kraken",
-        last_buy_at=None,
-        last_decision_at=None,
-        total_allocated_usd=Decimal("0"),
-        executions_count=0,
-        last_decision_code=None,
-        last_reason=None,
-    )
+    defaults: dict = {
+        "ticker": "BTC/USD",
+        "venue": "kraken",
+        "last_buy_at": None,
+        "last_decision_at": None,
+        "total_allocated_usd": Decimal("0"),
+        "executions_count": 0,
+        "last_decision_code": None,
+        "last_reason": None,
+    }
     defaults.update(overrides)
     return DCAState(**defaults)
 
@@ -101,6 +102,7 @@ def _eval_default(**config_overrides) -> DCADecision:
 
 # ── Architecture contracts ─────────────────────────────────────────────────────
 
+
 class TestArchitectureContracts:
     def test_runnable_is_false(self):
         """Deployment gate: must remain False until all prerequisites are met."""
@@ -122,6 +124,7 @@ class TestArchitectureContracts:
     def test_not_constructible_via_make_engine_dca_planner(self):
         """strategy_runner._make_engine must return None for 'kraken_dca_planner'."""
         from app.services.strategy_runner import StrategyRunner
+
         runner = StrategyRunner(MagicMock())
         strategy = MagicMock()
         strategy.type = "kraken_dca_planner"
@@ -135,18 +138,18 @@ class TestArchitectureContracts:
     def test_not_constructible_via_make_engine_kraken_dca(self):
         """strategy_runner._make_engine must return None for 'kraken_dca'."""
         from app.services.strategy_runner import StrategyRunner
+
         runner = StrategyRunner(MagicMock())
         strategy = MagicMock()
         strategy.type = "kraken_dca"
         strategy.params = {}
         result = runner._make_engine(strategy)
-        assert result is None, (
-            "_make_engine must return None for 'kraken_dca'"
-        )
+        assert result is None, "_make_engine must return None for 'kraken_dca'"
 
     def test_only_dedicated_paper_scheduler_in_beat_schedule(self):
         """DCA must only appear in the dedicated daily paper scheduler."""
         from app.workers.celery_app import celery_app
+
         for task_key, task_cfg in celery_app.conf.beat_schedule.items():
             task_path = task_cfg.get("task", "")
             if "dca" in task_path.lower():
@@ -159,10 +162,11 @@ class TestArchitectureContracts:
         assert hasattr(DcaSchedulerContract, "evaluate_due_plans")
 
     def test_approved_tickers_are_btc_and_eth_only(self):
-        assert APPROVED_TICKERS == frozenset({"BTC/USD", "ETH/USD"})
+        assert frozenset({"BTC/USD", "ETH/USD"}) == APPROVED_TICKERS
 
 
 # ── DCADecision type contract ─────────────────────────────────────────────────
+
 
 class TestDCADecisionTypeContract:
     def test_code_is_first_field_and_required(self):
@@ -180,7 +184,9 @@ class TestDCADecisionTypeContract:
         result = _eval_default()
         assert not hasattr(result, "signal_type"), "DCADecision must not have signal_type"
         assert not hasattr(result, "stop_price"), "DCADecision must not have stop_price"
-        assert not hasattr(result, "take_profit_price"), "DCADecision must not have take_profit_price"
+        assert not hasattr(
+            result, "take_profit_price"
+        ), "DCADecision must not have take_profit_price"
 
     def test_every_evaluation_returns_dca_decision(self):
         result = _eval_default()
@@ -188,12 +194,13 @@ class TestDCADecisionTypeContract:
 
     def test_every_evaluation_has_explicit_decision_code(self):
         result = _eval_default()
-        assert isinstance(result.code, DCADecisionCode), (
-            "Every DCA evaluation must set an explicit DCADecisionCode"
-        )
+        assert isinstance(
+            result.code, DCADecisionCode
+        ), "Every DCA evaluation must set an explicit DCADecisionCode"
 
 
 # ── All DCADecisionCode paths via evaluate_plan() ─────────────────────────────
+
 
 class TestDecisionCodePaths:
     """Each path through evaluate_plan() must produce the correct DCADecisionCode."""
@@ -355,6 +362,7 @@ class TestDecisionCodePaths:
 
 # ── Cadence boundary conditions ────────────────────────────────────────────────
 
+
 class TestCadenceBoundary:
     """Exact boundary: day N-1 is blocked; day N is due."""
 
@@ -427,6 +435,7 @@ class TestCadenceBoundary:
 
 # ── Cash reserve gate ─────────────────────────────────────────────────────────
 
+
 class TestCashReserveGate:
     """Gate uses strict less-than: available_cash < reserve blocks; == reserve passes."""
 
@@ -466,6 +475,7 @@ class TestCashReserveGate:
 
 
 # ── Max position gate ─────────────────────────────────────────────────────────
+
 
 class TestMaxPositionGate:
     def test_allocation_within_cap_is_allowed(self):
@@ -515,6 +525,7 @@ class TestMaxPositionGate:
 
 
 # ── Dip enhancement ───────────────────────────────────────────────────────────
+
 
 class TestDipEnhancement:
     def test_disabled_dip_enhancement_yields_scheduled_mode(self):
@@ -593,6 +604,7 @@ class TestDipEnhancement:
 
 # ── Determinism ────────────────────────────────────────────────────────────────
 
+
 class TestDeterminism:
     def test_same_inputs_produce_identical_outputs(self):
         """Planner is a pure function — identical inputs must produce identical outputs."""
@@ -615,13 +627,19 @@ class TestDeterminism:
         config = _config(cadence_days=7)
         # 6 days later → skip; 7 days later → buy
         day6 = _planner().evaluate_plan(
-            config=config, state=state,
-            current_price=PRICE, available_cash=CASH, account_value=ACCOUNT,
+            config=config,
+            state=state,
+            current_price=PRICE,
+            available_cash=CASH,
+            account_value=ACCOUNT,
             now=date(2026, 4, 28),
         )
         day7 = _planner().evaluate_plan(
-            config=config, state=state,
-            current_price=PRICE, available_cash=CASH, account_value=ACCOUNT,
+            config=config,
+            state=state,
+            current_price=PRICE,
+            available_cash=CASH,
+            account_value=ACCOUNT,
             now=date(2026, 4, 29),
         )
         assert day6.code == DCADecisionCode.SKIP_ALREADY_BOUGHT_THIS_WINDOW
@@ -630,24 +648,32 @@ class TestDeterminism:
 
 # ── DCAState persistence contract ─────────────────────────────────────────────
 
+
 class TestDCAStateContract:
     """
     DCAState defines the persistence contract for the future dca_plan_states table.
     These tests assert the correct field set is present — not DB integration tests.
     """
 
-    REQUIRED_FIELDS = frozenset({
-        "ticker", "venue", "last_buy_at", "last_decision_at",
-        "total_allocated_usd", "executions_count",
-        "last_decision_code", "last_reason",
-    })
+    REQUIRED_FIELDS = frozenset(
+        {
+            "ticker",
+            "venue",
+            "last_buy_at",
+            "last_decision_at",
+            "total_allocated_usd",
+            "executions_count",
+            "last_decision_code",
+            "last_reason",
+        }
+    )
 
     def test_all_required_persistence_fields_are_present(self):
         state = _state()
         for field_name in self.REQUIRED_FIELDS:
-            assert hasattr(state, field_name), (
-                f"DCAState is missing required persistence field: {field_name!r}"
-            )
+            assert hasattr(
+                state, field_name
+            ), f"DCAState is missing required persistence field: {field_name!r}"
 
     def test_zero_safe_defaults(self):
         state = DCAState(ticker="BTC/USD", venue="kraken")
@@ -695,6 +721,7 @@ class TestDCAStateContract:
 
 
 # ── DCAConfig contract ────────────────────────────────────────────────────────
+
 
 class TestDCAConfigContract:
     def test_paper_only_default_is_true(self):

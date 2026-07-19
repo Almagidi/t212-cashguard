@@ -3,9 +3,8 @@ Unit tests for the correlation and sector-exposure risk module.
 
 All functions under test are pure Python (no DB, no I/O).
 """
-from __future__ import annotations
 
-import pytest
+from __future__ import annotations
 
 from app.risk.correlation import (
     SECTOR_MAP,
@@ -16,8 +15,8 @@ from app.risk.correlation import (
     get_sector,
 )
 
-
 # ── get_sector ────────────────────────────────────────────────────────────────
+
 
 class TestGetSector:
     def test_known_ticker_returns_sector(self):
@@ -42,6 +41,7 @@ class TestGetSector:
 
 
 # ── compute_correlation ───────────────────────────────────────────────────────
+
 
 class TestComputeCorrelation:
     def test_insufficient_data_returns_zero(self):
@@ -75,6 +75,7 @@ class TestComputeCorrelation:
 
     def test_result_bounded(self):
         import random
+
         random.seed(42)
         a = [100.0 + random.gauss(0, 1) for _ in range(20)]
         b = [100.0 + random.gauss(0, 1) for _ in range(20)]
@@ -90,32 +91,29 @@ class TestComputeCorrelation:
 
 # ── CorrelationRiskChecker.check_sector_exposure ──────────────────────────────
 
+
 class TestSectorExposure:
     def setup_method(self):
         self.checker = CorrelationRiskChecker(max_sector_pct=25.0, max_correlation=0.75)
 
     def test_zero_account_value_always_allowed(self):
-        ok, reason = self.checker.check_sector_exposure("AAPL", 1000.0, [], account_value=0)
+        ok, _reason = self.checker.check_sector_exposure("AAPL", 1000.0, [], account_value=0)
         assert ok
 
     def test_etf_exempt_from_sector_limit(self):
-        ok, reason = self.checker.check_sector_exposure(
-            "SPY", 99999.0, [], account_value=10_000.0
-        )
+        ok, reason = self.checker.check_sector_exposure("SPY", 99999.0, [], account_value=10_000.0)
         assert ok
         assert "exempt" in reason
 
     def test_unknown_sector_exempt(self):
-        ok, reason = self.checker.check_sector_exposure(
+        ok, _reason = self.checker.check_sector_exposure(
             "ZZZUNKNOWN", 99999.0, [], account_value=10_000.0
         )
         assert ok
 
     def test_below_limit_allowed(self):
         # 2000 / 10000 = 20% < 25% limit
-        ok, reason = self.checker.check_sector_exposure(
-            "AAPL", 2000.0, [], account_value=10_000.0
-        )
+        ok, reason = self.checker.check_sector_exposure("AAPL", 2000.0, [], account_value=10_000.0)
         assert ok
         assert "Technology" in reason
 
@@ -132,22 +130,19 @@ class TestSectorExposure:
     def test_position_value_derived_from_qty_price_if_no_value(self):
         existing = [{"ticker": "MSFT", "quantity": 20, "current_price": 100.0}]
         # existing value = 2000, new = 500, total = 2500 / 10000 = 25% → at limit (not above)
-        ok, _ = self.checker.check_sector_exposure(
-            "AAPL", 500.0, existing, account_value=10_000.0
-        )
+        ok, _ = self.checker.check_sector_exposure("AAPL", 500.0, existing, account_value=10_000.0)
         # 25% == max_sector_pct → not strictly greater → allowed
         assert ok
 
     def test_different_sector_not_counted(self):
         existing = [{"ticker": "JPM", "value": 5000.0}]  # Financials
-        ok, _ = self.checker.check_sector_exposure(
-            "AAPL", 1000.0, existing, account_value=10_000.0
-        )
+        ok, _ = self.checker.check_sector_exposure("AAPL", 1000.0, existing, account_value=10_000.0)
         # only AAPL (Tech) = 1000/10000 = 10% — well under limit
         assert ok
 
 
 # ── CorrelationRiskChecker.check_correlation ──────────────────────────────────
+
 
 class TestCorrelationCheck:
     def setup_method(self):
@@ -164,7 +159,7 @@ class TestCorrelationCheck:
         assert violations == []
 
     def test_insufficient_new_history_allowed(self):
-        ok, violations = self.checker.check_correlation(
+        ok, _violations = self.checker.check_correlation(
             "AAPL", [{"ticker": "MSFT"}], {"AAPL": [1.0, 2.0], "MSFT": self._prices()}
         )
         assert ok
@@ -186,16 +181,17 @@ class TestCorrelationCheck:
 
     def test_uncorrelated_positions_allowed(self):
         import random
+
         random.seed(99)
         a = [100.0 + random.gauss(0, 3) for _ in range(20)]
         b = [200.0 + random.gauss(0, 3) for _ in range(20)]
         # These are random and shouldn't typically exceed 0.75, but we
         # mock a low-corr scenario explicitly
         checker = CorrelationRiskChecker(max_correlation=0.99)
-        ok, violations = checker.check_correlation(
+        _ok, _violations = checker.check_correlation(
             "AAPL", [{"ticker": "JPM"}], {"AAPL": a, "JPM": b}
         )
-        assert ok or True  # result depends on random seed; just verify it runs
+        assert True  # result depends on random seed; just verify it runs
 
     def test_same_ticker_skipped_in_existing(self):
         prices = self._prices(20)
@@ -209,7 +205,7 @@ class TestCorrelationCheck:
 
     def test_etf_existing_position_exempt(self):
         prices = self._prices(20)
-        ok, violations = self.checker.check_correlation(
+        ok, _violations = self.checker.check_correlation(
             "AAPL",
             [{"ticker": "SPY"}],
             {"AAPL": prices, "SPY": prices},
@@ -218,7 +214,7 @@ class TestCorrelationCheck:
         assert ok
 
     def test_existing_insufficient_history_skipped(self):
-        ok, violations = self.checker.check_correlation(
+        ok, _violations = self.checker.check_correlation(
             "AAPL",
             [{"ticker": "MSFT"}],
             {"AAPL": self._prices(20), "MSFT": [1.0, 2.0, 3.0]},
@@ -248,6 +244,7 @@ class TestCorrelationCheck:
 
 
 # ── singleton ─────────────────────────────────────────────────────────────────
+
 
 class TestSingleton:
     def test_get_correlation_checker_returns_instance(self):

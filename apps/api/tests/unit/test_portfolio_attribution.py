@@ -4,25 +4,26 @@ Unit tests for the portfolio sleeve attribution service.
 The pure methods _replay() and _build_ticker_attribution() are called
 directly without any mocking. DB-touching methods are patched via AsyncMock.
 """
+
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.services.portfolio_attribution import (
-    PositionLedger,
     PortfolioAttributionService,
+    PositionLedger,
     SleeveAttribution,
     SleeveOrderFill,
     TickerAttribution,
     TimelinePoint,
 )
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
+
 
 def _make_fill(
     ticker="AAPL",
@@ -56,16 +57,16 @@ def _make_histories(ticker="AAPL", price=Decimal("110"), base_date=None):
 
 # ── _replay ───────────────────────────────────────────────────────────────────
 
+
 class TestReplay:
     def _svc(self):
         return PortfolioAttributionService(MagicMock())
 
     def test_single_buy_creates_timeline_point(self):
         svc = self._svc()
-        d = date(2024, 1, 10)
         fills = [_make_fill()]
         histories = _make_histories()
-        timeline, ledger, prices = svc._replay(fills, histories)
+        timeline, _ledger, _prices = svc._replay(fills, histories)
         assert len(timeline) >= 1
         point = timeline[0]
         assert isinstance(point, TimelinePoint)
@@ -234,6 +235,7 @@ class TestReplay:
 
 # ── _build_ticker_attribution ─────────────────────────────────────────────────
 
+
 class TestBuildTickerAttribution:
     def _svc(self):
         return PortfolioAttributionService(MagicMock())
@@ -317,6 +319,7 @@ class TestBuildTickerAttribution:
 
 # ── I/O boundary helpers with mocked dependencies ─────────────────────────────
 
+
 class TestLoadAndFetchHelpers:
     def _svc(self):
         return PortfolioAttributionService(MagicMock())
@@ -369,19 +372,26 @@ class TestLoadAndFetchHelpers:
 
     @pytest.mark.asyncio
     async def test_load_order_fills_skips_missing_quantity_or_fill_price(self):
-        db = self._db_result([
-            (self._order(filled_quantity=None, quantity=None), self._signal()),
-            (self._order(avg_fill_price=None), self._signal()),
-        ])
+        db = self._db_result(
+            [
+                (self._order(filled_quantity=None, quantity=None), self._signal()),
+                (self._order(avg_fill_price=None), self._signal()),
+            ]
+        )
         svc = PortfolioAttributionService(db)
 
         assert await svc._load_order_fills("strategy-id") == []
 
     @pytest.mark.asyncio
     async def test_load_order_fills_handles_missing_signal_id_and_target_weight(self):
-        db = self._db_result([
-            (self._order(signal_id=None, filled_quantity=None, quantity=Decimal("7")), self._signal(params_snapshot=None)),
-        ])
+        db = self._db_result(
+            [
+                (
+                    self._order(signal_id=None, filled_quantity=None, quantity=Decimal("7")),
+                    self._signal(params_snapshot=None),
+                ),
+            ]
+        )
         svc = PortfolioAttributionService(db)
 
         fills = await svc._load_order_fills("strategy-id")
@@ -393,14 +403,19 @@ class TestLoadAndFetchHelpers:
     @pytest.mark.asyncio
     async def test_load_histories_uses_plain_provider(self):
         svc = self._svc()
+
         class PlainProvider:
             pass
 
         provider = PlainProvider()
         fill = _make_fill(ticker="MSFT")
 
-        with patch("app.services.portfolio_attribution.get_live_provider", return_value=provider), \
-             patch.object(svc, "_fetch_histories", new=AsyncMock(return_value={"MSFT": {}})) as fetch:
+        with (
+            patch("app.services.portfolio_attribution.get_live_provider", return_value=provider),
+            patch.object(
+                svc, "_fetch_histories", new=AsyncMock(return_value={"MSFT": {}})
+            ) as fetch,
+        ):
             result = await svc._load_histories([fill])
 
         assert result == {"MSFT": {}}
@@ -418,8 +433,12 @@ class TestLoadAndFetchHelpers:
         provider.__aexit__ = AsyncMock(return_value=False)
         fills = [_make_fill(ticker="TSLA"), _make_fill(ticker="AAPL")]
 
-        with patch("app.services.portfolio_attribution.get_live_provider", return_value=provider), \
-             patch.object(svc, "_fetch_histories", new=AsyncMock(return_value={"AAPL": {}, "TSLA": {}})) as fetch:
+        with (
+            patch("app.services.portfolio_attribution.get_live_provider", return_value=provider),
+            patch.object(
+                svc, "_fetch_histories", new=AsyncMock(return_value={"AAPL": {}, "TSLA": {}})
+            ) as fetch,
+        ):
             result = await svc._load_histories(fills)
 
         assert result == {"AAPL": {}, "TSLA": {}}
@@ -439,7 +458,9 @@ class TestLoadAndFetchHelpers:
             datetime(2024, 1, 11, 0, 0, tzinfo=UTC),
         ]
 
-        with patch.object(svc, "_fetch_daily_bars", new=AsyncMock(return_value=(bars, times))) as fetch:
+        with patch.object(
+            svc, "_fetch_daily_bars", new=AsyncMock(return_value=(bars, times))
+        ) as fetch:
             histories = await svc._fetch_histories(MagicMock(), ["AAPL", "MSFT"], 50)
 
         assert histories["AAPL"][date(2024, 1, 10)] == Decimal("101")
@@ -502,6 +523,7 @@ class TestLoadAndFetchHelpers:
 
 # ── build_for_strategy (integration of pure methods via mocked I/O) ───────────
 
+
 class TestBuildForStrategy:
     def _fake_strategy(self):
         s = MagicMock()
@@ -531,8 +553,10 @@ class TestBuildForStrategy:
         fill = _make_fill(quantity="10", fill_price="100")
         histories = _make_histories(price=Decimal("110"))
 
-        with patch.object(svc, "_load_order_fills", new=AsyncMock(return_value=[fill])), \
-             patch.object(svc, "_load_histories", new=AsyncMock(return_value=histories)):
+        with (
+            patch.object(svc, "_load_order_fills", new=AsyncMock(return_value=[fill])),
+            patch.object(svc, "_load_histories", new=AsyncMock(return_value=histories)),
+        ):
             result = await svc.build_for_strategy(strategy)
 
         assert isinstance(result, SleeveAttribution)
@@ -559,8 +583,10 @@ class TestBuildForStrategy:
                 date(2024, 1, 11): Decimal("105"),
             }
         }
-        with patch.object(svc, "_load_order_fills", new=AsyncMock(return_value=fills)), \
-             patch.object(svc, "_load_histories", new=AsyncMock(return_value=histories)):
+        with (
+            patch.object(svc, "_load_order_fills", new=AsyncMock(return_value=fills)),
+            patch.object(svc, "_load_histories", new=AsyncMock(return_value=histories)),
+        ):
             result = await svc.build_for_strategy(strategy)
 
         assert result.rebalance_days == 2
@@ -583,8 +609,10 @@ class TestBuildForStrategy:
                 date(2024, 1, 11): Decimal("110"),
             }
         }
-        with patch.object(svc, "_load_order_fills", new=AsyncMock(return_value=fills)), \
-             patch.object(svc, "_load_histories", new=AsyncMock(return_value=histories)):
+        with (
+            patch.object(svc, "_load_order_fills", new=AsyncMock(return_value=fills)),
+            patch.object(svc, "_load_histories", new=AsyncMock(return_value=histories)),
+        ):
             result = await svc.build_for_strategy(strategy)
 
         assert result.sells_notional == Decimal("550")  # 5 * 110

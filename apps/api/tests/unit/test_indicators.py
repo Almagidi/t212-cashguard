@@ -3,9 +3,9 @@ Unit tests for app/strategies/indicators.py.
 
 All functions are pure Python — no mocking needed.
 """
+
 from __future__ import annotations
 
-import math
 from decimal import Decimal
 
 import pytest
@@ -31,19 +31,19 @@ from app.strategies.indicators import (
     relative_volume,
     trailing_stop_price,
     true_range,
+    volume_sma,
     vwap,
     vwap_bands,
-    volume_sma,
 )
-
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _bar(o=100, h=105, l=98, c=102, v=10_000):
+
+def _bar(o=100, h=105, low=98, c=102, v=10_000):
     return Bar(
         open=Decimal(str(o)),
         high=Decimal(str(h)),
-        low=Decimal(str(l)),
+        low=Decimal(str(low)),
         close=Decimal(str(c)),
         volume=Decimal(str(v)),
     )
@@ -65,28 +65,30 @@ def _trending_bars(n=40, start=90, step=1, volume=10_000):
 
 # ── true_range ────────────────────────────────────────────────────────────────
 
+
 class TestTrueRange:
     def test_no_prev_close_uses_hl(self):
-        bar = _bar(h=105, l=98)
+        bar = _bar(h=105, low=98)
         assert true_range(bar, None) == Decimal("7")
 
     def test_with_prev_close_above_high(self):
-        bar = _bar(h=100, l=95, c=99)
+        bar = _bar(h=100, low=95, c=99)
         # prev_close=110: hc=10, lc=15, hl=5 → max=15
         assert true_range(bar, Decimal("110")) == Decimal("15")
 
     def test_with_prev_close_below_low(self):
-        bar = _bar(h=105, l=100, c=103)
+        bar = _bar(h=105, low=100, c=103)
         # prev_close=90: hc=15, lc=10, hl=5 → max=15
         assert true_range(bar, Decimal("90")) == Decimal("15")
 
     def test_prev_close_within_range(self):
-        bar = _bar(h=110, l=90, c=100)
+        bar = _bar(h=110, low=90, c=100)
         # hl=20, hc=|110-100|=10, lc=|90-100|=10 → max=20
         assert true_range(bar, Decimal("100")) == Decimal("20")
 
 
 # ── atr ───────────────────────────────────────────────────────────────────────
+
 
 class TestATR:
     def test_not_enough_bars_returns_zero(self):
@@ -100,8 +102,8 @@ class TestATR:
 
     def test_volatile_bars_returns_positive(self):
         bars = []
-        for i in range(30):
-            bars.append(_bar(h=110, l=90))  # hl range = 20
+        for _i in range(30):
+            bars.append(_bar(h=110, low=90))  # hl range = 20
         result = atr(bars, period=14)
         assert result > Decimal("5")
 
@@ -128,6 +130,7 @@ class TestATR:
 
 # ── atr_pct ───────────────────────────────────────────────────────────────────
 
+
 class TestATRPct:
     def test_empty_bars_returns_zero(self):
         assert atr_pct([], 14) == Decimal("0")
@@ -141,12 +144,13 @@ class TestATRPct:
         assert atr_pct(bars, 14) == Decimal("0")
 
     def test_normal_case_returns_percentage(self):
-        bars = [_bar(h=110, l=90, c=100) for _ in range(30)]
+        bars = [_bar(h=110, low=90, c=100) for _ in range(30)]
         result = atr_pct(bars, 14)
         assert result > Decimal("0")
 
 
 # ── ema ───────────────────────────────────────────────────────────────────────
+
 
 class TestEMA:
     def test_too_few_values_returns_zeros(self):
@@ -174,6 +178,7 @@ class TestEMA:
 
 # ── ema_of_closes ─────────────────────────────────────────────────────────────
 
+
 class TestEMAOfCloses:
     def test_returns_decimal(self):
         bars = _flat_bars(30, price=100)
@@ -188,6 +193,7 @@ class TestEMAOfCloses:
 
 # ── vwap ─────────────────────────────────────────────────────────────────────
 
+
 class TestVWAP:
     def test_zero_volume_returns_zero(self):
         bars = [_bar(v=0) for _ in range(5)]
@@ -195,14 +201,14 @@ class TestVWAP:
 
     def test_typical_price_used(self):
         # single bar: typical = (h+l+c)/3 = (105+95+100)/3 = 100
-        bars = [_bar(h=105, l=95, c=100, v=1000)]
+        bars = [_bar(h=105, low=95, c=100, v=1000)]
         result = vwap(bars)
         assert result == Decimal("100.0000")
 
     def test_multiple_bars_weighted(self):
         bars = [
-            _bar(h=110, l=100, c=105, v=2000),  # typical=105
-            _bar(h=120, l=110, c=115, v=1000),  # typical=115
+            _bar(h=110, low=100, c=105, v=2000),  # typical=105
+            _bar(h=120, low=110, c=115, v=1000),  # typical=115
         ]
         result = vwap(bars)
         # weighted: (105*2000 + 115*1000) / 3000 = (210000+115000)/3000 = 108.333...
@@ -214,6 +220,7 @@ class TestVWAP:
 
 
 # ── vwap_bands ────────────────────────────────────────────────────────────────
+
 
 class TestVWAPBands:
     def test_zero_vwap_returns_equal_bands(self):
@@ -229,7 +236,7 @@ class TestVWAPBands:
     def test_normal_bands_upper_above_lower(self):
         bars = []
         for i in range(20):
-            bars.append(_bar(h=100 + i, l=90 + i, c=95 + i, v=10000))
+            bars.append(_bar(h=100 + i, low=90 + i, c=95 + i, v=10000))
         v, upper, lower = vwap_bands(bars)
         assert upper >= v >= lower
 
@@ -241,6 +248,7 @@ class TestVWAPBands:
 
 
 # ── volume_sma ────────────────────────────────────────────────────────────────
+
 
 class TestVolumeSMA:
     def test_too_few_bars_returns_zero(self):
@@ -258,6 +266,7 @@ class TestVolumeSMA:
 
 
 # ── relative_volume ───────────────────────────────────────────────────────────
+
 
 class TestRelativeVolume:
     def test_zero_avg_returns_one(self):
@@ -280,6 +289,7 @@ class TestRelativeVolume:
 
 # ── is_volume_breakout ────────────────────────────────────────────────────────
 
+
 class TestIsVolumeBreakout:
     def test_high_volume_returns_true(self):
         bars = [_bar(v=1000)] * 21
@@ -293,6 +303,7 @@ class TestIsVolumeBreakout:
 
 
 # ── is_trending_up / is_trending_down ────────────────────────────────────────
+
 
 class TestTrendDetection:
     def test_not_enough_bars_returns_false_up(self):
@@ -317,6 +328,7 @@ class TestTrendDetection:
 
 
 # ── market_regime ─────────────────────────────────────────────────────────────
+
 
 class TestMarketRegime:
     def test_not_enough_bars_returns_unknown(self):
@@ -344,20 +356,21 @@ class TestMarketRegime:
         bars = []
         for i in range(50):
             if i % 2 == 0:
-                bars.append(_bar(h=120, l=80, c=110, v=5000))
+                bars.append(_bar(h=120, low=80, c=110, v=5000))
             else:
-                bars.append(_bar(h=120, l=80, c=90, v=5000))
+                bars.append(_bar(h=120, low=80, c=90, v=5000))
         result = market_regime(bars)
         assert result in ("choppy", "neutral", "trending_up", "trending_down")
 
     def test_zero_atr_returns_unknown(self):
         # All bars identical → ATR=0
-        bars = [_bar(h=100, l=100, c=100) for _ in range(40)]
+        bars = [_bar(h=100, low=100, c=100) for _ in range(40)]
         result = market_regime(bars)
         assert result == "unknown"
 
 
 # ── gap_pct ───────────────────────────────────────────────────────────────────
+
 
 class TestGapPct:
     def test_zero_prev_close_returns_zero(self):
@@ -378,6 +391,7 @@ class TestGapPct:
 
 # ── is_clean_open ─────────────────────────────────────────────────────────────
 
+
 class TestIsCleanOpen:
     def test_small_gap_is_clean(self):
         assert is_clean_open(Decimal("100"), Decimal("101"), max_gap_pct=2.0) is True
@@ -393,6 +407,7 @@ class TestIsCleanOpen:
 
 
 # ── atr_position_size ─────────────────────────────────────────────────────────
+
 
 class TestATRPositionSize:
     def test_zero_atr_returns_zero(self):
@@ -449,6 +464,7 @@ class TestATRPositionSize:
 
 
 # ── trailing_stop_price ───────────────────────────────────────────────────────
+
 
 class TestTrailingStopPrice:
     def test_long_no_initial_stop(self):
@@ -524,13 +540,14 @@ class TestTrailingStopPrice:
 
 # ── choppiness_index ──────────────────────────────────────────────────────────
 
+
 class TestChoppinessIndex:
     def test_not_enough_bars_returns_fifty(self):
         bars = _flat_bars(5)
         assert choppiness_index(bars, period=14) == Decimal("50")
 
     def test_zero_range_returns_fifty(self):
-        bars = [_bar(h=100, l=100, c=100) for _ in range(20)]
+        bars = [_bar(h=100, low=100, c=100) for _ in range(20)]
         assert choppiness_index(bars, period=14) == Decimal("50")
 
     def test_choppy_market_returns_high_value(self):
@@ -538,9 +555,9 @@ class TestChoppinessIndex:
         bars = []
         for i in range(20):
             if i % 2 == 0:
-                bars.append(_bar(h=150, l=50, c=140, v=10000))
+                bars.append(_bar(h=150, low=50, c=140, v=10000))
             else:
-                bars.append(_bar(h=150, l=50, c=60, v=10000))
+                bars.append(_bar(h=150, low=50, c=60, v=10000))
         result = choppiness_index(bars, period=14)
         assert Decimal("0") <= result <= Decimal("100")
 
@@ -551,12 +568,13 @@ class TestChoppinessIndex:
 
     def test_result_clamped_between_0_and_100(self):
         bars = _flat_bars(30)
-        bars[0] = _bar(h=200, l=50)  # one extreme bar
+        bars[0] = _bar(h=200, low=50)  # one extreme bar
         result = choppiness_index(bars, period=14)
         assert Decimal("0") <= result <= Decimal("100")
 
 
 # ── adaptive_atr_multiplier ───────────────────────────────────────────────────
+
 
 class TestAdaptiveATRMultiplier:
     def test_not_enough_bars_returns_base(self):
@@ -566,7 +584,7 @@ class TestAdaptiveATRMultiplier:
 
     def test_zero_current_atr_returns_base(self):
         # Flat bars → ATR ≈ 0
-        bars = [_bar(h=100, l=100, c=100) for _ in range(50)]
+        bars = [_bar(h=100, low=100, c=100) for _ in range(50)]
         result = adaptive_atr_multiplier(bars, base_multiplier=2.0)
         assert result == 2.0
 
@@ -574,9 +592,9 @@ class TestAdaptiveATRMultiplier:
         # Calm recent bars (low ATR) vs volatile history
         bars = []
         for _ in range(20):
-            bars.append(_bar(h=150, l=50))  # volatile
+            bars.append(_bar(h=150, low=50))  # volatile
         for _ in range(30):
-            bars.append(_bar(h=101, l=99, c=100))  # calm
+            bars.append(_bar(h=101, low=99, c=100))  # calm
         result = adaptive_atr_multiplier(bars, base_multiplier=2.0, floor=1.5, ceiling=4.0)
         assert result >= 1.5
 
@@ -584,9 +602,9 @@ class TestAdaptiveATRMultiplier:
         # Very volatile recent bars
         bars = []
         for _ in range(30):
-            bars.append(_bar(h=100, l=100, c=100))  # calm history
+            bars.append(_bar(h=100, low=100, c=100))  # calm history
         for _ in range(20):
-            bars.append(_bar(h=200, l=0, c=100))   # volatile recent
+            bars.append(_bar(h=200, low=0, c=100))  # volatile recent
         result = adaptive_atr_multiplier(bars, base_multiplier=2.0, floor=1.5, ceiling=4.0)
         assert result <= 4.0
 
@@ -597,6 +615,7 @@ class TestAdaptiveATRMultiplier:
 
 
 # ── kelly_fraction ────────────────────────────────────────────────────────────
+
 
 class TestKellyFraction:
     def test_zero_avg_loss_returns_zero(self):
@@ -630,6 +649,7 @@ class TestKellyFraction:
 
 
 # ── kelly_position_size ───────────────────────────────────────────────────────
+
 
 class TestKellyPositionSize:
     def test_zero_risk_per_share_returns_zero(self):
@@ -691,6 +711,7 @@ class TestKellyPositionSize:
 
 # ── is_tradeable_time ─────────────────────────────────────────────────────────
 
+
 class TestIsTradableTime:
     def test_before_session_returns_false(self):
         # Before 14:30 UTC
@@ -717,37 +738,49 @@ class TestIsTradableTime:
 
     def test_lunch_avoidance_disabled(self):
         # Same time but avoid_lunch=False → should pass if otherwise valid
-        assert is_tradeable_time(
-            "17:30",
-            avoid_first_minutes=5,
-            avoid_last_minutes=30,
-            avoid_lunch=False,
-        ) is True
+        assert (
+            is_tradeable_time(
+                "17:30",
+                avoid_first_minutes=5,
+                avoid_last_minutes=30,
+                avoid_lunch=False,
+            )
+            is True
+        )
 
     def test_valid_mid_session_returns_true(self):
         # 16:00 UTC = 11:00 ET — clean window
-        assert is_tradeable_time(
-            "16:00",
-            avoid_first_minutes=5,
-            avoid_last_minutes=30,
-            avoid_lunch=True,
-        ) is True
+        assert (
+            is_tradeable_time(
+                "16:00",
+                avoid_first_minutes=5,
+                avoid_last_minutes=30,
+                avoid_lunch=True,
+            )
+            is True
+        )
 
     def test_custom_session_window(self):
-        assert is_tradeable_time(
-            "15:00",
-            session_open_utc="14:30",
-            session_close_utc="21:00",
-            avoid_first_minutes=5,
-            avoid_last_minutes=30,
-            avoid_lunch=False,
-        ) is True
+        assert (
+            is_tradeable_time(
+                "15:00",
+                session_open_utc="14:30",
+                session_close_utc="21:00",
+                avoid_first_minutes=5,
+                avoid_last_minutes=30,
+                avoid_lunch=False,
+            )
+            is True
+        )
 
     def test_outside_custom_session(self):
-        assert is_tradeable_time(
-            "13:00",
-            session_open_utc="14:30",
-            session_close_utc="21:00",
-            avoid_first_minutes=5,
-            avoid_last_minutes=30,
-        ) is False
+        assert (
+            is_tradeable_time(
+                "13:00",
+                session_open_utc="14:30",
+                session_close_utc="21:00",
+                avoid_first_minutes=5,
+                avoid_last_minutes=30,
+            )
+            is False
+        )
