@@ -400,6 +400,18 @@ The following are intentionally not part of routine roadmap work:
 
 ## Recently Completed Maintenance
 
+- Ruff 0.15 compatibility cleanup — Batch 5: runtime-service batch, cleaning
+  `app/services/performance_attribution.py` (F401 removal of unused
+  `sqlalchemy.func` import, TC002 move of the annotation-only `AsyncSession`
+  import under `TYPE_CHECKING`, I001 function-local import ordering, UP017
+  `timezone.utc` → `datetime.UTC` at five call sites, E701 splitting of the
+  one-line `if: return` branches in the private `_hour_to_session` helper,
+  plus pinned-formatter alignment of the touched file). Ruff 0.15.22 debt
+  reduced 243 → 231 findings. The file is lint-, format-, and mypy-clean
+  under both pinned Ruff 0.8.4 and Ruff 0.15.22. No attribution formulas,
+  P&L calculations, branch conditions, constants, defaults, public
+  signatures, report shapes, or report keys changed. Dependabot #175 stays
+  open until the remaining Ruff 0.15 debt is cleared.
 - Ruff 0.15 compatibility cleanup — Batch 4: first runtime-code batch, cleaning
   `app/strategies/indicators.py` (RUF002 docstring Unicode normalisation of
   en-dash/minus-sign/multiplication-sign characters, SIM102/SIM103 mechanical

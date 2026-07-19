@@ -10,17 +10,20 @@ Answers:
 - Are we leaving money on the table (MFE analysis)?
 - What's our actual vs theoretical R:R achieved?
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import desc, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import desc, select
 
 from app.db.models import Order, Signal, Trade
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @dataclass
@@ -28,10 +31,10 @@ class SlippageRecord:
     order_id: str
     ticker: str
     side: str
-    expected_price: Decimal   # Signal entry price
-    actual_price: Decimal     # Actual fill price
-    slippage_pct: Decimal     # (actual - expected) / expected * 100
-    slippage_dollars: Decimal # slippage_pct * position_value
+    expected_price: Decimal  # Signal entry price
+    actual_price: Decimal  # Actual fill price
+    slippage_pct: Decimal  # (actual - expected) / expected * 100
+    slippage_dollars: Decimal  # slippage_pct * position_value
     timestamp: datetime
 
 
@@ -66,12 +69,12 @@ class StrategyAttribution:
     strategy_type: str
     total_signals: int
     signals_traded: int
-    signals_filtered: int    # Blocked by risk engine
+    signals_filtered: int  # Blocked by risk engine
     win_rate: float
     total_pnl: float
     sharpe_ratio: float | None
-    avg_confidence_correct: float   # Avg confidence of winning signals
-    avg_confidence_wrong: float     # Avg confidence of losing signals
+    avg_confidence_correct: float  # Avg confidence of winning signals
+    avg_confidence_wrong: float  # Avg confidence of losing signals
 
 
 class PerformanceAttributor:
@@ -88,7 +91,8 @@ class PerformanceAttributor:
         Identifies systematic fill quality issues.
         """
         from datetime import timedelta
-        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        since = datetime.now(UTC) - timedelta(days=days)
 
         # Get filled orders with their associated signals
         result = await self.db.execute(
@@ -125,16 +129,18 @@ class PerformanceAttributor:
 
             slip_dollars = abs(slip_pct / 100) * position_value
 
-            records.append(SlippageRecord(
-                order_id=str(order.id),
-                ticker=order.ticker,
-                side=order.side,
-                expected_price=expected,
-                actual_price=actual,
-                slippage_pct=slip_pct.quantize(Decimal("0.001")),
-                slippage_dollars=slip_dollars.quantize(Decimal("0.01")),
-                timestamp=order.created_at,
-            ))
+            records.append(
+                SlippageRecord(
+                    order_id=str(order.id),
+                    ticker=order.ticker,
+                    side=order.side,
+                    expected_price=expected,
+                    actual_price=actual,
+                    slippage_pct=slip_pct.quantize(Decimal("0.001")),
+                    slippage_dollars=slip_dollars.quantize(Decimal("0.01")),
+                    timestamp=order.created_at,
+                )
+            )
 
         return records
 
@@ -143,11 +149,11 @@ class PerformanceAttributor:
         P&L and execution quality breakdown by symbol.
         """
         from datetime import timedelta
-        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        since = datetime.now(UTC) - timedelta(days=days)
 
         result = await self.db.execute(
-            select(Trade)
-            .where(
+            select(Trade).where(
                 Trade.closed_at >= since,
                 Trade.is_dry_run == False,  # noqa: E712
                 Trade.realized_pnl.isnot(None),
@@ -172,20 +178,22 @@ class PerformanceAttributor:
             losses = [p for p in pnls if p <= 0]
             sym_pnl = sum(pnls)
 
-            attrs.append(SymbolAttribution(
-                ticker=ticker,
-                total_trades=len(ticker_trades),
-                winning_trades=len(wins),
-                losing_trades=len(losses),
-                win_rate=len(wins) / len(ticker_trades),
-                total_pnl=round(sym_pnl, 2),
-                avg_pnl=round(sym_pnl / len(ticker_trades), 2),
-                avg_win=round(sum(wins) / len(wins), 2) if wins else 0.0,
-                avg_loss=round(sum(losses) / len(losses), 2) if losses else 0.0,
-                avg_slippage_pct=0.0,  # TODO: join with slippage records
-                total_slippage_cost=0.0,
-                contribution_pct=round(sym_pnl / total_pnl * 100, 1) if total_pnl != 0 else 0.0,
-            ))
+            attrs.append(
+                SymbolAttribution(
+                    ticker=ticker,
+                    total_trades=len(ticker_trades),
+                    winning_trades=len(wins),
+                    losing_trades=len(losses),
+                    win_rate=len(wins) / len(ticker_trades),
+                    total_pnl=round(sym_pnl, 2),
+                    avg_pnl=round(sym_pnl / len(ticker_trades), 2),
+                    avg_win=round(sum(wins) / len(wins), 2) if wins else 0.0,
+                    avg_loss=round(sum(losses) / len(losses), 2) if losses else 0.0,
+                    avg_slippage_pct=0.0,  # TODO: join with slippage records
+                    total_slippage_cost=0.0,
+                    contribution_pct=round(sym_pnl / total_pnl * 100, 1) if total_pnl != 0 else 0.0,
+                )
+            )
 
         attrs.sort(key=lambda a: a.total_pnl, reverse=True)
         return attrs
@@ -195,15 +203,15 @@ class PerformanceAttributor:
         Win rate and avg P&L by hour of day (ET).
         Reveals which sessions are profitable (morning vs afternoon).
         """
-        import pytz
         from datetime import timedelta
 
-        since = datetime.now(timezone.utc) - timedelta(days=days)
+        import pytz
+
+        since = datetime.now(UTC) - timedelta(days=days)
         et_tz = pytz.timezone("America/New_York")
 
         result = await self.db.execute(
-            select(Trade)
-            .where(
+            select(Trade).where(
                 Trade.opened_at >= since,
                 Trade.is_dry_run == False,  # noqa: E712
                 Trade.realized_pnl.isnot(None),
@@ -220,9 +228,7 @@ class PerformanceAttributor:
         if not by_hour:
             return []
 
-        all_avg_pnls = [
-            sum(pnls) / len(pnls) for pnls in by_hour.values()
-        ]
+        all_avg_pnls = [sum(pnls) / len(pnls) for pnls in by_hour.values()]
         best_avg = max(all_avg_pnls) if all_avg_pnls else 0
 
         attrs = []
@@ -230,13 +236,15 @@ class PerformanceAttributor:
             pnls = by_hour[hour]
             wins = [p for p in pnls if p > 0]
             avg_pnl = sum(pnls) / len(pnls)
-            attrs.append(TimeAttribution(
-                hour_et=hour,
-                trades=len(pnls),
-                win_rate=round(len(wins) / len(pnls), 3),
-                avg_pnl=round(avg_pnl, 2),
-                best_period=(avg_pnl == best_avg),
-            ))
+            attrs.append(
+                TimeAttribution(
+                    hour_et=hour,
+                    trades=len(pnls),
+                    win_rate=round(len(wins) / len(pnls), 3),
+                    avg_pnl=round(avg_pnl, 2),
+                    best_period=(avg_pnl == best_avg),
+                )
+            )
 
         return attrs
 
@@ -248,11 +256,11 @@ class PerformanceAttributor:
         If avg MAE >> stop distance, our stops are consistently wrong.
         """
         from datetime import timedelta
-        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        since = datetime.now(UTC) - timedelta(days=days)
 
         result = await self.db.execute(
-            select(Trade)
-            .where(
+            select(Trade).where(
                 Trade.closed_at >= since,
                 Trade.is_dry_run == False,  # noqa: E712
             )
@@ -279,13 +287,12 @@ class PerformanceAttributor:
 
         total_slippage_cost = sum(float(s.slippage_dollars) for s in slippage)
         avg_slippage_pct = (
-            sum(float(s.slippage_pct) for s in slippage) / len(slippage)
-            if slippage else 0.0
+            sum(float(s.slippage_pct) for s in slippage) / len(slippage) if slippage else 0.0
         )
 
         return {
             "period_days": days,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "execution_quality": {
                 "total_orders_analysed": len(slippage),
                 "total_slippage_cost": round(total_slippage_cost, 2),
@@ -297,7 +304,9 @@ class PerformanceAttributor:
                         "slippage_dollars": float(s.slippage_dollars),
                         "timestamp": s.timestamp.isoformat(),
                     }
-                    for s in sorted(slippage, key=lambda x: float(x.slippage_dollars), reverse=True)[:5]
+                    for s in sorted(
+                        slippage, key=lambda x: float(x.slippage_dollars), reverse=True
+                    )[:5]
                 ],
             },
             "symbol_attribution": [
@@ -327,8 +336,12 @@ class PerformanceAttributor:
 
 
 def _hour_to_session(hour_et: int) -> str:
-    if 9 <= hour_et < 10:   return "Opening (09:00-10:00)"
-    if 10 <= hour_et < 12:  return "Morning (10:00-12:00)"
-    if 12 <= hour_et < 14:  return "Lunch (12:00-14:00)"
-    if 14 <= hour_et < 16:  return "Afternoon (14:00-16:00)"
+    if 9 <= hour_et < 10:
+        return "Opening (09:00-10:00)"
+    if 10 <= hour_et < 12:
+        return "Morning (10:00-12:00)"
+    if 12 <= hour_et < 14:
+        return "Lunch (12:00-14:00)"
+    if 14 <= hour_et < 16:
+        return "Afternoon (14:00-16:00)"
     return "Extended hours"
