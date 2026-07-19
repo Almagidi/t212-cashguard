@@ -400,6 +400,14 @@ The following are intentionally not part of routine roadmap work:
 
 ## Recently Completed Maintenance
 
+- Ruff 0.15 compatibility cleanup — Batch 3: tests-only cleanup of
+  `tests/unit/test_alert_service.py` (SIM117 nested-`with` combination into
+  single parenthesized `with` statements, F401 unused imports, I001 import
+  order) plus pinned-formatter alignment of the touched file. Ruff 0.15.22
+  debt reduced 277 → 259 findings. The file is lint- and format-clean under
+  both pinned Ruff 0.8.4 and Ruff 0.15.22. Context-manager enter/exit order,
+  mock scope, and all assertions preserved. No runtime behaviour changed.
+  Dependabot #175 stays open until the remaining Ruff 0.15 debt is cleared.
 - Ruff 0.15 compatibility cleanup — Batch 2: tests-only full-file cleanup (I001
   import order, F401 unused imports, RUF059 unused unpacked variables, E741
   ambiguous `l` parameter renames, C408 dict-literal rewrites, F841 unused
