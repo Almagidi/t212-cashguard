@@ -164,6 +164,17 @@ Expected result: every GET returns `200`; login returns a bearer token.
   operator/DCA status data and does not send POST, PUT, PATCH, or DELETE to operator or DCA
   paths.
 
+### Paper-execution visibility is backed by automated tests
+
+The read-only `Paper Execution` summary you inspect here is the same
+`paper_execution_summary` aggregation validated by
+`apps/api/tests/integration/test_paper_dry_run_validation.py`. That suite proves,
+without a live server or broker, that a paper dry-run fill surfaces as
+`paper_only`/`no_broker_order_sent` with the correct order count and open-position
+count, that the kill switch blocks the paper and automated paths, and that the demo
+reconciler refuses paper orders. Manual QA here is a visual confirmation of that
+already-tested read-only posture; it adds no controls and sends no broker orders.
+
 ## Expected Safe State
 
 The seeded manual QA database is intentionally conservative:
