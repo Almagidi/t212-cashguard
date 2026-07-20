@@ -32,6 +32,26 @@ Prove, with the smallest possible real-money exposure, that:
 Scope is **one order, one instrument, one session, fully supervised**.
 This is not a performance test, not a strategy test, and not a soak test.
 
+## 1a. Evidence already in place (demo/paper)
+
+The following is already proven in mock/paper mode and does **not** require live
+money. It is the baseline the live smoke test builds on, not a substitute for it:
+
+- `apps/api/tests/integration/test_paper_dry_run_validation.py` proves the
+  automated paper-trade dry-run chain end to end at the service layer: a
+  dry-run signal flows into a local paper-only fill with no broker adapter
+  constructed, the kill switch blocks both the paper path and the automated
+  `StrategyRunner`, the risk/mode/oversell gates fail closed, and the demo
+  reconciler refuses paper orders before any broker read.
+- What that suite does **not** cover, and what this runbook exists to prove with
+  a tiny supervised order, is listed below. Do not treat paper validation as
+  evidence that any of section 2's live prerequisites are met.
+
+Remaining gaps before an automated *paper* trade could even run unattended
+(still no live money): a real scheduler/Celery-beat dry run wired to the paper
+path, and an end-to-end operator-dashboard read of a scheduler-produced paper
+fill. Remaining gaps before this live smoke test are in section 2.
+
 ## 2. Prerequisites (all must be true before scheduling the test)
 
 Do not schedule a test date until every item below is true:

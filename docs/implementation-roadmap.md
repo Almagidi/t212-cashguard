@@ -43,6 +43,44 @@ order-placement controls and verifies the paper order form only reaches
 `/orders/paper`, and `apps/web/tests/unit/no-trading-controls-source.test.ts`
 statically proves the live order-placement client method has no UI call sites.
 
+## Automated Paper-Trade Dry-Run Validation
+
+`apps/api/tests/integration/test_paper_dry_run_validation.py` is a scenario-oriented
+validation suite (Level A, tests-only) that proves the current paper-mode path can be
+exercised as an automated dry run without enabling live trading or invoking a real
+broker. It asserts on the service layer directly (no live server, network, credentials,
+or timing sleeps) and walks the documented safety chain:
+
+`signal/dry-run trigger -> risk/safety gate -> paper-only order path -> audit/event
+visibility -> reconciliation visibility -> operator status visibility -> kill switch
+blocks the path`.
+
+What the suite proves:
+
+- **Paper-only happy path.** An automation-sourced signal produces a local `filled`
+  order with `is_dry_run=true` and `execution_environment=paper_mock`; no Trading 212 or
+  Kraken adapter is constructed (a monkeypatched constructor tripwire stays untripped);
+  the full `paper_signal_accepted -> paper_risk_check_result -> paper_order_created ->
+  paper_fill_simulated -> paper_position_updated` audit trail is written and every paper
+  audit row carries `paper_only=true` and `no_broker_order_sent=true`.
+- **Kill switch blocks the path.** With the global kill switch active, paper execution
+  fails closed before any order is created and is audited with decision code
+  `kill_switch_block`; separately, the automated `StrategyRunner.run_all_enabled()`
+  short-circuits with `skipped=kill_switch` before broker lookup.
+- **Risk/safety gate.** Paper execution is refused outside `APP_MODE=mock`
+  (`PAPER_MODE_BLOCK`, 403); an oversell is refused before any fill
+  (`paper_oversell_block`); and the request schema rejects `paper_only=false` and
+  unknown live-ish fields.
+- **Reconciliation isolation + operator visibility.** The real-broker demo reconciler
+  refuses a paper order at the environment gate
+  (`demo_reconciliation_order_environment_block`) before any broker read, and the
+  read-only `paper_execution_summary` (surfaced by the operator status endpoint) reports
+  the paper fill and open position as `paper_only`/`no_broker_order_sent`.
+
+What the suite does **not** prove: it does not exercise a live broker, does not run the
+scheduler/Celery beat end to end, and does not attest live-readiness. Remaining
+prerequisites are tracked in `docs/LIVE_SMOKE_TEST_RUNBOOK.md`.
+
 ## How To Choose Work
 
 Prefer small PR-sized targets. Keep docs/tests/investigation separate from runtime-adjacent
