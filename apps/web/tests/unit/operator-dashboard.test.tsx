@@ -593,12 +593,20 @@ describe("OperatorDashboard", () => {
     expect(
       within(card).getByText("Task heartbeat observed recently."),
     ).toBeInTheDocument();
+    expect(within(card).queryByText("live-ready")).not.toBeInTheDocument();
+    expect(
+      within(card).queryByText(
+        "Configured in Celery beat, but no real beat+worker run has been observed yet.",
+      ),
+    ).not.toBeInTheDocument();
     expect(
       within(card).getByText("This status is read-only. It does not start, stop, or run strategies."),
     ).toBeInTheDocument();
     expect(within(card).queryAllByRole("button")).toHaveLength(0);
     expect(within(card).queryAllByRole("link")).toHaveLength(0);
     expect(within(card).queryByRole("form")).not.toBeInTheDocument();
+    expect(within(card).queryByRole("textbox")).not.toBeInTheDocument();
+    expect(within(card).queryByRole("combobox")).not.toBeInTheDocument();
   });
 
   it("warns when the strategy-signals scheduler is configured but stale", () => {
@@ -621,9 +629,60 @@ describe("OperatorDashboard", () => {
         "Configured in Celery beat, but no real beat+worker run has been observed yet.",
       ),
     ).toBeInTheDocument();
+    expect(
+      within(card).getByText("This status is read-only. It does not start, stop, or run strategies."),
+    ).toBeInTheDocument();
   });
 
-  it("renders unconfigured or unknown strategy-signals scheduler status safely", () => {
+  it("treats ok strategy-signals scheduler without last_seen_at as not observed yet", () => {
+    render(
+      <OperatorDashboard
+        status={withStrategySignalsScheduler({
+          strategy_signals_observation_status: "ok",
+          strategy_signals_last_seen_at: null,
+          strategy_signals_observation_detail:
+            "Backend reported ok but did not include an observed timestamp.",
+        })}
+      />,
+    );
+
+    const card = screen.getByTestId("strategy-signals-scheduler-status");
+    expect(within(card).getByText("Observation OK")).toBeInTheDocument();
+    expect(within(card).getByText("Not observed yet")).toBeInTheDocument();
+    expect(
+      within(card).getByText(
+        "Configured in Celery beat, but no real beat+worker run has been observed yet.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: /start|stop|run/i })).toBeNull();
+  });
+
+  it("renders unknown registered strategy-signals scheduler status safely", () => {
+    render(
+      <OperatorDashboard
+        status={withStrategySignalsScheduler({
+          strategy_signals_observation_status: "unknown",
+          strategy_signals_last_seen_at: null,
+          strategy_signals_observation_detail: "Task heartbeat has not been recorded yet.",
+        })}
+      />,
+    );
+
+    const card = screen.getByTestId("strategy-signals-scheduler-status");
+    expect(within(card).getByText("Registered")).toBeInTheDocument();
+    expect(within(card).getByText("Observation unknown")).toBeInTheDocument();
+    expect(within(card).getByText("Not observed yet")).toBeInTheDocument();
+    expect(
+      within(card).getByText("Task heartbeat has not been recorded yet."),
+    ).toBeInTheDocument();
+    expect(
+      within(card).getByText(
+        "Configured in Celery beat, but no real beat+worker run has been observed yet.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("renders not registered strategy-signals scheduler status safely", () => {
     render(
       <OperatorDashboard
         status={withStrategySignalsScheduler({
@@ -644,6 +703,13 @@ describe("OperatorDashboard", () => {
     expect(
       within(card).getByText("Task heartbeat has not been recorded yet."),
     ).toBeInTheDocument();
+    expect(
+      within(card).queryByText(
+        "Configured in Celery beat, but no real beat+worker run has been observed yet.",
+      ),
+    ).not.toBeInTheDocument();
+    expect(within(card).queryAllByRole("button")).toHaveLength(0);
+    expect(within(card).queryAllByRole("link")).toHaveLength(0);
   });
 
   it("preserves slash tickers like BTC/USD", () => {

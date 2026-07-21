@@ -17,6 +17,8 @@ describe('operator UI safety invariants documentation', () => {
     expect(doc).toContain('Scheduled automation visibility is read-only')
     expect(doc).toContain('Strategy-signals scheduler visibility is read-only')
     expect(doc).toContain('does not start, stop, or run strategies')
+    expect(doc).toContain('Scheduler observation is not live-readiness')
+    expect(doc).toContain('Signal/fill observation is backend evidence, not a UI control')
     expect(doc).toContain('npm audit --audit-level=moderate')
   })
 })

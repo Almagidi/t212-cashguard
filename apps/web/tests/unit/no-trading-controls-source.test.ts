@@ -43,6 +43,16 @@ function operatorOffendersMatching(pattern: RegExp): string[] {
   return operatorFiles.filter((file) => pattern.test(fs.readFileSync(file, 'utf8')))
 }
 
+function sourceWithoutComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
+}
+
+function operatorCodeOffendersMatching(pattern: RegExp): string[] {
+  return operatorFiles.filter((file) => pattern.test(sourceWithoutComments(fs.readFileSync(file, 'utf8'))))
+}
+
 describe('no order-placement call sites in UI source', () => {
   test('scans a meaningful set of UI source files', () => {
     expect(uiFiles.length).toBeGreaterThan(20)
@@ -91,7 +101,23 @@ describe('no order-placement call sites in UI source', () => {
 
     const mutationPrimitivePattern =
       /<\s*(?:form|button|input|select|textarea)\b|\buseMutation\b|\b(?:api|client|axios)\.(?:post|put|patch|delete)\b|\bfetch\s*\([^)]*,\s*\{[\s\S]*method\s*:/
-    const offenders = operatorOffendersMatching(mutationPrimitivePattern)
+    const offenders = operatorCodeOffendersMatching(mutationPrimitivePattern)
+
+    expect(offenders).toEqual([])
+  })
+
+  test('operator source has no scheduler, strategy, live-unlock, or live-order mutation endpoint calls', () => {
+    const forbiddenOperatorMutationEndpoints =
+      /["'`]\/(?:v1\/)?(?:operator\/(?:scheduler|strategy-signals|strategy_signals)|strategies\/[^"'`]*(?:run|signal)|strategy-signals\/[^"'`]*(?:run|start|stop)|settings\/live-readiness|emergency\/auto-trading\/(?:on|off)|orders)(?:\/|["'`])/
+    const offenders = operatorCodeOffendersMatching(forbiddenOperatorMutationEndpoints)
+
+    expect(offenders).toEqual([])
+  })
+
+  test('operator source has no direct POST, PATCH, PUT, or DELETE method declarations', () => {
+    const forbiddenMutationMethods =
+      /\bmethod\s*:\s*["'`](?:POST|PATCH|PUT|DELETE)["'`]|\b(?:post|patch|put|delete)\s*\(/
+    const offenders = operatorCodeOffendersMatching(forbiddenMutationMethods)
 
     expect(offenders).toEqual([])
   })

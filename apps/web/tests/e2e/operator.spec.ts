@@ -595,6 +595,13 @@ test.describe('Operator dashboard readiness', () => {
     )
     await expect(strategyScheduler.getByRole('button')).toHaveCount(0)
     await expect(strategyScheduler.getByRole('link')).toHaveCount(0)
+    await expect(strategyScheduler.getByRole('textbox')).toHaveCount(0)
+    await expect(strategyScheduler.getByRole('combobox')).toHaveCount(0)
+    await expect(
+      strategyScheduler.getByRole('button', {
+        name: /start|stop|run strategy|enable live|unlock live|buy|sell|order/i,
+      }),
+    ).toHaveCount(0)
     await expect(page.getByText('Endpoint read-only')).toBeVisible()
     await expect(page.getByTestId('operator-execution-boundary')).toContainText('Creates orders')
     await expect(page.getByTestId('operator-execution-boundary')).toContainText('Calls brokers')
