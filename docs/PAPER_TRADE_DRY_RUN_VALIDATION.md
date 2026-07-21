@@ -1,6 +1,13 @@
 # Paper-Trade Dry-Run Readiness — Evidence Matrix
 
-Status date: 2026-07-21. Source of truth: `origin/main` at `ad5480151b01ff8c8b98345d1219ac9fadabf853`.
+Status date: 2026-07-21 (updated). Source of truth: `origin/main` at
+`e6b5960b1c73c0a2357139f35eeadf68db6a0417`, which now also includes
+[#201](https://github.com/Almagidi/t212-cashguard/pull/201) (scheduled task
+dry-run tests) and [#203](https://github.com/Almagidi/t212-cashguard/pull/203)
+(operator scheduler visibility). See
+[`SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md`](SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md)
+for the detailed evidence those two PRs add — this document's §3 and §4 below
+are updated to point at it rather than duplicate it.
 
 This document consolidates what is **currently proven** about the automated
 paper-trade dry-run path, what is **not** proven, and what would need to be
@@ -62,10 +69,12 @@ for those phases in this session** — opening one would have duplicated #195.
   operator status endpoint surfaces `paper_execution_summary()` (test 8),
   the global and per-venue `kill_switch_active` flags, computed blocking
   reasons (`_compute_blocking_reasons`), and Celery beat/heartbeat schedule
-  health (`_beat_entry`, `_scheduler_entry`, `_heartbeat_entry` — currently
-  wired for the DCA planner and worker heartbeat beat entries, not for the
-  `strategy-signals` entry specifically). This is read-only surfacing; the
-  route adds no order-placement controls.
+  health (`_beat_entry`, `_scheduler_entry`, `_heartbeat_entry`, and — as of
+  [#203](https://github.com/Almagidi/t212-cashguard/pull/203) —
+  `_strategy_signals_entry` for the `strategy-signals` beat entry
+  specifically; see
+  [`SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md`](SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md) §2).
+  This is read-only surfacing; the route adds no order-placement controls.
 
 ## 3. The automated Celery-beat path is a *separate* execution path — read carefully
 
@@ -74,6 +83,18 @@ scheduler/Celery-beat dry run wired to the paper path" as an unproven gap.
 That framing is slightly imprecise and worth correcting here: the wiring
 **exists in code** and is **already unit-tested**, but it does not run
 through `PaperExecutionEngine` at all.
+
+**Update (#201):** at the time this section was first written, only the
+*service method* (`StrategyRunner.run_all_enabled()`) was tested — the
+Celery *task function* itself (`app.workers.tasks.run_strategy_signals`,
+i.e. what Celery beat actually calls) was not exercised by any test. #201
+closes that specific gap with direct task invocation
+(`tasks.run_strategy_signals.run()`), proving the task_lock/session/delegation
+wiring and that it faithfully propagates the runner's kill-switch and
+no-strategies safety contracts. Full detail:
+[`SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md`](SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md) §1.
+This still does not start a real `celery beat` + `celery worker` process —
+see §4 below.
 
 - `celery_app.conf.beat_schedule["strategy-signals"]`
   (`apps/api/app/workers/celery_app.py:34-37`) fires
@@ -121,36 +142,46 @@ against the paper-only narrative until this document.
 
 - **End-to-end scheduler firing.** No test starts a real `celery beat` +
   worker process and observes `run_strategy_signals` actually fire on its
-  5-minute schedule and complete. Coverage stops at direct calls to
-  `StrategyRunner.run_all_enabled()`; the Celery task function itself is not
-  exercised via `.apply()`/task dispatch, only via the service method it
-  wraps.
-  This is an infra/process-level gap, not a logic gap: the underlying gates
-  (kill switch, broker selection, dry-run routing) are unit- and
-  integration-tested; the task wrapper (`task_lock`, `run_monitored_task`,
-  retry/time-limit config) is not exercised by either suite.
+  5-minute schedule and complete. **Update (#201):** direct invocation of the
+  task function itself (`tasks.run_strategy_signals.run()`, not just the
+  service method it wraps) is now tested — see
+  [`SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md`](SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md) §1.
+  What remains unobserved is specifically the real `celery beat` timer firing
+  and a real `celery worker` process consuming it via Redis — an
+  infra/process-level gap, not a logic gap. §4 of that document records the
+  exact command path for a future supervised observation of this.
 - **Operator dashboard read of a scheduler-produced fill.** No test drives
   the automated path to completion and then reads the resulting state back
   through the operator status endpoint the way test 8 does for the manual
-  paper path.
-- **`strategy-signals` beat entry is not surfaced in operator status.** Only
-  the DCA planner and worker-heartbeat beat entries are (`operator.py`
-  `_scheduler_entry` / `_heartbeat_entry`); there is no equivalent read for
-  the 5-minute strategy-signal schedule.
+  paper path. The operator-visibility fields added by #203 (see below) have
+  been proven correct against a *manually recorded* heartbeat, not one
+  produced by a live scheduled tick.
+- ~~**`strategy-signals` beat entry is not surfaced in operator status.**~~
+  **Resolved by #203.** `OperatorSchedulersStatusOut` now carries
+  `strategy_signals_registered`, `strategy_signals_cadence`,
+  `strategy_signals_task_name`, `strategy_signals_observation_status`,
+  `strategy_signals_last_seen_at`, and `strategy_signals_observation_detail` —
+  read-only, additive, no mutation path. Detail:
+  [`SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md`](SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md) §2.
 - **Live-broker interaction of any kind.** No test in this repository (new or
   pre-existing) makes a real network call to Trading 212 or Kraken. This
   document does not change that.
 
 ## 5. Can an automated paper trade be attempted now?
 
-**Partial.** If "automated paper trade" means the manual/API paper-only path
+**Partial** — unchanged conclusion, now with more of the chain proven. If
+"automated paper trade" means the manual/API paper-only path
 (`POST /orders/paper` → `PaperExecutionEngine`) triggered by an external
 automation client, that path is proven safe and functional today (§1). If it
 means the actual Celery-beat scheduled strategy runner producing paper-mode
-fills unattended, that requires `APP_MODE=mock` (so `_get_broker()` returns
-`MockBrokerAdapter`) and has never been observed running end-to-end through a
-live beat/worker process — the individual gates are unit-tested, but nobody
-has watched the whole schedule fire and complete.
+fills unattended: `APP_MODE=mock` (so `_get_broker()` returns
+`MockBrokerAdapter`) plus the task wrapper (`task_lock`, session, delegation)
+and the runner's safety gates are now proven at the function/service level
+(#201, #203 — see
+[`SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md`](SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md)),
+but it has still never been observed running end-to-end through a live
+`celery beat` + `celery worker` process — nobody has watched the real
+5-minute schedule fire and complete yet.
 
 ## 6. Blockers before the tiny supervised live-money smoke test
 
