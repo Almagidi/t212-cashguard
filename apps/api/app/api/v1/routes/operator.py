@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from celery.schedules import crontab
 from fastapi import APIRouter, Depends, Query
@@ -45,6 +45,7 @@ from app.db.repositories.worker_heartbeat_repo import WorkerHeartbeatRepository
 from app.db.session import get_db
 from app.execution.paper_engine import paper_execution_summary
 from app.services.live_readiness import LiveReadinessError, LiveReadinessService
+from app.services.worker_health import build_worker_health
 from app.strategies.kraken_dca_planner import KrakenDCAPlanner
 from app.workers.celery_app import celery_app
 from app.workers.tasks_heartbeat import (
@@ -62,6 +63,8 @@ _DCA_BEAT_KEY = "dca-paper-evaluate"
 _DCA_TASK = "app.workers.tasks_dca.evaluate_due_plans_task"
 _HEARTBEAT_BEAT_KEY = "worker-heartbeat"
 _HEARTBEAT_TASK = "app.workers.tasks_heartbeat.record_worker_heartbeat_task"
+_STRATEGY_SIGNALS_BEAT_KEY = "strategy-signals"
+_STRATEGY_SIGNALS_TASK = "app.workers.tasks.run_strategy_signals"
 _EXPECTED_VENUES = ("t212", "kraken")
 
 # Persisted RiskEvent types that represent protective-stop activity. This is a
@@ -108,6 +111,10 @@ def _scheduler_entry() -> dict[str, Any] | None:
 
 def _heartbeat_entry() -> dict[str, Any] | None:
     return _beat_entry(_HEARTBEAT_BEAT_KEY, _HEARTBEAT_TASK)
+
+
+def _strategy_signals_entry() -> dict[str, Any] | None:
+    return _beat_entry(_STRATEGY_SIGNALS_BEAT_KEY, _STRATEGY_SIGNALS_TASK)
 
 
 def _readable_schedule(entry: dict[str, Any] | None) -> str | None:
@@ -423,6 +430,31 @@ async def operator_status(
     worker_health = _evaluate_worker_health(heartbeat, now=now)
     heartbeat_last_seen_at = heartbeat.last_seen_at if heartbeat is not None else None
 
+    strategy_signals_entry = _strategy_signals_entry()
+    strategy_signals_registered = strategy_signals_entry is not None
+    strategy_signals_cadence = _readable_schedule(strategy_signals_entry)
+    task_health_report = await build_worker_health(db)
+    strategy_signals_task_health = next(
+        (
+            task
+            for task in task_health_report["tasks"]
+            if task["task_name"] == "run_strategy_signals"
+        ),
+        None,
+    )
+    strategy_signals_observation_status = cast(
+        'Literal["ok", "stale", "unknown"]',
+        strategy_signals_task_health["status"] if strategy_signals_task_health else "unknown",
+    )
+    strategy_signals_last_seen_at = (
+        strategy_signals_task_health["last_seen_at"] if strategy_signals_task_health else None
+    )
+    strategy_signals_observation_detail = (
+        strategy_signals_task_health["detail"]
+        if strategy_signals_task_health
+        else "Task heartbeat has not been recorded yet."
+    )
+
     recent_audit_rows = list(
         (await db.execute(select(AuditLog).order_by(desc(AuditLog.occurred_at)).limit(audit_limit)))
         .scalars()
@@ -625,6 +657,12 @@ async def operator_status(
             heartbeat_component=HEARTBEAT_COMPONENT,
             heartbeat_last_seen_at=heartbeat_last_seen_at,
             heartbeat_stale_after_seconds=HEARTBEAT_STALE_AFTER_SECONDS,
+            strategy_signals_registered=strategy_signals_registered,
+            strategy_signals_cadence=strategy_signals_cadence,
+            strategy_signals_task_name=_STRATEGY_SIGNALS_TASK,
+            strategy_signals_observation_status=strategy_signals_observation_status,
+            strategy_signals_last_seen_at=strategy_signals_last_seen_at,
+            strategy_signals_observation_detail=strategy_signals_observation_detail,
         ),
         recent_activity=[
             OperatorRecentActivityOut(
