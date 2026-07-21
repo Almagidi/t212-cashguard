@@ -140,22 +140,27 @@ against the paper-only narrative until this document.
 
 ## 4. What remains unproven
 
-- **End-to-end scheduler firing.** No test starts a real `celery beat` +
-  worker process and observes `run_strategy_signals` actually fire on its
-  5-minute schedule and complete. **Update (#201):** direct invocation of the
-  task function itself (`tasks.run_strategy_signals.run()`, not just the
-  service method it wraps) is now tested — see
-  [`SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md`](SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md) §1.
-  What remains unobserved is specifically the real `celery beat` timer firing
-  and a real `celery worker` process consuming it via Redis — an
-  infra/process-level gap, not a logic gap. §4 of that document records the
-  exact command path for a future supervised observation of this.
-- **Operator dashboard read of a scheduler-produced fill.** No test drives
-  the automated path to completion and then reads the resulting state back
-  through the operator status endpoint the way test 8 does for the manual
-  paper path. The operator-visibility fields added by #203 (see below) have
-  been proven correct against a *manually recorded* heartbeat, not one
-  produced by a live scheduled tick.
+- ~~**End-to-end scheduler firing.**~~ **Resolved 2026-07-21.** A real
+  `celery beat` process and a real `celery worker` process, pointed at a
+  disposable (non-default-port, uniquely-named) Redis and Postgres, observed
+  `run_strategy_signals` fire on its real, unmodified 300-second schedule and
+  complete with a safe no-op result (`skipped: "auto_trading_off"`), plus a
+  separate direct-dispatch invocation through the same real worker
+  beforehand. No broker adapter or live endpoint was referenced in either
+  process's logs. Full detail, environment, and repeatable command reference:
+  [`SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md`](SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md) §4.
+  This was a short (~6 minute), supervised, single-tick observation with no
+  strategies enabled — not a soak test, and not a test of the
+  signal-generating path with an actually-enabled strategy (see that
+  document's §5 for the precise remaining scope).
+- ~~**Operator dashboard read of a scheduler-produced fill.**~~ **Resolved
+  2026-07-21.** The same observation session read
+  `strategy_signals_observation_status`/`strategy_signals_last_seen_at` back
+  (via the exact service function the endpoint calls internally,
+  `build_worker_health(db)`) both before and after the real dispatches, and
+  confirmed the transition from `unknown`/`null` to `ok`/a fresh timestamp —
+  produced by a live scheduled tick, not a manually recorded heartbeat.
+  Detail: [`SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md`](SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md) §4.4.
 - ~~**`strategy-signals` beat entry is not surfaced in operator status.**~~
   **Resolved by #203.** `OperatorSchedulersStatusOut` now carries
   `strategy_signals_registered`, `strategy_signals_cadence`,
@@ -169,19 +174,23 @@ against the paper-only narrative until this document.
 
 ## 5. Can an automated paper trade be attempted now?
 
-**Partial** — unchanged conclusion, now with more of the chain proven. If
-"automated paper trade" means the manual/API paper-only path
-(`POST /orders/paper` → `PaperExecutionEngine`) triggered by an external
-automation client, that path is proven safe and functional today (§1). If it
-means the actual Celery-beat scheduled strategy runner producing paper-mode
-fills unattended: `APP_MODE=mock` (so `_get_broker()` returns
-`MockBrokerAdapter`) plus the task wrapper (`task_lock`, session, delegation)
-and the runner's safety gates are now proven at the function/service level
-(#201, #203 — see
-[`SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md`](SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md)),
-but it has still never been observed running end-to-end through a live
-`celery beat` + `celery worker` process — nobody has watched the real
-5-minute schedule fire and complete yet.
+**Partial** — the scheduled-task infrastructure gap is now closed; what
+remains is scope, not proof-of-concept. If "automated paper trade" means the
+manual/API paper-only path (`POST /orders/paper` → `PaperExecutionEngine`)
+triggered by an external automation client, that path is proven safe and
+functional today (§1). If it means the actual Celery-beat scheduled strategy
+runner producing paper-mode fills unattended: `APP_MODE=mock` (so
+`_get_broker()` returns `MockBrokerAdapter`), the task wrapper (`task_lock`,
+session, delegation), the runner's safety gates, *and* the real
+`celery beat` + `celery worker` process firing that wrapper on its actual
+schedule are now all proven — first at the function/service level (#201,
+#203), and now end-to-end through real Celery process machinery
+(see [`SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md`](SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md) §4).
+What remains before calling this "ready for unattended automated paper
+trading" is not an infrastructure question anymore: it is (a) observing the
+same real-process route with a strategy actually enabled and producing a
+signal, still paper-only, and (b) a longer supervised run rather than one
+~6-minute single-tick observation.
 
 ## 6. Blockers before the tiny supervised live-money smoke test
 

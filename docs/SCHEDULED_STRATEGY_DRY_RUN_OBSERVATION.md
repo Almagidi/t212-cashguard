@@ -1,7 +1,8 @@
 # Scheduled Strategy-Signals Task — Dry-Run Observation
 
-Status date: 2026-07-21. Source of truth: `origin/main` at
-`e6b5960b1c73c0a2357139f35eeadf68db6a0417`.
+Status date: 2026-07-21 (updated same day with an executed observation).
+Source of truth: `origin/main` at `ebb5cfef79ebc309ab9d9a354817a70eca89f23c`
+(the #204 merge; unchanged by this update).
 
 This document is scoped to one thing: the Celery-beat-scheduled
 `run_strategy_signals` task path (`celery_app.conf.beat_schedule["strategy-signals"]`,
@@ -115,83 +116,192 @@ as specified.
 
 ## 3. Can an automated paper-trade test be run now?
 
-**Partial — same overall answer as `PAPER_TRADE_DRY_RUN_VALIDATION.md` §5,
-now with the task wrapper itself in scope.**
+**Partial, but the scheduled-task-path gap identified below is now closed.**
+Same overall answer as `PAPER_TRADE_DRY_RUN_VALIDATION.md` §5, now with the
+task wrapper *and* the real Celery beat/worker process observed end to end.
 
 - The manual/API paper-only path (`POST /orders/paper` → `PaperExecutionEngine`)
   is proven safe and functional end-to-end (`PAPER_TRADE_DRY_RUN_VALIDATION.md` §1).
 - The scheduled task's **wrapper** (lock, session, delegation, safety-contract
-  propagation) is now proven safe by direct invocation (§1 above).
+  propagation) is proven safe by direct invocation (§1 above).
 - The scheduled task's **strategy-execution logic** (kill switch, mock-mode
   broker selection, dry-run routing) is proven safe at the service layer
   (§1 above, citing pre-existing tests).
-- What is **still not observed**: an actual Celery beat process firing
-  `run_strategy_signals` on its real 5-minute schedule, consumed by an actual
-  Celery worker process reading from a real broker (Redis), end to end. Every
-  test above invokes the task function directly — none starts `celery beat`
-  or `celery worker`.
+- **Now observed** (§4): a real Celery beat process fired `run_strategy_signals`
+  on its actual, unmodified 300-second schedule, consumed by a real Celery
+  worker process reading from a real (disposable) Redis broker and writing to
+  a real (disposable) Postgres database — with a second, independent
+  direct-dispatch invocation through the same real worker beforehand. No
+  broker adapter or live endpoint was ever referenced in either process's
+  logs. What remains unobserved is unattended, *unsupervised* execution over
+  a longer horizon (hours/days) and with strategies actually enabled — this
+  session used the repo's seeded defaults (`auto_trading_enabled=False`, no
+  enabled strategies), which is the correct, minimal-risk way to observe the
+  path without also needing to observe strategy-signal-generation logic
+  (already covered by `test_strategy_runner_helpers.py` and friends).
 
-## 4. Exact command path for a future supervised mock-mode observation
+## 4. Supervised mock-mode observation — executed 2026-07-21
 
-This is a **documented, not-yet-executed** procedure for a human operator to
-run in a supervised, disposable environment — not something this session ran.
-It requires infrastructure (Redis, a worker process) beyond what a test-suite
-run provides, and the real beat interval is 300 seconds, which this session
-correctly declined to wait out synchronously to avoid a slow/flaky automated
-test (per this task's own instructions).
+This procedure was run in this session, in a disposable environment fully
+isolated from any developer database, from the other agent's worktree, and
+from any pre-existing local containers. It is recorded here both as evidence
+and as a repeatable runbook.
+
+### 4.1 Environment
+
+- **Isolation**: two throwaway Docker containers, uniquely named
+  (`agent-a-mock-postgres`, `agent-a-mock-redis`) and mapped to non-default
+  host ports (`15432`, `16379`) specifically to avoid colliding with any
+  container the sibling `t212-cashguard-codex` worktree owns (stale, stopped
+  containers named `t212_postgres`/`t212_redis` already existed there from
+  unrelated local-dev sessions; they were left completely untouched —
+  confirmed unchanged before and after this run).
+- **Safety env vars**: `APP_MODE=mock`, `LIVE_TRADING_ENABLED=false` (both
+  also the code defaults — `apps/api/app/core/config.py:37,135`), plus a
+  disposable `SECRET_KEY`/`MASTER_KEY`/`ADMIN_EMAIL`/`ADMIN_PASSWORD` used
+  only for this container pair. No `T212_*` or `KRAKEN_*` credential
+  variables were set at any point (all default to `""` per
+  `apps/api/app/core/config.py`).
+- **Database**: fresh Postgres 16, migrated with `alembic upgrade head`
+  (repo's own migration chain, unmodified) and seeded with the repo's own
+  `python -m app.db.seed` — which seeds `AppSettings(id=1, kill_switch_active=False,
+  auto_trading_enabled=False, live_trading_unlocked=False)` and strategies
+  with `is_enabled=False` by default (`apps/api/app/db/seed.py`). No manual
+  data seeding beyond the repo's own script was performed.
+- **Broker**: a real Celery worker process (`celery -A app.workers.celery_app
+  worker --loglevel=INFO --concurrency=1 --pool=solo`) and a real Celery beat
+  process (`celery -A app.workers.celery_app beat --loglevel=INFO`), both
+  pointed at the disposable Redis/Postgres above via env vars only — no repo
+  file was modified to run this. `--schedule`/`--pidfile` were redirected to
+  `/tmp` to avoid writing beat state into the repo tree.
+
+### 4.2 Route A — direct dispatch through a real worker
+
+```
+celery_app.send_task("app.workers.tasks.run_strategy_signals")
+→ TASK_ID cbe6cfbe-0c00-4446-88c5-8270e010421a
+→ TASK_RESULT {'strategies_run': 0, 'signals_generated': 0, 'orders_submitted': 0,
+               'risk_blocks': 0, 'errors': [], 'skipped': 'auto_trading_off'}
+```
+
+Worker log confirmed: task received, ran `tasks.signals_complete`, and
+succeeded in 0.156s. `grep -iE "Trading212Adapter|KrakenAdapter|trading212\.com|kraken\.com"`
+across the full worker log matched nothing.
+
+### 4.3 Route B — real Celery beat firing on its actual 300s schedule
+
+Beat started at `17:47:52`. Its own log recorded:
+
+```
+17:48:22  Scheduler: Sending due task reconcile-orders (...)
+17:52:52  Scheduler: Sending due task strategy-signals (app.workers.tasks.run_strategy_signals)
+```
+
+`17:52:52 − 17:47:52 = 300.0s` — the real, unmodified 5-minute cadence, not a
+shortened test-only interval. The worker log for the same timestamp:
+
+```
+17:52:52,313  Task ...run_strategy_signals[e78de727-...] received
+17:52:52,352  tasks.signals_complete errors=[] orders_submitted=0 risk_blocks=0
+              signals_generated=0 skipped=auto_trading_off strategies_run=0
+17:52:52,353  Task ...run_strategy_signals[e78de727-...] succeeded in 0.040s
+```
+
+The bounded wait (~360s, via a background poll — not a synchronous blocking
+sleep) was itself the only concession to the real cadence; no schedule value
+was shortened or altered to make this observation faster. A combined
+end-to-end tripwire grep across both the worker and beat logs for
+`Trading212Adapter|KrakenAdapter|trading212\.com|kraken\.com|api\.trading212`
+matched nothing.
+
+### 4.4 Operator/status readback
+
+Rather than standing up a full authenticated HTTP server against the
+disposable database (a materially larger blast radius for no extra signal),
+this session called the exact same service function the route uses
+internally — `app.services.worker_health.build_worker_health(db)`, which
+`GET /v1/operator/status` calls directly at
+`apps/api/app/api/v1/routes/operator.py:436` — against the disposable
+session. This is not an approximation of the endpoint; it is the endpoint's
+own computation, exercised without the FastAPI/auth layer around it.
+
+| When | `strategy_signals_observation_status` | `strategy_signals_last_seen_at` |
+|---|---|---|
+| Before any dispatch (fresh env) | `unknown` | `null` |
+| After Route A (direct dispatch) | `ok` | `2026-07-21T16:47:16.536591+00:00` |
+| After Route B (real beat tick) | `ok` | `2026-07-21T16:52:52.347201+00:00` (age 27s at read time) |
+
+This is exactly the transition `SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md`
+(previous revision) and `OPERATOR_SCHEDULER_VISIBILITY.md` specified as the
+UI's contract: absent/`unknown` in a fresh environment, `ok` with a fresh
+timestamp only once a real invocation has recorded a heartbeat. No safety
+flag, `overall_status`, or `why_blocked` value was touched by reading it.
+
+### 4.5 Teardown
+
+Both Celery processes were stopped (`pkill -f "celery -A app.workers.celery_app"`);
+both disposable containers were stopped and removed
+(`docker rm agent-a-mock-postgres agent-a-mock-redis`); the `/tmp` beat
+schedule/pidfile were deleted. The pre-existing, stopped `t212_postgres` /
+`t212_redis` / `t212_worker` / `t212_beat` / `t212_api` / `t212_web`
+containers belonging to the sibling worktree's project were confirmed
+unchanged (same `Exited` status, same age) before and after this session —
+they were never started, stopped, or removed by this observation.
+
+### 4.6 Repeatable command reference
 
 ```bash
-# 1. Supervised, disposable environment only. Confirm before starting:
-export APP_MODE=mock
-export LIVE_TRADING_ENABLED=false
-#    ... plus the other test-safe env vars already required by
-#    apps/api/tests/conftest.py (SECRET_KEY, MASTER_KEY, REDIS_URL, etc.)
-#    No real T212_API_KEY / T212_API_SECRET / KRAKEN_* values should be set.
+# 1. Disposable, uniquely-named containers — avoids colliding with any
+#    existing project's fixed docker-compose container names.
+docker run -d --name <unique>-postgres -e POSTGRES_USER=cashguard \
+  -e POSTGRES_PASSWORD=cashguard_secret -e POSTGRES_DB=cashguard \
+  -p <free-port>:5432 postgres:16-alpine
+docker run -d --name <unique>-redis -p <free-port>:6379 \
+  redis:7-alpine redis-server --requirepass cashguard_redis
 
-# 2. Start Redis (task_lock + Celery broker) if not already running, e.g.:
-redis-server --daemonize yes
-
-# 3. In one terminal, start a Celery worker (short-lived, supervised):
+# 2. Migrate + seed (repo's own scripts, unmodified)
 cd apps/api
-celery -A app.workers.celery_app worker --loglevel=info --concurrency=1
+DATABASE_URL=postgresql+asyncpg://cashguard:cashguard_secret@localhost:<pg-port>/cashguard \
+  PYTHONPATH=. .venv/bin/python -m alembic upgrade head
+DATABASE_URL=postgresql+asyncpg://cashguard:cashguard_secret@localhost:<pg-port>/cashguard \
+  REDIS_URL=redis://:cashguard_redis@localhost:<redis-port>/0 \
+  APP_MODE=mock LIVE_TRADING_ENABLED=false \
+  SECRET_KEY=<disposable> MASTER_KEY=<disposable> \
+  PYTHONPATH=. .venv/bin/python -m app.db.seed
 
-# 4. In a second terminal, start Celery beat (short-lived, supervised):
-cd apps/api
-celery -A app.workers.celery_app beat --loglevel=info
+# 3. Real worker + real beat, both pointed at the disposable services only
+DATABASE_URL=... REDIS_URL=... APP_MODE=mock LIVE_TRADING_ENABLED=false \
+  .venv/bin/celery -A app.workers.celery_app worker --loglevel=INFO \
+  --concurrency=1 --pool=solo > /tmp/worker.log 2>&1 &
+DATABASE_URL=... REDIS_URL=... APP_MODE=mock LIVE_TRADING_ENABLED=false \
+  .venv/bin/celery -A app.workers.celery_app beat --loglevel=INFO \
+  --schedule=/tmp/beat-schedule --pidfile=/tmp/beat.pid \
+  > /tmp/beat.log 2>&1 &
 
-# 5. Observe the worker log for a "strategy-signals" tick firing
-#    run_strategy_signals and completing (up to ~5 minutes for the first
-#    scheduled tick). Confirm the returned summary is a safe no-op or a
-#    kill-switch skip, depending on seeded AppSettings/Strategy state.
+# 4. Optional immediate dispatch (do not wait 5 minutes if not needed):
+#    celery_app.send_task("app.workers.tasks.run_strategy_signals")
 
-# 6. Confirm no broker adapter was ever constructed, e.g. by grepping worker
-#    stdout for "Trading212Adapter" / "KrakenAdapter" (should be absent), and
-#    by checking that GET /v1/operator/status now reports
-#    strategy_signals_observation_status == "ok" with a fresh
-#    strategy_signals_last_seen_at.
-
-# 7. Stop both processes (Ctrl-C or `celery control shutdown`) and tear down
-#    the disposable environment. Do not leave a beat/worker pair running
-#    against a database that also serves real traffic.
+# 5. Tear down: kill both processes, `docker rm -f` both containers.
 ```
 
 **No real broker credentials, no real network call, and no live-money order
-of any kind are involved in this procedure** — it exercises the exact same
-mock-mode, no-broker-adapter contract that §1 and §2 already prove at the
-function level, just through the real Celery process machinery instead of a
-direct call. This session did not execute this procedure; it is recorded here
-as the exact next step for whoever picks this observation up.
+of any kind were involved in this procedure.**
 
 ## 5. Remaining gaps
 
 **Before an unattended automated paper trade:**
 
-- The real beat+worker end-to-end firing in §4 has not been observed.
-- Nothing beyond the individual task/service tests has ever watched a full
-  5-minute schedule tick complete and read the result back through the
-  operator status endpoint in the same session (the operator-visibility
-  fields in §2 have been proven correct against a *manually recorded*
-  heartbeat, not one produced by a live tick).
+- This observation used the repo's seeded defaults: no enabled strategies,
+  `auto_trading_enabled=False`. The safe no-op path (`skipped: "auto_trading_off"`)
+  is now observed end-to-end through real beat/worker/Redis/Postgres; the
+  *signal-generating* path (an enabled strategy actually producing a signal
+  through this same real-process route, still ending in a paper-only fill,
+  never a live order) has not been separately observed this way — it remains
+  proven only at the service/unit level (`PAPER_TRADE_DRY_RUN_VALIDATION.md` §1,
+  `test_strategy_runner_helpers.py`).
+- This was one supervised, short-lived run (~6 minutes), not a soak test.
+  Long-running unattended behaviour (hours/days, restart/reconnect handling,
+  Redis lock contention across multiple ticks) remains unobserved.
 
 **Before the tiny supervised live-money smoke test**
 (`LIVE_SMOKE_TEST_RUNBOOK.md`): unchanged. Nothing in #201 or #203 touches
@@ -211,3 +321,6 @@ live-ready.
 - No safety, risk, kill-switch, or readiness gate was modified, loosened, or
   bypassed by #201 or #203; both PRs are additive (new tests, and a purely
   read-only operator field derived from pre-existing data).
+- The §4 observation session changed no runtime code, no beat schedule, no
+  safety gate, and no default. It ran the repo's existing code, unmodified,
+  against a throwaway environment, and recorded what happened.
