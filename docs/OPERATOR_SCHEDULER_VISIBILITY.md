@@ -37,7 +37,26 @@ is missing, stale, or unknown, the UI warns:
 
 `Configured in Celery beat, but no real beat+worker run has been observed yet.`
 
+Operator interpretation:
+
+- `ok` means a scheduler task or worker heartbeat was observed in the current
+  mock/test context. It is not a live-readiness claim and does not mean live
+  trading can be enabled.
+- `stale` means the scheduler is known but the latest observation is too old or
+  incomplete. Operators should treat the automation path cautiously until fresh
+  backend evidence appears.
+- `unknown` means the backend cannot prove the task/worker observation yet. It
+  must be treated as unverified rather than healthy.
+- A null `strategy_signals_last_seen_at` means the UI must show "Not observed
+  yet", even if another status field is present.
+
 This status is read-only. It does not start, stop, or run strategies.
+
+Signal/fill observation, when present, must remain backend evidence only. The
+operator UI may display backend-provided facts about signals, scheduled paper
+fills, timestamps, and detail text, but it must not add a button or link that
+starts automation, stops automation, runs a strategy, unlocks live trading, or
+places an order.
 
 ## Continuing UI requirements
 

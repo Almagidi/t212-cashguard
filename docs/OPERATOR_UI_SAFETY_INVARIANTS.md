@@ -31,6 +31,12 @@ claim. Live trading remains disabled and not live-ready.
 - The operator surface must not provide start automation, stop automation,
   enable automation, disable automation, run strategy, or run strategy now
   controls.
+- Scheduler observation is not live-readiness. `ok` only means a task or worker
+  heartbeat was observed in the mock/test context; it does not permit live
+  trading or prove production execution readiness.
+- `stale` and `unknown` scheduler observation states require operator caution
+  and must be displayed as caution/unverified states rather than converted into
+  a healthy claim.
 - When additional scheduled strategy health is exposed by the backend, the UI
   may display backend-provided task name, cadence, last observed run, and
   observation state as read-only fields only.
@@ -42,6 +48,10 @@ claim. Live trading remains disabled and not live-ready.
 - If the strategy-signals scheduler is configured but not observed, the UI must
   show a caution that Celery beat configuration alone is not proof of a real
   beat and worker run.
+- Signal/fill observation is backend evidence, not a UI control. The UI may
+  show backend-provided signal, scheduled paper-fill, timestamp, and detail
+  fields once they exist, but it must not invent fields or expose controls to
+  start, stop, run, unlock, buy, sell, or place orders.
 
 ## Paper order form boundary
 
