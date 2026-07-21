@@ -875,6 +875,9 @@ function SchedulerWorkerHealth({ status }: { status: OperatorStatus }) {
           <p className="text-xs text-muted-foreground">
             This status is read-only. It does not start, stop, or run strategies.
           </p>
+          <p className="text-xs text-muted-foreground">
+            Scheduler observation only. Scheduled paper-fill success requires separate backend signal/fill evidence.
+          </p>
         </CardContent>
       </Card>
     </div>

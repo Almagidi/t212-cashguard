@@ -41,7 +41,8 @@ Operator interpretation:
 
 - `ok` means a scheduler task or worker heartbeat was observed in the current
   mock/test context. It is not a live-readiness claim and does not mean live
-  trading can be enabled.
+  trading can be enabled. Scheduler OK is not paper-fill success; scheduled
+  paper-fill success requires separate backend-derived signal/fill evidence.
 - `stale` means the scheduler is known but the latest observation is too old or
   incomplete. Operators should treat the automation path cautiously until fresh
   backend evidence appears.
@@ -57,6 +58,10 @@ operator UI may display backend-provided facts about signals, scheduled paper
 fills, timestamps, and detail text, but it must not add a button or link that
 starts automation, stops automation, runs a strategy, unlocks live trading, or
 places an order.
+
+The UI must never trigger strategies or fills. It must not infer paper-fill
+success from scheduler registration, cadence, heartbeat status, or observation
+status alone.
 
 ## Continuing UI requirements
 

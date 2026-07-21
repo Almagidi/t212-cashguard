@@ -593,6 +593,9 @@ test.describe('Operator dashboard readiness', () => {
     await expect(strategyScheduler).toContainText(
       'This status is read-only. It does not start, stop, or run strategies.',
     )
+    await expect(strategyScheduler).toContainText(
+      'Scheduler observation only. Scheduled paper-fill success requires separate backend signal/fill evidence.',
+    )
     await expect(strategyScheduler.getByRole('button')).toHaveCount(0)
     await expect(strategyScheduler.getByRole('link')).toHaveCount(0)
     await expect(strategyScheduler.getByRole('textbox')).toHaveCount(0)
