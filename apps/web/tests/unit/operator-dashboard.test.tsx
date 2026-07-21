@@ -575,15 +575,33 @@ describe("OperatorDashboard", () => {
     expect(screen.queryByText(/api_key/i)).toBeNull();
   });
 
-  it("does not expose enable, disable, execute, trade, buy, or sell buttons", () => {
+  it("does not expose manual trading or automation action controls", () => {
     render(<OperatorDashboard status={operatorStatus()} />);
 
-    expect(screen.queryByRole("button", { name: /enable/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /disable/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /execute/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /trade/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /buy/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /sell/i })).toBeNull();
+    const forbiddenActionLabels = [
+      /start automation/i,
+      /stop automation/i,
+      /enable automation/i,
+      /disable automation/i,
+      /run strategy now/i,
+      /run strategy/i,
+      /start live trading/i,
+      /stop live trading/i,
+      /unlock live/i,
+      /place order/i,
+      /submit order/i,
+      /execute/i,
+      /trade/i,
+      /buy/i,
+      /sell/i,
+    ];
+
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("link", { name: /run strategy|unlock live/i })).toBeNull();
+    for (const label of forbiddenActionLabels) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+      expect(screen.queryByRole("link", { name: label })).toBeNull();
+    }
   });
 
   it("renders Paper Execution History rows with safety wording", () => {

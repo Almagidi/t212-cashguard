@@ -25,6 +25,18 @@ claim. Live trading remains disabled and not live-ready.
 - E2E safety sweeps reject visible enabled controls labelled as buy, sell,
   place order, submit live order, execute trade, go live, or enable live.
 
+## Scheduled automation visibility is read-only
+
+- Scheduler and worker state on `/app/operator` is status visibility only.
+- The operator surface must not provide start automation, stop automation,
+  enable automation, disable automation, run strategy, or run strategy now
+  controls.
+- When additional scheduled strategy health is exposed by the backend, the UI
+  may display backend-provided task name, cadence, last observed run, and
+  observation state as read-only fields only.
+- If backend scheduler health is missing or unknown, the UI must present that as
+  unknown or unavailable rather than inventing a healthy state.
+
 ## Paper order form boundary
 
 - The only order-entry form is on `/app/orders` inside

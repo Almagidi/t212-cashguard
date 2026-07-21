@@ -16,6 +16,7 @@ import path from 'node:path'
 
 const WEB_ROOT = path.resolve(__dirname, '..', '..')
 const UI_SOURCE_DIRS = ['app', 'components', 'hooks', 'stores', 'lib']
+const OPERATOR_SOURCE_DIR = path.join(WEB_ROOT, 'components', 'operator')
 
 // The API client (services/api.ts) is the only file allowed to mention the
 // live order-placement method. It lives outside UI_SOURCE_DIRS, so every
@@ -32,9 +33,14 @@ function collectSourceFiles(dir: string): string[] {
 }
 
 const uiFiles = UI_SOURCE_DIRS.flatMap((dir) => collectSourceFiles(path.join(WEB_ROOT, dir)))
+const operatorFiles = collectSourceFiles(OPERATOR_SOURCE_DIR)
 
 function offendersMatching(pattern: RegExp): string[] {
   return uiFiles.filter((file) => pattern.test(fs.readFileSync(file, 'utf8')))
+}
+
+function operatorOffendersMatching(pattern: RegExp): string[] {
+  return operatorFiles.filter((file) => pattern.test(fs.readFileSync(file, 'utf8')))
 }
 
 describe('no order-placement call sites in UI source', () => {
@@ -78,5 +84,48 @@ describe('no order-placement call sites in UI source', () => {
     )
     expect(ordersPage).toContain('paper_only: true')
     expect(ordersPage).toContain('usePlacePaperOrder')
+  })
+
+  test('operator source does not define mutation controls or mutation hooks', () => {
+    expect(operatorFiles.length).toBeGreaterThan(0)
+
+    const mutationPrimitivePattern =
+      /<\s*(?:form|button|input|select|textarea)\b|\buseMutation\b|\b(?:api|client|axios)\.(?:post|put|patch|delete)\b|\bfetch\s*\([^)]*,\s*\{[\s\S]*method\s*:/
+    const offenders = operatorOffendersMatching(mutationPrimitivePattern)
+
+    expect(offenders).toEqual([])
+  })
+
+  test('operator source does not expose manual automation or live-unlock action labels', () => {
+    const forbiddenOperatorActionLabelText =
+      [
+        'start\\s+automation',
+        'stop\\s+automation',
+        'enable\\s+automation',
+        'disable\\s+automation',
+        'run\\s+strategy\\s+now',
+        'run\\s+strategy',
+        'start\\s+live\\s+trading',
+        'stop\\s+live\\s+trading',
+        'unlock\\s+live',
+        'place\\s+(?:live\\s+|real\\s+|broker\\s+)?order',
+        'submit\\s+(?:live\\s+|real\\s+|broker\\s+)?order',
+      ].join('|')
+    const forbiddenOperatorActionLabels = new RegExp(
+      `(?:aria-label|title|data-testid)=["'\`][^"'\`]*(?:${forbiddenOperatorActionLabelText})`,
+      'i',
+    )
+
+    const offenders = operatorOffendersMatching(forbiddenOperatorActionLabels)
+
+    expect(offenders).toEqual([])
+  })
+
+  test('operator source never addresses live order, live unlock, or auto-trading mutation endpoints', () => {
+    const forbiddenEndpointPattern =
+      /["'`]\/(?:v1\/)?(?:orders|settings\/live-readiness|emergency\/auto-trading\/(?:on|off))(?:\/|["'`])/
+    const offenders = operatorOffendersMatching(forbiddenEndpointPattern)
+
+    expect(offenders).toEqual([])
   })
 })
