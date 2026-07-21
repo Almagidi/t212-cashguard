@@ -293,12 +293,16 @@ of any kind were involved in this procedure.**
 
 - This observation used the repo's seeded defaults: no enabled strategies,
   `auto_trading_enabled=False`. The safe no-op path (`skipped: "auto_trading_off"`)
-  is now observed end-to-end through real beat/worker/Redis/Postgres; the
-  *signal-generating* path (an enabled strategy actually producing a signal
-  through this same real-process route, still ending in a paper-only fill,
-  never a live order) has not been separately observed this way — it remains
-  proven only at the service/unit level (`PAPER_TRADE_DRY_RUN_VALIDATION.md` §1,
-  `test_strategy_runner_helpers.py`).
+  is now observed end-to-end through real beat/worker/Redis/Postgres.
+  The *signal-generating* path was attempted in a follow-up session — see
+  [`SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md`](SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md).
+  It found that an enabled, live-routed strategy does **not** currently reach
+  a paper fill through this path — it deterministically errors inside a
+  safety-policy gate, because `strategy_runner.py`'s order-creation calls are
+  missing a dry-run flag that every other order-creation call site in the
+  codebase already sets. No live broker call results either way. That
+  document has the full root cause, regression-test evidence, and the
+  precise (out-of-session-scope) code change that would close it.
 - This was one supervised, short-lived run (~6 minutes), not a soak test.
   Long-running unattended behaviour (hours/days, restart/reconnect handling,
   Redis lock contention across multiple ticks) remains unobserved.
