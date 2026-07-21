@@ -208,6 +208,12 @@ function operatorStatus(
       heartbeat_component: "celery-worker",
       heartbeat_last_seen_at: null,
       heartbeat_stale_after_seconds: 180,
+      strategy_signals_registered: true,
+      strategy_signals_cadence: "300.0",
+      strategy_signals_task_name: "app.workers.tasks.run_strategy_signals",
+      strategy_signals_observation_status: "unknown",
+      strategy_signals_last_seen_at: null,
+      strategy_signals_observation_detail: "Task heartbeat has not been recorded yet.",
     },
     recent_activity: [
       {
@@ -248,6 +254,30 @@ function operatorStatus(
   };
 
   return { ...base, ...overrides };
+}
+
+function withStrategySignalsScheduler(
+  overrides: {
+    strategy_signals_registered?: boolean;
+    strategy_signals_cadence?: string | null;
+    strategy_signals_task_name?: string;
+    strategy_signals_observation_status?: "ok" | "stale" | "unknown";
+    strategy_signals_last_seen_at?: string | null;
+    strategy_signals_observation_detail?: string;
+  } = {},
+): OperatorStatus {
+  const status = operatorStatus();
+  return {
+    ...status,
+    schedulers: {
+      ...status.schedulers,
+      strategy_signals_cadence: "300.0",
+      strategy_signals_observation_status: "ok",
+      strategy_signals_last_seen_at: "2026-05-01T09:28:00Z",
+      strategy_signals_observation_detail: "Task heartbeat observed recently.",
+      ...overrides,
+    },
+  };
 }
 
 function withWorkerHealth(workerHealth: OperatorWorkerHealth): OperatorStatus {
@@ -547,6 +577,73 @@ describe("OperatorDashboard", () => {
     render(<OperatorDashboard status={operatorStatus()} />);
 
     expect(screen.getAllByText("Registered").length).toBeGreaterThan(0);
+  });
+
+  it("renders registered and observed strategy-signals scheduler status read-only", () => {
+    render(<OperatorDashboard status={withStrategySignalsScheduler()} />);
+
+    const card = screen.getByTestId("strategy-signals-scheduler-status");
+    expect(within(card).getByText("Strategy Signals Scheduler")).toBeInTheDocument();
+    expect(within(card).getByText("Registered")).toBeInTheDocument();
+    expect(within(card).getByText("Observation OK")).toBeInTheDocument();
+    expect(within(card).getByText("300.0")).toBeInTheDocument();
+    expect(
+      within(card).getByText("app.workers.tasks.run_strategy_signals"),
+    ).toBeInTheDocument();
+    expect(
+      within(card).getByText("Task heartbeat observed recently."),
+    ).toBeInTheDocument();
+    expect(
+      within(card).getByText("This status is read-only. It does not start, stop, or run strategies."),
+    ).toBeInTheDocument();
+    expect(within(card).queryAllByRole("button")).toHaveLength(0);
+    expect(within(card).queryAllByRole("link")).toHaveLength(0);
+    expect(within(card).queryByRole("form")).not.toBeInTheDocument();
+  });
+
+  it("warns when the strategy-signals scheduler is configured but stale", () => {
+    render(
+      <OperatorDashboard
+        status={withStrategySignalsScheduler({
+          strategy_signals_observation_status: "stale",
+          strategy_signals_last_seen_at: null,
+          strategy_signals_observation_detail:
+            "Celery beat entry exists, but no fresh worker heartbeat has been recorded.",
+        })}
+      />,
+    );
+
+    const card = screen.getByTestId("strategy-signals-scheduler-status");
+    expect(within(card).getByText("Observation stale")).toBeInTheDocument();
+    expect(within(card).getByText("Not observed yet")).toBeInTheDocument();
+    expect(
+      within(card).getByText(
+        "Configured in Celery beat, but no real beat+worker run has been observed yet.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("renders unconfigured or unknown strategy-signals scheduler status safely", () => {
+    render(
+      <OperatorDashboard
+        status={withStrategySignalsScheduler({
+          strategy_signals_registered: false,
+          strategy_signals_cadence: null,
+          strategy_signals_observation_status: "unknown",
+          strategy_signals_last_seen_at: null,
+          strategy_signals_observation_detail: "Task heartbeat has not been recorded yet.",
+        })}
+      />,
+    );
+
+    const card = screen.getByTestId("strategy-signals-scheduler-status");
+    expect(within(card).getByText("Not registered")).toBeInTheDocument();
+    expect(within(card).getByText("Observation unknown")).toBeInTheDocument();
+    expect(within(card).getByText("Unknown")).toBeInTheDocument();
+    expect(within(card).getByText("Not observed yet")).toBeInTheDocument();
+    expect(
+      within(card).getByText("Task heartbeat has not been recorded yet."),
+    ).toBeInTheDocument();
   });
 
   it("preserves slash tickers like BTC/USD", () => {

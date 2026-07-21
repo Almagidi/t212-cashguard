@@ -17,29 +17,29 @@ Live trading remains disabled and not live-ready.
 - Paper order UI remains outside the operator dashboard and is explicitly
   paper-only through `usePlacePaperOrder` and `/orders/paper`.
 
-## Strategy-signals scheduler gap
+## Strategy-signals scheduler status
 
-Current `origin/main` does not expose a backend-provided strategy-signals
-scheduler status field through the operator API schema or operator status route.
-Because that read-only backend field is absent, the frontend cannot truthfully
-display strategy-signals scheduler health, task name, cadence, last observed
-run, or observation state yet.
+Current `origin/main` exposes backend-provided strategy-signals scheduler status
+fields through the operator API schema and operator status route. The frontend
+renders those fields on `/app/operator` as a reporting surface only:
 
-The UI must not invent these fields from naming conventions, worker assumptions,
-local timers, or frontend-only inference. Missing backend scheduler status must
-remain absent or unknown in the UI.
+- `strategy_signals_registered`
+- `strategy_signals_cadence`
+- `strategy_signals_task_name`
+- `strategy_signals_observation_status`
+- `strategy_signals_last_seen_at`
+- `strategy_signals_observation_detail`
 
-## Future UI requirements
+The UI displays registered state, cadence, task name, observation status, last
+seen time, and backend detail text exactly as status visibility. If the backend
+reports the scheduler as registered but the latest beat and worker observation
+is missing, stale, or unknown, the UI warns:
 
-When the backend exposes read-only strategy-signals scheduler status, the
-operator dashboard may display only backend-provided status fields such as:
+`Configured in Celery beat, but no real beat+worker run has been observed yet.`
 
-- configured yes/no
-- task name
-- schedule interval
-- last observed run timestamp
-- observation status
-- warning text when configured but not observed end-to-end
+This status is read-only. It does not start, stop, or run strategies.
+
+## Continuing UI requirements
 
 The operator dashboard must still provide no start, stop, enable, disable, run
 now, live unlock, broker credential, buy, sell, order, or other mutation control.

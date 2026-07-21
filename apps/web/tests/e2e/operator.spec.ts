@@ -135,6 +135,13 @@ const operatorStatus = {
     heartbeat_component: 'celery-worker',
     heartbeat_last_seen_at: null,
     heartbeat_stale_after_seconds: 180,
+    strategy_signals_registered: true,
+    strategy_signals_cadence: '300.0',
+    strategy_signals_task_name: 'app.workers.tasks.run_strategy_signals',
+    strategy_signals_observation_status: 'stale',
+    strategy_signals_last_seen_at: null,
+    strategy_signals_observation_detail:
+      'Celery beat entry exists, but no fresh worker heartbeat has been recorded.',
   },
   recent_activity: [
     {
@@ -572,6 +579,22 @@ test.describe('Operator dashboard readiness', () => {
     await expect(page.getByRole('button', { name: /buy|sell|order|deposit/i })).toHaveCount(0)
 
     await expect(page.getByText('Worker heartbeat missing')).toBeVisible()
+    const strategyScheduler = page.getByTestId('strategy-signals-scheduler-status')
+    await expect(strategyScheduler).toBeVisible()
+    await expect(strategyScheduler).toContainText('Strategy Signals Scheduler')
+    await expect(strategyScheduler).toContainText('Registered')
+    await expect(strategyScheduler).toContainText('300.0')
+    await expect(strategyScheduler).toContainText('app.workers.tasks.run_strategy_signals')
+    await expect(strategyScheduler).toContainText('Observation stale')
+    await expect(strategyScheduler).toContainText('Not observed yet')
+    await expect(strategyScheduler).toContainText(
+      'Configured in Celery beat, but no real beat+worker run has been observed yet.',
+    )
+    await expect(strategyScheduler).toContainText(
+      'This status is read-only. It does not start, stop, or run strategies.',
+    )
+    await expect(strategyScheduler.getByRole('button')).toHaveCount(0)
+    await expect(strategyScheduler.getByRole('link')).toHaveCount(0)
     await expect(page.getByText('Endpoint read-only')).toBeVisible()
     await expect(page.getByTestId('operator-execution-boundary')).toContainText('Creates orders')
     await expect(page.getByTestId('operator-execution-boundary')).toContainText('Calls brokers')

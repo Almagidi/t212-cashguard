@@ -80,6 +80,11 @@ function boolLabel(value: boolean | null | undefined) {
   return BOOL_LABEL[String(value) as "true" | "false"];
 }
 
+function strategySignalsObservationLabel(status: "ok" | "stale" | "unknown") {
+  if (status === "ok") return "OK";
+  return status;
+}
+
 function TextBadge({
   children,
   tone = "outline",
@@ -703,71 +708,176 @@ function PaperExecutionSummary({ status }: { status: OperatorStatus }) {
 }
 
 function SchedulerWorkerHealth({ status }: { status: OperatorStatus }) {
+  const strategySignals = status.schedulers;
+  const strategySignalsTone =
+    strategySignals.strategy_signals_observation_status === "ok"
+      ? "success"
+      : strategySignals.strategy_signals_observation_status === "stale"
+        ? "warning"
+        : "info";
+  const strategySignalsObserved =
+    strategySignals.strategy_signals_observation_status === "ok" &&
+    strategySignals.strategy_signals_last_seen_at !== null;
+  const showStrategySignalsWarning =
+    strategySignals.strategy_signals_registered &&
+    !strategySignalsObserved;
+
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between gap-3">
-          <CardTitle>Scheduler / Worker Health</CardTitle>
-          <Badge variant={healthBadgeVariant(status.schedulers.worker_health)}>
-            Worker heartbeat {status.schedulers.worker_health}
-          </Badge>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <dl>
-          <InfoRow
-            label="DCA paper evaluate"
-            value={
-              status.schedulers.dca_paper_evaluate_registered
-                ? "Registered"
-                : "Not registered"
-            }
-            valueClassName={
-              status.schedulers.dca_paper_evaluate_registered
-                ? "text-emerald-400"
-                : "text-amber-400"
-            }
-          />
-          <InfoRow
-            label="DCA cadence"
-            value={status.schedulers.dca_paper_evaluate_cadence ?? "Unknown"}
-          />
-          <InfoRow
-            label="Heartbeat"
-            value={
-              status.schedulers.heartbeat_registered
-                ? "Registered"
-                : "Not registered"
-            }
-            valueClassName={
-              status.schedulers.heartbeat_registered
-                ? "text-emerald-400"
-                : "text-amber-400"
-            }
-          />
-          <InfoRow
-            label="Heartbeat cadence"
-            value={status.schedulers.heartbeat_cadence ?? "Unknown"}
-          />
-          <InfoRow
-            label="Heartbeat component"
-            value={status.schedulers.heartbeat_component}
-          />
-          <InfoRow
-            label="Last seen"
-            value={formatDate(status.schedulers.heartbeat_last_seen_at)}
-          />
-          <InfoRow
-            label="Stale threshold"
-            value={`${status.schedulers.heartbeat_stale_after_seconds}s`}
-          />
-        </dl>
-        <p className="mt-3 text-xs text-muted-foreground">
-          Scheduler status means registered only. Worker health is based on
-          persisted heartbeat rows.
-        </p>
-      </CardContent>
-    </Card>
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle>Scheduler / Worker Health</CardTitle>
+            <Badge variant={healthBadgeVariant(status.schedulers.worker_health)}>
+              Worker heartbeat {status.schedulers.worker_health}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <dl>
+            <InfoRow
+              label="DCA paper evaluate"
+              value={
+                status.schedulers.dca_paper_evaluate_registered
+                  ? "Registered"
+                  : "Not registered"
+              }
+              valueClassName={
+                status.schedulers.dca_paper_evaluate_registered
+                  ? "text-emerald-400"
+                  : "text-amber-400"
+              }
+            />
+            <InfoRow
+              label="DCA cadence"
+              value={status.schedulers.dca_paper_evaluate_cadence ?? "Unknown"}
+            />
+            <InfoRow
+              label="Heartbeat"
+              value={
+                status.schedulers.heartbeat_registered
+                  ? "Registered"
+                  : "Not registered"
+              }
+              valueClassName={
+                status.schedulers.heartbeat_registered
+                  ? "text-emerald-400"
+                  : "text-amber-400"
+              }
+            />
+            <InfoRow
+              label="Heartbeat cadence"
+              value={status.schedulers.heartbeat_cadence ?? "Unknown"}
+            />
+            <InfoRow
+              label="Heartbeat component"
+              value={status.schedulers.heartbeat_component}
+            />
+            <InfoRow
+              label="Last seen"
+              value={formatDate(status.schedulers.heartbeat_last_seen_at)}
+            />
+            <InfoRow
+              label="Stale threshold"
+              value={`${status.schedulers.heartbeat_stale_after_seconds}s`}
+            />
+          </dl>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Scheduler status means registered only. Worker health is based on
+            persisted heartbeat rows.
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card
+        className={cn(
+          showStrategySignalsWarning && "border-amber-500/40 bg-amber-500/5",
+        )}
+        data-testid="strategy-signals-scheduler-status"
+      >
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <CardTitle>Strategy Signals Scheduler</CardTitle>
+            <div className="flex flex-wrap justify-end gap-1.5">
+              <TextBadge
+                tone={
+                  strategySignals.strategy_signals_registered
+                    ? "success"
+                    : "warning"
+                }
+              >
+                {strategySignals.strategy_signals_registered
+                  ? "Registered"
+                  : "Not registered"}
+              </TextBadge>
+              <TextBadge tone={strategySignalsTone}>
+                Observation{" "}
+                {strategySignalsObservationLabel(
+                  strategySignals.strategy_signals_observation_status,
+                )}
+              </TextBadge>
+              <TextBadge tone="info">Read-only</TextBadge>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <dl>
+            <InfoRow
+              label="Registration"
+              value={
+                strategySignals.strategy_signals_registered
+                  ? "Yes"
+                  : "No"
+              }
+              valueClassName={boolTone(
+                strategySignals.strategy_signals_registered,
+              )}
+            />
+            <InfoRow
+              label="Cadence"
+              value={strategySignals.strategy_signals_cadence ?? "Unknown"}
+            />
+            <InfoRow
+              label="Task"
+              value={strategySignals.strategy_signals_task_name}
+            />
+            <InfoRow
+              label="Observation"
+              value={strategySignalsObservationLabel(
+                strategySignals.strategy_signals_observation_status,
+              )}
+              valueClassName={
+                strategySignals.strategy_signals_observation_status === "ok"
+                  ? "text-emerald-400"
+                  : strategySignals.strategy_signals_observation_status === "stale"
+                    ? "text-amber-300"
+                    : "text-muted-foreground"
+              }
+            />
+            <InfoRow
+              label="Last seen"
+              value={
+                strategySignals.strategy_signals_last_seen_at
+                  ? formatDate(strategySignals.strategy_signals_last_seen_at)
+                  : "Not observed yet"
+              }
+            />
+            <InfoRow
+              label="Detail"
+              value={strategySignals.strategy_signals_observation_detail}
+            />
+          </dl>
+          {showStrategySignalsWarning && (
+            <div className="rounded-md border border-amber-700/50 bg-amber-950/20 p-3 text-xs text-amber-100">
+              Configured in Celery beat, but no real beat+worker run has been observed yet.
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">
+            This status is read-only. It does not start, stop, or run strategies.
+          </p>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 
