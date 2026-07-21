@@ -14,6 +14,7 @@ describe('operator UI safety invariants documentation', () => {
     expect(doc).toContain('No live-trading unlock/control')
     expect(doc).toContain('Paper order form boundary')
     expect(doc).toContain('No broker order sent')
+    expect(doc).toContain('Scheduled automation visibility is read-only')
     expect(doc).toContain('npm audit --audit-level=moderate')
   })
 })
