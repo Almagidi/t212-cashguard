@@ -108,7 +108,7 @@ describe('no order-placement call sites in UI source', () => {
 
   test('operator source has no scheduler, strategy, live-unlock, or live-order mutation endpoint calls', () => {
     const forbiddenOperatorMutationEndpoints =
-      /["'`]\/(?:v1\/)?(?:operator\/(?:scheduler|strategy-signals|strategy_signals)|strategies\/[^"'`]*(?:run|signal)|strategy-signals\/[^"'`]*(?:run|start|stop)|settings\/live-readiness|emergency\/auto-trading\/(?:on|off)|orders)(?:\/|["'`])/
+      /["'`]\/(?:v1\/)?(?:operator\/(?:scheduler|strategy-signals|strategy_signals|signal-fill|signal_fill|paper-fill|paper_fill)|strategies\/[^"'`]*(?:run|signal|fill)|strategy-signals\/[^"'`]*(?:run|start|stop|fill)|strategy_signals\/[^"'`]*(?:run|start|stop|fill)|settings\/live-readiness|emergency\/auto-trading\/(?:on|off)|orders)(?:\/|["'`])/
     const offenders = operatorCodeOffendersMatching(forbiddenOperatorMutationEndpoints)
 
     expect(offenders).toEqual([])

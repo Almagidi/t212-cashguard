@@ -34,6 +34,9 @@ claim. Live trading remains disabled and not live-ready.
 - Scheduler observation is not live-readiness. `ok` only means a task or worker
   heartbeat was observed in the mock/test context; it does not permit live
   trading or prove production execution readiness.
+- Scheduler OK is not paper-fill success. Scheduled paper-fill success requires
+  separate backend-derived signal/fill evidence.
+- Operator shorthand: scheduler OK is not paper-fill success.
 - `stale` and `unknown` scheduler observation states require operator caution
   and must be displayed as caution/unverified states rather than converted into
   a healthy claim.
@@ -52,6 +55,8 @@ claim. Live trading remains disabled and not live-ready.
   show backend-provided signal, scheduled paper-fill, timestamp, and detail
   fields once they exist, but it must not invent fields or expose controls to
   start, stop, run, unlock, buy, sell, or place orders.
+- UI must never trigger strategies or fills. It must only render backend facts
+  about scheduler, signal, and fill observations.
 
 ## Paper order form boundary
 

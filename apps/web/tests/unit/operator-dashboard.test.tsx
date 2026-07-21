@@ -593,7 +593,14 @@ describe("OperatorDashboard", () => {
     expect(
       within(card).getByText("Task heartbeat observed recently."),
     ).toBeInTheDocument();
+    expect(
+      within(card).getByText(
+        "Scheduler observation only. Scheduled paper-fill success requires separate backend signal/fill evidence.",
+      ),
+    ).toBeInTheDocument();
     expect(within(card).queryByText("live-ready")).not.toBeInTheDocument();
+    expect(within(card).queryByText(/paper-fill success observed/i)).not.toBeInTheDocument();
+    expect(within(card).queryByText(/automated paper trading is ready/i)).not.toBeInTheDocument();
     expect(
       within(card).queryByText(
         "Configured in Celery beat, but no real beat+worker run has been observed yet.",
@@ -631,6 +638,11 @@ describe("OperatorDashboard", () => {
     ).toBeInTheDocument();
     expect(
       within(card).getByText("This status is read-only. It does not start, stop, or run strategies."),
+    ).toBeInTheDocument();
+    expect(
+      within(card).getByText(
+        "Scheduler observation only. Scheduled paper-fill success requires separate backend signal/fill evidence.",
+      ),
     ).toBeInTheDocument();
   });
 
@@ -674,6 +686,11 @@ describe("OperatorDashboard", () => {
     expect(within(card).getByText("Not observed yet")).toBeInTheDocument();
     expect(
       within(card).getByText("Task heartbeat has not been recorded yet."),
+    ).toBeInTheDocument();
+    expect(
+      within(card).getByText(
+        "Scheduler observation only. Scheduled paper-fill success requires separate backend signal/fill evidence.",
+      ),
     ).toBeInTheDocument();
     expect(
       within(card).getByText(

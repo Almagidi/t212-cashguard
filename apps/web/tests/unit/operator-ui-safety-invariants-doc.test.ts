@@ -19,6 +19,8 @@ describe('operator UI safety invariants documentation', () => {
     expect(doc).toContain('does not start, stop, or run strategies')
     expect(doc).toContain('Scheduler observation is not live-readiness')
     expect(doc).toContain('Signal/fill observation is backend evidence, not a UI control')
+    expect(doc).toContain('scheduler OK is not paper-fill success')
+    expect(doc).toContain('UI must never trigger strategies or fills')
     expect(doc).toContain('npm audit --audit-level=moderate')
   })
 })
