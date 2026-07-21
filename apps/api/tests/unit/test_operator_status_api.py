@@ -26,8 +26,9 @@ from app.db.seed import seed_dca_configs
 from app.execution.engine import ExecutionEngine
 from app.execution.paper_engine import PAPER_EXECUTION_ENVIRONMENT
 from app.market_data.kraken_provider import KrakenMarketDataProvider
+from app.services.worker_health import record_worker_heartbeat
 from app.strategies.kraken_dca_planner import KrakenDCAPlanner
-from app.workers import tasks_dca, tasks_heartbeat
+from app.workers import tasks, tasks_dca, tasks_heartbeat
 
 BASE_TIME = datetime(2026, 5, 1, 10, 0, tzinfo=UTC)
 
@@ -244,6 +245,12 @@ async def test_operator_status_returns_control_tower_summary(
         "heartbeat_component": "celery_worker",
         "heartbeat_last_seen_at": None,
         "heartbeat_stale_after_seconds": 180,
+        "strategy_signals_registered": True,
+        "strategy_signals_cadence": "300.0",
+        "strategy_signals_task_name": "app.workers.tasks.run_strategy_signals",
+        "strategy_signals_observation_status": "unknown",
+        "strategy_signals_last_seen_at": None,
+        "strategy_signals_observation_detail": "Task heartbeat has not been recorded yet.",
     }
     assert body["safety_flags"]["endpoint_read_only"] is True
     assert body["safety_flags"]["creates_orders"] is False
@@ -331,6 +338,108 @@ async def test_operator_status_does_not_treat_beat_registration_as_worker_health
     assert body["schedulers"]["worker_health"] == "missing"
     assert body["dca"]["scheduler_registered"] is True
     assert body["dca"]["worker_health"] == "missing"
+
+
+@pytest.mark.asyncio
+async def test_operator_status_exposes_strategy_signals_scheduler_metadata(
+    client,
+    auth_headers,
+    db,
+):
+    """The strategy-signals beat entry is surfaced read-only, unobserved by default.
+
+    ``registered``/``cadence``/``task_name`` reflect the static Celery beat
+    configuration (celery_app.py's ``"strategy-signals"`` entry); no task
+    invocation is required to produce them.
+    """
+    db.add_all([_venue("t212"), _venue("kraken")])
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schedulers"]["strategy_signals_registered"] is True
+    assert body["schedulers"]["strategy_signals_cadence"] == "300.0"
+    assert (
+        body["schedulers"]["strategy_signals_task_name"] == "app.workers.tasks.run_strategy_signals"
+    )
+    assert body["schedulers"]["strategy_signals_observation_status"] == "unknown"
+    assert body["schedulers"]["strategy_signals_last_seen_at"] is None
+    assert (
+        body["schedulers"]["strategy_signals_observation_detail"]
+        == "Task heartbeat has not been recorded yet."
+    )
+
+
+@pytest.mark.asyncio
+async def test_operator_status_reflects_a_recorded_strategy_signals_heartbeat_as_ok(
+    client,
+    auth_headers,
+    db,
+):
+    """Once a real tick has recorded a heartbeat, the field reflects it as observed.
+
+    ``record_worker_heartbeat`` here is the exact function
+    ``app.workers.tasks.run_strategy_signals`` calls after a real run via
+    ``_complete_task`` — this test does not invoke the task itself, it proves
+    the read-only field correctly surfaces that heartbeat once recorded.
+    """
+    db.add_all([_venue("t212"), _venue("kraken")])
+    await db.commit()
+    await record_worker_heartbeat(
+        db, task_name="run_strategy_signals", payload={"strategies_run": 0}
+    )
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schedulers"]["strategy_signals_observation_status"] == "ok"
+    assert body["schedulers"]["strategy_signals_last_seen_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_operator_status_strategy_signals_metadata_triggers_no_task_or_broker_call(
+    client,
+    auth_headers,
+    db,
+    monkeypatch,
+):
+    """Reading the new field must never run the task or touch a broker.
+
+    Guards the read-only boundary: the operator status route only reads
+    static beat configuration and a persisted heartbeat — it must never
+    invoke ``run_strategy_signals`` (directly, via ``.delay()``, or via
+    ``.apply_async()``) and must never construct a real broker adapter.
+    """
+
+    def _raise_task_call(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("operator status must not invoke the strategy-signals task")
+
+    def _raise_t212_init(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("operator status must not construct Trading212Adapter")
+
+    def _raise_kraken_init(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("operator status must not construct KrakenAdapter")
+
+    monkeypatch.setattr(tasks.run_strategy_signals, "delay", _raise_task_call)
+    monkeypatch.setattr(tasks.run_strategy_signals, "apply_async", _raise_task_call)
+    monkeypatch.setattr(Trading212Adapter, "__init__", _raise_t212_init)
+    monkeypatch.setattr(KrakenAdapter, "__init__", _raise_kraken_init)
+    db.add_all([_venue("t212"), _venue("kraken")])
+    await db.commit()
+
+    response = await client.get("/v1/operator/status", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schedulers"]["strategy_signals_registered"] is True
+    # Read-only visibility must not change the global blocked/kill-switch posture.
+    assert body["safety_flags"]["triggers_schedulers"] is False
+    assert body["safety_flags"]["calls_brokers"] is False
+    assert body["safety_flags"]["runs_strategies"] is False
 
 
 @pytest.mark.asyncio

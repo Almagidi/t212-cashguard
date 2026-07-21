@@ -474,6 +474,17 @@ class OperatorSchedulersStatusOut(BaseModel):
     heartbeat_component: str
     heartbeat_last_seen_at: datetime | None
     heartbeat_stale_after_seconds: int
+    # Read-only strategy-signals scheduler visibility. ``registered``/``cadence``
+    # reflect the static Celery beat configuration; ``observation_status`` and
+    # ``last_seen_at`` reflect whether a real invocation has ever recorded a
+    # heartbeat (app.services.worker_health.build_worker_health). Neither field
+    # triggers the task, writes state, or claims live-readiness.
+    strategy_signals_registered: bool
+    strategy_signals_cadence: str | None
+    strategy_signals_task_name: str
+    strategy_signals_observation_status: Literal["ok", "stale", "unknown"]
+    strategy_signals_last_seen_at: datetime | None
+    strategy_signals_observation_detail: str
 
 
 class OperatorRecentActivityOut(BaseModel):
@@ -981,7 +992,7 @@ PORTFOLIO_ATTRIBUTION_COVERAGE_CAVEATS: list[str] = [
     "deducted from these figures.",
     "Rejected and cancelled rebalance orders are excluded; only filled "
     "rebalance orders are replayed.",
-    "Orders still pending broker reconciliation may not yet be reflected in " "this attribution.",
+    "Orders still pending broker reconciliation may not yet be reflected in this attribution.",
 ]
 
 
@@ -1360,8 +1371,8 @@ PERFORMANCE_REPORT_COVERAGE_CAVEATS: list[str] = [
     "figures; totals reflect raw realized P&L only.",
     "Trading fees and commissions are not currently tracked and are not "
     "deducted from these figures.",
-    "Rejected and cancelled orders are excluded; only fully closed trades " "are counted.",
-    "Orders still pending broker reconciliation are not reflected in these " "totals.",
+    "Rejected and cancelled orders are excluded; only fully closed trades are counted.",
+    "Orders still pending broker reconciliation are not reflected in these totals.",
 ]
 
 
