@@ -884,6 +884,12 @@ export interface OperatorSchedulersStatus {
   heartbeat_component: string;
   heartbeat_last_seen_at: string | null;
   heartbeat_stale_after_seconds: number;
+  strategy_signals_registered: boolean;
+  strategy_signals_cadence: string | null;
+  strategy_signals_task_name: string;
+  strategy_signals_observation_status: "ok" | "stale" | "unknown";
+  strategy_signals_last_seen_at: string | null;
+  strategy_signals_observation_detail: string;
 }
 
 export interface OperatorRecentActivity {

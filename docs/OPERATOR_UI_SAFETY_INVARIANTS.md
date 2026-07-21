@@ -36,6 +36,12 @@ claim. Live trading remains disabled and not live-ready.
   observation state as read-only fields only.
 - If backend scheduler health is missing or unknown, the UI must present that as
   unknown or unavailable rather than inventing a healthy state.
+- Strategy-signals scheduler visibility is read-only. The operator dashboard
+  may show registered state, cadence, task name, observation status, last seen
+  time, and backend detail text, but it does not start, stop, or run strategies.
+- If the strategy-signals scheduler is configured but not observed, the UI must
+  show a caution that Celery beat configuration alone is not proof of a real
+  beat and worker run.
 
 ## Paper order form boundary
 

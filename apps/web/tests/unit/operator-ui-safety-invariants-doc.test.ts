@@ -15,6 +15,8 @@ describe('operator UI safety invariants documentation', () => {
     expect(doc).toContain('Paper order form boundary')
     expect(doc).toContain('No broker order sent')
     expect(doc).toContain('Scheduled automation visibility is read-only')
+    expect(doc).toContain('Strategy-signals scheduler visibility is read-only')
+    expect(doc).toContain('does not start, stop, or run strategies')
     expect(doc).toContain('npm audit --audit-level=moderate')
   })
 })
