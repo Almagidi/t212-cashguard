@@ -205,8 +205,12 @@ step earlier in the pipeline: `MockMarketDataProvider` has no async-context-
 manager path, so `MarketRegimeService` always reports `regime="unknown"` in
 `APP_MODE=mock`, and `RiskEngine.check_market_conditions()` unconditionally
 blocks entries on an unclassified regime — before `generate_signal()` is
-ever called. Full detail:
-[`SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md`](SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md) §1-§5.
+ever called. **Also resolved 2026-07-23** (same day, second update):
+`MarketRegimeService._load_snapshots()` now falls back to
+`MockMarketDataProvider.get_ohlcv()` for real mock-mode snapshot data, and a
+re-run real-worker observation confirmed the `"unknown market regime"`
+block no longer fires (0/11 dispatches). Full detail:
+[`SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md`](SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md) §1-§5, §4.4.
 
 ## 6. Blockers before the tiny supervised live-money smoke test
 

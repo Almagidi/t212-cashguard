@@ -161,26 +161,46 @@ class MarketRegimeService:
                 for ticker in self.BENCHMARKS:
                     daily = await md.get_bars(ticker, multiplier=1, timespan="day", limit=90)
                     intraday = await md.get_bars(ticker, multiplier=5, timespan="minute", limit=78)
-                    closes = [
-                        Decimal(str(bar.close))
-                        for bar in daily
-                        if getattr(bar, "close", None) is not None
-                    ]
-                    intraday_closes = [
-                        Decimal(str(bar.close))
-                        for bar in intraday
-                        if getattr(bar, "close", None) is not None
-                    ]
-                    intraday_volumes = [
-                        Decimal(str(bar.volume))
-                        for bar in intraday
-                        if getattr(bar, "volume", None) is not None
-                    ]
-                    if len(closes) >= 20 and intraday_closes:
-                        snapshots.append(
-                            _SeriesSnapshot(ticker, closes, intraday_closes, intraday_volumes)
-                        )
+                    snapshot = self._snapshot_from_bars(ticker, daily, intraday)
+                    if snapshot is not None:
+                        snapshots.append(snapshot)
+        else:
+            # Mock provider has no async context manager (see strategy_runner.py's
+            # identical hasattr("__aenter__") branch for _fetch_market_context) —
+            # reuse its sync get_ohlcv() so mock mode gets real snapshot data
+            # instead of silently falling through to an empty snapshot list.
+            for ticker in self.BENCHMARKS:
+                daily = provider.get_ohlcv(ticker, interval_minutes=1440, bars=90)
+                intraday = provider.get_ohlcv(ticker, interval_minutes=5, bars=78)
+                snapshot = self._snapshot_from_bars(ticker, daily, intraday)
+                if snapshot is not None:
+                    snapshots.append(snapshot)
         return snapshots
+
+    def _snapshot_from_bars(self, ticker: str, daily: Any, intraday: Any) -> _SeriesSnapshot | None:
+        closes = [
+            Decimal(str(self._bar_field(bar, "close")))
+            for bar in daily
+            if self._bar_field(bar, "close") is not None
+        ]
+        intraday_closes = [
+            Decimal(str(self._bar_field(bar, "close")))
+            for bar in intraday
+            if self._bar_field(bar, "close") is not None
+        ]
+        intraday_volumes = [
+            Decimal(str(self._bar_field(bar, "volume")))
+            for bar in intraday
+            if self._bar_field(bar, "volume") is not None
+        ]
+        if len(closes) >= 20 and intraday_closes:
+            return _SeriesSnapshot(ticker, closes, intraday_closes, intraday_volumes)
+        return None
+
+    def _bar_field(self, bar: Any, field: str) -> Any:
+        if isinstance(bar, dict):
+            return bar.get(field)
+        return getattr(bar, field, None)
 
     def _ema(self, values: list[Decimal], period: int) -> Decimal:
         if not values:
@@ -210,7 +230,7 @@ class MarketRegimeService:
             returns.append(float((curr - prev) / prev))
         if len(returns) < 2:
             return 0.0
-        return pstdev(returns) * 100 * (252**0.5)
+        return float(pstdev(returns) * 100 * (252**0.5))
 
     def _breadth_pct(self, snapshots: list[_SeriesSnapshot]) -> float:
         votes = 0
