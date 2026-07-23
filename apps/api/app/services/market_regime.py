@@ -230,7 +230,7 @@ class MarketRegimeService:
             returns.append(float((curr - prev) / prev))
         if len(returns) < 2:
             return 0.0
-        return pstdev(returns) * 100 * (252**0.5)
+        return float(pstdev(returns) * 100 * (252**0.5))
 
     def _breadth_pct(self, snapshots: list[_SeriesSnapshot]) -> float:
         votes = 0
