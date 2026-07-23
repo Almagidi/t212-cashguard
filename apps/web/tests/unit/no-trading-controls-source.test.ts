@@ -114,6 +114,22 @@ describe('no order-placement call sites in UI source', () => {
     expect(offenders).toEqual([])
   })
 
+  test('operator source has no market-regime override or risk-bypass mutation endpoint calls', () => {
+    const forbiddenRegimeOrRiskMutationEndpoints =
+      /["'`]\/(?:v1\/)?(?:operator\/(?:market[-_]regime|regime|risk[-_]bypass|risk_bypass)|market[-_]regime\/[^"'`]*(?:force|override|set)|risk(?:engine)?\/[^"'`]*(?:bypass|override)|risk[-_]bypass)(?:\/|["'`])/
+    const offenders = operatorCodeOffendersMatching(forbiddenRegimeOrRiskMutationEndpoints)
+
+    expect(offenders).toEqual([])
+  })
+
+  test('operator source has no imperative strategy, regime, fill, or risk-bypass command identifiers', () => {
+    const forbiddenOperatorCommandIdentifiers =
+      /\b(?:triggerStrategy|runStrategy|forceRegime|forceMarketRegime|overrideMarketRegime|triggerFill|forceFill|bypassRisk|bypassRiskEngine)\b/
+    const offenders = operatorCodeOffendersMatching(forbiddenOperatorCommandIdentifiers)
+
+    expect(offenders).toEqual([])
+  })
+
   test('operator source has no direct POST, PATCH, PUT, or DELETE method declarations', () => {
     const forbiddenMutationMethods =
       /\bmethod\s*:\s*["'`](?:POST|PATCH|PUT|DELETE)["'`]|\b(?:post|patch|put|delete)\s*\(/
@@ -131,6 +147,8 @@ describe('no order-placement call sites in UI source', () => {
         'disable\\s+automation',
         'run\\s+strategy\\s+now',
         'run\\s+strategy',
+        'force\\s+market\\s+regime',
+        'bypass\\s+risk\\s*engine',
         'start\\s+live\\s+trading',
         'stop\\s+live\\s+trading',
         'unlock\\s+live',

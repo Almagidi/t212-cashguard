@@ -605,12 +605,21 @@ test.describe('Operator dashboard readiness', () => {
         name: /start|stop|run strategy|enable live|unlock live|buy|sell|order/i,
       }),
     ).toHaveCount(0)
+    await expect(
+      strategyScheduler.getByRole('button', {
+        name: /force market regime|bypass riskengine|bypass risk engine|force fill/i,
+      }),
+    ).toHaveCount(0)
     await expect(page.getByText('Endpoint read-only')).toBeVisible()
     await expect(page.getByTestId('operator-execution-boundary')).toContainText('Creates orders')
     await expect(page.getByTestId('operator-execution-boundary')).toContainText('Calls brokers')
     await expect(page.getByText('BTC/USD').first()).toBeVisible()
     await expect(page.getByText('should-not-render')).toHaveCount(0)
-    await expect(page.getByRole('button', { name: /enable|disable|execute|trade|buy|sell/i })).toHaveCount(0)
+    await expect(
+      page.getByRole('button', {
+        name: /enable|disable|execute|trade|buy|sell|force market regime|bypass riskengine|bypass risk engine|force fill/i,
+      }),
+    ).toHaveCount(0)
     expect(mutations).toEqual([])
   })
 })
