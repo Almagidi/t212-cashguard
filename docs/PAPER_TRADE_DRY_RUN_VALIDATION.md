@@ -192,6 +192,22 @@ same real-process route with a strategy actually enabled and producing a
 signal, still paper-only, and (b) a longer supervised run rather than one
 ~6-minute single-tick observation.
 
+**Update (2026-07-23):** (a) above split into two parts. The order-creation
+side is now fixed and proven deterministically at the service level —
+`strategy_runner.py`'s two `create_order_intent()` calls (referenced at
+line 119-121 above) now pass `is_dry_run=(settings.APP_MODE == "mock")`,
+the same convention every other order-creation call site already used, so
+an enabled strategy that reaches `generate_signal()` now reaches a real
+paper fill instead of erroring at `require_order_submission_allowed()`'s
+mock-mode broker block. A real-worker attempt at observing this through the
+actual scheduled process found a *second, separate, pre-existing* gap one
+step earlier in the pipeline: `MockMarketDataProvider` has no async-context-
+manager path, so `MarketRegimeService` always reports `regime="unknown"` in
+`APP_MODE=mock`, and `RiskEngine.check_market_conditions()` unconditionally
+blocks entries on an unclassified regime — before `generate_signal()` is
+ever called. Full detail:
+[`SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md`](SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md) §1-§5.
+
 ## 6. Blockers before the tiny supervised live-money smoke test
 
 Unchanged from `LIVE_SMOKE_TEST_RUNBOOK.md` §2 — none of the work in this

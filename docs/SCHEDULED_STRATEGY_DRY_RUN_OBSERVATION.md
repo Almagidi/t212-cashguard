@@ -289,6 +289,19 @@ of any kind were involved in this procedure.**
 
 ## 5. Remaining gaps
 
+**Update (2026-07-23):** the dry-run gap described below is now **fixed**.
+`strategy_runner.py`'s two order-creation call sites now pass
+`is_dry_run=(settings.APP_MODE == "mock")`, proven by a converted regression
+test and a real service-level observation (Route A). A follow-up real-worker
+observation (Route B) found a *second, separate, pre-existing* gap —
+`MockMarketDataProvider` has no async-context-manager path, so
+`MarketRegimeService` always reports `regime="unknown"` in `APP_MODE=mock`,
+which blocks every live-routed strategy's entry signal at
+`RiskEngine.check_market_conditions()`, before the (now-fixed) order-creation
+step is ever reached. Full detail, evidence, and the precise (still
+out-of-session-scope) follow-up: see
+[`SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md`](SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md) §4.
+
 **Before an unattended automated paper trade:**
 
 - This observation used the repo's seeded defaults: no enabled strategies,
@@ -296,13 +309,16 @@ of any kind were involved in this procedure.**
   is now observed end-to-end through real beat/worker/Redis/Postgres.
   The *signal-generating* path was attempted in a follow-up session — see
   [`SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md`](SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md).
-  It found that an enabled, live-routed strategy does **not** currently reach
-  a paper fill through this path — it deterministically errors inside a
-  safety-policy gate, because `strategy_runner.py`'s order-creation calls are
-  missing a dry-run flag that every other order-creation call site in the
-  codebase already sets. No live broker call results either way. That
-  document has the full root cause, regression-test evidence, and the
-  precise (out-of-session-scope) code change that would close it.
+  ~~It found that an enabled, live-routed strategy does **not** currently
+  reach a paper fill through this path — it deterministically errors inside
+  a safety-policy gate, because `strategy_runner.py`'s order-creation calls
+  are missing a dry-run flag that every other order-creation call site in
+  the codebase already sets.~~ **Resolved 2026-07-23** — the missing
+  dry-run flag was added; see that document §1-§3 for the fix and its
+  regression-test/Route-A proof. A real-worker (Route B) attempt afterward
+  found the market-regime gap described in the update note above, which now
+  blocks the *real, fully-unstubbed* process route one step later than
+  before. No live broker call results from either gap.
 - This was one supervised, short-lived run (~6 minutes), not a soak test.
   Long-running unattended behaviour (hours/days, restart/reconnect handling,
   Redis lock contention across multiple ticks) remains unobserved.

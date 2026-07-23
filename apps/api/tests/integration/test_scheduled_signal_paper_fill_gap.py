@@ -1,30 +1,57 @@
 """
-Regression coverage for the scheduled signal-to-paper-fill gap.
+Regression coverage for the scheduled signal-to-paper-fill gap (now fixed).
 
-StrategyRunner._process_ticker creates a real Order via ExecutionEngine and
-calls submit_order() without ever passing is_dry_run=(APP_MODE == "mock"),
-unlike every other order-creation call site in this codebase (e.g.
-app/services/position_monitor.py:506,607). In APP_MODE=mock this means an
+StrategyRunner._process_ticker and _check_exit each create a real Order via
+ExecutionEngine.create_order_intent() and call submit_order(). Both call
+sites now pass is_dry_run=(APP_MODE == "mock"), matching every other
+order-creation call site in this codebase (e.g.
+app/services/position_monitor.py:506,607, app/api/v1/routes/orders.py:359,
+app/services/system_control.py:246). In APP_MODE=mock this means an
 enabled, is_live=True strategy that reaches order submission through the
 real scheduled path (app/workers/tasks.py:run_strategy_signals ->
-StrategyRunner.run_all_enabled()) does NOT produce a paper fill -- it
-errors out inside require_order_submission_allowed()'s mock-mode broker
-block, and the Order is orphaned at status="pending_intent" forever.
+StrategyRunner.run_all_enabled()) now produces a real paper/mock fill
+instead of erroring out inside require_order_submission_allowed()'s
+mock-mode broker block and orphaning the Order at status="pending_intent"
+forever.
 
 These tests pin down that exact behavior end-to-end against a real DB, the
-real ExecutionEngine, and the real MockBrokerAdapter (nothing in the
-order-creation / execution / safety-policy layer is mocked or stubbed), so
-that:
-  1. The gap is documented in code and won't silently regress further.
-  2. Whoever adds the missing is_dry_run guard to strategy_runner.py has a
-     test that will need to flip from "documents the gap" to "proves a
-     fill" -- forcing a deliberate, reviewed change instead of a silent one.
+real ExecutionEngine, real safety_policy gates, and the real
+MockBrokerAdapter (nothing in the order-creation / execution /
+safety-policy layer is mocked or stubbed), so that:
+  1. The success path is proven and locked in by a regression test, not
+     just a manual observation.
+  2. Anyone who removes the is_dry_run guard from strategy_runner.py (or
+     changes the safety-policy dry-run short-circuit) breaks a test loudly
+     instead of silently reopening the gap.
+  3. The kill switch is proven to still block order submission even for
+     dry-run orders -- is_dry_run does not bypass safety_policy's kill
+     switch check, only the broker-environment/live-readiness checks that
+     come after it.
 
 Only MarketIntelligenceMonitor and RiskEngine are stubbed out (matching the
 precedent set in test_strategy_runner_provider_equivalence.py), since
 neither is part of the order-submission / broker-safety path this test
 targets, and the real RiskEngine needs unrelated RiskProfile/portfolio
 state to run.
+
+"No live broker adapter/provider is invoked" is proven two ways:
+  1. Sentinels on Trading212Adapter, KrakenAdapter, and
+     create_trading212_provider_adapter (the provider factory) that raise
+     if constructed -- StrategyRunner._get_broker() only reaches these on
+     its non-mock branch, so a passing test proves that branch was never
+     taken.
+  2. The filled order's broker_response/broker_order_id fields: only
+     ExecutionEngine.submit_order()'s dry-run branch sets
+     broker_response == {"dry_run": True, "simulated": True}; the real
+     broker-submission branch always overwrites broker_response with the
+     broker's actual JSON reply and sets broker_order_id from it.
+
+"Non-mock mode still does not become implicitly dry-run" is proven in
+tests/unit/test_strategy_runner_provider_equivalence.py, whose
+APP_MODE="demo" fixture now asserts is_dry_run=False in the captured
+create_order_intent() kwargs at both call sites -- see
+test_process_ticker_live_entry_routes_order_through_execution_engine_only
+and test_check_exit_live_routes_sell_order_through_execution_engine_only.
 
 See docs/SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md for the full writeup.
 """
@@ -153,6 +180,17 @@ def _isolate_unrelated_subsystems(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(strategy_runner, "alert_daily_summary", lambda *_a, **_kw: None)
 
 
+def _live_adapter_sentinel(*_args: Any, **_kwargs: Any) -> Any:
+    """Fails loudly if a live broker adapter/provider is ever constructed.
+
+    StrategyRunner._get_broker() only reaches Trading212Adapter,
+    KrakenAdapter, or the provider factory on its non-mock branch -- in
+    APP_MODE=mock it returns MockBrokerAdapter() before any of these are
+    touched. Patching all three here means a passing test is direct proof
+    that branch was never taken."""
+    raise AssertionError("live broker adapter/provider must not be constructed in APP_MODE=mock")
+
+
 async def _seed_open_gates(db: AsyncSession, *, is_live: bool) -> Strategy:
     """Open every gate that would otherwise block run_all_enabled() before
     reaching order submission: app settings, venue config, and a single
@@ -192,27 +230,30 @@ async def _seed_open_gates(db: AsyncSession, *, is_live: bool) -> Strategy:
 
 
 @pytest.mark.asyncio
-async def test_scheduled_live_strategy_signal_errors_instead_of_paper_filling(
+async def test_scheduled_live_strategy_signal_reaches_mock_paper_fill(
     db: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    Documents the current (unintended) behavior: an enabled, is_live=True
-    strategy that reaches a real signal through the real scheduled
-    entrypoint (StrategyRunner.run_all_enabled(), the same method
-    app/workers/tasks.py:run_strategy_signals calls) does NOT end in a
-    paper/mock fill in APP_MODE=mock. It errors inside
-    require_order_submission_allowed()'s mock-mode broker block, because
-    strategy_runner.py's create_order_intent() call never passes
+    Proves the fix: an enabled, is_live=True strategy that reaches a real
+    signal through the real scheduled entrypoint (StrategyRunner.run_all_enabled(),
+    the same method app/workers/tasks.py:run_strategy_signals calls) now
+    DOES end in a paper/mock fill in APP_MODE=mock, because
+    strategy_runner.py's create_order_intent() call passes
     is_dry_run=(APP_MODE == "mock") the way every other order-creation call
     site in the codebase does.
 
-    If this test starts failing because an Order now reaches
-    status="filled", that means the missing is_dry_run guard was added to
-    strategy_runner.py -- update this test (and
-    docs/SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md) to assert the new,
-    fixed behavior instead of "fixing" the test back to pass.
+    If this test starts failing because an Order is stuck at
+    status="pending_intent" or a Signal ends status="error" again, that
+    means the is_dry_run guard was removed from strategy_runner.py -- fix
+    the production code, not this test.
     """
     assert settings.APP_MODE == "mock"
+    monkeypatch.setattr("app.broker.trading212.Trading212Adapter", _live_adapter_sentinel)
+    monkeypatch.setattr("app.broker.kraken.KrakenAdapter", _live_adapter_sentinel)
+    monkeypatch.setattr(
+        strategy_runner, "create_trading212_provider_adapter", _live_adapter_sentinel
+    )
+
     strategy = await _seed_open_gates(db, is_live=True)
     service = StrategyRunner(db)
     monkeypatch.setattr(service, "_fetch_market_context", _fake_market_context)
@@ -222,36 +263,56 @@ async def test_scheduled_live_strategy_signal_errors_instead_of_paper_filling(
 
     assert summary["strategies_run"] == 1
     assert summary["signals_generated"] == 1
-    assert summary["orders_submitted"] == 0, (
-        "orders_submitted > 0 means the mock-mode paper-fill gap has been "
-        "fixed -- see this test's docstring."
+    assert summary["orders_submitted"] == 1, (
+        "orders_submitted == 0 means the mock-mode paper-fill gap has "
+        "regressed -- see this test's docstring."
     )
-    assert summary["errors"] == []  # the failure surfaces on the Signal, not summary["errors"]
+    assert summary["errors"] == []
 
     signal = (
         await db.execute(select(Signal).where(Signal.strategy_id == strategy.id))
     ).scalar_one()
-    assert signal.status == "error"
-    assert signal.risk_rejection_reason is not None
-    assert "APP_MODE=mock must not call real broker endpoints" in signal.risk_rejection_reason
+    assert signal.status == "executed"
+    assert signal.risk_rejection_reason is None
 
     order = (await db.execute(select(Order).where(Order.signal_id == signal.id))).scalar_one()
-    assert order.status == "pending_intent"  # created, then permanently orphaned -- never filled
-    assert order.is_dry_run is False
+    assert order.is_dry_run is True
+    assert order.status == "filled"  # no longer stuck at pending_intent
+    assert order.filled_quantity == order.quantity
+    assert order.avg_fill_price is not None
+    # broker_response/broker_order_id are only ever set this way by
+    # ExecutionEngine.submit_order()'s dry-run branch -- the real-submission
+    # branch always overwrites broker_response with the broker's actual JSON
+    # reply and sets broker_order_id from it. Their presence here, combined
+    # with the Trading212Adapter/KrakenAdapter/provider-factory sentinels
+    # above never firing, is direct proof no live broker call occurred.
+    assert order.broker_response == {"dry_run": True, "simulated": True}
+    assert not order.broker_order_id
 
-    blocked_audit = (
-        await db.execute(
-            select(AuditLog).where(AuditLog.action == "order_blocked_by_runtime_policy")
-        )
+    simulated_audit = (
+        await db.execute(select(AuditLog).where(AuditLog.action == "order_submitted"))
     ).scalar_one()
-    assert blocked_audit.payload["decision_code"] == "mock_broker_block"
-    assert blocked_audit.payload["no_broker_order_sent"] is True
-
-    # No live-broker call was made, and no success audit trail was written.
-    placed_audit = await db.execute(
-        select(AuditLog).where(AuditLog.action == "strategy_order_placed")
+    assert simulated_audit.payload["decision"] == "simulated"
+    assert simulated_audit.payload["is_dry_run"] is True
+    assert simulated_audit.payload["no_broker_order_sent"] is True
+    assert (
+        simulated_audit.payload["reason"]
+        == "Dry-run order simulated locally. No broker order sent."
     )
-    assert placed_audit.scalar_one_or_none() is None
+
+    placed_audit = (
+        await db.execute(select(AuditLog).where(AuditLog.action == "strategy_order_placed"))
+    ).scalar_one()
+    assert placed_audit.payload["ticker"] == "NVDA"
+    assert placed_audit.payload["side"] == "buy"
+
+    # The mock-broker block that used to fire (order_blocked_by_runtime_policy,
+    # decision_code=mock_broker_block) is unreachable now: is_dry_run makes
+    # require_order_submission_allowed() return before that check runs.
+    blocked_audit = await db.execute(
+        select(AuditLog).where(AuditLog.action == "order_blocked_by_runtime_policy")
+    )
+    assert blocked_audit.scalar_one_or_none() is None
 
 
 @pytest.mark.asyncio
@@ -265,9 +326,14 @@ async def test_kill_switch_blocks_the_real_submission_path_independent_of_the_to
     mid-run. This forces that scenario (top-level gate patched permissive,
     real DB row has kill_switch_active=True) to prove the *real*
     ExecutionEngine.submit_order() -> require_order_submission_allowed()
-    path still blocks -- with no live broker call, and ahead of the
-    mock-mode gap covered by the test above -- when the kill switch is
+    path still blocks -- with no live broker call -- when the kill switch is
     active.
+
+    Order creation still passes is_dry_run=True (APP_MODE=mock) here, same
+    as the success-path test above -- proving the kill switch check in
+    require_order_submission_allowed() runs and blocks *before* the
+    `if order.is_dry_run: return` early-exit, so is_dry_run never bypasses
+    the kill switch.
     """
     strategy = await _seed_open_gates(db, is_live=True)
     app_settings_row = (
@@ -303,6 +369,7 @@ async def test_kill_switch_blocks_the_real_submission_path_independent_of_the_to
 
     order = (await db.execute(select(Order).where(Order.signal_id == signal.id))).scalar_one()
     assert order.status == "pending_intent"
+    assert order.is_dry_run is True  # dry-run intent created, but never reached fill
 
     kill_switch_audit = (
         await db.execute(select(AuditLog).where(AuditLog.action == "order_blocked_by_kill_switch"))
