@@ -1,7 +1,8 @@
 # Scheduled Signal-to-Paper-Fill Observation
 
-Status date: 2026-07-23 (updated same day: the `is_dry_run` fix landed and
-was observed via Routes A and B).
+Status date: 2026-07-23 (updated same day, second time: the mock
+market-regime gap found in §4 below is now fixed and re-observed via a new
+Route B run — see §4.4).
 Source of truth: `origin/main` at `e69710bad5b746b9991b5f48967662023af245c3`
 (the #210 merge; unchanged by this update — #210 only touched
 `apps/web/**` and `docs/OPERATOR_SCHEDULER_VISIBILITY.md` /
@@ -245,23 +246,155 @@ age) before and after this session.
 network call, and no live-money order of any kind were involved in this
 procedure.**
 
+### 4.4 Update (2026-07-23): the market-regime gap is now fixed, Route B re-run
+
+**The fix.** `apps/api/app/services/market_regime.py`, `_load_snapshots()`
+only: when `get_live_provider()` returns a provider with no
+`__aenter__`/`__aexit__` (i.e. `MockMarketDataProvider` in `APP_MODE=mock`),
+it now falls back to that provider's existing, already-used-elsewhere
+`get_ohlcv()` method to build the same `_SeriesSnapshot` objects, instead of
+silently skipping snapshot collection entirely. This mirrors the identical
+`hasattr(provider, "__aenter__")` dual-path pattern
+`strategy_runner.py::_fetch_market_context` already uses for the same
+mock-vs-real distinction. **`MockMarketDataProvider` itself is untouched** —
+it deliberately still has no `__aenter__`/`__aexit__`, because giving it one
+would silently flip `_fetch_market_context`'s own branch selection too (used
+by `position_monitor.py`, `portfolio_execution_service.py`,
+`portfolio_attribution*.py`, and `strategy_runner.py` itself), a much wider
+blast radius than this fix needs. `app/risk/engine.py` is untouched;
+unknown/invalid regimes are still blocked exactly as before.
+
+**Regression tests** (`apps/api/tests/unit/test_market_regime.py`, 3 new
+tests, all passing against the full 1725-test suite):
+
+- `test_market_regime_service_mock_provider_produces_real_snapshots_not_unknown`
+  — the real `MockMarketDataProvider` (not a test fake), via the real
+  `get_live_provider()`, no longer yields `regime="unknown"`.
+- `test_market_regime_service_mock_provider_has_no_async_context_manager` —
+  locks in the chosen fix shape (see above) as a regression guard.
+- `test_real_mock_regime_feeds_risk_engine_without_regime_block` — chains
+  the real `MarketRegimeService.evaluate()` output into the real
+  `RiskEngine.check_market_conditions()` (the exact call
+  `strategy_runner.py:754` makes before signal generation) and confirms it
+  is never blocked for being unknown/invalid. Handles `high_volatility`
+  (the one regime `RiskEngine` blocks unconditionally) as the sole tolerated
+  exception, since `MockMarketDataProvider`'s underlying price walk is
+  shared, mutable module state that drifts across the whole test session —
+  this test cannot assume which *trusted* regime a given run lands on, only
+  that it lands on one.
+
+Existing coverage unaffected and reconfirmed: `unknown` regime still returned
+for genuinely insufficient snapshot data
+(`test_market_regime_service_missing_data_is_unknown`, unchanged, still
+passing — its `FakeProvider("empty")` has `__aenter__`, so it still takes
+the async branch, untouched by this fix); `RiskEngine` still blocks
+unknown/invalid/high-volatility regimes
+(`test_risk_engine_blocks_untrusted_market_regime_states`,
+`test_risk_engine_blocks_unsafe_market_conditions`, unchanged); kill switch
+still blocks (`test_kill_switch_blocks_the_real_submission_path_independent_of_the_top_level_gate`,
+unchanged); Route A (§2, §3 above) unchanged and still green.
+
+**Route B, re-run.** Same disposable-container procedure as §4 above, new
+containers (`agent-a-regime-postgres` on `localhost:15432`,
+`agent-a-regime-redis` on `localhost:16379`; the sibling worktree's
+`t212_postgres`/`t212_redis`/etc. confirmed unchanged, same `Exited` status
+and age, before and after). Same seed shape as §4 (one enabled, `is_live`
+ORB strategy on NVDA with relaxed entry-filter params,
+`auto_trading_enabled=True`, `VenueConfig(t212).auto_trading_enabled=True`,
+`kill_switch_active=False`, `live_trading_unlocked=False`). Same real worker
+(`celery -A app.workers.celery_app worker --loglevel=INFO --concurrency=1
+--pool=solo`), same dispatch method
+(`celery_app.send_task("app.workers.tasks.run_strategy_signals")`).
+
+Dispatched 11 times over ~6 minutes (spaced to cross the regime service's
+60-second cache TTL at least twice, so more than one independently-computed
+regime value was observed):
+
+```
+TASK_RESULT (1st dispatch)  {'strategies_run': 1, 'signals_generated': 0, 'orders_submitted': 0, 'risk_blocks': 0, 'errors': []}
+TASK_RESULT (dispatches 2-5, same 60s regime-cache window) {'risk_blocks': 1, ...} x4
+TASK_RESULT (dispatches 6-11, after cache expiry + more of today's session elapsed) {'risk_blocks': 0, ...} x6
+```
+
+**The old bug never fired, in any of the 11 dispatches:** `grep -c "unknown
+market regime" worker.log` → `0`. Worker-observed regime values (read back
+from `AppSettings.extra["market_intelligence_monitor"]["last_regime"]`,
+which `MarketIntelligenceMonitor.evaluate_and_alert()` persists on every
+run) were real, trusted classifications — `trending_up` and `trending_down`
+were both observed across the 11 dispatches, driven by
+`MockMarketDataProvider`'s underlying random walk. When the regime was
+`trending_down`, `RiskEngine` correctly, legitimately blocked the ORB
+strategy — `trending_down` suppresses `orb` by design
+(`MarketRegimeService._strategy_policy`) — logged as
+`runner.intelligence_block reason='Strategy orb blocked in trending_down
+regime.'` and recorded as 4 `RiskEvent` rows,
+`event_type="regime_block"`, `payload={'regime': 'trending_down',
+'strategy_type': 'orb', 'suppressed_strategies': ['closing_momentum',
+'intraday_periodicity', 'orb']}`. This is the risk engine working exactly
+as designed, not a bug, and a categorically different message/payload than
+the old `"Strategy entries blocked: unknown market regime."` /
+`{'regime': 'unknown', ...}`.
+
+**No paper fill was reached this session.** In the 6 dispatches where the
+regime permitted `orb` (`risk_blocks=0`), `check_market_conditions()` passed
+and `engine.generate_signal(...)` was reached and called — but returned
+`None` every time: `MockMarketDataProvider.get_ohlcv()`'s random-walk bars
+did not happen to produce a qualifying opening-range breakout in any of
+those 6 draws. This is expected, unrelated stochastic strategy-engine
+behaviour, not a regression or a new blocker: `_extract_session_context`
+correctly found only a handful of real, wall-clock-timestamped bars
+available this early into today's trading session (dispatches ran
+~14:53-14:57 UTC, session opens 14:30 UTC), leaving little room for a clear
+breakout to form. `signals_generated=0`/`orders_submitted=0` in every
+dispatch; no `Signal` or `Order` row was created (no row is created until
+`generate_signal()` returns non-`None`); the deterministic, guaranteed-fill
+path from a controlled bar sequence is already proven separately at Route A
+(§2, §3) and does not depend on this randomness.
+
+Operator readback (`build_worker_health(db)`) showed `run_strategy_signals`
+at `status="ok"`, `age_seconds=24` at read time, same fresh-heartbeat
+contract as §4 and `SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md` §4.4. A
+tripwire grep for `Trading212Adapter|KrakenAdapter|trading212\.com|
+kraken\.com|api\.trading212` across the full worker log matched nothing.
+
+**Route C (real beat) was not attempted.** `run_strategy_signals` is on a
+300-second beat cadence; a real beat tick would dispatch the identical task
+through the identical code path already exercised 11 times via direct
+`send_task()` above. It would re-confirm beat-scheduling infrastructure
+(already proven in `SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md` §4) but add
+no new evidence about the regime fix specifically, for a 5-minute-per-tick
+wait. Documented as not attempted, by design, same reasoning §4.2 used for
+the pre-fix Route C decision.
+
+**Teardown:** worker process stopped
+(`pkill -f "celery -A app.workers.celery_app worker"`); both disposable
+containers stopped and removed
+(`docker rm agent-a-regime-postgres agent-a-regime-redis`); sibling
+worktree's `t212_*` containers confirmed unchanged before/after.
+
 ## 5. Remaining gaps
 
 **Before an unattended automated paper trade:**
 
-- **New finding, out of this session's scope:** `MockMarketDataProvider`
-  does not implement `__aenter__`, so `MarketRegimeService._load_snapshots()`
-  always returns no benchmark data and `evaluate()` always returns
-  `regime="unknown"` in `APP_MODE=mock` — which unconditionally blocks every
-  live-routed strategy's entry signal at `RiskEngine.check_market_conditions()`,
-  before order creation. This means a real, fully-unstubbed scheduled-task
-  process (Route B/C) cannot currently reach a signal at all in mock mode,
-  regardless of the `is_dry_run` fix in this session. Closing it would mean
-  either giving `MockMarketDataProvider` an async-context-manager code path
-  that `_load_snapshots()` can use, or giving `MarketRegimeService` a
-  mock-mode-aware fallback regime — both are changes to files outside this
-  session's allowed-edit scope (`app/market_data/**`, `app/services/
-  market_regime.py`) and are recommended as a follow-up, not attempted here.
+- **Resolved 2026-07-23 (§4.4):** the market-regime gap described in the
+  original revision of this section — `MockMarketDataProvider` had no
+  `__aenter__`, so `MarketRegimeService._load_snapshots()` always returned no
+  benchmark data and `evaluate()` always returned `regime="unknown"` in
+  `APP_MODE=mock`, unconditionally blocking every live-routed strategy's
+  entry signal at `RiskEngine.check_market_conditions()` before order
+  creation — is now fixed. See §4.4 for the fix, regression tests, and the
+  re-run Route B observation proving the old `"unknown market regime"` block
+  no longer fires (0 occurrences across 11 real-worker dispatches).
+- **New, smaller remaining gap:** Route B did not reach an actual paper fill
+  this session. Not because of the regime fix (proven closed above) or the
+  `is_dry_run` fix (proven separately at Route A) — the mock strategy engine
+  simply did not draw a qualifying opening-range breakout in any of the 6
+  attempts where the regime permitted it, likely compounded by how few
+  today's-session bars existed this early after market open at dispatch
+  time. Re-running Route B later in a session (more elapsed session bars)
+  or across more attempts would be the natural next step; this is ordinary
+  strategy-engine/mock-data randomness, not a code defect, and is not
+  believed to require any further code change.
 - The `is_dry_run` fix itself **is** proven, deterministically, at the
   service level (§2, §3) — an enabled strategy that reaches
   `generate_signal()` and creates an order intent in `APP_MODE=mock` now
@@ -286,12 +419,21 @@ recorded owner sign-off. Live trading remains disabled
 ## 6. Kill-switch / safety status
 
 - No safety, risk, kill-switch, or readiness gate was modified, loosened, or
-  bypassed by this session. The runtime change is two keyword arguments in
-  `strategy_runner.py`; everything else is tests and documentation.
+  bypassed by this session or by the §4.4 update. The §4.4 runtime change is
+  confined to `MarketRegimeService._load_snapshots()`
+  (`app/services/market_regime.py`) — it supplies real mock market data
+  through the same code path production providers already use, so the risk
+  engine has something legitimate to evaluate; it does not change what the
+  risk engine does with that evaluation. `app/risk/engine.py` is untouched
+  by either update in this document.
 - The kill switch's defense-in-depth check inside
   `require_order_submission_allowed()` was re-verified, against the real
   `ExecutionEngine.submit_order()` path and a real `is_dry_run=True` order,
   to still block first (§2, second test).
-- The market-regime block found in §4 is an *existing*, unmodified safety
-  gate behaving as designed (refusing to trade on an unclassified regime);
-  this session did not touch, loosen, or work around it.
+- The market-regime block itself is an *existing*, unmodified safety gate
+  behaving as designed (refusing to trade on an unclassified regime or a
+  regime that suppresses the given strategy); §4.4 gives it real data to
+  classify from in mock mode, it does not touch, loosen, or work around the
+  gate's logic. §4.4's Route B re-run directly demonstrates the gate still
+  firing correctly and legitimately for a *different*, real reason
+  (`trending_down` suppressing `orb`) once it has real data to work with.

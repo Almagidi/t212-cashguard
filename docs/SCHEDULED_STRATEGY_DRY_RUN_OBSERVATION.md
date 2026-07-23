@@ -298,9 +298,22 @@ observation (Route B) found a *second, separate, pre-existing* gap —
 `MarketRegimeService` always reports `regime="unknown"` in `APP_MODE=mock`,
 which blocks every live-routed strategy's entry signal at
 `RiskEngine.check_market_conditions()`, before the (now-fixed) order-creation
-step is ever reached. Full detail, evidence, and the precise (still
-out-of-session-scope) follow-up: see
+step is ever reached. Full detail, evidence, and the precise follow-up: see
 [`SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md`](SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md) §4.
+
+**Update (2026-07-23), second time:** the market-regime gap above is now
+**also fixed** — `MarketRegimeService._load_snapshots()` falls back to
+`MockMarketDataProvider`'s existing `get_ohlcv()` method (mirroring
+`strategy_runner.py::_fetch_market_context`'s own dual-path pattern) instead
+of silently skipping snapshot collection for providers without an async
+context manager. A real-worker Route B re-run (11 dispatches) confirmed the
+old `"unknown market regime"` block never fires anymore, and that
+`RiskEngine.check_market_conditions()` now correctly evaluates real (if
+random, mock-mode) regime classifications — including legitimately blocking
+`orb` during a `trending_down` regime, a different, working safety behaviour
+rather than the old bug. No paper fill was reached in this re-run (unrelated
+strategy-engine/mock-data randomness, not a code defect). Full detail:
+[`SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md`](SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md) §4.4.
 
 **Before an unattended automated paper trade:**
 
@@ -315,10 +328,16 @@ out-of-session-scope) follow-up: see
   are missing a dry-run flag that every other order-creation call site in
   the codebase already sets.~~ **Resolved 2026-07-23** — the missing
   dry-run flag was added; see that document §1-§3 for the fix and its
-  regression-test/Route-A proof. A real-worker (Route B) attempt afterward
-  found the market-regime gap described in the update note above, which now
-  blocks the *real, fully-unstubbed* process route one step later than
-  before. No live broker call results from either gap.
+  regression-test/Route-A proof. ~~A real-worker (Route B) attempt
+  afterward found the market-regime gap described in the update note above,
+  which now blocks the *real, fully-unstubbed* process route one step later
+  than before.~~ **Also resolved 2026-07-23** (second update) — see that
+  document §4.4: `MarketRegimeService` now gets real mock-mode snapshot
+  data, and a real-worker Route B re-run confirmed the `"unknown market
+  regime"` block no longer fires. An actual paper fill was not reached in
+  that re-run either, for a third, unrelated reason (mock strategy-engine
+  randomness did not produce a qualifying breakout) — see §4.4 for detail.
+  No live broker call results from any of the three findings.
 - This was one supervised, short-lived run (~6 minutes), not a soak test.
   Long-running unattended behaviour (hours/days, restart/reconnect handling,
   Redis lock contention across multiple ticks) remains unobserved.
