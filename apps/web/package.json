@@ -32,7 +32,7 @@
     "date-fns": "4.4.0",
     "framer-motion": "12.42.2",
     "lucide-react": "1.18.0",
-    "next": "16.2.9",
+    "next": "16.2.11",
     "next-themes": "0.4.6",
     "react": "18.3.1",
     "react-dom": "18.3.1",
@@ -73,6 +73,7 @@
     "@tootallnate/once": "2.0.1",
     "js-yaml": "4.3.0",
     "postcss": "8.5.20",
-    "ws": "8.21.0"
+    "ws": "8.21.0",
+    "sharp": "0.35.0"
   }
 }
