@@ -946,6 +946,7 @@ class StrategyRunner:
                     order_type="limit",
                     quantity=qty,
                     signal_id=sig.id,
+                    is_dry_run=(settings.APP_MODE == "mock"),
                     available_cash=cash,
                     estimated_price=price,
                     limit_price=limit_price,
@@ -1090,6 +1091,7 @@ class StrategyRunner:
                 order_type="market",
                 quantity=sell_qty,
                 signal_id=last_sig.id,
+                is_dry_run=(settings.APP_MODE == "mock"),
                 estimated_price=current_price,
                 venue=strategy.venue,
             )

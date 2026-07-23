@@ -890,6 +890,7 @@ async def test_process_ticker_live_entry_routes_order_through_execution_engine_o
             "order_type": "limit",
             "quantity": Decimal("2"),
             "signal_id": db.added[0].id,
+            "is_dry_run": False,  # APP_MODE="demo" in this fixture, not "mock"
             "available_cash": Decimal("1000"),
             "estimated_price": Decimal("105"),
             "limit_price": Decimal("105.10"),
@@ -1019,6 +1020,7 @@ async def test_check_exit_live_routes_sell_order_through_execution_engine_only(
             "order_type": "market",
             "quantity": Decimal("1"),
             "signal_id": last_signal.id,
+            "is_dry_run": False,  # APP_MODE="demo" in this fixture, not "mock"
             "estimated_price": Decimal("105"),
             "venue": "t212",
         }
