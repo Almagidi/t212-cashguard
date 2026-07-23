@@ -43,6 +43,8 @@ Operator interpretation:
   mock/test context. It is not a live-readiness claim and does not mean live
   trading can be enabled. Scheduler OK is not paper-fill success; scheduled
   paper-fill success requires separate backend-derived signal/fill evidence.
+  Market-regime validity is separate backend risk evidence and must not be
+  inferred from scheduler health.
 - `stale` means the scheduler is known but the latest observation is too old or
   incomplete. Operators should treat the automation path cautiously until fresh
   backend evidence appears.
@@ -59,9 +61,19 @@ fills, timestamps, and detail text, but it must not add a button or link that
 starts automation, stops automation, runs a strategy, unlocks live trading, or
 places an order.
 
+Market-regime and RiskEngine observation, when present, must also remain
+backend evidence only. Operator UI may display backend-provided evidence
+read-only, but it must never force market regime, must never bypass RiskEngine,
+and must never synthesize a valid-regime or risk-approved claim from scheduler
+status alone.
+
 The UI must never trigger strategies or fills. It must not infer paper-fill
 success from scheduler registration, cadence, heartbeat status, or observation
 status alone.
+
+Live-readiness remains separate from mock and paper observations. Mock or paper
+scheduler, market-regime, RiskEngine, signal, and fill evidence may improve
+operator visibility, but none of those observations unlocks live trading.
 
 ## Continuing UI requirements
 

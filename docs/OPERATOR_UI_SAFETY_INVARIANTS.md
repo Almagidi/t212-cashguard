@@ -37,6 +37,12 @@ claim. Live trading remains disabled and not live-ready.
 - Scheduler OK is not paper-fill success. Scheduled paper-fill success requires
   separate backend-derived signal/fill evidence.
 - Operator shorthand: scheduler OK is not paper-fill success.
+- Market-regime validity is backend risk evidence, not scheduler health. A
+  scheduler heartbeat, cadence, or registered task does not prove the current
+  market regime is valid for trading.
+- Paper-fill success is backend execution evidence, not scheduler health. The
+  UI must not infer fill success from scheduler registration, cadence,
+  heartbeat status, or observation status alone.
 - `stale` and `unknown` scheduler observation states require operator caution
   and must be displayed as caution/unverified states rather than converted into
   a healthy claim.
@@ -55,6 +61,13 @@ claim. Live trading remains disabled and not live-ready.
   show backend-provided signal, scheduled paper-fill, timestamp, and detail
   fields once they exist, but it must not invent fields or expose controls to
   start, stop, run, unlock, buy, sell, or place orders.
+- Operator UI may display backend-provided evidence read-only, including
+  market-regime, RiskEngine, signal, and paper-fill evidence once the backend
+  exposes those fields. It must never force market regime, must never bypass RiskEngine,
+  and must never create, mutate, or certify that evidence locally.
+- Live-readiness remains separate from mock and paper observations. Mock-mode
+  scheduler, signal, regime, RiskEngine, and paper-fill evidence can support
+  operator visibility but cannot unlock or claim live trading readiness.
 - UI must never trigger strategies or fills. It must only render backend facts
   about scheduler, signal, and fill observations.
 

@@ -599,6 +599,8 @@ describe("OperatorDashboard", () => {
       ),
     ).toBeInTheDocument();
     expect(within(card).queryByText("live-ready")).not.toBeInTheDocument();
+    expect(within(card).queryByText(/market[- ]regime valid/i)).not.toBeInTheDocument();
+    expect(within(card).queryByText(/riskengine approved/i)).not.toBeInTheDocument();
     expect(within(card).queryByText(/paper-fill success observed/i)).not.toBeInTheDocument();
     expect(within(card).queryByText(/automated paper trading is ready/i)).not.toBeInTheDocument();
     expect(
@@ -765,6 +767,9 @@ describe("OperatorDashboard", () => {
       /disable automation/i,
       /run strategy now/i,
       /run strategy/i,
+      /force market regime/i,
+      /bypass riskengine/i,
+      /bypass risk engine/i,
       /start live trading/i,
       /stop live trading/i,
       /unlock live/i,
