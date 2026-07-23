@@ -136,7 +136,7 @@ class StrategyRunner:
             return create_trading212_provider_adapter(
                 BrokerProviderRequest(
                     broker_id="trading212",
-                    environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                    environment=cast("BrokerRuntimeEnvironment", conn.environment),
                     purpose="worker_strategy_runner",
                     user_id=conn.user_id,
                 ),
