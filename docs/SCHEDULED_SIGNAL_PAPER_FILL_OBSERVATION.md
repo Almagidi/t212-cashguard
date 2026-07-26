@@ -372,6 +372,192 @@ containers stopped and removed
 (`docker rm agent-a-regime-postgres agent-a-regime-redis`); sibling
 worktree's `t212_*` containers confirmed unchanged before/after.
 
+### 4.5 Update (2026-07-26): long-run Route B re-run — a second, distinct, deterministic blocker found
+
+Status date: 2026-07-26. Source of truth: `origin/main` at
+`f3e337509d66e6e807b6b1221e35bca1edb9e376` (the #214 merge; this session
+makes no runtime code changes).
+
+The §4.4 re-run's stated next step ("re-running Route B later in a session,
+across more attempts, would be the natural next step") was followed up on:
+a longer, more controlled Route B observation, run against a fresh pair of
+disposable, uniquely-named Postgres/Redis containers
+(`agent-a-longrun-postgres` on `localhost:25432`, `agent-a-longrun-redis` on
+`localhost:26379` — distinct names/ports from every prior session's
+containers and from the sibling `t212-cashguard-codex` worktree's `t212_*`
+containers, confirmed unchanged, same `Exited` status, before and after).
+Same environment shape as §4/§4.4: `APP_MODE=mock`, `LIVE_TRADING_ENABLED=false`,
+`ENVIRONMENT=test`, `MARKET_DATA_PROVIDER=mock` (code default), no `T212_*`
+or `KRAKEN_*` variable set at any point (verified by `env | grep` immediately
+after sourcing the session's env file, before any app code ran).
+`kill_switch_active=False`, `live_trading_unlocked=False`,
+`auto_trading_enabled=True` throughout.
+
+**Methodology change, declared before running, not tuned after seeing
+results:** the prior Route B run's own write-up (§4.4) diagnosed its cause
+of zero fills as "the mock strategy engine simply did not draw a qualifying
+opening-range breakout in any of the 6 attempts where the regime permitted
+it, likely compounded by how few today's-session bars existed this early
+after market open." This session's one enabled/`is_live` ORB strategy
+(`Agent A Long-Run Route B Observation ORB`, `NVDA`, seeded via a
+scratchpad-only helper script, not committed) therefore changes exactly one
+`OpeningRangeBreakoutStrategy` param from its `DEFAULT_PARAMS`:
+`session_open_utc` is set ~3 hours before the seeding timestamp instead of
+the real-session default `"14:30"`, so `StrategyRunner._extract_session_context`
+(`strategy_runner.py:175-206`) — which filters `MockMarketDataProvider`'s
+wall-clock-relative bars down to whatever falls after `session_open_utc` on
+the most recent matching date — has a genuine multi-hour window of bars to
+work with (36 bars observed throughout this run) instead of the ~5-25
+minutes' worth the earlier run had. This comfortably clears
+`OpeningRangeBreakoutStrategy`'s own `trend_ema_slow=21`-bar minimum for its
+`require_trend` check, which the previous run's ~5-bar window never reached
+(that check is skipped, not failed, below 21 bars — the previous run never
+got a real answer from it either way). `min_rvol` is also relaxed `1.5 ->
+1.0`, documented as: RVOL here is driven by `MockMarketDataProvider`'s
+independent `random.randint(50000, 500000)` per-bar volume draw against the
+20-bar trailing average, not a real intraday volume curve, so requiring
+"at or above average" rather than "50% above average" is a reasonable
+threshold for characterizing this data generator rather than real market
+behavior. `session_open_utc` is a normal, already-existing, user-configurable
+`Strategy.params` key (the exact key `strategy_runner.py:710` already reads
+with a `"14:30"` fallback) — nothing was hard-coded into market data, no
+risk gate, regime check, or strategy filter logic was edited, bypassed, or
+loosened; both changes are strategy *input configuration*, applied the same
+way for every one of this run's dispatches regardless of outcome.
+
+**Dispatch.** Same task (`app.workers.tasks.run_strategy_signals`), same
+real worker command as §4/§4.4
+(`celery -A app.workers.celery_app worker --loglevel=INFO --concurrency=1
+--pool=solo`), dispatched via `celery_app.send_task(...)` against the real
+worker 40 times, ~75 seconds apart (comfortably past
+`MarketRegimeService`'s 60-second cache TTL every time), spanning
+2026-07-26T12:10:11Z to 2026-07-26T12:59:02Z (~49 minutes wall clock,
+within the mission's 30-60 minute bound). Every one of the 40 dispatches
+returned promptly (`result.get(timeout=90)` never raised) with
+`{'strategies_run': 1, 'signals_generated': 0, 'orders_submitted': 0,
+'risk_blocks': 0, 'errors': []}` — identical shape all 40 times.
+`run_strategy_signals`'s operator/status readback
+(`build_worker_health(db)`, the function `GET /v1/operator/status` calls)
+showed `status="ok"`, `age_seconds=30` at read time immediately after the
+40th dispatch — the same fresh-heartbeat contract as §4/§4.4/
+`SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md` §4.4, across all 40 real runs,
+not just one. A tripwire grep for
+`Trading212Adapter|KrakenAdapter|trading212\.com|kraken\.com|api\.trading212`
+across the full 40-dispatch worker log matched nothing. Final DB state after
+all 40 dispatches: 0 `Signal` rows, 0 `Order` rows, 0 `RiskEvent` rows, 0
+`AuditLog` rows — nothing was ever created, at any layer, in any of the 40
+runs.
+
+**risk_blocks=0 in all 40 dispatches** — a materially different result from
+§4.4's 11-dispatch run (4/11 blocked, `trending_down` suppressing `orb`).
+This run's `AppSettings.extra["market_intelligence_monitor"]["last_regime"]`
+readback (taken after each dispatch, one call lagged from the regime the
+concurrent dispatch actually evaluated, so treated here as directional, not
+per-dispatch-exact) showed the same real distribution §4.4 found —
+`ranging`, `trending_up`, `trending_down`, `risk_off` all observed — so
+`MarketRegimeService` continues working as fixed in #214; `orb` simply
+was not caught by a suppressing regime this time by chance across 40 draws.
+
+### 4.6 The second blocker: a distinct, deterministic, structural gap — not the same one #214 fixed
+
+This codebase has **two independent, same-named "regime" concepts**, and
+this session's evidence disambiguates them for the first time in this
+document:
+
+1. `MarketRegimeService.evaluate()` (`app/services/market_regime.py`) — feeds
+   `RiskEngine.check_market_conditions()` (`app/risk/engine.py`), the outer
+   gate `_process_ticker` calls *before* `generate_signal()`. This is what
+   §4.4 fixed and what `risk_blocks` in the task result counts.
+2. `market_regime()` (`app/strategies/indicators.py:202-238`) — a
+   **separate**, Choppiness-Index-based classifier called *only inside*
+   `OpeningRangeBreakoutStrategy._check_filters()`
+   (`app/strategies/orb_production.py:174,229`), using only the ticker's own
+   OHLCV bars. It is unrelated to, and untouched by, the #214 fix.
+
+With `risk_blocks=0` across the board this run, gate (1) was almost never
+the obstacle. A read-only, non-DB, non-Celery diagnostic (a scratchpad-only
+script, run alongside the real dispatch loop, calling the exact same
+`MockMarketDataProvider.get_ohlcv()` and `OpeningRangeBreakoutStrategy`
+production classes) sampled 300 independent 36-bar draws through the full
+`generate_signal()` funnel:
+
+| Stage | Count / 300 |
+|---|---|
+| No breakout above the opening-range high | 186 |
+| Breakout, but `_check_filters` rejected | 114 |
+| — rejected: RVOL < 1.0 | 59 |
+| — rejected: `"Market choppy — skip"` | 55 |
+| Passed both RVOL and choppy checks | **0** |
+| Signal generated | **0 / 300** |
+
+A follow-up, more targeted sample — calling `market_regime()`
+(`indicators.py`) directly on 200 independent 36-bar
+`MockMarketDataProvider.get_ohlcv("NVDA", ...)` draws, with no ORB filtering
+at all — returned `"choppy"` **200 / 200 times**.
+
+**Root cause.** `MockMarketDataProvider.get_ohlcv()`
+(`app/market_data/mock_provider.py:74-103`) generates a purely driftless,
+memoryless random walk: each bar's `open` is the prior bar's `close`, and
+the new `close` is drawn uniformly inside a fresh, symmetric `±1%` band with
+no momentum or autocorrelation term carried forward. The Choppiness Index
+(`indicators.py:230`, `100 * ATR(14) * sqrt(14) / (14-bar high-low range)`)
+is, by design, close to its maximum for exactly this kind of memoryless
+walk: real (or realistically-simulated) trends have a persistent drift
+component that widens the multi-bar high-low range faster than the
+per-bar ATR grows, driving the index down; a symmetric, memoryless walk's
+range grows in line with its own per-bar noise, keeping the index
+structurally high. `_check_filters` (`orb_production.py:174-176`,
+`:229-231`) unconditionally rejects `regime == "choppy"` for both the long
+and short ORB paths. The 55/59 split between "choppy" and low-RVOL
+rejections in the 300-sample funnel (summing to exactly the 114 breakout
+draws, with zero surviving both) is consistent with this: RVOL is close to
+an independent 50/50 draw (volume is i.i.d. uniform, unrelated to price),
+while the choppy classification is *not* independent of anything price
+related — it is, in this data generator, close to deterministic.
+
+**This is data-shape, not a risk-gate bug, not a strategy-logic bug, and not
+this session's config choice.** It reproduces identically regardless of
+`session_open_utc` (36 bars here vs. ~5 in §4.4 — both still saw the same
+outcome once enough bars existed to compute the index at all, i.e. `len(bars)
+>= 30`, `indicators.py:211`), `min_rvol` (1.0 here vs. 1.5 in §4.4 — RVOL
+was never the sole blocker in either), ticker, or dispatch count: no
+parameter this session controls, and no parameter a real strategy owner
+would tune per-deployment, changes the fact that `MockMarketDataProvider`'s
+bars have no trend component for the Choppiness Index to detect as
+non-choppy. `app/risk/engine.py` and `app/services/market_regime.py` — the
+files #214 touched — are unrelated to this gap and were not touched this
+session either. Fixing it would mean changing `MockMarketDataProvider` (to
+add a momentum/drift component — but see §4.4's explicit reasoning for why
+giving it new async-context-manager-adjacent behavior has a wide,
+unintended blast radius across `position_monitor.py`,
+`portfolio_execution_service.py`, `portfolio_attribution*.py`, and
+`strategy_runner.py`'s own `_fetch_market_context` branch selection) or
+`indicators.market_regime()`/`OpeningRangeBreakoutStrategy._check_filters()`
+(which would change real production trading logic for a testing-data
+limitation) — both are materially broader changes than this observation
+session is scoped to, exactly the same category of judgment call §4.4 made
+about `app/risk/engine.py`.
+
+**Route C (real beat) was not attempted**, per the mission's own
+instruction: Route C is only worth the 5-minute wait if Route B succeeded
+and beat-cadence adds new evidence. Route B did not reach a fill this
+session either, and the blocker found (§4.6) is deterministic and
+data-shape-driven, not timing-driven — a real beat tick would dispatch the
+identical task through the identical code path already exercised 40 times
+via direct `send_task()` above, adding no new evidence.
+
+**Teardown.** Worker process stopped
+(`pkill -f "celery -A app.workers.celery_app worker"`, confirmed no process
+remains); both disposable containers removed
+(`docker rm -f agent-a-longrun-postgres agent-a-longrun-redis`); sibling
+worktree's `t212_postgres`/`t212_redis`/`t212_worker`/`t212_beat`/
+`t212_api`/`t212_web` containers confirmed unchanged (same `Exited` status,
+consistent age progression) before and after this session.
+
+**No real broker credentials, no real market-data credentials, no real
+network call, and no live-money order of any kind were involved in this
+procedure.**
+
 ## 5. Remaining gaps
 
 **Before an unattended automated paper trade:**
@@ -385,16 +571,27 @@ worktree's `t212_*` containers confirmed unchanged before/after.
   creation — is now fixed. See §4.4 for the fix, regression tests, and the
   re-run Route B observation proving the old `"unknown market regime"` block
   no longer fires (0 occurrences across 11 real-worker dispatches).
-- **New, smaller remaining gap:** Route B did not reach an actual paper fill
-  this session. Not because of the regime fix (proven closed above) or the
-  `is_dry_run` fix (proven separately at Route A) — the mock strategy engine
-  simply did not draw a qualifying opening-range breakout in any of the 6
-  attempts where the regime permitted it, likely compounded by how few
-  today's-session bars existed this early after market open at dispatch
-  time. Re-running Route B later in a session (more elapsed session bars)
-  or across more attempts would be the natural next step; this is ordinary
-  strategy-engine/mock-data randomness, not a code defect, and is not
-  believed to require any further code change.
+- **Superseded 2026-07-26 (§4.5, §4.6):** the 2026-07-23 write-up above
+  guessed the zero-fill cause was ordinary randomness compounded by too few
+  session bars. A longer, 40-dispatch, ~49-minute real-worker run with a
+  deliberately extended session window (36 session bars, well past the
+  21-bar trend-check threshold) ruled that out and found the real cause:
+  `OpeningRangeBreakoutStrategy._check_filters()`'s own internal Choppiness
+  Index regime check (`app/strategies/indicators.py::market_regime()` — a
+  second, separate "regime" concept from `MarketRegimeService`/`RiskEngine`,
+  unrelated to and untouched by the #214 fix) classifies
+  `MockMarketDataProvider`'s driftless, memoryless random-walk bars as
+  `"choppy"` deterministically (200/200 in a direct sample), and
+  `_check_filters` unconditionally rejects choppy regimes for `orb`. See
+  §4.6 for the full root-cause analysis. **This is a data-shape limitation
+  of `MockMarketDataProvider`, not a risk-gate bug, not a strategy-logic
+  bug, and not fixable by any strategy param this session controls** (session
+  window length, RVOL threshold, ticker, and dispatch count were all varied
+  across §4.4/§4.5 without changing the outcome). It is out of this
+  session's scope to fix (would mean changing either the shared mock
+  provider or real ORB production filter logic for a testing-data
+  limitation — a materially broader change, same category of judgment call
+  §4.4 made about not touching `app/risk/engine.py`).
 - The `is_dry_run` fix itself **is** proven, deterministically, at the
   service level (§2, §3) — an enabled strategy that reaches
   `generate_signal()` and creates an order intent in `APP_MODE=mock` now
@@ -405,9 +602,12 @@ worktree's `t212_*` containers confirmed unchanged before/after.
   call, exactly as it forwarded `mock_broker_block` before the fix and
   `auto_trading_off` in the no-strategies-enabled case
   (`SCHEDULED_STRATEGY_DRY_RUN_OBSERVATION.md` §4.2).
-- This was one supervised, short-lived Route B run, not a soak test.
-  Long-running unattended behaviour remains unobserved (unchanged from the
-  prior revision of this document).
+- **Partially resolved 2026-07-26 (§4.5):** a longer, 40-dispatch, ~49-minute
+  supervised Route B run has now been observed (up from 11 dispatches/~6
+  minutes in §4.4), with the operator/status heartbeat readback re-confirmed
+  fresh after every dispatch and zero DB rows created at any point. This is
+  still a supervised session, not an unattended multi-hour/multi-day soak —
+  that remains unobserved.
 
 **Before the tiny supervised live-money smoke test**
 (`LIVE_SMOKE_TEST_RUNBOOK.md`): unchanged. Nothing in this session's fix or

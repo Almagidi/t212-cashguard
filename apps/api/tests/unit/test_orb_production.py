@@ -658,3 +658,101 @@ class TestCheckExitConditions:
         if result is not None and result.signal_type in ("stop", "trailing_stop"):
             # When current_stop > initial_stop it's a trailing stop
             assert result.signal_type == "trailing_stop"
+
+
+# ── MockMarketDataProvider characterization (Agent A, 2026-07-26) ─────────────
+#
+# Documents a real-worker Route B observation finding: a real Celery worker,
+# dispatched 40 times over ~49 minutes against one enabled/is_live ORB
+# strategy, produced zero signals in every dispatch even with a 36-bar
+# session window (well past the 21-bar trend-confirmation threshold) and
+# risk_blocks=0 throughout (MarketRegimeService/RiskEngine were not the
+# obstacle — see docs/SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md §4.6).
+#
+# Root cause: MockMarketDataProvider.get_ohlcv() generates a driftless,
+# memoryless random walk (each bar's open is the prior close; the new close
+# is drawn uniformly in a fresh symmetric band with no carried-forward
+# momentum). indicators.market_regime()'s Choppiness Index is, by design,
+# close to its maximum for exactly this kind of walk, and
+# OpeningRangeBreakoutStrategy._check_filters() unconditionally rejects a
+# "choppy" regime. These tests pin that behaviour with a seeded PRNG so it
+# is a locked, reproducible regression rather than an anecdote.
+
+
+class TestMockProviderChoppyRegimeCharacterization:
+    """
+    Characterizes real MockMarketDataProvider output against the real
+    production regime/strategy classes it feeds in mock mode. Not a bug
+    report and not something this test suite fixes — see the module-level
+    comment above and docs/SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md §4.6
+    for why fixing it is out of scope (broader blast radius across
+    position_monitor.py / portfolio_execution_service.py /
+    portfolio_attribution*.py / strategy_runner.py's own async-provider
+    branch selection, or changing real ORB production filter logic for a
+    testing-data limitation).
+    """
+
+    def _session_bars(self, provider, ticker="NVDA", n_bars=36):
+        from app.strategies.indicators import Bar as _Bar
+
+        raw = provider.get_ohlcv(ticker, interval_minutes=5, bars=n_bars)
+        return [
+            _Bar(
+                Decimal(str(r["open"])),
+                Decimal(str(r["high"])),
+                Decimal(str(r["low"])),
+                Decimal(str(r["close"])),
+                Decimal(str(r["volume"])),
+            )
+            for r in raw
+        ]
+
+    def test_mock_provider_bars_are_classified_choppy_by_orb_regime_detector(self):
+        import random as _random
+
+        from app.market_data.mock_provider import MockMarketDataProvider
+        from app.strategies.indicators import market_regime
+
+        _random.seed(20260726)
+        provider = MockMarketDataProvider()
+        regimes = [market_regime(self._session_bars(provider)) for _ in range(50)]
+        choppy_count = regimes.count("choppy")
+        # Observed 200/200 in the real Route B session; require a large
+        # majority here (not 100%) so this stays robust to the PRNG
+        # implementation details while still failing if the underlying
+        # driftless-walk behaviour changes materially.
+        assert choppy_count >= 45, (
+            f"expected the driftless mock walk to classify as 'choppy' in "
+            f"the large majority of draws, got {choppy_count}/50: {regimes}"
+        )
+
+    def test_orb_strategy_generates_no_signal_against_driftless_mock_walk(self):
+        import random as _random
+
+        from app.market_data.mock_provider import MockMarketDataProvider
+
+        _random.seed(20260726)
+        provider = MockMarketDataProvider()
+        engine = OpeningRangeBreakoutStrategy(params={"min_rvol": 1.0})
+
+        signals = 0
+        for _ in range(50):
+            bars = self._session_bars(provider)
+            sig = engine.generate_signal(
+                ticker="NVDA",
+                bars=bars,
+                account_value=Decimal("100000"),
+                available_cash=Decimal("100000"),
+                current_time_utc="15:00",
+            )
+            if sig is not None:
+                signals += 1
+
+        # Observed 0/300 in the real Route B session's diagnostic sample.
+        # This is a real, current limitation of the mock data generator for
+        # momentum/breakout strategies, not a fluke of one run's PRNG state.
+        assert signals == 0, (
+            f"expected the choppy-classified driftless mock walk to produce "
+            f"no ORB signals; got {signals}/50 — either the mock data "
+            f"generator or the choppy-regime gate has changed"
+        )
