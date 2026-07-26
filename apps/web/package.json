@@ -72,6 +72,10 @@
   "overrides": {
     "@tootallnate/once": "2.0.1",
     "js-yaml": "4.3.0",
+    "minimatch": {
+      ".": "10.2.5",
+      "brace-expansion": "5.0.8"
+    },
     "postcss": "8.5.20",
     "ws": "8.21.0",
     "sharp": "0.35.0"
