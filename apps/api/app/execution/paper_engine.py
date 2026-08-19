@@ -17,6 +17,7 @@ from sqlalchemy import desc, func, select
 
 from app.core.config import settings
 from app.db.models import AuditLog, BrokerConnection, Order, OrderEvent, PositionSnapshot
+from app.execution.state_machine import transition_order_status
 from app.risk.engine import RiskEngine, RiskViolation
 from app.services.execution_quality import apply_order_execution_quality
 
@@ -29,7 +30,6 @@ if TYPE_CHECKING:
 
 PAPER_BROKER = "paper"
 PAPER_ENVIRONMENT = "mock"
-PAPER_ORDER_STATUS = "filled"
 PAPER_EXECUTION_ENVIRONMENT = "paper_mock"
 PAPER_SUPPORTED_VENUES = {"paper", "mock"}
 
@@ -398,17 +398,9 @@ class PaperExecutionEngine:
             side=body.side,
             order_type=body.order_type,
             quantity=quantity,
-            status=PAPER_ORDER_STATUS,
-            filled_quantity=quantity,
-            avg_fill_price=body.estimated_price,
+            status="pending_intent",
             execution_environment=PAPER_EXECUTION_ENVIRONMENT,
             expected_fill_price=body.estimated_price,
-            submitted_at=now,
-            first_ack_at=now,
-            filled_at=now,
-            broker_latency_ms=0,
-            fill_latency_ms=0,
-            reconciliation_latency_ms=0,
             venue=body.venue,
             is_dry_run=True,
             cash_used=cash_used,
@@ -423,14 +415,7 @@ class PaperExecutionEngine:
                 "source": body.source,
                 "strategy": body.strategy,
             },
-            broker_response={
-                "paper_only": True,
-                "mock_execution": True,
-                "no_broker_order_sent": True,
-                "status": "PAPER_FILLED",
-            },
         )
-        apply_order_execution_quality(order)
         self.db.add(order)
         await self.db.flush()
         await self._order_event(
@@ -453,10 +438,33 @@ class PaperExecutionEngine:
                 "no_broker_order_sent": True,
             },
         )
+        transition_order_status(order, "submitted", reason="paper order accepted locally")
+        order.submitted_at = now
+        await self._order_event(
+            order.id,
+            "paper_order_submitted",
+            from_status="pending_intent",
+            to_status="submitted",
+        )
+        transition_order_status(order, "filled", reason="paper fill simulated locally")
+        order.filled_quantity = quantity
+        order.avg_fill_price = body.estimated_price
+        order.first_ack_at = now
+        order.filled_at = now
+        order.broker_latency_ms = 0
+        order.fill_latency_ms = 0
+        order.reconciliation_latency_ms = 0
+        order.broker_response = {
+            "paper_only": True,
+            "mock_execution": True,
+            "no_broker_order_sent": True,
+            "status": "PAPER_FILLED",
+        }
+        apply_order_execution_quality(order)
         await self._order_event(
             order.id,
             "paper_fill_simulated",
-            from_status="pending_intent",
+            from_status="submitted",
             to_status=order.status,
             payload={"fill_price": str(body.estimated_price), "filled_quantity": str(quantity)},
         )

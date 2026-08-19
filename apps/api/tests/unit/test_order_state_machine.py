@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -136,3 +138,75 @@ def test_regression_filled_order_cannot_be_cancelled_locally():
         transition_order_status(order, "cancelled")
 
     assert order.status == "filled"
+
+
+def _direct_order_status_assignments(source: str) -> list[int]:
+    """Return direct assignments that bypass the persisted-order state machine."""
+    violations: list[int] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        else:
+            continue
+        for target in targets:
+            if (
+                isinstance(target, ast.Attribute)
+                and target.attr == "status"
+                and isinstance(target.value, ast.Name)
+                and (target.value.id == "order" or target.value.id.endswith("_order"))
+            ):
+                violations.append(node.lineno)
+    return violations
+
+
+def test_direct_order_status_assignment_detector_catches_bypasses():
+    source = 'order.status = "filled"\npaper_order.status: str = "cancelled"\n'
+
+    assert _direct_order_status_assignments(source) == [1, 2]
+
+
+def test_persistent_order_status_is_only_mutated_by_state_machine():
+    app_root = Path(__file__).parents[2] / "app"
+    allowed = app_root / "execution" / "state_machine.py"
+    violations: list[str] = []
+
+    for path in app_root.rglob("*.py"):
+        if path == allowed or "backtest" in path.parts:
+            continue
+        for line in _direct_order_status_assignments(path.read_text()):
+            violations.append(f"{path.relative_to(app_root)}:{line}")
+
+    assert violations == [], (
+        "Persistent order status must advance only through the central state machine; "
+        f"direct assignment violations: {violations}"
+    )
+
+
+def test_persistent_orders_are_only_constructed_in_the_initial_state():
+    app_root = Path(__file__).parents[2] / "app"
+    violations: list[str] = []
+
+    for path in app_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            call_name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else None
+            )
+            if call_name != "Order":
+                continue
+            status = next((item.value for item in node.keywords if item.arg == "status"), None)
+            if not isinstance(status, ast.Constant) or status.value != "pending_intent":
+                violations.append(f"{path.relative_to(app_root)}:{node.lineno}")
+
+    assert violations == [], (
+        "Persistent orders must be constructed in pending_intent and advance only "
+        f"through the central state machine; violations: {violations}"
+    )
