@@ -112,7 +112,7 @@ def run_monitored_task(
                 log.exception("tasks.failure_heartbeat_failed", task=task_name)
             raise
 
-    return cast(dict[str, Any], run_async(_wrapped()))
+    return cast("dict[str, Any]", run_async(_wrapped()))
 
 
 # ── Strategy signal generation (every 5 min) ─────────────────────────────────
@@ -331,7 +331,7 @@ def reconcile_pending_orders(self: Any) -> dict[str, Any]:
                     provider_broker = create_trading212_provider_adapter(
                         BrokerProviderRequest(
                             broker_id="trading212",
-                            environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                            environment=cast("BrokerRuntimeEnvironment", conn.environment),
                             purpose="worker_reconcile",
                             user_id=conn.user_id,
                         ),
@@ -432,7 +432,7 @@ def sync_account_snapshot(self: Any) -> dict[str, Any]:
                     provider_broker = create_trading212_provider_adapter(
                         BrokerProviderRequest(
                             broker_id="trading212",
-                            environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                            environment=cast("BrokerRuntimeEnvironment", conn.environment),
                             purpose="worker_account_sync",
                             user_id=conn.user_id,
                         ),
@@ -573,7 +573,7 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
         from app.core.security import CredentialDecryptionError, decrypt_field
         from app.db.models import BrokerConnection, Order
         from app.db.session import AsyncSessionLocal
-        from app.execution.engine import ExecutionEngine
+        from app.execution.engine import ExecutionEngine, OrderCancellationFailed
         from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
         ORDER_TIMEOUT_MINUTES = 60  # Cancel working orders after 1 hour
@@ -645,7 +645,7 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
                     provider_broker = create_trading212_provider_adapter(
                         BrokerProviderRequest(
                             broker_id="trading212",
-                            environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                            environment=cast("BrokerRuntimeEnvironment", conn.environment),
                             purpose="worker_cancel_timed_out_orders",
                             user_id=conn.user_id,
                         ),
@@ -669,8 +669,19 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
 
                 async with provider_broker as broker:
                     engine = ExecutionEngine(db, broker)
+                    failed = 0
                     for order in timed_out:
-                        await engine.cancel_order(order)
+                        try:
+                            await engine.cancel_order(order)
+                        except OrderCancellationFailed:
+                            failed += 1
+                            log.error(
+                                "tasks.order_timeout_cancel_failed",
+                                order_id=str(order.id),
+                                ticker=order.ticker,
+                                requires_reconciliation=True,
+                            )
+                            continue
                         log.warning(
                             "tasks.order_timeout_cancel",
                             order_id=str(order.id),
@@ -679,7 +690,10 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
                         )
                         count += 1
 
-                return await _complete_task(db, "cancel_timed_out_orders", {"cancelled": count})
+                summary = {"cancelled": count}
+                if failed:
+                    summary["failed"] = failed
+                return await _complete_task(db, "cancel_timed_out_orders", summary)
 
     return run_monitored_task("cancel_timed_out_orders", _run)
 
@@ -859,7 +873,7 @@ def purge_old_records(self: Any) -> dict[str, Any]:
                 if not id_rows:
                     break
                 result = await db.execute(delete(AuditLog).where(AuditLog.id.in_(id_rows)))
-                audit_deleted += result.rowcount
+                audit_deleted += int(getattr(result, "rowcount", 0))
                 await db.flush()
 
             # ── RiskEvent purge ───────────────────────────────────────────────
@@ -879,7 +893,7 @@ def purge_old_records(self: Any) -> dict[str, Any]:
                 if not id_rows:
                     break
                 result = await db.execute(delete(RiskEvent).where(RiskEvent.id.in_(id_rows)))
-                risk_deleted += result.rowcount
+                risk_deleted += int(getattr(result, "rowcount", 0))
                 await db.flush()
 
             summary = {
@@ -972,7 +986,7 @@ def track_cfd_funding(self: Any) -> dict[str, Any]:
                     trading212_broker = create_trading212_provider_adapter(
                         BrokerProviderRequest(
                             broker_id="trading212",
-                            environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                            environment=cast("BrokerRuntimeEnvironment", conn.environment),
                             purpose="worker_cfd_funding",
                             user_id=conn.user_id,
                         ),

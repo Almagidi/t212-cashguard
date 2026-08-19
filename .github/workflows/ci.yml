@@ -74,6 +74,7 @@ jobs:
     env:
       PYTHONPATH: "."
       DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
+      POSTGRES_TEST_DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
       REDIS_URL: redis://localhost:6379/15
       SECRET_KEY: test-secret-key-32-chars-minimum-x
       MASTER_KEY: test-master-key-32-chars-minimum-x

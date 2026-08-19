@@ -6,6 +6,7 @@ import type {
   CreatePaperOrderPayload,
   CreateStrategyPayload,
   CreateStrategyPresetPayload,
+  EmergencyActionResult,
   StrategyPresetKey,
   StrategyPromotionAction,
 } from "@/types";
@@ -28,7 +29,12 @@ function extractErrorMessage(error: any, fallback: string): string {
 export const QK = {
   me: ["me"],
   brokerStatus: ["broker", "status"],
-  demoReconciliationStatus: ["broker", "trading212", "reconciliation", "status"],
+  demoReconciliationStatus: [
+    "broker",
+    "trading212",
+    "reconciliation",
+    "status",
+  ],
   demoReconciliationSchedulerStatus: [
     "broker",
     "trading212",
@@ -411,7 +417,13 @@ export const useCancelOrder = () => {
       qc.invalidateQueries({ queryKey: ["orders"] });
       toast.success("Order cancelled");
     },
-    onError: () => toast.error("Failed to cancel order"),
+    onError: (error: any) => {
+      if (error?.response?.data?.requires_reconciliation) {
+        toast.error("Cancellation failed; order requires reconciliation");
+        return;
+      }
+      toast.error("Failed to cancel order");
+    },
   });
 };
 
@@ -419,8 +431,14 @@ export const useCancelAllPending = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.cancelAllPending.bind(api),
-    onSuccess: (d: any) => {
+    onSuccess: (d: { cancelled: number; failed: number }) => {
       qc.invalidateQueries({ queryKey: ["orders"] });
+      if (d.failed > 0) {
+        toast.error(
+          `Cancelled ${d.cancelled} orders; ${d.failed} cancellation${d.failed === 1 ? "" : "s"} requires reconciliation`,
+        );
+        return;
+      }
       toast.success(`Cancelled ${d.cancelled} orders`);
     },
   });
@@ -604,9 +622,10 @@ export const useEmergencyCancelAll = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.emergencyCancelAll.bind(api),
-    onSuccess: (d: any) => {
+    onSuccess: (d: EmergencyActionResult) => {
       qc.invalidateQueries({ queryKey: ["orders"] });
-      toast.success(d.message);
+      if (d.success) toast.success(d.message);
+      else toast.error(d.message);
     },
   });
 };

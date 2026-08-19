@@ -1463,6 +1463,114 @@ class TestOrderFlow:
         # May return 201 (placed) or 422 (risk violation)
         assert resp.status_code in (201, 422)
 
+    async def test_cancel_order_broker_failure_returns_reconciliation_required(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        db,
+    ):
+        from sqlalchemy import select
+
+        from app.api.deps import get_broker
+        from app.db.models import AuditLog, Order
+        from app.main import app
+
+        class CancelErrorBroker(FakeTrading212Adapter):
+            async def cancel_order(self, order_id):
+                raise RuntimeError(f"secret broker response for {order_id}")
+
+        order = Order(
+            id=uuid.uuid4(),
+            client_order_key=f"cancel-failure-{uuid.uuid4()}",
+            ticker="AAPL",
+            side="buy",
+            order_type="limit",
+            quantity=Decimal("1"),
+            limit_price=Decimal("100"),
+            status="accepted",
+            broker_order_id="broker-cancel-failure",
+            execution_environment="demo",
+            is_dry_run=False,
+        )
+        db.add(order)
+        await db.commit()
+        app.dependency_overrides[get_broker] = lambda: CancelErrorBroker("key", "secret", "demo")
+
+        try:
+            resp = await client.post(f"/v1/orders/{order.id}/cancel", headers=auth_headers)
+        finally:
+            app.dependency_overrides.pop(get_broker, None)
+
+        assert resp.status_code == 502
+        assert resp.json() == {
+            "cancelled": False,
+            "order_id": str(order.id),
+            "status": "error",
+            "requires_reconciliation": True,
+        }
+        await db.refresh(order)
+        assert order.status == "error"
+        assert order.error_message == "Broker request failed with RuntimeError."
+        actions = (
+            (await db.execute(select(AuditLog.action).where(AuditLog.entity_id == str(order.id))))
+            .scalars()
+            .all()
+        )
+        assert "order_cancel_failed" in actions
+        assert "order_cancelled" not in actions
+
+    async def test_cancel_all_pending_reports_partial_broker_failure(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        db,
+    ):
+        from app.api.deps import get_broker
+        from app.db.models import Order
+        from app.main import app
+
+        class PartiallyFailingBroker(FakeTrading212Adapter):
+            async def cancel_order(self, order_id):
+                if order_id == "broker-msft":
+                    raise RuntimeError("secret broker cancellation failure")
+                return await super().cancel_order(order_id)
+
+        orders = [
+            Order(
+                id=uuid.uuid4(),
+                client_order_key=f"cancel-all-{ticker.lower()}-{uuid.uuid4()}",
+                ticker=ticker,
+                side="buy",
+                order_type="limit",
+                quantity=Decimal("1"),
+                limit_price=Decimal("100"),
+                status="accepted",
+                broker_order_id=broker_order_id,
+                execution_environment="demo",
+                is_dry_run=False,
+            )
+            for ticker, broker_order_id in (
+                ("AAPL", "broker-aapl"),
+                ("MSFT", "broker-msft"),
+            )
+        ]
+        db.add_all(orders)
+        await db.commit()
+        app.dependency_overrides[get_broker] = lambda: PartiallyFailingBroker(
+            "key", "secret", "demo"
+        )
+
+        try:
+            resp = await client.post("/v1/orders/cancel-all-pending", headers=auth_headers)
+        finally:
+            app.dependency_overrides.pop(get_broker, None)
+
+        assert resp.status_code == 200
+        assert resp.json() == {"cancelled": 1, "failed": 1}
+        await db.refresh(orders[0])
+        await db.refresh(orders[1])
+        assert [order.status for order in orders] == ["cancelled", "error"]
+
     async def test_kill_switch_blocks_manual_order_before_account_summary(
         self,
         client: AsyncClient,
@@ -1797,6 +1905,38 @@ class TestEmergencyFlow:
         resp = await client.post("/v1/emergency/auto-trading/off", headers=auth_headers)
         assert resp.status_code == 200
         assert resp.json()["success"] is True
+
+    async def test_emergency_cancel_all_marks_reconciliation_failure_unsuccessful(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        monkeypatch,
+    ):
+        from types import SimpleNamespace
+
+        class PartiallyFailingSystemControl:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def cancel_all_pending_summary(self, _actor):
+                return SimpleNamespace(
+                    failed=1,
+                    message=(
+                        "Cancelled 1 pending orders; 1 cancellation attempts require "
+                        "reconciliation."
+                    ),
+                )
+
+        monkeypatch.setattr(
+            "app.api.v1.routes.emergency.SystemControlService",
+            PartiallyFailingSystemControl,
+        )
+
+        resp = await client.post("/v1/emergency/cancel-all", headers=auth_headers)
+
+        assert resp.status_code == 200
+        assert resp.json()["success"] is False
+        assert "require reconciliation" in resp.json()["message"]
 
     async def test_cannot_enable_auto_trading_with_kill_switch(
         self, client: AsyncClient, auth_headers: dict

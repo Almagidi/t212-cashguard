@@ -1,16 +1,21 @@
 """Emergency controls — kill switch, flatten, cancel all."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_admin
 from app.api.schemas import EmergencyActionResult
-from app.db.models import User
 from app.db.session import get_db
 from app.services.system_control import SystemControlService
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.db.models import User
 
 router = APIRouter(prefix="/emergency", tags=["emergency"])
 
@@ -19,13 +24,16 @@ router = APIRouter(prefix="/emergency", tags=["emergency"])
 async def emergency_kill_switch(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> EmergencyActionResult:
     """Activate kill switch AND disable auto-trading in one atomic action."""
-    message = await SystemControlService(db, current_user.id).activate_kill_switch(current_user.email)
+    message = await SystemControlService(db, current_user.id).activate_kill_switch(
+        current_user.email
+    )
     return EmergencyActionResult(
-        success=True, action="kill_switch",
+        success=True,
+        action="kill_switch",
         message=message,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
     )
 
 
@@ -33,11 +41,13 @@ async def emergency_kill_switch(
 async def disable_auto_trading(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> EmergencyActionResult:
     message = await SystemControlService(db, current_user.id).pause_auto_trading(current_user.email)
     return EmergencyActionResult(
-        success=True, action="auto_trading_off",
-        message=message, timestamp=datetime.now(timezone.utc),
+        success=True,
+        action="auto_trading_off",
+        message=message,
+        timestamp=datetime.now(UTC),
     )
 
 
@@ -45,14 +55,18 @@ async def disable_auto_trading(
 async def enable_auto_trading(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> EmergencyActionResult:
     try:
-        message = await SystemControlService(db, current_user.id).resume_auto_trading(current_user.email)
+        message = await SystemControlService(db, current_user.id).resume_auto_trading(
+            current_user.email
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return EmergencyActionResult(
-        success=True, action="auto_trading_on",
-        message=message, timestamp=datetime.now(timezone.utc),
+        success=True,
+        action="auto_trading_on",
+        message=message,
+        timestamp=datetime.now(UTC),
     )
 
 
@@ -60,12 +74,15 @@ async def enable_auto_trading(
 async def emergency_cancel_all(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
-    message = await SystemControlService(db, current_user.id).cancel_all_pending(current_user.email)
+) -> EmergencyActionResult:
+    summary = await SystemControlService(db, current_user.id).cancel_all_pending_summary(
+        current_user.email
+    )
     return EmergencyActionResult(
-        success=True, action="cancel_all",
-        message=message,
-        timestamp=datetime.now(timezone.utc),
+        success=summary.failed == 0,
+        action="cancel_all",
+        message=summary.message,
+        timestamp=datetime.now(UTC),
     )
 
 
@@ -73,11 +90,12 @@ async def emergency_cancel_all(
 async def emergency_flatten_all(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> EmergencyActionResult:
     """Close all open positions via market sell orders."""
     message = await SystemControlService(db, current_user.id).flatten_all(current_user.email)
     return EmergencyActionResult(
-        success=True, action="flatten_all",
+        success=True,
+        action="flatten_all",
         message=message,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
     )

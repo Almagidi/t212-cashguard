@@ -17,7 +17,7 @@ from sqlalchemy import desc, func, select
 
 from app.core.config import settings
 from app.db.models import AuditLog, BrokerConnection, Order, OrderEvent, PositionSnapshot
-from app.execution.state_machine import transition_order_status
+from app.execution.state_machine import transition_order_status_with_evidence
 from app.risk.engine import RiskEngine, RiskViolation
 from app.services.execution_quality import apply_order_execution_quality
 
@@ -438,15 +438,26 @@ class PaperExecutionEngine:
                 "no_broker_order_sent": True,
             },
         )
-        transition_order_status(order, "submitted", reason="paper order accepted locally")
-        order.submitted_at = now
-        await self._order_event(
-            order.id,
-            "paper_order_submitted",
-            from_status="pending_intent",
-            to_status="submitted",
+        transition_order_status_with_evidence(
+            self.db,
+            order,
+            "submitted",
+            event_type="paper_order_submitted",
+            reason="paper order accepted locally",
+            actor=actor,
+            correlation_id=order.client_order_key,
         )
-        transition_order_status(order, "filled", reason="paper fill simulated locally")
+        order.submitted_at = now
+        transition_order_status_with_evidence(
+            self.db,
+            order,
+            "filled",
+            event_type="paper_fill_simulated",
+            reason="paper fill simulated locally",
+            actor=actor,
+            correlation_id=order.client_order_key,
+            payload={"fill_price": str(body.estimated_price), "filled_quantity": str(quantity)},
+        )
         order.filled_quantity = quantity
         order.avg_fill_price = body.estimated_price
         order.first_ack_at = now
@@ -461,13 +472,6 @@ class PaperExecutionEngine:
             "status": "PAPER_FILLED",
         }
         apply_order_execution_quality(order)
-        await self._order_event(
-            order.id,
-            "paper_fill_simulated",
-            from_status="submitted",
-            to_status=order.status,
-            payload={"fill_price": str(body.estimated_price), "filled_quantity": str(quantity)},
-        )
         await self._audit(
             "paper_fill_simulated",
             actor=actor,

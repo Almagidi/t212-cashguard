@@ -18,6 +18,7 @@ from app.broker.provider import (
 from app.core.config import settings
 from app.core.security import CredentialDecryptionError
 from app.db.models import BrokerConnection
+from app.execution.engine import OrderCancellationFailed
 from app.services import system_control
 from app.services.system_control import SystemControlError, SystemControlService
 from tests.unit import test_trading212_construction_inventory as construction_inventory
@@ -653,6 +654,35 @@ async def test_cancel_all_pending_uses_shared_broker_boundary_and_cancels_select
 
 
 @pytest.mark.asyncio
+async def test_cancel_all_pending_reports_broker_cancellation_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class PartiallyFailingExecutionEngine(RecordingExecutionEngine):
+        async def cancel_order(self, order: FakeOrder) -> None:
+            self.cancel_calls.append(order)
+            if order.ticker == "MSFT":
+                raise OrderCancellationFailed(order)  # type: ignore[arg-type]
+
+    selected_orders = [FakeOrder(id=uuid.uuid4()), FakeOrder(id=uuid.uuid4(), ticker="MSFT")]
+    broker = RecordingBroker()
+    db = FakeSession(results=[selected_orders])
+    service = SystemControlService(db)
+    monkeypatch.setattr(service, "_get_broker", _broker_provider(broker))
+    monkeypatch.setattr(system_control, "ExecutionEngine", PartiallyFailingExecutionEngine)
+
+    message = await service.cancel_all_pending(actor="operator")
+
+    assert message == "Cancelled 1 pending orders; 1 cancellation attempts require reconciliation."
+    assert RecordingExecutionEngine.cancel_calls == selected_orders
+    assert [entry.action for entry in db.added] == ["emergency_cancel_all"]
+    assert db.added[0].payload == {
+        "source": "system_control",
+        "cancelled_count": 1,
+        "failed_count": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_flatten_all_uses_shared_broker_boundary_and_submits_sell_intents_only_for_long_positions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -692,7 +722,7 @@ def test_system_control_source_is_provider_backed_and_mixed_write_capable() -> N
     get_broker = _method_node("_get_broker")
     get_snapshot = _method_node("get_snapshot")
     get_positions_summary = _method_node("get_positions_summary")
-    cancel_all_pending = _method_node("cancel_all_pending")
+    cancel_all_pending = _method_node("cancel_all_pending_summary")
     flatten_all = _method_node("flatten_all")
 
     assert _adapter_counts(get_broker) == {"construct": 0, "import": 0}
@@ -731,7 +761,7 @@ def test_system_control_read_status_methods_have_no_write_or_provider_surface() 
 
 
 def test_system_control_emergency_methods_are_write_capable_not_read_only() -> None:
-    cancel_all_pending = _method_node("cancel_all_pending")
+    cancel_all_pending = _method_node("cancel_all_pending_summary")
     flatten_all = _method_node("flatten_all")
 
     assert "ExecutionEngine" in ast.unparse(cancel_all_pending)

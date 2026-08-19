@@ -184,6 +184,53 @@ def test_persistent_order_status_is_only_mutated_by_state_machine():
     )
 
 
+def test_runtime_transitions_always_use_the_evidence_boundary():
+    app_root = Path(__file__).parents[2] / "app"
+    allowed = app_root / "execution" / "state_machine.py"
+    violations: list[str] = []
+
+    for path in app_root.rglob("*.py"):
+        if path == allowed or "backtest" in path.parts:
+            continue
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            call_name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else None
+            )
+            if call_name == "transition_order_status":
+                violations.append(f"{path.relative_to(app_root)}:{node.lineno}")
+
+    assert violations == [], (
+        "Runtime transitions must atomically add event/audit evidence; "
+        f"mutation-only calls: {violations}"
+    )
+
+
+def test_runtime_has_no_bulk_status_update_bypass():
+    app_root = Path(__file__).parents[2] / "app"
+    violations: list[str] = []
+
+    for path in app_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute) or node.func.attr != "values":
+                continue
+            if any(keyword.arg == "status" for keyword in node.keywords):
+                violations.append(f"{path.relative_to(app_root)}:{node.lineno}")
+
+    assert violations == [], (
+        f"Bulk status updates bypass validation and transition evidence; violations: {violations}"
+    )
+
+
 def test_persistent_orders_are_only_constructed_in_the_initial_state():
     app_root = Path(__file__).parents[2] / "app"
     violations: list[str] = []

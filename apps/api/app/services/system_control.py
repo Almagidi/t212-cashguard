@@ -4,6 +4,7 @@ Shared system-control operations used by both the web API and Telegram bot.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, cast
@@ -22,7 +23,7 @@ from app.core.config import settings
 from app.core.security import CredentialDecryptionError, decrypt_field
 from app.db.models import AppSettings, AuditLog, BrokerConnection
 from app.db.repositories import OrderRepository
-from app.execution.engine import ExecutionEngine
+from app.execution.engine import ExecutionEngine, OrderCancellationFailed
 from app.risk.engine import activate_kill_switch
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
 from app.services.live_readiness import LiveReadinessService
@@ -37,6 +38,23 @@ if TYPE_CHECKING:
 
 class SystemControlError(Exception):
     """Raised when a system-control operation cannot be completed safely."""
+
+
+@dataclass(frozen=True)
+class CancellationSummary:
+    cancelled: int
+    failed: int
+
+    @property
+    def message(self) -> str:
+        if self.cancelled == 0 and self.failed == 0:
+            return "No pending orders to cancel."
+        if self.failed:
+            return (
+                f"Cancelled {self.cancelled} pending orders; {self.failed} cancellation "
+                "attempts require reconciliation."
+            )
+        return f"Cancelled {self.cancelled} pending orders."
 
 
 class SystemControlService:
@@ -100,7 +118,7 @@ class SystemControlService:
             return create_trading212_provider_adapter(
                 BrokerProviderRequest(
                     broker_id="trading212",
-                    environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                    environment=cast("BrokerRuntimeEnvironment", conn.environment),
                     purpose=purpose,
                     user_id=conn.user_id,
                 ),
@@ -147,7 +165,7 @@ class SystemControlService:
     async def get_positions_summary(self) -> list[dict[str, Any]]:
         broker = await self._get_broker("operator_system_control_read")
         async with broker as active_broker:
-            return cast(list[dict[str, Any]], await active_broker.get_positions())
+            return cast("list[dict[str, Any]]", await active_broker.get_positions())
 
     async def pause_auto_trading(self, actor: str) -> str:
         app_settings = await self._get_settings()
@@ -207,26 +225,41 @@ class SystemControlService:
         return "Kill switch activated. Auto-trading halted."
 
     async def cancel_all_pending(self, actor: str) -> str:
+        return (await self.cancel_all_pending_summary(actor)).message
+
+    async def cancel_all_pending_summary(self, actor: str) -> CancellationSummary:
         repo = OrderRepository(self.db)
         orders = await repo.list_pending()
         if not orders:
-            return "No pending orders to cancel."
+            return CancellationSummary(cancelled=0, failed=0)
 
         broker = await self._get_broker("operator_system_control_emergency")
+        cancelled = 0
+        failed = 0
         async with broker as active_broker:
             engine = ExecutionEngine(self.db, active_broker)
             for order in orders:
-                await engine.cancel_order(order)
+                try:
+                    await engine.cancel_order(order)
+                    cancelled += 1
+                except OrderCancellationFailed:
+                    failed += 1
 
+        audit_payload: dict[str, Any] = {
+            "source": "system_control",
+            "cancelled_count": cancelled,
+        }
+        if failed:
+            audit_payload["failed_count"] = failed
         self.db.add(
             AuditLog(
                 action="emergency_cancel_all",
                 actor=actor,
-                payload={"source": "system_control", "cancelled_count": len(orders)},
+                payload=audit_payload,
                 occurred_at=datetime.now(UTC),
             )
         )
-        return f"Cancelled {len(orders)} pending orders."
+        return CancellationSummary(cancelled=cancelled, failed=failed)
 
     async def flatten_all(self, actor: str) -> str:
         broker = await self._get_broker("operator_system_control_emergency")
