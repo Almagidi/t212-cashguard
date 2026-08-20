@@ -64,6 +64,7 @@ class FakeSession:
         self.executed: list[Any] = []
         self.added: list[Any] = []
         self.flushed = 0
+        self.nested_begins = 0
 
     async def execute(self, statement: Any) -> ExecuteResult:
         if self.events is not None:
@@ -81,6 +82,7 @@ class FakeSession:
 
     @asynccontextmanager
     async def begin_nested(self) -> Any:
+        self.nested_begins += 1
         yield
 
 
@@ -716,6 +718,34 @@ async def test_run_all_enabled_reads_account_and_positions_before_strategy_execu
         "risk_blocks": 0,
         "errors": [],
     }
+
+
+@pytest.mark.asyncio
+async def test_demo_strategy_error_does_not_wrap_external_effects_in_a_savepoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy = _strategy()
+    broker = RecordingBroker()
+    db = FakeSession(results=[FakeAppSettings(), [strategy]])
+    service = StrategyRunner(db)
+
+    async def get_broker() -> RecordingBroker:
+        return broker
+
+    async def fail_after_external_effect(**_kwargs: Any) -> tuple[int, int, int]:
+        broker.write_calls.append("external_effect_already_happened")
+        raise RuntimeError("later ticker failed")
+
+    monkeypatch.setattr(service, "_get_broker", get_broker)
+    monkeypatch.setattr(service, "_run_strategy", fail_after_external_effect)
+    monkeypatch.setattr(strategy_runner, "MarketIntelligenceMonitor", FakeMarketIntelligenceMonitor)
+    monkeypatch.setattr(strategy_runner, "alert_daily_summary", lambda *_args, **_kwargs: None)
+
+    summary = await service.run_all_enabled()
+
+    assert broker.write_calls == ["external_effect_already_happened"]
+    assert summary["errors"] == [f"{strategy.name}: later ticker failed"]
+    assert db.nested_begins == 0
 
 
 @pytest.mark.asyncio

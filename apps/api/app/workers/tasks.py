@@ -129,6 +129,7 @@ def run_strategy_signals(self: Any) -> dict[str, Any]:
     """Entry signal generation loop. Runs every 5 minutes."""
 
     async def _run() -> dict[str, Any]:
+        from app.core.config import settings
         from app.core.redis import task_lock
         from app.db.session import AsyncSessionLocal
         from app.services.strategy_runner import StrategyRunner
@@ -140,6 +141,8 @@ def run_strategy_signals(self: Any) -> dict[str, Any]:
             async with AsyncSessionLocal() as db:
                 runner = StrategyRunner(db)
                 summary: dict[str, Any] = await runner.run_all_enabled()
+                if settings.APP_MODE == "mock" and summary.get("errors"):
+                    raise RuntimeError(f"strategy execution failed: {summary['errors']!r}")
                 summary = await _complete_task(db, "run_strategy_signals", summary)
             log.info("tasks.signals_complete", **summary)
             return summary
