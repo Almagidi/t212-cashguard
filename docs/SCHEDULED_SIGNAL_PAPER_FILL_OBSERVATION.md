@@ -1,5 +1,12 @@
 # Scheduled Signal-to-Paper-Fill Observation
 
+> Update 2026-08-20: the historical zero-cost `ExecutionEngine` dry-run
+> observation below is superseded. Mock scheduled orders now use the realistic
+> `PaperExecutionEngine`; `make real-worker-paper-smoke` proves the actual
+> Celery task with disposable PostgreSQL/Redis, non-zero costs, duplicate
+> suppression, broker-construction tripwires, and owned-resource cleanup.
+> Demo/live continue to use `ExecutionEngine` unchanged.
+
 Status date: 2026-07-23 (updated same day, second time: the mock
 market-regime gap found in §4 below is now fixed and re-observed via a new
 Route B run — see §4.4).

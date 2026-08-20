@@ -436,6 +436,7 @@ def test_strategy_runner_source_is_provider_backed_and_mixed_write_capable() -> 
     run_all_enabled = _method_node("run_all_enabled")
     process_ticker = _method_node("_process_ticker")
     check_exit = _method_node("_check_exit")
+    submit_strategy_order = _method_node("_submit_strategy_order")
     source = STRATEGY_RUNNER_PATH.read_text()
 
     assert _adapter_counts(get_broker) == {"construct": 0, "import": 0}
@@ -451,8 +452,10 @@ def test_strategy_runner_source_is_provider_backed_and_mixed_write_capable() -> 
     assert "worker_strategy_runner" in ast.unparse(get_broker)
 
     assert {"get_account_summary", "get_positions"} <= _call_names(run_all_enabled)
-    assert {"create_order_intent", "submit_order"} <= _call_names(process_ticker)
-    assert {"create_order_intent", "submit_order"} <= _call_names(check_exit)
+    assert "_submit_strategy_order" in _call_names(process_ticker)
+    assert "_submit_strategy_order" in _call_names(check_exit)
+    assert {"create_order_intent", "submit_order", "execute"} <= _call_names(submit_strategy_order)
+    assert "PaperExecutionEngine" in ast.unparse(submit_strategy_order)
     assert "strategy_order_placed" in ast.unparse(process_ticker)
     assert "strategy_exit_placed" in ast.unparse(check_exit)
     assert "ExecutionEngine" in ast.unparse(service)
@@ -908,6 +911,46 @@ async def test_process_ticker_live_entry_routes_order_through_execution_engine_o
         "strategy_order_placed"
     ]
     assert risk.run_all_calls and risk.sector_calls
+
+
+@pytest.mark.asyncio
+async def test_mock_scheduled_order_canonicalizes_strategy_quantity_for_paper_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[Any] = []
+
+    class RecordingPaperExecutionEngine:
+        def __init__(self, _db: Any) -> None:
+            pass
+
+        async def execute(self, body: Any, **kwargs: Any) -> Any:
+            captured.append((body, kwargs))
+            return SimpleNamespace(id=uuid.uuid4())
+
+    db = FakeSession(results=[])
+    service = StrategyRunner(db)
+
+    async def paper_user() -> Any:
+        return SimpleNamespace(id=uuid.uuid4(), email="paper@example.test")
+
+    monkeypatch.setattr(settings, "APP_MODE", "mock")
+    monkeypatch.setattr(service, "_get_paper_user", paper_user)
+    monkeypatch.setattr(
+        "app.execution.paper_engine.PaperExecutionEngine", RecordingPaperExecutionEngine
+    )
+
+    await service._submit_strategy_order(
+        broker=None,
+        strategy=_strategy(is_live=True),
+        signal_id=uuid.uuid4(),
+        ticker="NVDA",
+        side="buy",
+        quantity=Decimal("8.802689045449603945013122609"),
+        estimated_price=Decimal("908.8133"),
+        order_type="limit",
+    )
+
+    assert captured[0][0].quantity == Decimal("8.80268904")
 
 
 @pytest.mark.asyncio
