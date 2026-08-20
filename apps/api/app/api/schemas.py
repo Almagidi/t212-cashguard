@@ -1088,14 +1088,15 @@ class PaperOrderCreate(BaseModel):
 
     ticker: str = Field(min_length=1, max_length=50)
     side: Literal["buy", "sell"]
-    quantity: Decimal | None = Field(default=None, gt=0)
-    notional: Decimal | None = Field(default=None, gt=0)
-    estimated_price: Decimal = Field(default=Decimal("100"), gt=0)
+    quantity: Decimal | None = Field(default=None, gt=0, max_digits=20, decimal_places=8)
+    notional: Decimal | None = Field(default=None, gt=0, max_digits=20, decimal_places=8)
+    estimated_price: Decimal = Field(default=Decimal("100"), gt=0, max_digits=20, decimal_places=8)
     order_type: Literal["market"] = "market"
     strategy: str | None = Field(default=None, max_length=100)
     source: str = Field(default="manual_qa", min_length=1, max_length=100)
     venue: Literal["paper", "mock"] = "paper"
     paper_only: Literal[True] = True
+    simulation_profile: Literal["standard", "partial_fill", "no_liquidity"] = "standard"
 
     @model_validator(mode="after")
     def validate_quantity_or_notional(self) -> PaperOrderCreate:
@@ -1128,6 +1129,7 @@ class OrderOut(BaseSchema):
     expected_fill_price: Decimal | None = None
     slippage_pct: Decimal | None = None
     slippage_value: Decimal | None = None
+    fee_amount: Decimal | None = None
     submitted_at: datetime | None = None
     first_ack_at: datetime | None = None
     filled_at: datetime | None = None

@@ -9,14 +9,23 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import UTC, datetime
-from decimal import Decimal
+from datetime import UTC, datetime, timedelta
+from decimal import ROUND_DOWN, Decimal
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import desc, func, select
 
 from app.core.config import settings
-from app.db.models import AuditLog, BrokerConnection, Order, OrderEvent, PositionSnapshot
+from app.db.models import (
+    AuditLog,
+    BrokerAccountSnapshot,
+    BrokerConnection,
+    Order,
+    OrderEvent,
+    PositionSnapshot,
+    Trade,
+)
+from app.execution.paper_policy import PaperFillDecision, evaluate_paper_fill
 from app.execution.state_machine import transition_order_status_with_evidence
 from app.risk.engine import RiskEngine, RiskViolation
 from app.services.execution_quality import apply_order_execution_quality
@@ -32,6 +41,9 @@ PAPER_BROKER = "paper"
 PAPER_ENVIRONMENT = "mock"
 PAPER_EXECUTION_ENVIRONMENT = "paper_mock"
 PAPER_SUPPORTED_VENUES = {"paper", "mock"}
+PAPER_STARTING_CASH = Decimal("100000")
+PAPER_CASH_QUANTUM = Decimal("0.00000001")
+PAPER_MAX_QUANTITY = Decimal("999999999999.99999999")
 
 
 class PaperExecutionError(Exception):
@@ -140,13 +152,23 @@ class PaperExecutionEngine:
         result = await self.db.execute(
             select(PositionSnapshot)
             .where(PositionSnapshot.connection_id == connection.id)
-            .order_by(desc(PositionSnapshot.snapshotted_at))
+            .order_by(desc(PositionSnapshot.snapshotted_at), desc(PositionSnapshot.id))
         )
         latest: dict[str, PositionSnapshot] = {}
         for snapshot in result.scalars().all():
             ticker = snapshot.ticker.upper()
             latest.setdefault(ticker, snapshot)
         return latest
+
+    async def _latest_paper_account(self, user: User) -> BrokerAccountSnapshot | None:
+        connection = await self._paper_connection(user)
+        result = await self.db.execute(
+            select(BrokerAccountSnapshot)
+            .where(BrokerAccountSnapshot.connection_id == connection.id)
+            .order_by(desc(BrokerAccountSnapshot.snapshotted_at), desc(BrokerAccountSnapshot.id))
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     async def current_open_paper_positions_count(self, user: User) -> int:
         latest = await self._latest_paper_positions(user)
@@ -166,6 +188,9 @@ class PaperExecutionEngine:
         *,
         actor: str,
         user: User,
+        estimated_price: Decimal,
+        available_cash: Decimal,
+        account_value: Decimal,
     ) -> None:
         open_positions = await self.current_open_paper_positions_count(user)
         risk = RiskEngine(self.db)
@@ -174,9 +199,9 @@ class PaperExecutionEngine:
                 ticker=body.ticker.upper(),
                 side=body.side,
                 quantity=quantity,
-                estimated_price=body.estimated_price,
-                available_cash=Decimal("100000"),
-                account_value=Decimal("100000"),
+                estimated_price=estimated_price,
+                available_cash=available_cash,
+                account_value=account_value,
                 realized_pnl_today=Decimal("0"),
                 current_open_positions=open_positions,
                 skip_auto_trading_check=True,
@@ -278,30 +303,78 @@ class PaperExecutionEngine:
         )
         raise PaperExecutionError(reason)
 
-    async def _update_position(
+    async def _apply_fill_effects(
         self,
         *,
         user: User,
         order: Order,
-        price: Decimal,
+        decision: PaperFillDecision,
         actor: str,
     ) -> PositionSnapshot:
+        if decision.fill_price is None or decision.filled_quantity <= 0:
+            raise ValueError("filled paper effects require a positive fill")
+
         connection = await self._paper_connection(user)
         latest_positions = await self._latest_paper_positions(user)
         previous = latest_positions.get(order.ticker)
         previous_quantity = previous.quantity if previous is not None else Decimal("0")
-        previous_avg = previous.avg_price if previous is not None else price
+        previous_avg = previous.avg_price if previous is not None else decision.fill_price
+        filled_quantity = decision.filled_quantity
+        gross_value = decision.fill_price * filled_quantity
+        position_opened_at = datetime.now(UTC)
+        position_open_order_id: uuid.UUID | None = None
+        if previous is not None and previous_quantity > 0:
+            raw = previous.raw or {}
+            try:
+                position_opened_at = datetime.fromisoformat(
+                    str(raw.get("position_opened_at", previous.snapshotted_at.isoformat()))
+                )
+                if order.side == "sell" and raw.get("position_open_order_id"):
+                    position_open_order_id = uuid.UUID(str(raw["position_open_order_id"]))
+            except ValueError:
+                position_opened_at = previous.snapshotted_at
+        elif order.side == "buy":
+            position_open_order_id = order.id
 
         if order.side == "buy":
-            new_quantity = previous_quantity + order.quantity
+            new_quantity = previous_quantity + filled_quantity
             new_avg = (
-                ((previous_quantity * previous_avg) + (order.quantity * price)) / new_quantity
+                ((previous_quantity * previous_avg) + gross_value + decision.fee_amount)
+                / new_quantity
                 if new_quantity > 0
-                else price
+                else decision.fill_price
             )
         else:
-            new_quantity = max(Decimal("0"), previous_quantity - order.quantity)
+            new_quantity = max(Decimal("0"), previous_quantity - filled_quantity)
             new_avg = previous_avg
+
+            trade = Trade(
+                id=uuid.uuid4(),
+                ticker=order.ticker,
+                side="sell",
+                open_order_id=position_open_order_id,
+                close_order_id=order.id,
+                quantity=filled_quantity,
+                open_price=previous_avg,
+                close_price=decision.fill_price,
+                realized_pnl=(
+                    (decision.fill_price - previous_avg) * filled_quantity - decision.fee_amount
+                ).quantize(PAPER_CASH_QUANTUM),
+                opened_at=position_opened_at,
+                closed_at=datetime.now(UTC),
+                is_dry_run=True,
+            )
+            self.db.add(trade)
+            await self._audit(
+                "paper_trade_closed",
+                actor=actor,
+                entity_type="trade",
+                entity_id=str(trade.id),
+                user_id=user.id,
+                payload={"ticker": order.ticker, "order_id": str(order.id)},
+            )
+
+        unrealized = ((decision.quote_price - new_avg) * new_quantity).quantize(PAPER_CASH_QUANTUM)
 
         snapshot = PositionSnapshot(
             id=uuid.uuid4(),
@@ -309,15 +382,21 @@ class PaperExecutionEngine:
             ticker=order.ticker,
             quantity=new_quantity,
             avg_price=new_avg,
-            current_price=price,
-            unrealized_pnl=Decimal("0"),
+            current_price=decision.quote_price,
+            unrealized_pnl=unrealized,
             quantity_available=new_quantity,
             raw={
                 "paper_only": True,
                 "no_broker_order_sent": True,
                 "source_order_id": str(order.id),
+                "position_open_order_id": (
+                    str(position_open_order_id) if position_open_order_id else None
+                ),
+                "position_opened_at": position_opened_at.isoformat(),
                 "side": order.side,
-                "simulated_fill_price": str(price),
+                "simulated_fill_price": str(decision.fill_price),
+                "fee_amount": str(decision.fee_amount),
+                "simulation_profile": decision.profile,
                 "previous_quantity": str(previous_quantity),
                 "new_quantity": str(new_quantity),
             },
@@ -325,6 +404,52 @@ class PaperExecutionEngine:
         )
         self.db.add(snapshot)
         await self.db.flush()
+
+        previous_account = await self._latest_paper_account(user)
+        cash_before = previous_account.cash if previous_account else PAPER_STARTING_CASH
+        cash_delta = (
+            -(gross_value + decision.fee_amount)
+            if order.side == "buy"
+            else gross_value - decision.fee_amount
+        )
+        cash = (cash_before + cash_delta).quantize(PAPER_CASH_QUANTUM)
+        current_positions = await self._latest_paper_positions(user)
+        invested = sum(
+            (
+                row.quantity
+                * (row.current_price if row.current_price is not None else row.avg_price)
+                for row in current_positions.values()
+            ),
+            Decimal("0"),
+        ).quantize(PAPER_CASH_QUANTUM)
+        total_value = (cash + invested).quantize(PAPER_CASH_QUANTUM)
+        account = BrokerAccountSnapshot(
+            id=uuid.uuid4(),
+            connection_id=connection.id,
+            total_value=total_value,
+            cash=cash,
+            free_funds=cash,
+            invested=invested,
+            result=(total_value - PAPER_STARTING_CASH).quantize(PAPER_CASH_QUANTUM),
+            currency="USD",
+            raw={
+                "paper_only": True,
+                "no_broker_order_sent": True,
+                "source_order_id": str(order.id),
+                "cash_delta": str(cash_delta),
+                "simulation_profile": decision.profile,
+            },
+            snapshotted_at=datetime.now(UTC),
+        )
+        self.db.add(account)
+        await self._audit(
+            "paper_account_updated",
+            actor=actor,
+            entity_type="broker_account",
+            entity_id=str(account.id),
+            user_id=user.id,
+            payload={"cash": str(cash), "invested": str(invested), "order_id": str(order.id)},
+        )
         await self._audit(
             "paper_position_updated",
             actor=actor,
@@ -335,6 +460,7 @@ class PaperExecutionEngine:
                 "ticker": order.ticker,
                 "quantity": str(new_quantity),
                 "avg_price": str(new_avg),
+                "unrealized_pnl": str(unrealized),
                 "order_id": str(order.id),
             },
         )
@@ -370,7 +496,27 @@ class PaperExecutionEngine:
             if body.notional is None:
                 raise PaperExecutionError("quantity or notional is required")
             quantity = body.notional / body.estimated_price
+        quantity = quantity.quantize(PAPER_CASH_QUANTUM, rounding=ROUND_DOWN)
+        if quantity <= 0 or quantity > PAPER_MAX_QUANTITY:
+            raise PaperExecutionError("Paper quantity is outside persistence range.")
         await self._check_sell_quantity_available(body, quantity, actor=actor, user=user)
+        decision = evaluate_paper_fill(
+            side=body.side,
+            quantity=quantity,
+            quote_price=body.estimated_price,
+            profile=body.simulation_profile,
+        )
+        latest_account = await self._latest_paper_account(user)
+        available_cash = latest_account.cash if latest_account else PAPER_STARTING_CASH
+        account_value = latest_account.total_value if latest_account else PAPER_STARTING_CASH
+        gross_value = (
+            decision.fill_price * decision.filled_quantity
+            if decision.fill_price is not None
+            else Decimal("0")
+        )
+        risk_price = decision.fill_price or decision.quote_price
+        if body.side == "buy" and decision.filled_quantity > 0:
+            risk_price = (gross_value + decision.fee_amount) / decision.filled_quantity
         await self._audit(
             "paper_signal_accepted",
             actor=actor,
@@ -387,10 +533,22 @@ class PaperExecutionEngine:
                 "decision_code": "PAPER_SIGNAL_ACCEPTED",
             },
         )
-        await self._run_risk_check(body, quantity, actor=actor, user=user)
+        await self._run_risk_check(
+            body,
+            quantity,
+            actor=actor,
+            user=user,
+            estimated_price=risk_price,
+            available_cash=available_cash,
+            account_value=account_value,
+        )
 
         now = datetime.now(UTC)
-        cash_used = quantity * body.estimated_price if body.side == "buy" else None
+        cash_used = (
+            (gross_value + decision.fee_amount).quantize(PAPER_CASH_QUANTUM)
+            if body.side == "buy"
+            else None
+        )
         order = Order(
             id=uuid.uuid4(),
             client_order_key=self._client_order_key(body, quantity),
@@ -401,10 +559,11 @@ class PaperExecutionEngine:
             status="pending_intent",
             execution_environment=PAPER_EXECUTION_ENVIRONMENT,
             expected_fill_price=body.estimated_price,
+            fee_amount=decision.fee_amount,
             venue=body.venue,
             is_dry_run=True,
             cash_used=cash_used,
-            available_cash_at_submission=Decimal("100000"),
+            available_cash_at_submission=available_cash,
             broker_request={
                 "paper_only": True,
                 "no_broker_order_sent": True,
@@ -414,6 +573,7 @@ class PaperExecutionEngine:
                 "estimated_price": str(body.estimated_price),
                 "source": body.source,
                 "strategy": body.strategy,
+                "simulation_profile": decision.profile,
             },
         )
         self.db.add(order)
@@ -448,28 +608,83 @@ class PaperExecutionEngine:
             correlation_id=order.client_order_key,
         )
         order.submitted_at = now
+
+        if decision.outcome == "rejected":
+            transition_order_status_with_evidence(
+                self.db,
+                order,
+                "rejected",
+                event_type="paper_execution_rejected",
+                reason="paper execution policy rejected the order",
+                actor=actor,
+                correlation_id=order.client_order_key,
+                payload={
+                    "rejection_code": decision.rejection_code,
+                    "simulation_profile": decision.profile,
+                },
+            )
+            order.filled_quantity = Decimal("0")
+            order.error_message = decision.rejection_code
+            order.rejected_at = now
+            order.first_ack_at = now + timedelta(milliseconds=decision.fill_latency_ms)
+            order.broker_latency_ms = decision.fill_latency_ms
+            order.reconciliation_latency_ms = decision.fill_latency_ms
+            order.broker_response = {
+                "paper_only": True,
+                "mock_execution": True,
+                "no_broker_order_sent": True,
+                "status": "PAPER_REJECTED",
+                "rejection_code": decision.rejection_code,
+                "simulation_profile": decision.profile,
+            }
+            apply_order_execution_quality(order)
+            await self._audit(
+                "paper_execution_rejected",
+                actor=actor,
+                entity_type="order",
+                entity_id=str(order.id),
+                user_id=user.id,
+                payload={
+                    "ticker": order.ticker,
+                    "rejection_code": decision.rejection_code,
+                    "simulation_profile": decision.profile,
+                },
+            )
+            await self.db.flush()
+            return order
+
+        terminal_status = decision.outcome
         transition_order_status_with_evidence(
             self.db,
             order,
-            "filled",
+            terminal_status,
             event_type="paper_fill_simulated",
             reason="paper fill simulated locally",
             actor=actor,
             correlation_id=order.client_order_key,
-            payload={"fill_price": str(body.estimated_price), "filled_quantity": str(quantity)},
+            payload={
+                "fill_price": str(decision.fill_price),
+                "filled_quantity": str(decision.filled_quantity),
+                "fee_amount": str(decision.fee_amount),
+                "simulation_profile": decision.profile,
+            },
         )
-        order.filled_quantity = quantity
-        order.avg_fill_price = body.estimated_price
-        order.first_ack_at = now
-        order.filled_at = now
-        order.broker_latency_ms = 0
-        order.fill_latency_ms = 0
-        order.reconciliation_latency_ms = 0
+        order.filled_quantity = decision.filled_quantity
+        order.avg_fill_price = decision.fill_price
+        order.first_ack_at = now + timedelta(milliseconds=decision.fill_latency_ms)
+        order.filled_at = order.first_ack_at if terminal_status == "filled" else None
+        order.broker_latency_ms = decision.fill_latency_ms
+        order.fill_latency_ms = decision.fill_latency_ms
+        order.reconciliation_latency_ms = decision.fill_latency_ms
         order.broker_response = {
             "paper_only": True,
             "mock_execution": True,
             "no_broker_order_sent": True,
-            "status": "PAPER_FILLED",
+            "status": ("PAPER_FILLED" if terminal_status == "filled" else "PAPER_PARTIALLY_FILLED"),
+            "spread_bps": str(decision.spread_bps),
+            "slippage_bps": str(decision.slippage_bps),
+            "fee_amount": str(decision.fee_amount),
+            "simulation_profile": decision.profile,
         }
         apply_order_execution_quality(order)
         await self._audit(
@@ -480,12 +695,13 @@ class PaperExecutionEngine:
             user_id=user.id,
             payload={
                 "ticker": order.ticker,
-                "fill_price": str(body.estimated_price),
-                "filled_quantity": str(quantity),
+                "fill_price": str(decision.fill_price),
+                "filled_quantity": str(decision.filled_quantity),
+                "fee_amount": str(decision.fee_amount),
                 "no_broker_order_sent": True,
             },
         )
-        await self._update_position(user=user, order=order, price=body.estimated_price, actor=actor)
+        await self._apply_fill_effects(user=user, order=order, decision=decision, actor=actor)
         await self.db.flush()
         return order
 

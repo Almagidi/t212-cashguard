@@ -120,6 +120,7 @@ async def test_paper_order_creates_local_order_audits_and_position(
         "paper_order_created",
         "paper_fill_simulated",
         "paper_position_updated",
+        "paper_account_updated",
     }
     paper_audits = [audit for audit in all_audits if audit.action.startswith("paper_")]
     assert all(audit.payload["paper_only"] is True for audit in paper_audits)
@@ -129,7 +130,7 @@ async def test_paper_order_creates_local_order_audits_and_position(
         await db.execute(select(PositionSnapshot).where(PositionSnapshot.ticker == "PAPERXYZ"))
     ).scalar_one()
     assert position.quantity == Decimal("2")
-    assert position.avg_price == Decimal("25.5")
+    assert position.avg_price == Decimal("25.53060510")
     assert position.raw["paper_only"] is True
     assert position.raw["no_broker_order_sent"] is True
 
@@ -179,7 +180,7 @@ async def test_paper_order_history_returns_newest_first_with_safety_fields(
     assert newest["source"] == "watchlist_signal"
     assert newest["strategy"] == "opening-fade"
     assert newest["status"] == "filled"
-    assert newest["fill_price"] == "20.00000000"
+    assert newest["fill_price"] == "20.02000000"
     assert newest["filled_quantity"] == "3.00000000"
     assert newest["paper_only"] is True
     assert newest["live_order_sent"] is False
@@ -280,6 +281,7 @@ async def test_paper_order_audit_endpoint_returns_relevant_safe_events(
     actions = [item["action"] for item in body["items"]]
     assert actions == [
         "paper_position_updated",
+        "paper_account_updated",
         "paper_fill_simulated",
         "paper_order_created",
     ]

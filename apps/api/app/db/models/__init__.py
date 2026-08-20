@@ -395,6 +395,7 @@ class Order(Base):
     expected_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     slippage_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
     slippage_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    fee_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     first_ack_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
