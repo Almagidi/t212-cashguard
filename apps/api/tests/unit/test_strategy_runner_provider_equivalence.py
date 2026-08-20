@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -77,6 +78,10 @@ class FakeSession:
 
     async def flush(self) -> None:
         self.flushed += 1
+
+    @asynccontextmanager
+    async def begin_nested(self) -> Any:
+        yield
 
 
 @dataclass
@@ -967,6 +972,7 @@ async def test_check_exit_dry_run_preserves_no_submit_behavior(
         ticker="AAPL",
         strategy=_strategy(is_live=False),
         bars=_bars(),
+        bar_time=_bar_times()[-1],
         pos_qty=Decimal("2"),
         avg_price=Decimal("100"),
         max_sell=Decimal("1"),
@@ -1001,6 +1007,7 @@ async def test_check_exit_live_routes_sell_order_through_execution_engine_only(
         ticker="AAPL",
         strategy=_strategy(is_live=True),
         bars=_bars(),
+        bar_time=_bar_times()[-1],
         pos_qty=Decimal("2"),
         avg_price=Decimal("100"),
         max_sell=Decimal("1"),
@@ -1019,7 +1026,7 @@ async def test_check_exit_live_routes_sell_order_through_execution_engine_only(
             "side": "sell",
             "order_type": "market",
             "quantity": Decimal("1"),
-            "signal_id": last_signal.id,
+            "signal_id": db.added[0].id,
             "is_dry_run": False,  # APP_MODE="demo" in this fixture, not "mock"
             "estimated_price": Decimal("105"),
             "venue": "t212",

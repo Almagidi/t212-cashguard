@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.broker.trading212 import make_sell_quantity
 from app.core.config import settings
@@ -172,8 +173,18 @@ class ExecutionEngine:
             cash_used=cash_used,
             available_cash_at_submission=available_cash,
         )
-        self.db.add(order)
-        await self.db.flush()
+        try:
+            async with self.db.begin_nested():
+                self.db.add(order)
+                await self.db.flush()
+        except IntegrityError:
+            result = await self.db.execute(
+                select(Order).where(Order.client_order_key == client_key)
+            )
+            existing = result.scalar_one_or_none()
+            if existing is None:
+                raise
+            return existing
 
         await self._log_order_event(
             order.id,

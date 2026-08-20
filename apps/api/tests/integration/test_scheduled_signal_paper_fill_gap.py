@@ -61,6 +61,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -313,6 +314,124 @@ async def test_scheduled_live_strategy_signal_reaches_mock_paper_fill(
         select(AuditLog).where(AuditLog.action == "order_blocked_by_runtime_policy")
     )
     assert blocked_audit.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_repeated_scheduler_tick_creates_one_signal_and_one_order(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    strategy = await _seed_open_gates(db, is_live=True)
+    service = StrategyRunner(db)
+    monkeypatch.setattr(service, "_fetch_market_context", _fake_market_context)
+
+    first = await service.run_all_enabled()
+    await db.commit()
+    second = await service.run_all_enabled()
+    await db.commit()
+
+    signals = (
+        (await db.execute(select(Signal).where(Signal.strategy_id == strategy.id))).scalars().all()
+    )
+    orders = (
+        (
+            await db.execute(
+                select(Order).where(Order.signal_id.in_([signal.id for signal in signals]))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert first["signals_generated"] == 1
+    assert first["orders_submitted"] == 1
+    assert second["signals_generated"] == 0
+    assert second["orders_submitted"] == 0
+    assert len(signals) == 1
+    assert len(orders) == 1
+    assert signals[0].decision_key is not None
+
+
+@pytest.mark.asyncio
+async def test_exit_decisions_dedupe_same_bar_but_allow_later_bar(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    strategy = await _seed_open_gates(db, is_live=True)
+    entry_signal = Signal(
+        id=uuid.uuid4(),
+        strategy_id=strategy.id,
+        ticker="NVDA",
+        side="buy",
+        signal_type="entry",
+        status="executed",
+        stop_price=Decimal("95"),
+        take_profit_price=Decimal("110"),
+        generated_at=datetime(2026, 1, 2, 14, 30, tzinfo=UTC),
+    )
+    db.add(entry_signal)
+    await db.commit()
+
+    class _DeterministicExitEngine:
+        def __init__(self, _params: dict[str, Any]) -> None:
+            pass
+
+        def check_exit_conditions(self, *_args: Any, **_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(
+                signal_type="partial_exit",
+                suggested_quantity=Decimal("-1"),
+                stop_price=Decimal("101"),
+                take_profit_price=Decimal("112"),
+                confidence=Decimal("0.8"),
+                reason="deterministic partial exit",
+            )
+
+    monkeypatch.setattr(strategy_runner, "OpeningRangeBreakoutStrategy", _DeterministicExitEngine)
+    service = StrategyRunner(db)
+    broker = await service._get_broker()
+    assert broker is not None
+    first_bar = datetime(2026, 1, 2, 15, 0, tzinfo=UTC)
+    later_bar = datetime(2026, 1, 2, 15, 5, tzinfo=UTC)
+    call = {
+        "ticker": "NVDA",
+        "strategy": strategy,
+        "bars": _deterministic_breakout_bars(),
+        "pos_qty": Decimal("2"),
+        "avg_price": Decimal("100"),
+        "max_sell": Decimal("1"),
+        "broker": broker,
+        "risk": _AllowingRiskEngine(),
+    }
+
+    first = await service._check_exit(**call, bar_time=first_bar)
+    await db.commit()
+    repeated = await service._check_exit(**call, bar_time=first_bar)
+    await db.commit()
+    later = await service._check_exit(**call, bar_time=later_bar)
+    await db.commit()
+
+    exit_signals = (
+        (
+            await db.execute(
+                select(Signal).where(
+                    Signal.strategy_id == strategy.id,
+                    Signal.side == "sell",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    exit_orders = (
+        (
+            await db.execute(
+                select(Order).where(Order.signal_id.in_([signal.id for signal in exit_signals]))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert (first, repeated, later) == (1, None, 1)
+    assert len(exit_signals) == 2
+    assert len(exit_orders) == 2
+    assert len({signal.decision_key for signal in exit_signals}) == 2
 
 
 @pytest.mark.asyncio

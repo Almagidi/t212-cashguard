@@ -29,6 +29,7 @@ Quarantined (not constructible):
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import uuid
 from contextlib import suppress
@@ -38,6 +39,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from sqlalchemy import desc, func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.backtest.portfolio_strategies import is_portfolio_strategy_type
 from app.broker.provider import (
@@ -76,6 +78,44 @@ log = structlog.get_logger()
 class StrategyRunner:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
+
+    @staticmethod
+    def _signal_decision_key(
+        *,
+        strategy_id: uuid.UUID,
+        ticker: str,
+        side: str,
+        signal_type: str,
+        bar_time: datetime,
+    ) -> str:
+        raw = ":".join(
+            (
+                str(strategy_id),
+                ticker.upper(),
+                side,
+                signal_type,
+                bar_time.isoformat(),
+            )
+        )
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    async def _create_signal_once(self, signal: Signal) -> tuple[Signal, bool]:
+        if signal.decision_key is None:
+            raise ValueError("scheduled signal decision_key is required")
+        try:
+            async with self.db.begin_nested():
+                self.db.add(signal)
+                await self.db.flush()
+        except IntegrityError:
+            existing = (
+                await self.db.execute(
+                    select(Signal).where(Signal.decision_key == signal.decision_key)
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                raise
+            return existing, False
+        return signal, True
 
     # ── Infrastructure ────────────────────────────────────────────────────────
 
@@ -740,6 +780,7 @@ class StrategyRunner:
                     ticker=ticker,
                     strategy=strategy,
                     bars=session_bars,
+                    bar_time=session_times[-1],
                     pos_qty=qty,
                     avg_price=avg,
                     max_sell=Decimal(str(pos.get("maxSell", float(qty)))),
@@ -799,6 +840,13 @@ class StrategyRunner:
         sig = Signal(
             id=uuid.uuid4(),
             strategy_id=strategy.id,
+            decision_key=self._signal_decision_key(
+                strategy_id=strategy.id,
+                ticker=ticker,
+                side=signal_obj.side,
+                signal_type=signal_obj.signal_type,
+                bar_time=session_times[-1],
+            ),
             ticker=ticker,
             side=signal_obj.side,
             signal_type=signal_obj.signal_type,
@@ -812,8 +860,15 @@ class StrategyRunner:
             params_snapshot={**signal_obj.params_snapshot, "strategy_type": strategy.type},
             generated_at=datetime.now(UTC),
         )
-        self.db.add(sig)
-        await self.db.flush()
+        sig, created = await self._create_signal_once(sig)
+        if not created:
+            log.info(
+                "runner.duplicate_signal_suppressed",
+                strategy=strategy.name,
+                ticker=ticker,
+                decision_key=sig.decision_key,
+            )
+            return 0, 0, 0
         strategy.last_signal_at = datetime.now(UTC)
 
         allocation = allocator.allocate_one(
@@ -1008,6 +1063,7 @@ class StrategyRunner:
         ticker: str,
         strategy: Strategy,
         bars: list[Bar],
+        bar_time: datetime,
         pos_qty: Decimal,
         avg_price: Decimal,
         max_sell: Decimal,
@@ -1083,6 +1139,38 @@ class StrategyRunner:
         except RiskViolation:
             return None
 
+        exit_signal = Signal(
+            id=uuid.uuid4(),
+            strategy_id=strategy.id,
+            decision_key=self._signal_decision_key(
+                strategy_id=strategy.id,
+                ticker=ticker,
+                side="sell",
+                signal_type=exit_sig.signal_type,
+                bar_time=bar_time,
+            ),
+            ticker=ticker,
+            side="sell",
+            signal_type=exit_sig.signal_type,
+            status="pending",
+            entry_price=current_price,
+            stop_price=exit_sig.stop_price,
+            take_profit_price=exit_sig.take_profit_price,
+            suggested_quantity=-sell_qty,
+            confidence=exit_sig.confidence,
+            reason=exit_sig.reason,
+            generated_at=datetime.now(UTC),
+        )
+        exit_signal, created = await self._create_signal_once(exit_signal)
+        if not created:
+            log.info(
+                "runner.duplicate_exit_suppressed",
+                strategy=strategy.name,
+                ticker=ticker,
+                decision_key=exit_signal.decision_key,
+            )
+            return None
+
         async with broker as b:
             exec_engine = ExecutionEngine(self.db, b)
             order = await exec_engine.create_order_intent(
@@ -1090,31 +1178,15 @@ class StrategyRunner:
                 side="sell",
                 order_type="market",
                 quantity=sell_qty,
-                signal_id=last_sig.id,
+                signal_id=exit_signal.id,
                 is_dry_run=(settings.APP_MODE == "mock"),
                 estimated_price=current_price,
                 venue=strategy.venue,
             )
             order = await exec_engine.submit_order(order)
 
-        self.db.add(
-            Signal(
-                id=uuid.uuid4(),
-                strategy_id=strategy.id,
-                ticker=ticker,
-                side="sell",
-                signal_type=exit_sig.signal_type,
-                status="executed",
-                entry_price=current_price,
-                stop_price=exit_sig.stop_price,
-                take_profit_price=exit_sig.take_profit_price,
-                suggested_quantity=-sell_qty,
-                confidence=exit_sig.confidence,
-                reason=exit_sig.reason,
-                generated_at=datetime.now(UTC),
-                executed_at=datetime.now(UTC),
-            )
-        )
+        exit_signal.status = "executed"
+        exit_signal.executed_at = datetime.now(UTC)
         self.db.add(
             AuditLog(
                 action="strategy_exit_placed",
