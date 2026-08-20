@@ -9,8 +9,8 @@ import pytest_asyncio
 from sqlalchemy import select
 
 import app.services.execution_quality as _eq
-from app.db.models import Alert, AppSettings
-from app.execution.engine import ExecutionEngine
+from app.db.models import Alert, AppSettings, OrderEvent
+from app.execution.engine import ExecutionEngine, OrderCancellationFailed
 from app.execution.state_machine import InvalidOrderTransition
 
 
@@ -56,6 +56,11 @@ class WorkingBroker:
 
     async def cancel_order(self, broker_order_id):
         pass
+
+
+class CancelErrorBroker(WorkingBroker):
+    async def cancel_order(self, broker_order_id):
+        raise RuntimeError("Authorization: Bearer super-secret-token")
 
 
 class FilledOnReconcileBroker:
@@ -274,7 +279,12 @@ async def test_submit_order_broker_error_sets_error_status(db, monkeypatch):
     )
     order = await engine.submit_order(order)
     assert order.status == "error"
-    assert "Broker unavailable" in order.error_message
+    assert order.error_message == "Broker request failed with RuntimeError."
+    event = (
+        await db.execute(select(OrderEvent).where(OrderEvent.event_type == "broker_error"))
+    ).scalar_one()
+    assert event.payload["error_type"] == "RuntimeError"
+    assert "Broker unavailable" not in str(event.payload)
 
 
 @pytest.mark.asyncio
@@ -363,6 +373,31 @@ async def test_cancel_order_sets_cancelled_status(db):
     order = await engine.cancel_order(order)
     assert order.status == "cancelled"
     assert order.cancelled_at is not None
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_failure_records_safe_error_without_claiming_cancelled(db):
+    engine = ExecutionEngine(db, CancelErrorBroker())
+    order = await engine.create_order_intent(
+        ticker="SPY",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("3"),
+        is_dry_run=False,
+    )
+    order = await engine.submit_order(order)
+
+    with pytest.raises(OrderCancellationFailed) as exc_info:
+        await engine.cancel_order(order)
+    order = exc_info.value.order
+
+    assert order.status == "error"
+    assert order.cancelled_at is None
+    assert order.error_message == "Broker request failed with RuntimeError."
+    event = (
+        await db.execute(select(OrderEvent).where(OrderEvent.event_type == "cancel_failed"))
+    ).scalar_one()
+    assert "super-secret-token" not in str(event.payload)
 
 
 @pytest.mark.asyncio

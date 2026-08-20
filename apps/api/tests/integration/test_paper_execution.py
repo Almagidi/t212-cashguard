@@ -56,13 +56,17 @@ async def test_paper_order_creates_local_order_audits_and_position(
     monkeypatch: pytest.MonkeyPatch,
 ):
     transitions: list[tuple[str, str]] = []
-    real_transition = paper_engine_module.transition_order_status
+    real_transition = paper_engine_module.transition_order_status_with_evidence
 
-    def track_transition(order: Order, to_status: str, *, reason: str | None = None) -> None:
+    def track_transition(db, order: Order, to_status: str, **kwargs):
         transitions.append((order.status, to_status))
-        real_transition(order, to_status, reason=reason)
+        return real_transition(db, order, to_status, **kwargs)
 
-    monkeypatch.setattr(paper_engine_module, "transition_order_status", track_transition)
+    monkeypatch.setattr(
+        paper_engine_module,
+        "transition_order_status_with_evidence",
+        track_transition,
+    )
 
     response = await client.post(
         "/v1/orders/paper",

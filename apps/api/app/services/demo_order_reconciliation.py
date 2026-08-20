@@ -7,7 +7,6 @@ history record matches the stored broker_order_id.
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -17,10 +16,10 @@ from sqlalchemy import select
 from app.broker.trading212 import T212APIError, T212AuthError, T212RateLimitError
 from app.broker.trading212_mappers import map_trading212_history_order_to_snapshot
 from app.core.config import settings
-from app.db.models import AuditLog, Order, OrderEvent
+from app.db.models import AuditLog, Order
 from app.execution.engine import _safe_broker_error_reason
 from app.execution.paper_engine import PAPER_EXECUTION_ENVIRONMENT
-from app.execution.state_machine import transition_order_status
+from app.execution.state_machine import transition_order_status_with_evidence
 from app.services.execution_quality import (
     apply_order_execution_quality,
     milliseconds_between,
@@ -28,6 +27,8 @@ from app.services.execution_quality import (
 from app.services.safety_policy import SafetyPolicyViolation
 
 if TYPE_CHECKING:
+    import uuid
+
     from app.broker.protocols import ReconciliationHistoryBrokerProtocol
     from app.broker.snapshots import BrokerOrderSnapshot
 
@@ -220,13 +221,12 @@ class DemoOrderReconciler:
                 broker_status=broker_status,
             )
 
-        await self._apply_match(order, match, snapshot, mapped_status)
-        await self._log_order_event(
+        await self._apply_match(
             order,
-            "demo_history_reconciled",
-            previous_status,
-            order.status,
-            {
+            match,
+            snapshot,
+            mapped_status,
+            transition_payload={
                 "broker_status": broker_status,
                 "broker_order_id": order.broker_order_id,
                 "broker_ticker": broker_ticker,
@@ -363,12 +363,19 @@ class DemoOrderReconciler:
         item: dict[str, Any],
         snapshot: BrokerOrderSnapshot,
         mapped_status: str,
+        *,
+        transition_payload: dict[str, Any],
     ) -> None:
         reconciled_at = datetime.now(UTC)
-        transition_order_status(
+        transition_order_status_with_evidence(
+            self.db,
             order,
             mapped_status,
+            event_type="demo_history_reconciled",
             reason="demo history reconciliation status update",
+            actor=self.actor,
+            correlation_id=order.client_order_key,
+            payload=transition_payload,
         )
         order.last_reconciled_at = reconciled_at
         order.broker_response = item
@@ -413,27 +420,6 @@ class DemoOrderReconciler:
                     "side": order.side,
                     **payload,
                 },
-                occurred_at=datetime.now(UTC),
-            )
-        )
-        await self.db.flush()
-
-    async def _log_order_event(
-        self,
-        order: Order,
-        event_type: str,
-        from_status: str | None,
-        to_status: str | None,
-        payload: dict[str, Any],
-    ) -> None:
-        self.db.add(
-            OrderEvent(
-                id=uuid.uuid4(),
-                order_id=order.id,
-                event_type=event_type,
-                from_status=from_status,
-                to_status=to_status,
-                payload=payload,
                 occurred_at=datetime.now(UTC),
             )
         )

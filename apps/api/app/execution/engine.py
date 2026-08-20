@@ -20,7 +20,7 @@ from app.core.config import settings
 from app.db.models import Order, OrderEvent
 from app.execution.state_machine import (
     can_transition_order_status,
-    transition_order_status,
+    transition_order_status_with_evidence,
 )
 from app.services.execution_quality import (
     apply_order_execution_quality,
@@ -43,11 +43,15 @@ log = structlog.get_logger()
 
 def _safe_broker_error_reason(exc: Exception) -> str:
     """Keep broker failures auditable without echoing potentially sensitive response text."""
-    message = str(exc)
-    sensitive_markers = ("secret", "token", "password", "api_key", "api secret", "authorization")
-    if not message or any(marker in message.lower() for marker in sensitive_markers):
-        return f"Broker request failed with {type(exc).__name__}."
-    return message
+    return f"Broker request failed with {type(exc).__name__}."
+
+
+class OrderCancellationFailed(RuntimeError):
+    """Raised after a failed broker cancellation is staged for persistence."""
+
+    def __init__(self, order: Order):
+        self.order = order
+        super().__init__("Broker cancellation failed; reconciliation is required.")
 
 
 class ExecutionEngine:
@@ -268,9 +272,24 @@ class ExecutionEngine:
         # Dry-run: simulate fill
         if order.is_dry_run:
             now = datetime.now(UTC)
-            old_status = order.status
-            transition_order_status(order, "submitted", reason="dry-run simulated submission")
-            transition_order_status(order, "filled", reason="dry-run simulated fill")
+            transition_order_status_with_evidence(
+                self.db,
+                order,
+                "submitted",
+                event_type="dry_run_submitted",
+                reason="dry-run simulated submission",
+                actor="execution_engine",
+                correlation_id=order.client_order_key,
+            )
+            transition_order_status_with_evidence(
+                self.db,
+                order,
+                "filled",
+                event_type="dry_run_fill",
+                reason="dry-run simulated fill",
+                actor="execution_engine",
+                correlation_id=order.client_order_key,
+            )
             order.filled_quantity = order.quantity
             order.avg_fill_price = (
                 order.expected_fill_price or order.limit_price or Decimal("100.00")
@@ -283,9 +302,6 @@ class ExecutionEngine:
             order.reconciliation_latency_ms = 0
             order.broker_response = {"dry_run": True, "simulated": True}
             apply_order_execution_quality(order)
-            await self._log_order_event(
-                order.id, "dry_run_fill", from_status=old_status, to_status="filled"
-            )
             await audit_safety_decision(
                 self.db,
                 action="order_submitted",
@@ -299,16 +315,18 @@ class ExecutionEngine:
 
         # Real submission
         submitted_at = datetime.now(UTC)
-        transition_order_status(order, "submitted", reason="broker submission started")
-        order.submitted_at = submitted_at
-        order.execution_environment = order.execution_environment or settings.APP_MODE
-        await self._log_order_event(
-            order.id,
+        transition_order_status_with_evidence(
+            self.db,
+            order,
             "submitted",
-            from_status="pending_intent",
-            to_status="submitted",
+            event_type="submitted",
+            reason="broker submission started",
+            actor="execution_engine",
+            correlation_id=order.client_order_key,
             payload={"submitted_at": submitted_at.isoformat()},
         )
+        order.submitted_at = submitted_at
+        order.execution_environment = order.execution_environment or settings.APP_MODE
         await self.db.flush()
 
         try:
@@ -368,9 +386,17 @@ class ExecutionEngine:
 
             # Map broker status
             broker_status = response.get("status", "")
-            old_status = order.status
             if broker_status in ("FILLED",):
-                transition_order_status(order, "filled", reason="broker returned FILLED")
+                transition_event = transition_order_status_with_evidence(
+                    self.db,
+                    order,
+                    "filled",
+                    event_type="broker_accepted",
+                    reason="broker returned FILLED",
+                    actor="execution_engine",
+                    correlation_id=order.client_order_key,
+                    payload={"broker_status": broker_status},
+                )
                 order.filled_quantity = Decimal(
                     str(response.get("filledQuantity", float(abs(order.quantity))))
                 )
@@ -379,16 +405,50 @@ class ExecutionEngine:
                 order.fill_latency_ms = milliseconds_between(order.submitted_at, first_ack_at)
                 order.reconciliation_latency_ms = order.fill_latency_ms
             elif broker_status in ("CANCELLED",):
-                transition_order_status(order, "cancelled", reason="broker returned CANCELLED")
+                transition_event = transition_order_status_with_evidence(
+                    self.db,
+                    order,
+                    "cancelled",
+                    event_type="broker_accepted",
+                    reason="broker returned CANCELLED",
+                    actor="execution_engine",
+                    correlation_id=order.client_order_key,
+                    payload={"broker_status": broker_status},
+                )
                 order.cancelled_at = first_ack_at
             elif broker_status in ("REJECTED",):
-                transition_order_status(order, "rejected", reason="broker returned REJECTED")
+                transition_event = transition_order_status_with_evidence(
+                    self.db,
+                    order,
+                    "rejected",
+                    event_type="broker_accepted",
+                    reason="broker returned REJECTED",
+                    actor="execution_engine",
+                    correlation_id=order.client_order_key,
+                    payload={"broker_status": broker_status},
+                )
                 order.rejected_at = first_ack_at
             elif broker_status in ("WORKING", "PENDING"):
-                transition_order_status(order, "accepted", reason="broker returned working status")
+                transition_event = transition_order_status_with_evidence(
+                    self.db,
+                    order,
+                    "accepted",
+                    event_type="broker_accepted",
+                    reason="broker returned working status",
+                    actor="execution_engine",
+                    correlation_id=order.client_order_key,
+                    payload={"broker_status": broker_status},
+                )
             else:
-                transition_order_status(
-                    order, "accepted", reason="broker status defaulted to accepted"
+                transition_event = transition_order_status_with_evidence(
+                    self.db,
+                    order,
+                    "accepted",
+                    event_type="broker_accepted",
+                    reason="broker status defaulted to accepted",
+                    actor="execution_engine",
+                    correlation_id=order.client_order_key,
+                    payload={"broker_status": broker_status},
                 )
 
             apply_order_execution_quality(order)
@@ -407,12 +467,9 @@ class ExecutionEngine:
                         "no_broker_order_sent": False,
                     },
                 )
-            await self._log_order_event(
-                order.id,
-                "broker_accepted",
-                from_status=old_status,
-                to_status=order.status,
-                payload={
+            if transition_event is not None:
+                transition_event.payload = {
+                    **dict(transition_event.payload or {}),
                     "broker_status": broker_status,
                     "broker_order_id": order.broker_order_id,
                     "broker_latency_ms": order.broker_latency_ms,
@@ -422,14 +479,22 @@ class ExecutionEngine:
                     "slippage_pct": float(order.slippage_pct)
                     if order.slippage_pct is not None
                     else None,
-                },
-            )
+                }
 
         except Exception as e:
             # Persist the user-visible error on the order and in the audit trail,
             # and emit a structured log with traceback so operators can debug
             # broker integration failures (connectivity, schema drift, auth).
-            transition_order_status(order, "error", reason="broker submission error")
+            transition_order_status_with_evidence(
+                self.db,
+                order,
+                "error",
+                event_type="broker_error",
+                reason="broker submission error",
+                actor="execution_engine",
+                correlation_id=order.client_order_key,
+                payload={"error_type": type(e).__name__},
+            )
             order.error_message = _safe_broker_error_reason(e)
             order.rejected_at = datetime.now(UTC)
             apply_order_execution_quality(order)
@@ -438,13 +503,6 @@ class ExecutionEngine:
                 order_id=str(order.id),
                 ticker=order.ticker,
                 side=order.side,
-            )
-            await self._log_order_event(
-                order.id,
-                "broker_error",
-                from_status="submitted",
-                to_status="error",
-                payload={"error": str(e), "error_type": type(e).__name__},
             )
             await audit_safety_decision(
                 self.db,
@@ -468,28 +526,62 @@ class ExecutionEngine:
 
     async def cancel_order(self, order: Order) -> Order:
         """Cancel a pending order at the broker."""
-        old_status = order.status
-        if not can_transition_order_status(old_status, "cancelled"):
-            transition_order_status(order, "cancelled", reason="local cancellation requested")
+        locked_result = await self.db.execute(
+            select(Order)
+            .where(Order.id == order.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        order = locked_result.scalar_one()
+        if order.status == "cancelled":
+            return order
+        if not can_transition_order_status(order.status, "cancelled"):
+            transition_order_status_with_evidence(
+                self.db,
+                order,
+                "cancelled",
+                event_type="cancelled",
+                reason="local cancellation requested",
+                actor="execution_engine",
+                correlation_id=order.client_order_key,
+            )
 
         if order.broker_order_id and not order.is_dry_run:
             try:
                 await self.broker.cancel_order(order.broker_order_id)
             except Exception as e:
-                order.error_message = f"Cancel error: {e}"
+                now = datetime.now(UTC)
+                transition_order_status_with_evidence(
+                    self.db,
+                    order,
+                    "error",
+                    event_type="cancel_failed",
+                    reason="broker cancellation failed",
+                    actor="execution_engine",
+                    correlation_id=order.client_order_key,
+                    payload={"error_type": type(e).__name__},
+                )
+                order.error_message = _safe_broker_error_reason(e)
+                order.rejected_at = now
+                order.reconciliation_latency_ms = milliseconds_between(order.submitted_at, now)
+                apply_order_execution_quality(order)
+                await self.db.flush()
+                raise OrderCancellationFailed(order) from None
 
         now = datetime.now(UTC)
-        transition_order_status(order, "cancelled", reason="local cancellation requested")
+        transition_order_status_with_evidence(
+            self.db,
+            order,
+            "cancelled",
+            event_type="cancelled",
+            reason="local cancellation requested",
+            actor="execution_engine",
+            correlation_id=order.client_order_key,
+            payload={"reconciliation_latency_ms": milliseconds_between(order.submitted_at, now)},
+        )
         order.cancelled_at = now
         order.reconciliation_latency_ms = milliseconds_between(order.submitted_at, now)
         apply_order_execution_quality(order)
-        await self._log_order_event(
-            order.id,
-            "cancelled",
-            from_status=old_status,
-            to_status="cancelled",
-            payload={"reconciliation_latency_ms": order.reconciliation_latency_ms},
-        )
         await self.db.flush()
         return order
 
@@ -510,9 +602,17 @@ class ExecutionEngine:
             broker_status = response.get("status", "")
 
             if broker_status == "FILLED":
-                old_status = order.status
                 reconciled_at = datetime.now(UTC)
-                transition_order_status(order, "filled", reason="reconciliation returned FILLED")
+                transition_event = transition_order_status_with_evidence(
+                    self.db,
+                    order,
+                    "filled",
+                    event_type="reconciled_fill",
+                    reason="reconciliation returned FILLED",
+                    actor="execution_engine",
+                    correlation_id=order.client_order_key,
+                    payload={"broker_status": broker_status},
+                )
                 order.filled_quantity = Decimal(str(response.get("filledQuantity", 0)))
                 order.avg_fill_price = Decimal(str(response.get("filledPrice", 0) or 0))
                 order.broker_response = response
@@ -524,12 +624,9 @@ class ExecutionEngine:
                 order.last_reconciled_at = reconciled_at
                 apply_order_execution_quality(order)
                 await self._maybe_alert_abnormal_slippage(order)
-                await self._log_order_event(
-                    order.id,
-                    "reconciled_fill",
-                    from_status=old_status,
-                    to_status="filled",
-                    payload={
+                if transition_event is not None:
+                    transition_event.payload = {
+                        **dict(transition_event.payload or {}),
                         "broker_status": broker_status,
                         "fill_latency_ms": order.fill_latency_ms,
                         "reconciliation_latency_ms": order.reconciliation_latency_ms,
@@ -539,15 +636,18 @@ class ExecutionEngine:
                         "slippage_pct": float(order.slippage_pct)
                         if order.slippage_pct is not None
                         else None,
-                    },
-                )
+                    }
             elif broker_status in ("CANCELLED", "REJECTED"):
-                old_status = order.status
                 reconciled_at = datetime.now(UTC)
-                transition_order_status(
+                transition_order_status_with_evidence(
+                    self.db,
                     order,
                     broker_status.lower(),
+                    event_type="reconciled_status",
                     reason=f"reconciliation returned {broker_status}",
+                    actor="execution_engine",
+                    correlation_id=order.client_order_key,
+                    payload={"broker_status": broker_status},
                 )
                 if order.status == "cancelled":
                     order.cancelled_at = order.cancelled_at or reconciled_at
@@ -559,19 +659,6 @@ class ExecutionEngine:
                 order.last_reconciled_at = reconciled_at
                 order.broker_response = response
                 apply_order_execution_quality(order)
-                await self._log_order_event(
-                    order.id,
-                    "reconciled_status",
-                    from_status=old_status,
-                    to_status=order.status,
-                    payload={
-                        "broker_status": broker_status,
-                        "reconciliation_latency_ms": order.reconciliation_latency_ms,
-                        "execution_quality_score": float(order.execution_quality_score)
-                        if order.execution_quality_score is not None
-                        else None,
-                    },
-                )
             else:
                 order.last_reconciled_at = datetime.now(UTC)
 

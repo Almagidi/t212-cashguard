@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import uuid
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from app.db.models import Order
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.db.models import Order, OrderEvent
 
 
 TERMINAL_ORDER_STATUSES = frozenset({"filled", "cancelled", "rejected", "error"})
@@ -64,3 +68,67 @@ def transition_order_status(
     if reason:
         details = f"{details} ({reason})"
     raise InvalidOrderTransition(details)
+
+
+def transition_order_status_with_evidence(
+    db: AsyncSession,
+    order: Order,
+    to_status: str,
+    *,
+    event_type: str,
+    reason: str,
+    actor: str,
+    correlation_id: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> OrderEvent | None:
+    """Stage a validated transition and its event/audit in one transaction."""
+    if not event_type or len(event_type) > 50:
+        raise ValueError("event_type must contain 1-50 characters")
+    if not actor or len(actor) > 100:
+        raise ValueError("actor must contain 1-100 characters")
+    if not reason or len(reason) > 500:
+        raise ValueError("reason must contain 1-500 characters")
+    if correlation_id is not None and len(correlation_id) > 100:
+        raise ValueError("correlation_id must contain at most 100 characters")
+
+    from app.db.models import AuditLog, OrderEvent
+
+    from_status = order.status
+    if from_status == to_status:
+        transition_order_status(order, to_status, reason=reason)
+        return None
+
+    transition_order_status(order, to_status, reason=reason)
+    occurred_at = datetime.now(UTC)
+    event_payload = {
+        **dict(payload or {}),
+        "transition_reason": reason,
+        "transition_actor": actor,
+        "correlation_id": correlation_id,
+    }
+    event = OrderEvent(
+        id=uuid.uuid4(),
+        order_id=order.id,
+        event_type=event_type,
+        from_status=from_status,
+        to_status=to_status,
+        payload=event_payload,
+        occurred_at=occurred_at,
+    )
+    audit = AuditLog(
+        id=uuid.uuid4(),
+        action="order_status_transitioned",
+        entity_type="order",
+        entity_id=str(order.id),
+        actor=actor,
+        payload={
+            "event_type": event_type,
+            "from_status": from_status,
+            "to_status": to_status,
+            "reason": reason,
+            "correlation_id": correlation_id,
+        },
+        occurred_at=occurred_at,
+    )
+    db.add_all((event, audit))
+    return event
