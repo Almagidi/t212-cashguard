@@ -44,6 +44,18 @@ class FakeRedis:
         return 1
 
 
+class UnavailableRedis:
+    def __init__(self) -> None:
+        self.release_attempted = False
+
+    async def set(self, *_args: object, **_kwargs: object) -> None:
+        raise ConnectionError("deterministic Redis outage")
+
+    async def eval(self, *_args: object, **_kwargs: object) -> int:
+        self.release_attempted = True
+        return 0
+
+
 @pytest.fixture
 def fake_redis(monkeypatch: pytest.MonkeyPatch) -> FakeRedis:
     client = FakeRedis()
@@ -84,3 +96,17 @@ async def test_each_acquisition_uses_a_unique_token(fake_redis: FakeRedis) -> No
 
     first, second = fake_redis.acquisition_tokens
     assert first != second
+
+
+@pytest.mark.asyncio
+async def test_redis_acquisition_failure_does_not_authorize_or_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = UnavailableRedis()
+    monkeypatch.setattr(redis_module, "_get_pool", lambda: object())
+    monkeypatch.setattr(redis_module.aioredis, "Redis", lambda **_kwargs: client)
+
+    async with redis_module.task_lock("redis-unavailable", ttl_seconds=30) as acquired:
+        assert acquired is False
+
+    assert client.release_attempted is False
