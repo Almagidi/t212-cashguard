@@ -325,6 +325,7 @@ class Signal(Base):
     signal_type: Mapped[str] = mapped_column(
         String(50), nullable=False
     )  # entry | exit | stop | take_profit
+    decision_key: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="pending"
     )  # pending | approved | rejected | executed | expired
