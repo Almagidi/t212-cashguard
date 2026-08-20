@@ -230,6 +230,7 @@ def test_strategy_runner_is_provider_backed_and_write_capable_for_entries_and_ex
     tree = _parse(STRATEGY_RUNNER_PATH)
     service_class = _class_node(tree, "StrategyRunner")
     get_broker = _method_node(service_class, "_get_broker")
+    submit_strategy_order = _method_node(service_class, "_submit_strategy_order")
     process_ticker = _method_node(service_class, "_process_ticker")
     check_exit = _method_node(service_class, "_check_exit")
     run_all_enabled = _method_node(service_class, "run_all_enabled")
@@ -242,8 +243,9 @@ def test_strategy_runner_is_provider_backed_and_write_capable_for_entries_and_ex
     assert "BrokerProviderCredentials" in source
     assert "worker_strategy_runner" in ast.unparse(get_broker)
     assert _source_contains(run_all_enabled, "live_trading_unlocked")
-    assert {"create_order_intent", "submit_order"} <= _call_names(process_ticker)
-    assert {"create_order_intent", "submit_order"} <= _call_names(check_exit)
+    assert {"create_order_intent", "submit_order"} <= _call_names(submit_strategy_order)
+    assert "_submit_strategy_order" in _call_names(process_ticker)
+    assert "_submit_strategy_order" in _call_names(check_exit)
     assert _source_contains(process_ticker, "strategy_order_placed")
     assert _source_contains(check_exit, "strategy_exit_placed")
 
@@ -251,11 +253,13 @@ def test_strategy_runner_is_provider_backed_and_write_capable_for_entries_and_ex
 def test_strategy_runner_is_write_capable_for_strategy_entries_and_exits() -> None:
     tree = _parse(STRATEGY_RUNNER_PATH)
     service_class = _class_node(tree, "StrategyRunner")
+    submit_strategy_order = _method_node(service_class, "_submit_strategy_order")
     process_ticker = _method_node(service_class, "_process_ticker")
     check_exit = _method_node(service_class, "_check_exit")
 
-    assert {"create_order_intent", "submit_order"} <= _call_names(process_ticker)
-    assert {"create_order_intent", "submit_order"} <= _call_names(check_exit)
+    assert {"create_order_intent", "submit_order"} <= _call_names(submit_strategy_order)
+    assert "_submit_strategy_order" in _call_names(process_ticker)
+    assert "_submit_strategy_order" in _call_names(check_exit)
     assert _source_contains(process_ticker, "strategy_order_placed")
     assert _source_contains(check_exit, "strategy_exit_placed")
 

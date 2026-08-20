@@ -34,8 +34,8 @@ import inspect
 import uuid
 from contextlib import suppress
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal
-from typing import TYPE_CHECKING, Any, cast
+from decimal import ROUND_DOWN, Decimal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import structlog
 from sqlalchemy import desc, func, select
@@ -122,6 +122,78 @@ class StrategyRunner:
     async def _get_settings(self) -> AppSettings | None:
         r = await self.db.execute(select(AppSettings).where(AppSettings.id == 1))
         return r.scalar_one_or_none()
+
+    async def _get_paper_user(self) -> Any | None:
+        from app.db.models import User
+
+        result = await self.db.execute(
+            select(User).where(
+                User.email == settings.ADMIN_EMAIL,
+                User.is_active.is_(True),
+                User.is_admin.is_(True),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def _submit_strategy_order(
+        self,
+        *,
+        broker: Any,
+        strategy: Strategy,
+        signal_id: uuid.UUID,
+        ticker: str,
+        side: Literal["buy", "sell"],
+        quantity: Decimal,
+        estimated_price: Decimal,
+        order_type: Literal["market", "limit"],
+        available_cash: Decimal | None = None,
+        limit_price: Decimal | None = None,
+    ) -> Any:
+        if settings.APP_MODE == "mock":
+            from app.api.schemas import PaperOrderCreate
+            from app.execution.paper_engine import PaperExecutionEngine
+
+            user = await self._get_paper_user()
+            if user is None:
+                raise RuntimeError(
+                    "Active configured admin is required for scheduled paper execution."
+                )
+            paper_quantity = quantity.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
+            return await PaperExecutionEngine(self.db).execute(
+                PaperOrderCreate(
+                    ticker=ticker,
+                    side=side,
+                    quantity=paper_quantity,
+                    estimated_price=estimated_price,
+                    strategy=strategy.name,
+                    source="scheduled_strategy",
+                    venue="paper",
+                    paper_only=True,
+                ),
+                user=user,
+                signal_id=signal_id,
+            )
+
+        async with broker as active_broker:
+            exec_engine = ExecutionEngine(self.db, active_broker)
+            intent_kwargs: dict[str, Any] = {
+                "ticker": ticker,
+                "side": side,
+                "order_type": order_type,
+                "quantity": quantity,
+                "signal_id": signal_id,
+                "is_dry_run": False,
+                "estimated_price": estimated_price,
+                "venue": strategy.venue,
+            }
+            if available_cash is not None:
+                intent_kwargs["available_cash"] = available_cash
+            if limit_price is not None:
+                intent_kwargs["limit_price"] = limit_price
+            order = await exec_engine.create_order_intent(
+                **intent_kwargs,
+            )
+            return await exec_engine.submit_order(order)
 
     async def _get_realized_pnl_today(self) -> Decimal:
         today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -569,9 +641,17 @@ class StrategyRunner:
         if broker is None:
             return {**summary, "skipped": "no_broker"}
 
-        async with broker as b:
-            account = await b.get_account_summary()
-            positions = await b.get_positions()
+        if settings.APP_MODE == "mock":
+            from app.execution.paper_engine import PaperExecutionEngine
+
+            paper_user = await self._get_paper_user()
+            if paper_user is None:
+                return {**summary, "skipped": "no_paper_admin"}
+            account, positions = await PaperExecutionEngine(self.db).portfolio_state(paper_user)
+        else:
+            async with broker as b:
+                account = await b.get_account_summary()
+                positions = await b.get_positions()
 
         cash = Decimal(str(account.get("free", 0)))
         total = Decimal(str(account.get("total", 0)))
@@ -993,21 +1073,18 @@ class StrategyRunner:
                 limit_price = price * (1 - limit_offset)
             limit_price = limit_price.quantize(Decimal("0.01"))
 
-            async with broker as b:
-                exec_engine = ExecutionEngine(self.db, b)
-                order = await exec_engine.create_order_intent(
-                    ticker=ticker,
-                    side=signal_obj.side,
-                    order_type="limit",
-                    quantity=qty,
-                    signal_id=sig.id,
-                    is_dry_run=(settings.APP_MODE == "mock"),
-                    available_cash=cash,
-                    estimated_price=price,
-                    limit_price=limit_price,
-                    venue=strategy.venue,
-                )
-                order = await exec_engine.submit_order(order)
+            order = await self._submit_strategy_order(
+                broker=broker,
+                strategy=strategy,
+                signal_id=sig.id,
+                ticker=ticker,
+                side=cast("Literal['buy', 'sell']", signal_obj.side),
+                quantity=qty,
+                estimated_price=price,
+                order_type="limit",
+                available_cash=cash,
+                limit_price=limit_price,
+            )
 
             sig.status = "executed"
             sig.executed_at = datetime.now(UTC)
@@ -1171,19 +1248,16 @@ class StrategyRunner:
             )
             return None
 
-        async with broker as b:
-            exec_engine = ExecutionEngine(self.db, b)
-            order = await exec_engine.create_order_intent(
-                ticker=ticker,
-                side="sell",
-                order_type="market",
-                quantity=sell_qty,
-                signal_id=exit_signal.id,
-                is_dry_run=(settings.APP_MODE == "mock"),
-                estimated_price=current_price,
-                venue=strategy.venue,
-            )
-            order = await exec_engine.submit_order(order)
+        order = await self._submit_strategy_order(
+            broker=broker,
+            strategy=strategy,
+            signal_id=exit_signal.id,
+            ticker=ticker,
+            side="sell",
+            quantity=sell_qty,
+            estimated_price=current_price,
+            order_type="market",
+        )
 
         exit_signal.status = "executed"
         exit_signal.executed_at = datetime.now(UTC)

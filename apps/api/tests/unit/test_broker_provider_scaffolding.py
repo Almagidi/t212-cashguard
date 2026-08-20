@@ -868,4 +868,7 @@ def test_provider_function_is_only_referenced_from_approved_runtime_call_sites()
             "BrokerProviderValidationError",
             "create_trading212_provider_adapter",
         },
+        "scripts/real_worker_tripwire_worker.py": {
+            "create_trading212_provider_adapter",
+        },
     }

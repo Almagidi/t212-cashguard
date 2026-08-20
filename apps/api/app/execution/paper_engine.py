@@ -174,6 +174,28 @@ class PaperExecutionEngine:
         latest = await self._latest_paper_positions(user)
         return sum(1 for position in latest.values() if position.quantity > 0)
 
+    async def portfolio_state(self, user: User) -> tuple[dict[str, Decimal], list[dict[str, Any]]]:
+        account = await self._latest_paper_account(user)
+        latest_positions = await self._latest_paper_positions(user)
+        positions = [
+            {
+                "ticker": position.ticker.upper(),
+                "quantity": position.quantity,
+                "averagePrice": position.avg_price,
+                "currentPrice": position.current_price,
+                "maxSell": position.quantity_available or position.quantity,
+            }
+            for position in latest_positions.values()
+            if position.quantity > 0
+        ]
+        return (
+            {
+                "free": account.cash if account is not None else PAPER_STARTING_CASH,
+                "total": account.total_value if account is not None else PAPER_STARTING_CASH,
+            },
+            positions,
+        )
+
     def _client_order_key(self, body: PaperOrderCreate, quantity: Decimal) -> str:
         raw = (
             f"paper:{body.source}:{body.strategy or 'manual'}:"
@@ -466,7 +488,13 @@ class PaperExecutionEngine:
         )
         return snapshot
 
-    async def execute(self, body: PaperOrderCreate, *, user: User) -> Order:
+    async def execute(
+        self,
+        body: PaperOrderCreate,
+        *,
+        user: User,
+        signal_id: uuid.UUID | None = None,
+    ) -> Order:
         actor = user.email
         if settings.APP_MODE != "mock":
             await self._audit(
@@ -551,6 +579,7 @@ class PaperExecutionEngine:
         )
         order = Order(
             id=uuid.uuid4(),
+            signal_id=signal_id,
             client_order_key=self._client_order_key(body, quantity),
             ticker=body.ticker.upper(),
             side=body.side,
