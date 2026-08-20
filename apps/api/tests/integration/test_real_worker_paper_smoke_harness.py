@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -82,15 +83,40 @@ def test_worker_network_tripwire_rejects_non_loopback_connections() -> None:
         worker_launcher._guarded_connect(object(), ("8.8.8.8", 443))
 
 
-def test_redis_lock_evidence_binds_commands_to_the_exact_lock_key() -> None:
-    key = "celery:task_lock:run_strategy_signals"
-    false_positive = f'"set" "celery-task-meta-other" "value"\n"del" "{key}"\n'
+def _monitor_line(*args: str) -> str:
+    return " ".join(json.dumps(arg) for arg in args)
 
-    with pytest.raises(smoke.EvidenceFailure, match="SET NX EX"):
-        smoke.assert_redis_lock_evidence(false_positive, key)
+
+def test_redis_lock_evidence_binds_commands_to_exact_positions() -> None:
+    key = "celery:task_lock:run_strategy_signals"
+    release_script = smoke._release_lock_script()
+    acquisition = _monitor_line("set", key, "owner-a", "ex", "270", "nx")
+
+    invalid_releases = (
+        # The expected key is present only as an unused extra argument.
+        _monitor_line("eval", release_script, "1", "wrong-key", "owner-a", key),
+        # The acquired token is present only as an unused extra argument.
+        _monitor_line("eval", release_script, "1", key, "owner-b", "owner-a"),
+        # Redis string values are case-sensitive.
+        _monitor_line("eval", release_script, "1", key, "Owner-A"),
+        # GET and DEL substrings alone do not prove an ownership comparison.
+        _monitor_line(
+            "eval",
+            'redis.call("get", KEYS[1]); return redis.call("del", KEYS[1])',
+            "1",
+            key,
+            "owner-a",
+        ),
+    )
+    for invalid_release in invalid_releases:
+        with pytest.raises(smoke.EvidenceFailure, match="same owner token"):
+            smoke.assert_redis_lock_evidence(
+                f"{acquisition}\n{invalid_release}\n",
+                key,
+            )
 
     smoke.assert_redis_lock_evidence(
-        f'"set" "{key}" "1" "ex" "270" "nx"\n"del" "{key}"\n',
+        f"{acquisition}\n{_monitor_line('eval', release_script, '1', key, 'owner-a')}\n",
         key,
     )
 

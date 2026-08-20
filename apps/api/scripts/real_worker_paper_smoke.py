@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -80,16 +81,51 @@ def assert_safe_worker_log(log_text: str) -> None:
         raise EvidenceFailure("Worker network tripwire was not armed.")
 
 
+def _release_lock_script() -> str:
+    from app.core.redis import _RELEASE_LOCK_SCRIPT
+
+    return _RELEASE_LOCK_SCRIPT
+
+
+def _monitor_command_args(line: str) -> tuple[str, ...]:
+    encoded_args = re.findall(r'"(?:\\.|[^"\\])*"', line)
+    try:
+        return tuple(json.loads(arg) for arg in encoded_args)
+    except json.JSONDecodeError:
+        return ()
+
+
 def assert_redis_lock_evidence(monitor_text: str, lock_key: str) -> None:
-    lines = monitor_text.lower().splitlines()
-    quoted_key = f'"{lock_key.lower()}"'
-    acquired = any(
-        '"set"' in line and quoted_key in line and '"nx"' in line and '"ex"' in line
-        for line in lines
+    commands = tuple(_monitor_command_args(line) for line in monitor_text.splitlines())
+    acquisition_token: str | None = None
+    for args in commands:
+        if (
+            len(args) == 6
+            and args[0].upper() == "SET"
+            and args[1] == lock_key
+            and args[3].upper() == "EX"
+            and args[4].isdigit()
+            and int(args[4]) > 0
+            and args[5].upper() == "NX"
+        ):
+            acquisition_token = args[2]
+            break
+    if acquisition_token is None:
+        raise EvidenceFailure("Redis MONITOR did not prove SET NX EX task-lock acquisition")
+
+    released_by_owner = any(
+        len(args) == 5
+        and args[0].upper() == "EVAL"
+        and args[1] == _release_lock_script()
+        and args[2] == "1"
+        and args[3] == lock_key
+        and args[4] == acquisition_token
+        for args in commands
     )
-    released = any('"del"' in line and quoted_key in line for line in lines)
-    if not acquired or not released:
-        raise EvidenceFailure("Redis MONITOR did not prove SET NX EX/DEL task-lock activity")
+    if not released_by_owner:
+        raise EvidenceFailure(
+            "Redis MONITOR did not prove compare-and-delete release with the same owner token"
+        )
 
 
 def _free_port() -> int:
@@ -423,7 +459,7 @@ def run_smoke() -> dict[str, Any]:
                 monitor = None
                 worker_log.flush()
                 monitor_log.flush()
-            worker_text, monitor_text = worker_path.read_text(), monitor_path.read_text().lower()
+            worker_text, monitor_text = worker_path.read_text(), monitor_path.read_text()
             assert_safe_worker_log(worker_text)
             lock_key = "celery:task_lock:run_strategy_signals"
             assert_redis_lock_evidence(monitor_text, lock_key)
@@ -432,7 +468,7 @@ def run_smoke() -> dict[str, Any]:
                 "first_task": first,
                 "duplicate_task": second,
                 "database": evidence,
-                "redis_lock": "SET/DEL observed",
+                "redis_lock": "SET NX EX / owner compare-and-delete observed",
                 "broker_tripwires": "armed and untriggered",
                 "owned_resources_removed": True,
             }
