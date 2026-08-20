@@ -82,6 +82,20 @@ def build_startup_report() -> dict[str, Any]:
             ),
         )
     )
+
+    profile_outside_mock = settings.MOCK_MARKET_PROFILE != "default" and settings.APP_MODE != "mock"
+    checks.append(
+        _check(
+            key="mock_market_profile",
+            label="Deterministic mock market profile isolated",
+            status="fail" if profile_outside_mock else "pass",
+            detail=(
+                "Non-default mock market profile is forbidden outside APP_MODE=mock."
+                if profile_outside_mock
+                else "Mock market profile is default or isolated to mock mode."
+            ),
+        )
+    )
     master_key_status = _secret_status(settings.MASTER_KEY)
     checks.append(
         _check(
@@ -236,6 +250,11 @@ def build_startup_report() -> dict[str, Any]:
 
 def assert_startup_safe() -> dict[str, Any]:
     report = build_startup_report()
+    profile_failures = [
+        check for check in _failing_checks(report) if check["key"] == "mock_market_profile"
+    ]
+    if profile_failures:
+        raise RuntimeError("Unsafe mock market profile configuration outside APP_MODE=mock.")
     if settings.APP_MODE == "live" and report["failures"] > 0:
         details = "; ".join(check["detail"] for check in _failing_checks(report))
         raise RuntimeError(f"Unsafe {settings.APP_MODE} startup configuration: {details}")
