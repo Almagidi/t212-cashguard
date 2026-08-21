@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 from sqlalchemy.orm import selectinload
 
 from app.db.models import Order, OrderEvent, Signal
+from app.execution.state_machine import ACTIVE_ORDER_STATUSES
 
 
 class OrderRepository:
@@ -67,13 +68,7 @@ class OrderRepository:
     async def list_pending(self) -> Sequence[Order]:
         """All orders in submittable / reconcilable states."""
         return (
-            (
-                await self.db.execute(
-                    select(Order).where(
-                        Order.status.in_(["pending_intent", "submitted", "accepted"])
-                    )
-                )
-            )
+            (await self.db.execute(select(Order).where(Order.status.in_(ACTIVE_ORDER_STATUSES))))
             .scalars()
             .all()
         )
@@ -95,7 +90,7 @@ class OrderRepository:
             .where(
                 Order.ticker == ticker,
                 Order.side == side,
-                Order.status.in_(["pending_intent", "submitted", "accepted"]),
+                Order.status.in_(ACTIVE_ORDER_STATUSES),
             )
             .limit(1)
         )

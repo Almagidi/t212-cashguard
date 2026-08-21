@@ -233,17 +233,26 @@ class SystemControlService:
         if not orders:
             return CancellationSummary(cancelled=0, failed=0)
 
-        broker = await self._get_broker("operator_system_control_emergency")
         cancelled = 0
         failed = 0
-        async with broker as active_broker:
-            engine = ExecutionEngine(self.db, active_broker)
-            for order in orders:
-                try:
-                    await engine.cancel_order(order)
-                    cancelled += 1
-                except OrderCancellationFailed:
-                    failed += 1
+        paper_orders = [order for order in orders if order.is_dry_run]
+        external_orders = [order for order in orders if not order.is_dry_run]
+        if paper_orders:
+            paper_engine = ExecutionEngine(self.db, None)
+            for order in paper_orders:
+                await paper_engine.cancel_order(order)
+                cancelled += 1
+
+        if external_orders:
+            broker = await self._get_broker("operator_system_control_emergency")
+            async with broker as active_broker:
+                engine = ExecutionEngine(self.db, active_broker)
+                for order in external_orders:
+                    try:
+                        await engine.cancel_order(order)
+                        cancelled += 1
+                    except OrderCancellationFailed:
+                        failed += 1
 
         audit_payload: dict[str, Any] = {
             "source": "system_control",

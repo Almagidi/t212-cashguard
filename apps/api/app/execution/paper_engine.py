@@ -24,17 +24,17 @@ from app.db.models import (
     OrderEvent,
     PositionSnapshot,
     Trade,
+    User,
 )
 from app.execution.paper_policy import PaperFillDecision, evaluate_paper_fill
 from app.execution.state_machine import transition_order_status_with_evidence
 from app.risk.engine import RiskEngine, RiskViolation
-from app.services.execution_quality import apply_order_execution_quality
+from app.services.execution_quality import apply_order_execution_quality, milliseconds_between
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.api.schemas import PaperOrderCreate
-    from app.db.models import User
 
 
 PAPER_BROKER = "paper"
@@ -127,6 +127,21 @@ class PaperExecutionEngine:
         if existing is not None:
             return existing
 
+        # The User row exists before any paper ledger state and is therefore
+        # the stable first-use mutex. Recheck after acquiring it so every
+        # create-if-missing path (including portfolio reads) uses one order.
+        await self.db.execute(select(User.id).where(User.id == user.id).with_for_update())
+        result = await self.db.execute(
+            select(BrokerConnection).where(
+                BrokerConnection.user_id == user.id,
+                BrokerConnection.broker == PAPER_BROKER,
+                BrokerConnection.environment == PAPER_ENVIRONMENT,
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            return existing
+
         connection = BrokerConnection(
             id=uuid.uuid4(),
             user_id=user.id,
@@ -143,6 +158,18 @@ class PaperExecutionEngine:
         self.db.add(connection)
         await self.db.flush()
         return connection
+
+    async def _lock_paper_connection(self, user: User) -> BrokerConnection:
+        """Serialize ledger mutations for one user's local paper account."""
+        connection = await self._paper_connection(user)
+        return (
+            await self.db.execute(
+                select(BrokerConnection)
+                .where(BrokerConnection.id == connection.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
 
     async def _latest_paper_positions(
         self,
@@ -343,6 +370,17 @@ class PaperExecutionEngine:
         previous_avg = previous.avg_price if previous is not None else decision.fill_price
         filled_quantity = decision.filled_quantity
         gross_value = decision.fill_price * filled_quantity
+        previous_account = await self._latest_paper_account(user)
+        cash_before = previous_account.cash if previous_account else PAPER_STARTING_CASH
+        cash_delta = (
+            -(gross_value + decision.fee_amount)
+            if order.side == "buy"
+            else gross_value - decision.fee_amount
+        )
+        cash = (cash_before + cash_delta).quantize(PAPER_CASH_QUANTUM)
+        if cash < 0:
+            raise PaperExecutionError("Paper cash guard blocks a negative cash balance.")
+
         position_opened_at = datetime.now(UTC)
         position_open_order_id: uuid.UUID | None = None
         if previous is not None and previous_quantity > 0:
@@ -351,8 +389,10 @@ class PaperExecutionEngine:
                 position_opened_at = datetime.fromisoformat(
                     str(raw.get("position_opened_at", previous.snapshotted_at.isoformat()))
                 )
-                if order.side == "sell" and raw.get("position_open_order_id"):
-                    position_open_order_id = uuid.UUID(str(raw["position_open_order_id"]))
+                if raw.get("position_open_order_id"):
+                    existing_open_order_id = uuid.UUID(str(raw["position_open_order_id"]))
+                    if order.side == "sell" or existing_open_order_id == order.id:
+                        position_open_order_id = existing_open_order_id
             except ValueError:
                 position_opened_at = previous.snapshotted_at
         elif order.side == "buy":
@@ -427,14 +467,6 @@ class PaperExecutionEngine:
         self.db.add(snapshot)
         await self.db.flush()
 
-        previous_account = await self._latest_paper_account(user)
-        cash_before = previous_account.cash if previous_account else PAPER_STARTING_CASH
-        cash_delta = (
-            -(gross_value + decision.fee_amount)
-            if order.side == "buy"
-            else gross_value - decision.fee_amount
-        )
-        cash = (cash_before + cash_delta).quantize(PAPER_CASH_QUANTUM)
         current_positions = await self._latest_paper_positions(user)
         invested = sum(
             (
@@ -517,6 +549,8 @@ class PaperExecutionEngine:
 
         if body.venue not in PAPER_SUPPORTED_VENUES:
             raise PaperExecutionError("Unsupported paper venue.")
+
+        paper_connection = await self._lock_paper_connection(user)
 
         if body.quantity is not None:
             quantity = body.quantity
@@ -603,6 +637,7 @@ class PaperExecutionEngine:
                 "source": body.source,
                 "strategy": body.strategy,
                 "simulation_profile": decision.profile,
+                "paper_connection_id": str(paper_connection.id),
             },
         )
         self.db.add(order)
@@ -733,6 +768,174 @@ class PaperExecutionEngine:
         await self._apply_fill_effects(user=user, order=order, decision=decision, actor=actor)
         await self.db.flush()
         return order
+
+    async def fill_partial_order(
+        self,
+        order: Order,
+        *,
+        quantity: Decimal,
+        estimated_price: Decimal,
+        user: User,
+    ) -> Order:
+        """Apply one deterministic mock fill without exceeding the live remainder."""
+        if settings.APP_MODE != "mock":
+            raise PaperExecutionError(
+                "Paper follow-up fills require APP_MODE=mock.", status_code=403
+            )
+
+        paper_connection = await self._lock_paper_connection(user)
+        locked = (
+            await self.db.execute(
+                select(Order)
+                .where(Order.id == order.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
+        if (
+            not locked.is_dry_run
+            or locked.execution_environment != PAPER_EXECUTION_ENVIRONMENT
+            or locked.status != "partially_filled"
+        ):
+            raise PaperExecutionError("Only an active partial paper order can receive a fill.")
+        if str((locked.broker_request or {}).get("paper_connection_id", "")) != str(
+            paper_connection.id
+        ):
+            raise PaperExecutionError("Partial paper order does not belong to this paper account.")
+
+        quantity = quantity.quantize(PAPER_CASH_QUANTUM, rounding=ROUND_DOWN)
+        remaining_before = locked.remaining_quantity
+        if quantity <= 0 or quantity > remaining_before:
+            raise PaperExecutionError(
+                f"Follow-up fill quantity must be positive and at most remaining quantity "
+                f"{remaining_before}."
+            )
+
+        decision = evaluate_paper_fill(
+            side=locked.side,
+            quantity=quantity,
+            quote_price=estimated_price,
+            profile="standard",
+        )
+        if (
+            decision.outcome != "filled"
+            or decision.fill_price is None
+            or decision.filled_quantity != quantity
+        ):
+            raise PaperExecutionError("Deterministic follow-up fill policy did not fill exactly.")
+
+        latest_account = await self._latest_paper_account(user)
+        available_cash = latest_account.cash if latest_account else PAPER_STARTING_CASH
+        required_cash = (
+            decision.fill_price * decision.filled_quantity + decision.fee_amount
+        ).quantize(PAPER_CASH_QUANTUM)
+        if locked.side == "buy" and required_cash > available_cash:
+            await self._audit(
+                "paper_follow_up_fill_blocked",
+                actor=user.email,
+                entity_type="order",
+                entity_id=str(locked.id),
+                user_id=user.id,
+                payload={
+                    "reason": "paper_cash_guard",
+                    "required_cash": str(required_cash),
+                    "available_cash": str(available_cash),
+                    "remaining_quantity": str(remaining_before),
+                },
+            )
+            raise PaperExecutionError("Paper follow-up fill blocked by cash guard.")
+
+        previous_filled = locked.filled_quantity or Decimal("0")
+        previous_avg = locked.avg_fill_price or decision.fill_price
+        cumulative_filled = previous_filled + decision.filled_quantity
+        remaining_after = locked.quantity - cumulative_filled
+        if remaining_after < 0:
+            raise PaperExecutionError("Follow-up fill exceeds remaining quantity.")
+
+        await self._apply_fill_effects(
+            user=user,
+            order=locked,
+            decision=decision,
+            actor=user.email,
+        )
+        cumulative_avg = (
+            (previous_avg * previous_filled) + (decision.fill_price * decision.filled_quantity)
+        ) / cumulative_filled
+        cumulative_fee = (locked.fee_amount or Decimal("0")) + decision.fee_amount
+        now = datetime.now(UTC)
+        target_status = "filled" if remaining_after == 0 else "partially_filled"
+        event_payload = {
+            "incremental_filled_quantity": str(decision.filled_quantity),
+            "cumulative_filled_quantity": str(cumulative_filled),
+            "remaining_quantity": str(remaining_after),
+            "fill_price": str(decision.fill_price),
+            "incremental_fee_amount": str(decision.fee_amount),
+            "cumulative_fee_amount": str(cumulative_fee),
+            "paper_only": True,
+            "no_broker_order_sent": True,
+        }
+        if target_status == "filled":
+            transition_order_status_with_evidence(
+                self.db,
+                locked,
+                "filled",
+                event_type="paper_follow_up_fill",
+                reason="paper remainder filled locally",
+                actor=user.email,
+                correlation_id=locked.client_order_key,
+                payload=event_payload,
+            )
+            locked.filled_at = now
+        else:
+            await self._order_event(
+                locked.id,
+                "paper_follow_up_fill",
+                from_status="partially_filled",
+                to_status="partially_filled",
+                payload=event_payload,
+            )
+
+        locked.filled_quantity = cumulative_filled
+        locked.avg_fill_price = cumulative_avg.quantize(PAPER_CASH_QUANTUM)
+        locked.fee_amount = cumulative_fee.quantize(PAPER_CASH_QUANTUM)
+        if locked.side == "buy":
+            incremental_cash = (
+                decision.fill_price * decision.filled_quantity + decision.fee_amount
+            ).quantize(PAPER_CASH_QUANTUM)
+            locked.cash_used = (locked.cash_used or Decimal("0")) + incremental_cash
+        locked.last_reconciled_at = now
+        latest_fill_latency = milliseconds_between(locked.submitted_at, now) or 0
+        locked.fill_latency_ms = max(locked.fill_latency_ms or 0, latest_fill_latency)
+        locked.reconciliation_latency_ms = max(
+            locked.reconciliation_latency_ms or 0,
+            latest_fill_latency,
+        )
+        locked.execution_quality_notes = None
+        locked.slippage_pct = None
+        locked.slippage_value = None
+        locked.broker_response = {
+            **dict(locked.broker_response or {}),
+            "status": ("PAPER_FILLED" if target_status == "filled" else "PAPER_PARTIALLY_FILLED"),
+            "cumulative_filled_quantity": str(cumulative_filled),
+            "remaining_quantity": str(remaining_after),
+            "fee_amount": str(locked.fee_amount),
+            "last_incremental_fill_quantity": str(decision.filled_quantity),
+            "last_incremental_fill_price": str(decision.fill_price),
+            "paper_only": True,
+            "mock_execution": True,
+            "no_broker_order_sent": True,
+        }
+        apply_order_execution_quality(locked)
+        await self._audit(
+            "paper_follow_up_fill",
+            actor=user.email,
+            entity_type="order",
+            entity_id=str(locked.id),
+            user_id=user.id,
+            payload=event_payload,
+        )
+        await self.db.flush()
+        return locked
 
 
 async def paper_execution_summary(db: AsyncSession) -> dict[str, Any]:

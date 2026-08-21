@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.execution.state_machine import (
+    ACTIVE_ORDER_STATUSES,
     InvalidOrderTransition,
     can_transition_order_status,
     is_terminal_status,
@@ -26,6 +27,15 @@ LEGAL_TRANSITIONS = {
     "accepted": {"partially_filled", "filled", "rejected", "cancelled", "error"},
     "partially_filled": {"filled", "cancelled", "error"},
 }
+
+
+def test_active_statuses_are_exactly_known_nonterminal_statuses() -> None:
+    assert {
+        "pending_intent",
+        "submitted",
+        "accepted",
+        "partially_filled",
+    } == ACTIVE_ORDER_STATUSES
 
 
 @pytest.mark.parametrize(

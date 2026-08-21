@@ -1124,6 +1124,7 @@ class OrderOut(BaseSchema):
     status: str
     broker_order_id: str | None
     filled_quantity: Decimal | None
+    remaining_quantity: Decimal
     avg_fill_price: Decimal | None
     execution_environment: str | None = None
     expected_fill_price: Decimal | None = None

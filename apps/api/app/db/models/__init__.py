@@ -430,6 +430,12 @@ class Order(Base):
         return self.signal.strategy_id if self.signal else None
 
     @property
+    def remaining_quantity(self) -> Decimal:
+        """Exact unfilled remainder derived from authoritative persisted quantities."""
+        filled = self.filled_quantity or Decimal("0")
+        return max(Decimal("0"), self.quantity - filled)
+
+    @property
     def strategy_name(self) -> str | None:
         if self.signal and self.signal.strategy:
             return self.signal.strategy.name

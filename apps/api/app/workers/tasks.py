@@ -252,6 +252,7 @@ def reconcile_pending_orders(self: Any) -> dict[str, Any]:
         from app.db.models import BrokerConnection, Order
         from app.db.session import AsyncSessionLocal
         from app.execution.engine import ExecutionEngine
+        from app.execution.state_machine import ACTIVE_ORDER_STATUSES
         from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
         async with task_lock("reconcile_pending_orders", ttl_seconds=90) as acquired:
@@ -286,7 +287,7 @@ def reconcile_pending_orders(self: Any) -> dict[str, Any]:
                 result = await db.execute(
                     select(Order)
                     .where(
-                        Order.status.in_(["accepted", "submitted"]),
+                        Order.status.in_(ACTIVE_ORDER_STATUSES),
                         Order.is_dry_run.is_(False),
                         Order.broker_order_id.isnot(None),
                     )
@@ -577,6 +578,7 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
         from app.db.models import BrokerConnection, Order
         from app.db.session import AsyncSessionLocal
         from app.execution.engine import ExecutionEngine, OrderCancellationFailed
+        from app.execution.state_machine import ACTIVE_ORDER_STATUSES
         from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
         ORDER_TIMEOUT_MINUTES = 60  # Cancel working orders after 1 hour
@@ -590,7 +592,7 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
                 cutoff = datetime.now(UTC) - timedelta(minutes=ORDER_TIMEOUT_MINUTES)
                 result = await db.execute(
                     select(Order).where(
-                        Order.status.in_(["accepted", "submitted"]),
+                        Order.status.in_(ACTIVE_ORDER_STATUSES),
                         Order.order_type.in_(["limit", "stop", "stop_limit"]),
                         Order.created_at < cutoff,
                         Order.is_dry_run.is_(False),

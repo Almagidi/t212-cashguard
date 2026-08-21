@@ -151,6 +151,11 @@ async def test_operator_status_returns_control_tower_summary(
                 created_at=datetime.now(UTC) - timedelta(minutes=5),
             ),
             _order(
+                venue="t212",
+                status="partially_filled",
+                created_at=datetime.now(UTC) - timedelta(minutes=6),
+            ),
+            _order(
                 venue="kraken",
                 status="filled",
                 created_at=datetime.now(UTC) - timedelta(minutes=4),
@@ -196,8 +201,8 @@ async def test_operator_status_returns_control_tower_summary(
 
     assert body["trading212"]["strategies_count"] == 1
     assert body["trading212"]["live_approved_strategies_count"] == 1
-    assert body["trading212"]["active_orders_count"] == 1
-    assert body["trading212"]["recent_orders_count"] == 1
+    assert body["trading212"]["active_orders_count"] == 2
+    assert body["trading212"]["recent_orders_count"] == 2
     assert body["trading212"]["latest_order_status"] == "submitted"
     assert body["trading212"]["live_readiness_status"]["ready_for_live"] is False
 
