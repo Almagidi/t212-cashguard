@@ -110,6 +110,7 @@ class FakeConnection:
 class FakeOrder:
     id: uuid.UUID
     ticker: str = "AAPL"
+    is_dry_run: bool = False
 
 
 class RecordingTrading212Adapter:

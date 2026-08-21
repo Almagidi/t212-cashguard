@@ -27,7 +27,7 @@ ORDER_STATUS_TRANSITIONS = {
         }
     ),
     "accepted": frozenset({"partially_filled", "filled", "rejected", "cancelled", "error"}),
-    "partially_filled": frozenset({"filled", "cancelled", "error"}),
+    "partially_filled": frozenset({"filled", "cancelled", "rejected", "error"}),
     "filled": frozenset(),
     "cancelled": frozenset(),
     "rejected": frozenset(),
@@ -35,6 +35,7 @@ ORDER_STATUS_TRANSITIONS = {
 }
 
 KNOWN_ORDER_STATUSES = frozenset(ORDER_STATUS_TRANSITIONS)
+ACTIVE_ORDER_STATUSES = KNOWN_ORDER_STATUSES - TERMINAL_ORDER_STATUSES
 
 
 class InvalidOrderTransition(ValueError):

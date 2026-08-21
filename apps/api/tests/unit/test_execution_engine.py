@@ -11,7 +11,7 @@ from sqlalchemy import select
 import app.services.execution_quality as _eq
 from app.db.models import Alert, AppSettings, OrderEvent
 from app.execution.engine import ExecutionEngine, OrderCancellationFailed
-from app.execution.state_machine import InvalidOrderTransition
+from app.execution.state_machine import InvalidOrderTransition, transition_order_status
 
 
 class DummyBroker:
@@ -79,6 +79,34 @@ class FilledOnReconcileBroker:
 
     async def cancel_order(self, broker_order_id):
         pass
+
+
+class StaleFilledOnReconcileBroker(FilledOnReconcileBroker):
+    async def get_order_by_id(self, broker_order_id):
+        response = await super().get_order_by_id(broker_order_id)
+        return {**response, "filledQuantity": 5, "filledPrice": 101}
+
+
+class PartiallyFilledThenCancelledBroker(WorkingBroker):
+    async def get_order_by_id(self, broker_order_id):
+        return {
+            "id": broker_order_id,
+            "status": "CANCELLED",
+            "filledQuantity": 7,
+            "filledPrice": 101,
+        }
+
+
+class PartiallyFilledThenRejectedBroker(PartiallyFilledThenCancelledBroker):
+    async def get_order_by_id(self, broker_order_id):
+        response = await super().get_order_by_id(broker_order_id)
+        return {**response, "status": "REJECTED"}
+
+
+class StalePartialThenCancelledBroker(PartiallyFilledThenCancelledBroker):
+    async def get_order_by_id(self, broker_order_id):
+        response = await super().get_order_by_id(broker_order_id)
+        return {**response, "filledQuantity": 5, "filledPrice": 101}
 
 
 class ErrorBroker:
@@ -337,6 +365,143 @@ async def test_reconcile_order_fills_accepted(db):
     assert order.status == "filled"
     assert order.filled_quantity == Decimal("10")
     assert order.avg_fill_price == Decimal("101.5")
+
+
+@pytest.mark.asyncio
+async def test_reconcile_order_fills_active_partial_remainder(db):
+    engine = ExecutionEngine(db, FilledOnReconcileBroker())
+    order = await engine.create_order_intent(
+        ticker="META",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("10"),
+        estimated_price=Decimal("100"),
+        is_dry_run=False,
+    )
+    order = await engine.submit_order(order)
+    transition_order_status(order, "partially_filled")
+    order.filled_quantity = Decimal("5")
+    order.avg_fill_price = Decimal("100")
+    _eq.apply_order_execution_quality(order)
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "filled"
+    assert order.filled_quantity == Decimal("10")
+    assert order.remaining_quantity == Decimal("0")
+    assert order.avg_fill_price == Decimal("101.5")
+    assert order.slippage_pct == Decimal("1.5000")
+    assert order.slippage_value == Decimal("15.0000")
+    assert "pending" not in order.execution_quality_notes
+
+
+@pytest.mark.asyncio
+async def test_reconcile_stale_filled_response_cannot_regress_partial_quantity(db):
+    engine = ExecutionEngine(db, StaleFilledOnReconcileBroker())
+    order = await engine.create_order_intent(
+        ticker="META",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("10"),
+        estimated_price=Decimal("100"),
+        is_dry_run=False,
+    )
+    order = await engine.submit_order(order)
+    transition_order_status(order, "partially_filled")
+    order.filled_quantity = Decimal("7")
+    order.avg_fill_price = Decimal("100")
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "partially_filled"
+    assert order.filled_quantity == Decimal("7")
+    assert order.avg_fill_price == Decimal("100")
+    assert order.remaining_quantity == Decimal("3")
+
+
+@pytest.mark.asyncio
+async def test_reconcile_terminal_partial_applies_broker_final_fill(db):
+    engine = ExecutionEngine(db, PartiallyFilledThenCancelledBroker())
+    order = await engine.create_order_intent(
+        ticker="META",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("10"),
+        estimated_price=Decimal("100"),
+        is_dry_run=False,
+    )
+    order = await engine.submit_order(order)
+    transition_order_status(order, "partially_filled")
+    order.filled_quantity = Decimal("5")
+    order.avg_fill_price = Decimal("100")
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "cancelled"
+    assert order.filled_quantity == Decimal("7")
+    assert order.avg_fill_price == Decimal("101")
+    assert order.remaining_quantity == Decimal("3")
+    assert order.slippage_pct == Decimal("1.0000")
+    assert order.slippage_value == Decimal("7.0000")
+    assert "pending" not in order.execution_quality_notes
+    event = (
+        await db.execute(
+            select(OrderEvent).where(
+                OrderEvent.order_id == order.id, OrderEvent.event_type == "reconciled_status"
+            )
+        )
+    ).scalar_one()
+    assert event.payload["filled_quantity"] == "7"
+    assert event.payload["remaining_quantity"] == "3"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_rejected_partial_is_terminal_and_atomic(db):
+    engine = ExecutionEngine(db, PartiallyFilledThenRejectedBroker())
+    order = await engine.create_order_intent(
+        ticker="META",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("10"),
+        estimated_price=Decimal("100"),
+        is_dry_run=False,
+    )
+    order = await engine.submit_order(order)
+    transition_order_status(order, "partially_filled")
+    order.filled_quantity = Decimal("5")
+    order.avg_fill_price = Decimal("100")
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "rejected"
+    assert order.filled_quantity == Decimal("7")
+    assert order.avg_fill_price == Decimal("101")
+    assert order.remaining_quantity == Decimal("3")
+    assert order.broker_response["status"] == "REJECTED"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_stale_terminal_partial_keeps_quantity_and_price_together(db):
+    engine = ExecutionEngine(db, StalePartialThenCancelledBroker())
+    order = await engine.create_order_intent(
+        ticker="META",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("10"),
+        estimated_price=Decimal("100"),
+        is_dry_run=False,
+    )
+    order = await engine.submit_order(order)
+    transition_order_status(order, "partially_filled")
+    order.filled_quantity = Decimal("7")
+    order.avg_fill_price = Decimal("100")
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "cancelled"
+    assert order.filled_quantity == Decimal("7")
+    assert order.avg_fill_price == Decimal("100")
+    assert order.slippage_value == Decimal("0.0000")
 
 
 @pytest.mark.asyncio

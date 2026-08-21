@@ -20,6 +20,7 @@ from app.broker.trading212 import make_sell_quantity
 from app.core.config import settings
 from app.db.models import Order, OrderEvent
 from app.execution.state_machine import (
+    ACTIVE_ORDER_STATUSES,
     can_transition_order_status,
     transition_order_status_with_evidence,
 )
@@ -221,7 +222,7 @@ class ExecutionEngine:
                 Order.time_validity == time_validity,
                 Order.is_dry_run == is_dry_run,
                 Order.created_at >= cutoff,
-                Order.status.in_(("pending_intent", "submitted", "accepted")),
+                Order.status.in_(ACTIVE_ORDER_STATUSES),
             )
         )
         candidates = result.scalars().all()
@@ -580,6 +581,11 @@ class ExecutionEngine:
                 raise OrderCancellationFailed(order) from None
 
         now = datetime.now(UTC)
+        cancellation_payload = {
+            "reconciliation_latency_ms": milliseconds_between(order.submitted_at, now),
+            "filled_quantity": str(order.filled_quantity or Decimal("0")),
+            "cancelled_quantity": str(order.remaining_quantity),
+        }
         transition_order_status_with_evidence(
             self.db,
             order,
@@ -588,7 +594,7 @@ class ExecutionEngine:
             reason="local cancellation requested",
             actor="execution_engine",
             correlation_id=order.client_order_key,
-            payload={"reconciliation_latency_ms": milliseconds_between(order.submitted_at, now)},
+            payload=cancellation_payload,
         )
         order.cancelled_at = now
         order.reconciliation_latency_ms = milliseconds_between(order.submitted_at, now)
@@ -599,10 +605,10 @@ class ExecutionEngine:
     async def reconcile_order(self, order: Order) -> Order:
         """
         Poll broker for latest order status.
-        Only reconcile orders in accepted/submitted state.
+        Only reconcile orders in active state.
         NEVER blindly retry on uncertain state.
         """
-        if order.status not in ("accepted", "submitted") or not order.broker_order_id:
+        if order.status not in ACTIVE_ORDER_STATUSES or not order.broker_order_id:
             return order
 
         if order.is_dry_run:
@@ -614,6 +620,18 @@ class ExecutionEngine:
 
             if broker_status == "FILLED":
                 reconciled_at = datetime.now(UTC)
+                current_filled = order.filled_quantity or Decimal("0")
+                reported_filled = Decimal(str(response.get("filledQuantity", 0)))
+                if reported_filled < 0 or reported_filled > order.quantity:
+                    raise ValueError("Broker reported an invalid filled quantity")
+                reconciled_filled = max(current_filled, reported_filled)
+                if reconciled_filled != order.quantity:
+                    raise ValueError("Broker FILLED response does not cover the order quantity")
+                reconciled_price = order.avg_fill_price
+                if reported_filled >= current_filled and response.get("filledPrice") is not None:
+                    reported_price = Decimal(str(response.get("filledPrice") or 0))
+                    if reported_price > 0:
+                        reconciled_price = reported_price
                 transition_event = transition_order_status_with_evidence(
                     self.db,
                     order,
@@ -622,10 +640,18 @@ class ExecutionEngine:
                     reason="reconciliation returned FILLED",
                     actor="execution_engine",
                     correlation_id=order.client_order_key,
-                    payload={"broker_status": broker_status},
+                    payload={
+                        "broker_status": broker_status,
+                        "filled_quantity": str(reconciled_filled),
+                        "remaining_quantity": "0",
+                        "avg_fill_price": str(reconciled_price)
+                        if reconciled_price is not None
+                        else None,
+                    },
                 )
-                order.filled_quantity = Decimal(str(response.get("filledQuantity", 0)))
-                order.avg_fill_price = Decimal(str(response.get("filledPrice", 0) or 0))
+                order.filled_quantity = reconciled_filled
+                if reconciled_price is not None:
+                    order.avg_fill_price = reconciled_price
                 order.broker_response = response
                 order.filled_at = order.filled_at or reconciled_at
                 order.fill_latency_ms = milliseconds_between(order.submitted_at, order.filled_at)
@@ -633,7 +659,10 @@ class ExecutionEngine:
                     order.submitted_at, reconciled_at
                 )
                 order.last_reconciled_at = reconciled_at
-                apply_order_execution_quality(order)
+                order.execution_quality_notes = None
+                order.slippage_pct = None
+                order.slippage_value = None
+                quality = apply_order_execution_quality(order)
                 await self._maybe_alert_abnormal_slippage(order)
                 if transition_event is not None:
                     transition_event.payload = {
@@ -641,15 +670,29 @@ class ExecutionEngine:
                         "broker_status": broker_status,
                         "fill_latency_ms": order.fill_latency_ms,
                         "reconciliation_latency_ms": order.reconciliation_latency_ms,
-                        "execution_quality_score": float(order.execution_quality_score)
-                        if order.execution_quality_score is not None
+                        "execution_quality_score": float(quality["execution_quality_score"])
+                        if quality["execution_quality_score"] is not None
                         else None,
-                        "slippage_pct": float(order.slippage_pct)
-                        if order.slippage_pct is not None
+                        "slippage_pct": float(quality["slippage_pct"])
+                        if quality["slippage_pct"] is not None
                         else None,
                     }
             elif broker_status in ("CANCELLED", "REJECTED"):
                 reconciled_at = datetime.now(UTC)
+                current_filled = order.filled_quantity or Decimal("0")
+                broker_filled = current_filled
+                broker_fill_price = order.avg_fill_price
+                if response.get("filledQuantity") is not None:
+                    reported_filled = Decimal(str(response["filledQuantity"]))
+                    if reported_filled < 0 or reported_filled > order.quantity:
+                        raise ValueError("Broker reported an invalid terminal filled quantity")
+                    if reported_filled >= current_filled:
+                        broker_filled = reported_filled
+                        if response.get("filledPrice") is not None:
+                            reported_price = Decimal(str(response["filledPrice"] or 0))
+                            if reported_price > 0:
+                                broker_fill_price = reported_price
+                remaining_quantity = max(Decimal("0"), order.quantity - broker_filled)
                 transition_order_status_with_evidence(
                     self.db,
                     order,
@@ -658,8 +701,18 @@ class ExecutionEngine:
                     reason=f"reconciliation returned {broker_status}",
                     actor="execution_engine",
                     correlation_id=order.client_order_key,
-                    payload={"broker_status": broker_status},
+                    payload={
+                        "broker_status": broker_status,
+                        "filled_quantity": str(broker_filled),
+                        "remaining_quantity": str(remaining_quantity),
+                        "avg_fill_price": str(broker_fill_price)
+                        if broker_fill_price is not None
+                        else None,
+                    },
                 )
+                order.filled_quantity = broker_filled
+                if broker_filled > 0 and broker_fill_price is not None:
+                    order.avg_fill_price = broker_fill_price
                 if order.status == "cancelled":
                     order.cancelled_at = order.cancelled_at or reconciled_at
                 else:
@@ -669,6 +722,9 @@ class ExecutionEngine:
                 )
                 order.last_reconciled_at = reconciled_at
                 order.broker_response = response
+                order.execution_quality_notes = None
+                order.slippage_pct = None
+                order.slippage_value = None
                 apply_order_execution_quality(order)
             else:
                 order.last_reconciled_at = datetime.now(UTC)

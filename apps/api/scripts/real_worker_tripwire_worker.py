@@ -11,6 +11,7 @@ import json
 import math
 import os
 import socket
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, NoReturn
 
 if TYPE_CHECKING:
@@ -132,6 +133,22 @@ def _install_precommit_fault() -> None:
     tasks._complete_task = fail_once
 
 
+def _install_mock_bar_offset(offset_minutes: int) -> None:
+    """Shift deterministic mock bars to prove a genuinely new decision key."""
+    from app.market_data.mock_provider import MockMarketDataProvider
+
+    original_bars = MockMarketDataProvider._orb_breakout_bars
+
+    def shifted_bars(self: Any, ticker: str, *, interval_minutes: int, bars: int) -> Any:
+        rows = original_bars(self, ticker, interval_minutes=interval_minutes, bars=bars)
+        for row in rows:
+            timestamp = datetime.fromisoformat(str(row["timestamp"]))
+            row["timestamp"] = (timestamp + timedelta(minutes=offset_minutes)).isoformat()
+        return rows
+
+    MockMarketDataProvider._orb_breakout_bars = shifted_bars
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--hostname", required=True)
@@ -141,6 +158,7 @@ def main() -> int:
     parser.add_argument("--lock-ttl-seconds")
     parser.add_argument("--pool", choices=("solo", "prefork"), default="solo")
     parser.add_argument("--precommit-fault-once", action="store_true")
+    parser.add_argument("--mock-bar-offset-minutes")
     args = parser.parse_args()
     hostname = args.hostname
     modules = {
@@ -186,6 +204,21 @@ def main() -> int:
         if os.environ.get("APP_MODE", "").lower() != "mock":
             parser.error("pre-commit fault requires APP_MODE=mock")
         _install_precommit_fault()
+    if args.mock_bar_offset_minutes is not None:
+        if os.environ.get("APP_MODE", "").lower() != "mock":
+            parser.error("mock bar offset requires APP_MODE=mock")
+        try:
+            offset = float(args.mock_bar_offset_minutes)
+        except ValueError:
+            parser.error("mock bar offset must be a non-zero whole number of minutes")
+        if (
+            not math.isfinite(offset)
+            or not offset.is_integer()
+            or offset == 0
+            or abs(offset) > 1440
+        ):
+            parser.error("mock bar offset must be a non-zero whole number of minutes")
+        _install_mock_bar_offset(int(offset))
     print(
         "CASHGUARD_BROKER_TRIPWIRES_ARMED CASHGUARD_NETWORK_TRIPWIRE_ARMED",
         flush=True,

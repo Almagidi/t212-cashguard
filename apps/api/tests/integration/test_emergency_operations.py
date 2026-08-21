@@ -179,6 +179,45 @@ async def test_cancel_all_pending_cancels_real_pending_orders_and_audits(db, mon
 
 
 @pytest.mark.asyncio
+async def test_cancel_all_pending_cancels_partial_paper_remainder_without_broker(db, monkeypatch):
+    monkeypatch.setattr(settings, "APP_MODE", "mock")
+    partial = _order(
+        ticker="PARTIAL_PAPER",
+        status="partially_filled",
+        quantity=Decimal("4"),
+        filled_quantity=Decimal("2"),
+        execution_environment="paper_mock",
+        is_dry_run=True,
+    )
+    db.add(partial)
+    await db.commit()
+
+    service = SystemControlService(db)
+
+    async def forbidden_broker(_purpose: str) -> EmergencyBroker:
+        raise AssertionError("paper cancellation must not construct a broker")
+
+    monkeypatch.setattr(service, "_get_broker", forbidden_broker)
+    summary = await service.cancel_all_pending_summary(actor="d3-partial-cancel")
+    await db.commit()
+
+    assert summary.cancelled == 1
+    assert summary.failed == 0
+    assert partial.status == "cancelled"
+    assert partial.filled_quantity == Decimal("2")
+    assert partial.remaining_quantity == Decimal("2")
+    event = (
+        await db.execute(
+            select(OrderEvent)
+            .where(OrderEvent.order_id == partial.id)
+            .where(OrderEvent.event_type == "cancelled")
+        )
+    ).scalar_one()
+    assert Decimal(event.payload["filled_quantity"]) == Decimal("2")
+    assert Decimal(event.payload["cancelled_quantity"]) == Decimal("2")
+
+
+@pytest.mark.asyncio
 async def test_flatten_all_submits_market_sells_for_long_positions_and_audits(db, monkeypatch):
     monkeypatch.setattr(settings, "APP_MODE", "demo")
     monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)

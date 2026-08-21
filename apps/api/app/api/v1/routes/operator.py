@@ -44,6 +44,7 @@ from app.db.repositories.venue_config_repo import VenueConfigRepository
 from app.db.repositories.worker_heartbeat_repo import WorkerHeartbeatRepository
 from app.db.session import get_db
 from app.execution.paper_engine import paper_execution_summary
+from app.execution.state_machine import ACTIVE_ORDER_STATUSES
 from app.services.live_readiness import LiveReadinessError, LiveReadinessService
 from app.services.worker_health import build_worker_health
 from app.strategies.kraken_dca_planner import KrakenDCAPlanner
@@ -54,11 +55,12 @@ from app.workers.tasks_heartbeat import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/operator", tags=["operator"])
 
-_ACTIVE_ORDER_STATUSES = ("pending_intent", "submitted", "accepted")
 _DCA_BEAT_KEY = "dca-paper-evaluate"
 _DCA_TASK = "app.workers.tasks_dca.evaluate_due_plans_task"
 _HEARTBEAT_BEAT_KEY = "worker-heartbeat"
@@ -321,7 +323,7 @@ async def _count_orders(
     db: AsyncSession,
     *,
     venue: str,
-    statuses: tuple[str, ...] | None = None,
+    statuses: Collection[str] | None = None,
     since: datetime | None = None,
 ) -> int:
     query = select(func.count()).select_from(Order).where(Order.venue == venue)
@@ -587,7 +589,7 @@ async def operator_status(
             active_orders_count=await _count_orders(
                 db,
                 venue="t212",
-                statuses=_ACTIVE_ORDER_STATUSES,
+                statuses=ACTIVE_ORDER_STATUSES,
             ),
             recent_orders_count=await _count_orders(db, venue="t212", since=recent_since),
             latest_order_status=latest_t212_order.status if latest_t212_order else None,
@@ -607,7 +609,7 @@ async def operator_status(
             active_orders_count=await _count_orders(
                 db,
                 venue="kraken",
-                statuses=_ACTIVE_ORDER_STATUSES,
+                statuses=ACTIVE_ORDER_STATUSES,
             ),
             venue_config=next(
                 (status for status in venue_statuses if status.venue == "kraken"),
