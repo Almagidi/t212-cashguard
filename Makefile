@@ -144,7 +144,7 @@ clean: ## Remove build artifacts and caches
 check-all: lint typecheck test ## Run lint, typecheck, and tests in sequence
 	@echo "$(GREEN)✓ All checks passed$(RESET)"
 
-.PHONY: smoke readiness paper-check real-worker-paper-smoke real-worker-lock-recovery e2e-operator-integration readiness-full
+.PHONY: smoke readiness paper-check real-worker-paper-smoke real-worker-lock-recovery real-worker-interruption-recovery e2e-operator-integration readiness-full
 
 smoke:
 	cd apps/api && DATABASE_URL=sqlite+aiosqlite:///:memory: REDIS_URL=redis://localhost:6379/15 SECRET_KEY=test-secret-key-32-chars-minimum-x MASTER_KEY=test-master-key-32-chars-minimum-x APP_MODE=mock python3.12 -m pytest tests/smoke/ -v --tb=short --no-cov
@@ -159,6 +159,9 @@ real-worker-paper-smoke: ## Prove real Celery/Redis/PostgreSQL scheduled paper f
 
 real-worker-lock-recovery: ## Prove two-worker exclusion and bounded death recovery (Docker)
 	cd apps/api && .venv/bin/python scripts/real_worker_lock_recovery.py
+
+real-worker-interruption-recovery: ## Prove Redis/PostgreSQL/failure/worker-loss recovery (Docker)
+	cd apps/api && .venv/bin/python scripts/real_worker_interruption_recovery.py
 
 e2e-operator-integration: ## Run real-backend integration e2e for operator dashboard (SQLite, APP_MODE=mock, ports 8001/3001)
 	@if lsof -tiTCP:8001 -sTCP:LISTEN >/dev/null 2>&1; then \

@@ -32,7 +32,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import uuid
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -53,6 +53,7 @@ from app.core.config import settings
 from app.db.models import AppSettings, AuditLog, BrokerConnection, Signal, Strategy, Trade
 from app.db.repositories.venue_config_repo import VenueConfigRepository
 from app.execution.engine import ExecutionEngine
+from app.execution.paper_engine import PaperExecutionError
 from app.risk.engine import RiskEngine, RiskViolation
 from app.services.alert_service import (
     alert_daily_summary,
@@ -661,26 +662,31 @@ class StrategyRunner:
         allocation_state = allocator.new_state()
 
         for strategy in strategies:
+            strategy_name = strategy.name
             try:
-                g, s, b_ = await self._run_strategy(
-                    strategy=strategy,
-                    broker=broker,
-                    cash=cash,
-                    total=total,
-                    n_open=n_open,
-                    pos_map=pos_map,
-                    all_positions=positions,
-                    intelligence=intelligence,
-                    allocator=allocator,
-                    allocation_state=allocation_state,
+                strategy_scope = (
+                    self.db.begin_nested() if settings.APP_MODE == "mock" else nullcontext()
                 )
+                async with strategy_scope:
+                    g, s, b_ = await self._run_strategy(
+                        strategy=strategy,
+                        broker=broker,
+                        cash=cash,
+                        total=total,
+                        n_open=n_open,
+                        pos_map=pos_map,
+                        all_positions=positions,
+                        intelligence=intelligence,
+                        allocator=allocator,
+                        allocation_state=allocation_state,
+                    )
                 summary["strategies_run"] += 1
                 summary["signals_generated"] += g
                 summary["orders_submitted"] += s
                 summary["risk_blocks"] += b_
             except Exception as exc:
-                summary["errors"].append(f"{strategy.name}: {exc}")
-                log.error("runner.strategy_error", name=strategy.name, error=str(exc))
+                summary["errors"].append(f"{strategy_name}: {exc}")
+                log.error("runner.strategy_error", name=strategy_name, error=str(exc))
 
         # Daily summary alert (fires after all strategies have run)
         try:
@@ -806,6 +812,8 @@ class StrategyRunner:
                 log.warning(
                     "runner.ticker_error", strategy=strategy.name, ticker=ticker, error=str(exc)
                 )
+                if settings.APP_MODE == "mock":
+                    raise
         return gen, sub, blocks
 
     # ── Per-ticker ────────────────────────────────────────────────────────────
@@ -1124,12 +1132,24 @@ class StrategyRunner:
                     reason=signal_obj.reason or "",
                 )
             return 1, 1, 0
-        except Exception as exc:
+        except (PaperExecutionError, SafetyPolicyViolation) as exc:
             sig.status = "error"
             sig.risk_rejection_reason = str(exc)
             log.error("runner.submit_error", ticker=ticker, error=str(exc))
             with suppress(Exception):
                 await alert_order_failed(self.db, ticker, str(exc))
+            return 1, 0, 0
+        except Exception as exc:
+            sig.status = "error"
+            sig.risk_rejection_reason = str(exc)
+            if settings.APP_MODE == "mock":
+                log.exception("runner.submit_unexpected_error", ticker=ticker, error=str(exc))
+            else:
+                log.error("runner.submit_error", ticker=ticker, error=str(exc))
+            with suppress(Exception):
+                await alert_order_failed(self.db, ticker, str(exc))
+            if settings.APP_MODE == "mock":
+                raise
             return 1, 0, 0
 
     # ── Exit logic ────────────────────────────────────────────────────────────

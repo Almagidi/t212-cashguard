@@ -231,6 +231,7 @@ async def test_scheduled_live_strategy_signal_reaches_mock_paper_fill(
     )
 
     strategy = await _seed_open_gates(db, is_live=True)
+    strategy_id = strategy.id
     service = StrategyRunner(db)
     monkeypatch.setattr(service, "_fetch_market_context", _fake_market_context)
 
@@ -246,7 +247,7 @@ async def test_scheduled_live_strategy_signal_reaches_mock_paper_fill(
     assert summary["errors"] == []
 
     signal = (
-        await db.execute(select(Signal).where(Signal.strategy_id == strategy.id))
+        await db.execute(select(Signal).where(Signal.strategy_id == strategy_id))
     ).scalar_one()
     assert signal.status == "executed"
     assert signal.risk_rejection_reason is None
@@ -332,6 +333,46 @@ async def test_repeated_scheduler_tick_creates_one_signal_and_one_order(
     assert len(signals) == 1
     assert len(orders) == 1
     assert signals[0].decision_key is not None
+
+
+@pytest.mark.asyncio
+async def test_unexpected_submission_failure_rolls_back_all_strategy_effects(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    strategy = await _seed_open_gates(db, is_live=True)
+    strategy_id = strategy.id
+    service = StrategyRunner(db)
+    monkeypatch.setattr(service, "_fetch_market_context", _fake_market_context)
+
+    async def fail_after_staging_effect(*_args: Any, **_kwargs: Any) -> Any:
+        db.add(
+            AuditLog(
+                action="deterministic_precommit_fault",
+                actor="d2-regression",
+                occurred_at=datetime.now(UTC),
+            )
+        )
+        await db.flush()
+        raise RuntimeError("deterministic pre-commit failure")
+
+    monkeypatch.setattr(service, "_submit_strategy_order", fail_after_staging_effect)
+
+    summary = await service.run_all_enabled()
+    assert summary["errors"] == ["Agent A Observation ORB: deterministic pre-commit failure"]
+
+    # Even a mistaken caller commit cannot preserve the failed strategy's
+    # savepoint. The Celery task additionally rejects this summary before its
+    # outer commit, which rolls back any earlier successful strategy units.
+    await db.commit()
+
+    assert (
+        await db.execute(select(Signal).where(Signal.strategy_id == strategy_id))
+    ).scalar_one_or_none() is None
+    assert (await db.execute(select(Order))).scalar_one_or_none() is None
+    assert (await db.execute(select(OrderEvent))).scalar_one_or_none() is None
+    assert (
+        await db.execute(select(AuditLog).where(AuditLog.action == "deterministic_precommit_fault"))
+    ).scalar_one_or_none() is None
 
 
 @pytest.mark.asyncio

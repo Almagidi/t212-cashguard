@@ -93,7 +93,12 @@ def _install_harness_lock_hold(
                 print(
                     "CASHGUARD_HARNESS_LOCK_OWNER "
                     + json.dumps(
-                        {"task": name, "token": owned_token, "worker": worker_id},
+                        {
+                            "pid": os.getpid(),
+                            "task": name,
+                            "token": owned_token,
+                            "worker": worker_id,
+                        },
                         sort_keys=True,
                     ),
                     flush=True,
@@ -105,6 +110,28 @@ def _install_harness_lock_hold(
     redis_core.task_lock = held_task_lock
 
 
+def _install_precommit_fault() -> None:
+    """Raise once immediately before the task's outer database commit."""
+    from app.workers import tasks
+
+    original_complete_task = tasks._complete_task
+    fired = False
+
+    async def fail_once(db: Any, task_name: str, summary: dict[str, Any]) -> dict[str, Any]:
+        nonlocal fired
+        if task_name == "run_strategy_signals" and not fired:
+            fired = True
+            print(
+                "CASHGUARD_HARNESS_PRECOMMIT_FAULT "
+                + json.dumps({"pid": os.getpid(), "task": task_name}, sort_keys=True),
+                flush=True,
+            )
+            raise RuntimeError("CASHGUARD_DETERMINISTIC_PRECOMMIT_FAULT")
+        return await original_complete_task(db, task_name, summary)
+
+    tasks._complete_task = fail_once
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--hostname", required=True)
@@ -112,6 +139,8 @@ def main() -> int:
     parser.add_argument("--worker-id")
     parser.add_argument("--lock-hold-seconds")
     parser.add_argument("--lock-ttl-seconds")
+    parser.add_argument("--pool", choices=("solo", "prefork"), default="solo")
+    parser.add_argument("--precommit-fault-once", action="store_true")
     args = parser.parse_args()
     hostname = args.hostname
     modules = {
@@ -153,6 +182,10 @@ def main() -> int:
             hold_seconds=hold_seconds,
             ttl_seconds=ttl_seconds,
         )
+    if args.precommit_fault_once:
+        if os.environ.get("APP_MODE", "").lower() != "mock":
+            parser.error("pre-commit fault requires APP_MODE=mock")
+        _install_precommit_fault()
     print(
         "CASHGUARD_BROKER_TRIPWIRES_ARMED CASHGUARD_NETWORK_TRIPWIRE_ARMED",
         flush=True,
@@ -163,7 +196,7 @@ def main() -> int:
     worker_args = [
         "worker",
         "--loglevel=INFO",
-        "--pool=solo",
+        f"--pool={args.pool}",
         "--concurrency=1",
         "--prefetch-multiplier=1",
         "--without-gossip",
