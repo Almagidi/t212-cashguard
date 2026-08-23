@@ -84,7 +84,7 @@ def _stddev(values: list[float]) -> float:
         return 0.0
     mean = sum(values) / len(values)
     variance = sum((value - mean) ** 2 for value in values) / len(values)
-    return variance**0.5
+    return float(variance**0.5)
 
 
 def _align_histories(
