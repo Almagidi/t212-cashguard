@@ -1,11 +1,11 @@
 """
 Per-strategy promotion pipeline: dry-run -> demo -> live approval.
 """
+
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from sqlalchemy import select
 
@@ -14,6 +14,8 @@ from app.db.models import AuditLog, Order, Signal, Strategy
 from app.services.live_readiness import LiveReadinessService
 
 if TYPE_CHECKING:
+    import uuid
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -64,6 +66,14 @@ class StrategyPromotionService:
         return parsed.astimezone(UTC)
 
     @staticmethod
+    @overload
+    def _normalize_timestamp(value: None) -> None: ...
+
+    @staticmethod
+    @overload
+    def _normalize_timestamp(value: datetime) -> datetime: ...
+
+    @staticmethod
     def _normalize_timestamp(value: datetime | None) -> datetime | None:
         if value is None:
             return None
@@ -98,8 +108,16 @@ class StrategyPromotionService:
             "verified_at": verified_at,
         }
 
-    async def _get_strategy(self, strategy_id: uuid.UUID) -> Strategy:
-        result = await self.db.execute(select(Strategy).where(Strategy.id == strategy_id))
+    async def _get_strategy(
+        self,
+        strategy_id: uuid.UUID,
+        *,
+        for_update: bool = False,
+    ) -> Strategy:
+        statement = select(Strategy).where(Strategy.id == strategy_id)
+        if for_update:
+            statement = statement.with_for_update()
+        result = await self.db.execute(statement)
         strategy = result.scalar_one_or_none()
         if strategy is None:
             raise StrategyPromotionError("Strategy not found.")
@@ -146,17 +164,23 @@ class StrategyPromotionService:
         live_approved_at = self._parse_timestamp(promotion.get("live_approved_at"))
 
         dry_phase_signals = [
-            signal for signal in signals
-            if demo_promoted_at is None or self._normalize_timestamp(signal.generated_at) < demo_promoted_at
+            signal
+            for signal in signals
+            if demo_promoted_at is None
+            or self._normalize_timestamp(signal.generated_at) < demo_promoted_at
         ]
         dry_phase_orders = [
-            order for order in orders
-            if order.is_dry_run and (
-                demo_promoted_at is None or self._normalize_timestamp(order.created_at) < demo_promoted_at
+            order
+            for order in orders
+            if order.is_dry_run
+            and (
+                demo_promoted_at is None
+                or self._normalize_timestamp(order.created_at) < demo_promoted_at
             )
         ]
         demo_phase_signals = [
-            signal for signal in signals
+            signal
+            for signal in signals
             if demo_promoted_at is not None
             and self._normalize_timestamp(signal.generated_at) >= demo_promoted_at
             and (
@@ -165,7 +189,8 @@ class StrategyPromotionService:
             )
         ]
         demo_phase_orders = [
-            order for order in orders
+            order
+            for order in orders
             if demo_promoted_at is not None
             and not order.is_dry_run
             and self._normalize_timestamp(order.created_at) >= demo_promoted_at
@@ -202,8 +227,7 @@ class StrategyPromotionService:
         demo_error_rate = (demo_error_like / demo_order_total) if demo_order_total else 0.0
         demo_risk_blocks = sum(1 for signal in demo_phase_signals if signal.risk_rejected)
         demo_risk_block_rate = (
-            demo_risk_blocks / len(demo_phase_signals)
-            if demo_phase_signals else 0.0
+            demo_risk_blocks / len(demo_phase_signals) if demo_phase_signals else 0.0
         )
 
         live_readiness = await LiveReadinessService(self.db).evaluate()
@@ -211,7 +235,11 @@ class StrategyPromotionService:
         live_readiness_detail = (
             "Global live-readiness checklist has passed."
             if live_readiness_ready
-            else (live_readiness["blockers"][0] if live_readiness["blockers"] else "Global live-readiness is incomplete.")
+            else (
+                live_readiness["blockers"][0]
+                if live_readiness["blockers"]
+                else "Global live-readiness is incomplete."
+            )
         )
 
         checks = [
@@ -328,7 +356,8 @@ class StrategyPromotionService:
                 phase="live",
                 key="demo_fill_rate",
                 label="Demo fill rate acceptable",
-                passed=demo_order_total > 0 and demo_fill_rate >= settings.STRATEGY_PROMOTION_MIN_DEMO_FILL_RATE,
+                passed=demo_order_total > 0
+                and demo_fill_rate >= settings.STRATEGY_PROMOTION_MIN_DEMO_FILL_RATE,
                 detail=(
                     f"Fill rate {demo_fill_rate:.0%} across {demo_order_total} demo orders."
                     f" Need at least {settings.STRATEGY_PROMOTION_MIN_DEMO_FILL_RATE:.0%}."
@@ -338,7 +367,8 @@ class StrategyPromotionService:
                 phase="live",
                 key="demo_error_rate",
                 label="Demo order error rate acceptable",
-                passed=demo_order_total > 0 and demo_error_rate <= settings.STRATEGY_PROMOTION_MAX_DEMO_ERROR_RATE,
+                passed=demo_order_total > 0
+                and demo_error_rate <= settings.STRATEGY_PROMOTION_MAX_DEMO_ERROR_RATE,
                 detail=(
                     f"Error/reject rate {demo_error_rate:.0%}."
                     f" Must stay at or below {settings.STRATEGY_PROMOTION_MAX_DEMO_ERROR_RATE:.0%}."
@@ -446,14 +476,19 @@ class StrategyPromotionService:
         actor: str,
         notes: str | None = None,
     ) -> dict[str, Any]:
-        strategy = await self._get_strategy(strategy_id)
+        strategy = await self._get_strategy(strategy_id, for_update=True)
         promotion = self._promotion_state(strategy)
         now = datetime.now(UTC)
         status = await self.evaluate_strategy(strategy)
 
         if action == "record_dry_run_review":
-            if status["metrics"]["dry_run_signal_count"] <= 0 and status["metrics"]["dry_run_order_count"] <= 0:
-                raise StrategyPromotionError("Run the strategy in dry-run first so there is evidence to review.")
+            if (
+                status["metrics"]["dry_run_signal_count"] <= 0
+                and status["metrics"]["dry_run_order_count"] <= 0
+            ):
+                raise StrategyPromotionError(
+                    "Run the strategy in dry-run first so there is evidence to review."
+                )
             promotion["dry_run_reviewed_at"] = now.isoformat()
             promotion["dry_run_reviewed_by"] = actor
             if notes:
@@ -461,7 +496,9 @@ class StrategyPromotionService:
             audit_action = "strategy_dry_run_review_recorded"
         elif action == "promote_to_demo":
             if not status["eligible_for_demo"]:
-                raise StrategyPromotionError("This strategy has not yet satisfied the dry-run promotion checklist.")
+                raise StrategyPromotionError(
+                    "This strategy has not yet satisfied the dry-run promotion checklist."
+                )
             strategy.is_live = True
             promotion["demo_promoted_at"] = now.isoformat()
             promotion["demo_promoted_by"] = actor
@@ -470,7 +507,9 @@ class StrategyPromotionService:
             audit_action = "strategy_promoted_to_demo"
         elif action == "record_demo_review":
             if status["metrics"]["demo_order_count"] <= 0:
-                raise StrategyPromotionError("Demo broker execution must produce at least one order before review can be recorded.")
+                raise StrategyPromotionError(
+                    "Demo broker execution must produce at least one order before review can be recorded."
+                )
             promotion["demo_reviewed_at"] = now.isoformat()
             promotion["demo_reviewed_by"] = actor
             if notes:
@@ -478,7 +517,9 @@ class StrategyPromotionService:
             audit_action = "strategy_demo_review_recorded"
         elif action == "promote_to_live":
             if not status["eligible_for_live"]:
-                raise StrategyPromotionError("This strategy has not yet satisfied the live promotion checklist.")
+                raise StrategyPromotionError(
+                    "This strategy has not yet satisfied the live promotion checklist."
+                )
             strategy.is_live = True
             promotion["live_approved_at"] = now.isoformat()
             promotion["live_approved_by"] = actor
