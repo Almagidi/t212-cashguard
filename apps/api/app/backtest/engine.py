@@ -17,12 +17,13 @@ import statistics
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
 from app.backtest.data_contract import validate_bar_series
+from app.execution.paper_policy import PaperFillDecision, evaluate_paper_fill
 
 if TYPE_CHECKING:
     from app.strategies.indicators import Bar
@@ -65,6 +66,7 @@ class BacktestTrade:
     exit_reason: str  # stop | take_profit | partial | eod | signal
     slippage_cost: Decimal
     holding_bars: int
+    commission_cost: Decimal = Decimal("0")
     mfe: Decimal = Decimal("0")  # Maximum Favourable Excursion
     mae: Decimal = Decimal("0")  # Maximum Adverse Excursion
 
@@ -279,38 +281,55 @@ def monte_carlo_trade_sequence(
 # ── Execution simulation ──────────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class SimulatedFill:
+    price: Decimal
+    quantity: Decimal
+    slippage_cost: Decimal
+    fee: Decimal
+
+
 class ExecutionSimulator:
     """
     Realistic fill simulation.
 
-    Assumptions (conservative):
-    - Market orders fill at next bar's open + slippage
-    - Limit orders fill if next bar's low <= limit (buys) or high >= limit (sells)
-    - Slippage = half_spread + market_impact
-    - Half spread = 0.03% of price (conservative for liquid US equities)
-    - Market impact = 0.02% (assumes order < 1% of avg volume)
+    Market fills use the same deterministic standard profile as the paper
+    execution engine so research and paper results share one cost model.
     """
-
-    HALF_SPREAD_PCT = Decimal("0.0003")  # 3 bps per side
-    MARKET_IMPACT_PCT = Decimal("0.0002")  # 2 bps market impact
 
     def simulate_fill(
         self,
         order: BacktestOrder,
         next_bar: Bar,
         side: str,
-    ) -> tuple[Decimal, Decimal]:
-        """
-        Returns (fill_price, slippage_cost).
-        slippage_cost is always positive (it's a cost).
-        """
-        raw_price = next_bar.open
-        slippage_pct = self.HALF_SPREAD_PCT + self.MARKET_IMPACT_PCT
+    ) -> SimulatedFill:
+        """Fill a market order at the next bar open."""
+        return self.simulate_at_quote(order=order, quote_price=next_bar.open, side=side)
 
-        fill = raw_price * (1 + slippage_pct) if side == "buy" else raw_price * (1 - slippage_pct)
-
-        slippage_cost = abs(fill - raw_price) * order.quantity
-        return fill.quantize(Decimal("0.0001")), slippage_cost.quantize(Decimal("0.01"))
+    def simulate_at_quote(
+        self,
+        *,
+        order: BacktestOrder,
+        quote_price: Decimal,
+        side: str,
+    ) -> SimulatedFill:
+        if side not in {"buy", "sell"}:
+            raise ValueError(f"Unsupported execution side: {side}")
+        decision: PaperFillDecision = evaluate_paper_fill(
+            side=side,
+            quantity=order.quantity,
+            quote_price=quote_price,
+            profile="standard",
+        )
+        if decision.outcome != "filled" or decision.fill_price is None:
+            raise ValueError(f"Paper execution rejected backtest fill: {decision.rejection_code}")
+        slippage_cost = abs(decision.fill_price - decision.quote_price) * decision.filled_quantity
+        return SimulatedFill(
+            price=decision.fill_price,
+            quantity=decision.filled_quantity,
+            slippage_cost=slippage_cost.quantize(Decimal("0.01")),
+            fee=decision.fee_amount,
+        )
 
     def can_fill_limit(
         self,
@@ -352,10 +371,18 @@ class Backtester:
         max_position_pct: Decimal = Decimal("10.0"),
         stop_loss_required: bool = True,
         max_holding_bars: int = 39,  # Full session (~3.25h on 5-min bars)
-        commission_per_trade: Decimal = Decimal("0"),  # T212 is zero commission
+        commission_per_trade: Decimal | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
     ) -> None:
+        if initial_capital <= 0:
+            raise ValueError("Backtest initial capital must be positive")
+        if risk_per_trade_pct <= 0 or risk_per_trade_pct > 100:
+            raise ValueError("risk_per_trade_pct must be greater than 0 and at most 100")
+        if max_position_pct <= 0 or max_position_pct > 100:
+            raise ValueError("max_position_pct must be greater than 0 and at most 100")
+        if commission_per_trade is not None and commission_per_trade < 0:
+            raise ValueError("commission_per_trade cannot be negative")
         self.strategy = strategy
         self.ticker = ticker
         self.initial_capital = initial_capital
@@ -367,6 +394,75 @@ class Backtester:
         self.start_date = start_date
         self.end_date = end_date
         self.executor = ExecutionSimulator()
+
+    def _fill_fee(self, fill: SimulatedFill) -> Decimal:
+        """Use paper-policy fees by default while preserving explicit legacy overrides."""
+        if self.commission_per_trade is not None:
+            return self.commission_per_trade
+        return fill.fee
+
+    def _cap_entry_fill(
+        self,
+        *,
+        order: BacktestOrder,
+        bar: Bar,
+        available_cash: Decimal,
+        account_equity: Decimal,
+        stop_price: Decimal,
+    ) -> SimulatedFill | None:
+        """Cap a long entry by position size, stop risk, and settled cash."""
+        if order.quantity <= 0:
+            raise ValueError("Backtest entry quantity must be positive")
+
+        initial_fill = self.executor.simulate_fill(order, bar, "buy")
+        fill_price = initial_fill.price
+        quantity = initial_fill.quantity
+        position_budget = account_equity * self.max_position_pct / Decimal("100")
+        quantity = min(quantity, position_budget / fill_price)
+
+        if self.stop_loss_required and (stop_price <= 0 or stop_price >= fill_price):
+            raise ValueError("Long-only backtest entry requires a stop below its fill price")
+        risk_per_share = fill_price - stop_price
+        if risk_per_share > 0:
+            risk_budget = account_equity * self.risk_per_trade_pct / Decimal("100")
+            quantity = min(quantity, risk_budget / risk_per_share)
+
+        quantity = quantity.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
+        if quantity <= 0:
+            return None
+
+        capped_order = BacktestOrder(
+            id=order.id,
+            ticker=order.ticker,
+            side=order.side,
+            order_type=order.order_type,
+            quantity=quantity,
+            limit_price=order.limit_price,
+            submitted_bar_idx=order.submitted_bar_idx,
+        )
+        fill = self.executor.simulate_fill(capped_order, bar, "buy")
+        fee = self._fill_fee(fill)
+        if fill.price * fill.quantity + fee > available_cash:
+            spendable = available_cash - fee
+            if spendable <= 0:
+                return None
+            capped_order.quantity = min(
+                fill.quantity,
+                (spendable / fill.price).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN),
+            )
+            if capped_order.quantity <= 0:
+                return None
+            fill = self.executor.simulate_fill(capped_order, bar, "buy")
+            fee = self._fill_fee(fill)
+            if fill.price * fill.quantity + fee > available_cash:
+                return None
+
+        return SimulatedFill(
+            price=fill.price,
+            quantity=fill.quantity,
+            slippage_cost=fill.slippage_cost,
+            fee=fee,
+        )
 
     def run(self, bars: list[Bar], bar_times: list[datetime]) -> BacktestResult:
         """
@@ -386,6 +482,7 @@ class Backtester:
         position_tp = Decimal("0")
         position_tp1 = Decimal("0")
         remaining_entry_slippage = Decimal("0")
+        remaining_entry_fee = Decimal("0")
         partial_done = False
 
         trades: list[BacktestTrade] = []
@@ -431,27 +528,37 @@ class Backtester:
                     if order.status != "pending":
                         continue
                     if order.order_type == "market":
-                        fp, slip = self.executor.simulate_fill(order, bar, order.side)
-                        order.fill_price = fp
+                        if order.side != "buy":
+                            raise ValueError(
+                                "The single-symbol backtester is long-only; "
+                                f"unsupported entry side: {order.side}"
+                            )
+                        account_equity = available_cash + position_qty * bar.open
+                        fill = self._cap_entry_fill(
+                            order=order,
+                            bar=bar,
+                            available_cash=available_cash,
+                            account_equity=account_equity,
+                            stop_price=position_stop,
+                        )
+                        if fill is None:
+                            order.status = "cancelled"
+                            continue
+                        order.quantity = fill.quantity
+                        order.fill_price = fill.price
                         order.fill_bar_idx = i
-                        order.slippage = slip
+                        order.slippage = fill.slippage_cost
                         order.status = "filled"
-
-                        if order.side == "buy":
-                            cost = fp * order.quantity + self.commission_per_trade
-                            available_cash -= cost
-                            total_commission_cost += self.commission_per_trade
-                            position_qty += order.quantity
-                            position_entry_price = fp
-                            position_entry_idx = i
-                            remaining_entry_slippage = slip
-                            mfe_high = fp
-                            mae_low = fp
-                        else:
-                            proceeds = fp * order.quantity - self.commission_per_trade
-                            available_cash += proceeds
-                            total_commission_cost += self.commission_per_trade
-                            position_qty -= order.quantity
+                        cost = fill.price * fill.quantity + fill.fee
+                        available_cash -= cost
+                        total_commission_cost += fill.fee
+                        position_qty += fill.quantity
+                        position_entry_price = fill.price
+                        position_entry_idx = i
+                        remaining_entry_slippage = fill.slippage_cost
+                        remaining_entry_fee = fill.fee
+                        mfe_high = fill.price
+                        mae_low = fill.price
                     elif order.order_type == "limit":
                         if self.executor.can_fill_limit(order, bar, order.side):
                             # Defense-in-depth: a limit order must carry a
@@ -465,13 +572,15 @@ class Backtester:
                             order.fill_price = order.limit_price
                             order.fill_bar_idx = i
                             order.status = "filled"
-                            cost = order.limit_price * order.quantity + self.commission_per_trade
+                            fee = self.commission_per_trade or Decimal("0")
+                            cost = order.limit_price * order.quantity + fee
                             available_cash -= cost
-                            total_commission_cost += self.commission_per_trade
+                            total_commission_cost += fee
                             position_qty += order.quantity
                             position_entry_price = order.limit_price
                             position_entry_idx = i
                             remaining_entry_slippage = Decimal("0")
+                            remaining_entry_fee = fee
                         else:
                             # Cancel limit if too old (3 bars)
                             if i - order.submitted_bar_idx > 3:
@@ -491,32 +600,37 @@ class Backtester:
             # Check exit conditions for open position
             if position_qty > 0 and position_stop > 0:
                 exit_reason = None
-                exit_price = None
+                exit_quote = None
                 exit_qty = position_qty
 
                 # Stop loss
                 if bar.low <= position_stop:
                     exit_reason = "stop"
-                    exit_price = min(bar.open, position_stop)  # Worst case: gap through stop
+                    exit_quote = min(bar.open, position_stop)  # Worst case: gap through stop
 
                 # Take profit full
                 elif bar.high >= position_tp and not partial_done:
                     exit_reason = "take_profit"
-                    exit_price = position_tp
+                    exit_quote = position_tp
 
                 # Partial exit at 1R
                 elif bar.high >= position_tp1 and not partial_done:
                     exit_reason = "partial"
-                    exit_qty = (position_qty * Decimal("0.5")).quantize(Decimal("0.01"))
-                    exit_price = position_tp1
+                    exit_qty = (position_qty * Decimal("0.5")).quantize(
+                        Decimal("0.00000001"), rounding=ROUND_DOWN
+                    )
+                    exit_quote = position_tp1
                     partial_done = True
 
                 # Max holding time
                 elif i - position_entry_idx >= self.max_holding_bars:
                     exit_reason = "eod"
-                    exit_price, _ = self.executor.simulate_fill(
-                        BacktestOrder(
-                            id="eod",
+                    exit_quote = bar.open
+
+                if exit_reason and exit_quote and exit_qty > 0:
+                    exit_fill = self.executor.simulate_at_quote(
+                        order=BacktestOrder(
+                            id=f"exit-{i}",
                             ticker=self.ticker,
                             side="sell",
                             order_type="market",
@@ -524,20 +638,26 @@ class Backtester:
                             limit_price=None,
                             submitted_bar_idx=i,
                         ),
-                        bar,
-                        "sell",
+                        quote_price=exit_quote,
+                        side="sell",
                     )
-
-                if exit_reason and exit_price:
+                    exit_price = exit_fill.price
+                    exit_fee = self._fill_fee(exit_fill)
                     open_qty_before_exit = position_qty
                     raw_pnl = (exit_price - position_entry_price) * exit_qty
-                    exit_slippage_cost = abs(exit_price - bar.open) * exit_qty
                     entry_slippage_alloc = (
                         remaining_entry_slippage * exit_qty / open_qty_before_exit
                         if open_qty_before_exit > 0
                         else Decimal("0")
                     )
-                    slippage_cost = entry_slippage_alloc + exit_slippage_cost
+                    entry_fee_alloc = (
+                        remaining_entry_fee * exit_qty / open_qty_before_exit
+                        if open_qty_before_exit > 0
+                        else Decimal("0")
+                    )
+                    commission_cost = entry_fee_alloc + exit_fee
+                    net_pnl = raw_pnl - commission_cost
+                    slippage_cost = entry_slippage_alloc + exit_fill.slippage_cost
 
                     trade = BacktestTrade(
                         id=str(uuid.uuid4())[:8],
@@ -546,8 +666,8 @@ class Backtester:
                         exit_price=exit_price,
                         quantity=exit_qty,
                         side="buy",
-                        pnl=raw_pnl,
-                        pnl_pct=(raw_pnl / (position_entry_price * exit_qty) * 100).quantize(
+                        pnl=net_pnl,
+                        pnl_pct=(net_pnl / (position_entry_price * exit_qty) * 100).quantize(
                             Decimal("0.01")
                         ),
                         entry_bar_idx=position_entry_idx,
@@ -557,29 +677,32 @@ class Backtester:
                         exit_reason=exit_reason,
                         slippage_cost=slippage_cost,
                         holding_bars=i - position_entry_idx,
+                        commission_cost=commission_cost,
                         mfe=(mfe_high - position_entry_price) * exit_qty,
                         mae=(position_entry_price - mae_low) * exit_qty,
                     )
                     trades.append(trade)
 
-                    proceeds = exit_price * exit_qty - self.commission_per_trade
+                    proceeds = exit_price * exit_qty - exit_fee
                     available_cash += proceeds
-                    total_commission_cost += self.commission_per_trade
+                    total_commission_cost += exit_fee
                     position_qty -= exit_qty
                     remaining_entry_slippage -= entry_slippage_alloc
+                    remaining_entry_fee -= entry_fee_alloc
 
-                    if position_qty <= Decimal("0.01"):
+                    if position_qty <= 0:
                         position_qty = Decimal("0")
                         position_stop = Decimal("0")
                         position_tp = Decimal("0")
                         position_tp1 = Decimal("0")
                         remaining_entry_slippage = Decimal("0")
+                        remaining_entry_fee = Decimal("0")
                         partial_done = False
 
                     capital = available_cash + position_qty * bar.close
 
             # Only generate entry signals when flat
-            if position_qty <= Decimal("0.01") and not pending_orders:
+            if position_qty <= 0 and not pending_orders:
                 signal = generate_strategy_signal(
                     self.strategy,
                     ticker=self.ticker,
@@ -594,6 +717,13 @@ class Backtester:
                 )
 
                 if signal:
+                    if signal.side != "buy":
+                        raise ValueError(
+                            "The single-symbol backtester is long-only; "
+                            f"unsupported entry side: {signal.side}"
+                        )
+                    if signal.suggested_quantity <= 0:
+                        raise ValueError("Backtest entry quantity must be positive")
                     # Place market order for next bar open
                     order = BacktestOrder(
                         id=str(uuid.uuid4())[:8],
@@ -612,7 +742,7 @@ class Backtester:
                     risk = signal.entry_price - signal.stop_price
                     position_tp1 = signal.entry_price + risk  # 1R target
 
-            if position_qty > Decimal("0.01"):
+            if position_qty > 0:
                 exposure_bars += 1
 
             # Update equity
@@ -632,30 +762,34 @@ class Backtester:
             last_bar = filtered_bars[-1]
             last_time = filtered_times[-1]
             last_idx = filtered_indices[-1]
-            fp, slip = self.executor.simulate_fill(
-                BacktestOrder(
+            final_qty = position_qty
+            final_fill = self.executor.simulate_at_quote(
+                order=BacktestOrder(
                     id="final",
                     ticker=self.ticker,
                     side="sell",
                     order_type="market",
-                    quantity=position_qty,
+                    quantity=final_qty,
                     limit_price=None,
                     submitted_bar_idx=last_idx,
                 ),
-                last_bar,
-                "sell",
+                quote_price=last_bar.close,
+                side="sell",
             )
-            raw_pnl = (fp - position_entry_price) * position_qty
+            final_fee = self._fill_fee(final_fill)
+            raw_pnl = (final_fill.price - position_entry_price) * final_qty
+            commission_cost = remaining_entry_fee + final_fee
+            net_pnl = raw_pnl - commission_cost
             trades.append(
                 BacktestTrade(
                     id=str(uuid.uuid4())[:8],
                     ticker=self.ticker,
                     entry_price=position_entry_price,
-                    exit_price=fp,
-                    quantity=position_qty,
+                    exit_price=final_fill.price,
+                    quantity=final_qty,
                     side="buy",
-                    pnl=raw_pnl,
-                    pnl_pct=(raw_pnl / (position_entry_price * position_qty) * 100).quantize(
+                    pnl=net_pnl,
+                    pnl_pct=(net_pnl / (position_entry_price * final_qty) * 100).quantize(
                         Decimal("0.01")
                     ),
                     entry_bar_idx=position_entry_idx,
@@ -663,14 +797,20 @@ class Backtester:
                     entry_time=bar_times[position_entry_idx],
                     exit_time=last_time,
                     exit_reason="backtest_end",
-                    slippage_cost=remaining_entry_slippage + slip,
+                    slippage_cost=remaining_entry_slippage + final_fill.slippage_cost,
                     holding_bars=last_idx - position_entry_idx,
-                    mfe=(mfe_high - position_entry_price) * position_qty,
-                    mae=(position_entry_price - mae_low) * position_qty,
+                    commission_cost=commission_cost,
+                    mfe=(mfe_high - position_entry_price) * final_qty,
+                    mae=(position_entry_price - mae_low) * final_qty,
                 )
             )
-            available_cash += fp * position_qty - self.commission_per_trade
-            total_commission_cost += self.commission_per_trade
+            available_cash += final_fill.price * final_qty - final_fee
+            total_commission_cost += final_fee
+            position_qty = Decimal("0")
+            if equity_curve:
+                equity_curve[-1]["equity"] = float(available_cash)
+                equity_curve[-1]["cash"] = float(available_cash)
+                equity_curve[-1]["position_value"] = 0.0
 
         final_capital = available_cash
         result = BacktestResult(

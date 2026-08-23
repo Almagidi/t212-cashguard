@@ -1054,6 +1054,7 @@ export interface BacktestTrade {
   exit_reason: string;
   holding_bars: number;
   slippage: number;
+  commission_cost: number;
   mfe: number;
   mae: number;
 }
@@ -1178,8 +1179,11 @@ export interface PortfolioBacktestTrade {
   ticker: string;
   side: string;
   shares: number;
+  quote_price: number;
   price: number;
   notional: number;
+  slippage_cost: number;
+  fee_cost: number;
   cost: number;
   reason: string;
   target_weight: number;
@@ -1216,6 +1220,9 @@ export interface PortfolioBacktestResult {
   rebalance_count: number;
   turnover_pct: number;
   avg_exposure_pct: number;
+  total_slippage_cost: number;
+  total_fee_cost: number;
+  total_execution_cost: number;
   latest_weights: Record<string, number>;
   equity_curve: PortfolioBacktestEquityPoint[];
   trades: PortfolioBacktestTrade[];

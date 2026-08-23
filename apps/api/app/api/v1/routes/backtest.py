@@ -1,11 +1,12 @@
 """
 Backtest and performance attribution routes.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
@@ -99,14 +100,24 @@ class PortfolioBacktestStrategyInfo(BaseModel):
 async def get_backtest_strategies(
     _: User = Depends(get_current_user),
 ) -> list[BacktestStrategyInfo]:
-    return [BacktestStrategyInfo(**item) for item in list_backtest_strategies()]
+    return [
+        BacktestStrategyInfo(
+            type=cast("BacktestStrategyType", item["type"]),
+            label=item["label"],
+            description=item["description"],
+        )
+        for item in list_backtest_strategies()
+    ]
 
 
 @router.get("/portfolio/strategies", response_model=list[PortfolioBacktestStrategyInfo])
 async def get_portfolio_backtest_strategies(
     _: User = Depends(get_current_user),
 ) -> list[PortfolioBacktestStrategyInfo]:
-    return [PortfolioBacktestStrategyInfo(**item.__dict__) for item in list_portfolio_backtest_strategies()]
+    return [
+        PortfolioBacktestStrategyInfo(**item.__dict__)
+        for item in list_portfolio_backtest_strategies()
+    ]
 
 
 @router.post("/run", response_model=BacktestJobResponse)
@@ -127,12 +138,13 @@ async def run_backtest(
                 "Get a free key at https://polygon.io — "
                 "Note: Alpaca is used for live signals, Polygon for historical backtesting. "
                 "Both can be set at the same time."
-            )
+            ),
         )
     if body.from_date >= body.to_date:
         raise HTTPException(status_code=422, detail="from_date must be before to_date")
 
     import uuid
+
     job_id = str(uuid.uuid4())[:12]
     _jobs[job_id] = {"status": "running", "created_at": datetime.now(UTC).isoformat()}
 
@@ -142,7 +154,7 @@ async def run_backtest(
         job_id=job_id,
         status="running",
         message=f"Backtest started for {body.ticker} ({body.from_date} to {body.to_date}). "
-                f"Poll GET /v1/backtest/result/{job_id}",
+        f"Poll GET /v1/backtest/result/{job_id}",
     )
 
 
@@ -290,6 +302,7 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
 
     except Exception as exc:
         import traceback
+
         _jobs[job_id] = {
             "status": "error",
             "error": str(exc),
@@ -362,6 +375,7 @@ def _serialize_backtest_trade(trade: Any) -> dict[str, Any]:
         "exit_reason": trade.exit_reason,
         "holding_bars": trade.holding_bars,
         "slippage": float(trade.slippage_cost),
+        "commission_cost": float(trade.commission_cost),
         "mfe": float(trade.mfe),
         "mae": float(trade.mae),
     }
@@ -448,7 +462,12 @@ def _serialize_portfolio_backtest_result(
         "rebalance_count": result.rebalance_count,
         "turnover_pct": float(result.turnover_pct),
         "avg_exposure_pct": float(result.avg_exposure_pct),
-        "latest_weights": {ticker: float(weight) for ticker, weight in result.latest_weights.items()},
+        "total_slippage_cost": float(result.total_slippage_cost),
+        "total_fee_cost": float(result.total_fee_cost),
+        "total_execution_cost": float(result.total_execution_cost),
+        "latest_weights": {
+            ticker: float(weight) for ticker, weight in result.latest_weights.items()
+        },
         "equity_curve": [
             {
                 "date": point.date.isoformat(),
@@ -466,8 +485,11 @@ def _serialize_portfolio_backtest_result(
                 "ticker": trade.ticker,
                 "side": trade.side,
                 "shares": float(trade.shares),
+                "quote_price": float(trade.quote_price),
                 "price": float(trade.price),
                 "notional": float(trade.notional),
+                "slippage_cost": float(trade.slippage_cost),
+                "fee_cost": float(trade.fee_cost),
                 "cost": float(trade.cost),
                 "reason": trade.reason,
                 "target_weight": float(trade.target_weight),
@@ -499,13 +521,19 @@ def _interpret_results(result: Any) -> dict[str, Any]:
     if result.total_trades < 30:
         warnings.append("Too few trades for statistical significance (need 30+)")
     if float(result.max_drawdown_pct) > 20:
-        warnings.append(f"Max drawdown {float(result.max_drawdown_pct):.1f}% is high — review stops")
+        warnings.append(
+            f"Max drawdown {float(result.max_drawdown_pct):.1f}% is high — review stops"
+        )
     if result.consecutive_losses_max >= 5:
-        warnings.append(f"Max {result.consecutive_losses_max} consecutive losses — ensure daily loss limit covers this")
+        warnings.append(
+            f"Max {result.consecutive_losses_max} consecutive losses — ensure daily loss limit covers this"
+        )
     friction_cost = float(result.total_slippage_cost + result.total_commission_cost)
     gross_pnl = max(float(result.gross_pnl), 0.0)
     if gross_pnl > 0 and friction_cost > gross_pnl * 0.3:
-        warnings.append("Execution friction is >30% of gross profit — tighten entry quality or routing")
+        warnings.append(
+            "Execution friction is >30% of gross profit — tighten entry quality or routing"
+        )
 
     return {
         "verdict": verdict,
@@ -537,11 +565,17 @@ def _interpret_portfolio_results(result: Any) -> dict[str, Any]:
     if result.rebalance_count < 3:
         warnings.append("Very few rebalance decisions were observed — extend the test period.")
     if float(result.max_drawdown_pct) > 25:
-        warnings.append(f"Portfolio drawdown reached {float(result.max_drawdown_pct):.1f}% — consider a stronger cash filter.")
+        warnings.append(
+            f"Portfolio drawdown reached {float(result.max_drawdown_pct):.1f}% — consider a stronger cash filter."
+        )
     if float(result.turnover_pct) > 250:
-        warnings.append("Turnover is high for a retail account — review rebalancing frequency and FX drag.")
+        warnings.append(
+            "Turnover is high for a retail account — review rebalancing frequency and FX drag."
+        )
     if float(result.avg_exposure_pct) < 40:
-        warnings.append("Average exposure stayed low — performance may be driven more by cash timing than asset selection.")
+        warnings.append(
+            "Average exposure stayed low — performance may be driven more by cash timing than asset selection."
+        )
 
     return {
         "verdict": verdict,
@@ -558,6 +592,7 @@ def _interpret_portfolio_results(result: Any) -> dict[str, Any]:
 
 # ── Attribution routes ────────────────────────────────────────────────────────
 
+
 @attribution_router.get("/full")
 async def get_full_attribution(
     days: int = Query(30, ge=7, le=365),
@@ -565,6 +600,7 @@ async def get_full_attribution(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     from app.services.performance_attribution import PerformanceAttributor
+
     attr = PerformanceAttributor(db)
     return await attr.full_report(days=days)
 
@@ -576,6 +612,7 @@ async def get_slippage_report(
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
     from app.services.performance_attribution import PerformanceAttributor
+
     attr = PerformanceAttributor(db)
     records = await attr.slippage_report(days=days)
     return [
@@ -599,6 +636,7 @@ async def get_symbol_attribution(
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
     from app.services.performance_attribution import PerformanceAttributor
+
     attr = PerformanceAttributor(db)
     symbols = await attr.symbol_attribution(days=days)
     return [
