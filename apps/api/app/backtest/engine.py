@@ -8,6 +8,7 @@ Design principles:
 - Full trade log for attribution analysis
 - Walk-forward validation support
 """
+
 from __future__ import annotations
 
 import inspect
@@ -21,6 +22,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
+from app.backtest.data_contract import validate_bar_series
+
 if TYPE_CHECKING:
     from app.strategies.indicators import Bar
 
@@ -29,19 +32,20 @@ log = structlog.get_logger()
 
 # ── Data structures ───────────────────────────────────────────────────────────
 
+
 @dataclass
 class BacktestOrder:
     id: str
     ticker: str
-    side: str                    # buy | sell
-    order_type: str              # market | limit
+    side: str  # buy | sell
+    order_type: str  # market | limit
     quantity: Decimal
     limit_price: Decimal | None
     submitted_bar_idx: int
     fill_bar_idx: int | None = None
     fill_price: Decimal | None = None
     slippage: Decimal = Decimal("0")
-    status: str = "pending"     # pending | filled | cancelled | expired
+    status: str = "pending"  # pending | filled | cancelled | expired
 
 
 @dataclass
@@ -58,7 +62,7 @@ class BacktestTrade:
     exit_bar_idx: int
     entry_time: datetime
     exit_time: datetime
-    exit_reason: str            # stop | take_profit | partial | eod | signal
+    exit_reason: str  # stop | take_profit | partial | eod | signal
     slippage_cost: Decimal
     holding_bars: int
     mfe: Decimal = Decimal("0")  # Maximum Favourable Excursion
@@ -68,6 +72,7 @@ class BacktestTrade:
 @dataclass
 class BacktestResult:
     """Complete result from one backtest run."""
+
     strategy_name: str
     ticker: str
     start_date: date
@@ -209,7 +214,7 @@ def _percentile(values: list[float], percentile: float) -> float:
     if not values:
         return 0.0
     ordered = sorted(values)
-    index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * percentile))))
+    index = min(len(ordered) - 1, max(0, round((len(ordered) - 1) * percentile)))
     return ordered[index]
 
 
@@ -258,14 +263,21 @@ def monte_carlo_trade_sequence(
         "median_max_drawdown_pct": round(statistics.median(max_drawdowns), 2),
         "p95_max_drawdown_pct": round(_percentile(max_drawdowns, 0.95), 2),
         "worst_max_drawdown_pct": round(max(max_drawdowns), 2),
-        "median_consecutive_losses": int(round(statistics.median(max_consecutive_losses))),
-        "p95_consecutive_losses": int(round(_percentile([float(item) for item in max_consecutive_losses], 0.95))),
-        "probability_drawdown_gt_10pct": round(sum(dd >= 10 for dd in max_drawdowns) / iterations * 100, 1),
-        "probability_drawdown_gt_20pct": round(sum(dd >= 20 for dd in max_drawdowns) / iterations * 100, 1),
+        "median_consecutive_losses": round(statistics.median(max_consecutive_losses)),
+        "p95_consecutive_losses": round(
+            _percentile([float(item) for item in max_consecutive_losses], 0.95)
+        ),
+        "probability_drawdown_gt_10pct": round(
+            sum(dd >= 10 for dd in max_drawdowns) / iterations * 100, 1
+        ),
+        "probability_drawdown_gt_20pct": round(
+            sum(dd >= 20 for dd in max_drawdowns) / iterations * 100, 1
+        ),
     }
 
 
 # ── Execution simulation ──────────────────────────────────────────────────────
+
 
 class ExecutionSimulator:
     """
@@ -278,8 +290,9 @@ class ExecutionSimulator:
     - Half spread = 0.03% of price (conservative for liquid US equities)
     - Market impact = 0.02% (assumes order < 1% of avg volume)
     """
-    HALF_SPREAD_PCT = Decimal("0.0003")   # 3 bps per side
-    MARKET_IMPACT_PCT = Decimal("0.0002") # 2 bps market impact
+
+    HALF_SPREAD_PCT = Decimal("0.0003")  # 3 bps per side
+    MARKET_IMPACT_PCT = Decimal("0.0002")  # 2 bps market impact
 
     def simulate_fill(
         self,
@@ -315,6 +328,7 @@ class ExecutionSimulator:
 
 
 # ── Main backtester ───────────────────────────────────────────────────────────
+
 
 class Backtester:
     """
@@ -361,7 +375,7 @@ class Backtester:
         bars: list of Bar namedtuples in chronological order
         bar_times: matching list of datetime for each bar
         """
-        assert len(bars) == len(bar_times), "bars and bar_times must be same length"
+        validate_bar_series(bars, bar_times)
 
         capital = self.initial_capital
         available_cash = capital
@@ -472,7 +486,7 @@ class Backtester:
             # Update MFE/MAE for open position
             if position_qty > 0:
                 mfe_high = max(mfe_high, bar.high)
-                mae_low  = min(mae_low, bar.low)
+                mae_low = min(mae_low, bar.low)
 
             # Check exit conditions for open position
             if position_qty > 0 and position_stop > 0:
@@ -501,10 +515,17 @@ class Backtester:
                 elif i - position_entry_idx >= self.max_holding_bars:
                     exit_reason = "eod"
                     exit_price, _ = self.executor.simulate_fill(
-                        BacktestOrder(id="eod", ticker=self.ticker, side="sell",
-                                      order_type="market", quantity=exit_qty,
-                                      limit_price=None, submitted_bar_idx=i),
-                        bar, "sell"
+                        BacktestOrder(
+                            id="eod",
+                            ticker=self.ticker,
+                            side="sell",
+                            order_type="market",
+                            quantity=exit_qty,
+                            limit_price=None,
+                            submitted_bar_idx=i,
+                        ),
+                        bar,
+                        "sell",
                     )
 
                 if exit_reason and exit_price:
@@ -526,7 +547,9 @@ class Backtester:
                         quantity=exit_qty,
                         side="buy",
                         pnl=raw_pnl,
-                        pnl_pct=(raw_pnl / (position_entry_price * exit_qty) * 100).quantize(Decimal("0.01")),
+                        pnl_pct=(raw_pnl / (position_entry_price * exit_qty) * 100).quantize(
+                            Decimal("0.01")
+                        ),
                         entry_bar_idx=position_entry_idx,
                         exit_bar_idx=i,
                         entry_time=bar_times[position_entry_idx],
@@ -561,7 +584,7 @@ class Backtester:
                     self.strategy,
                     ticker=self.ticker,
                     bars=session_bars,
-                    bar_times=filtered_times[-len(session_bars):],
+                    bar_times=filtered_times[-len(session_bars) :],
                     history_bars=filtered_bars,
                     history_bar_times=filtered_times,
                     account_value=capital,
@@ -594,13 +617,15 @@ class Backtester:
 
             # Update equity
             current_equity = available_cash + position_qty * bar.close
-            equity_curve.append({
-                "time": ts.isoformat(),
-                "equity": float(current_equity),
-                "cash": float(available_cash),
-                "position_value": float(position_qty * bar.close),
-                "bar_idx": i,
-            })
+            equity_curve.append(
+                {
+                    "time": ts.isoformat(),
+                    "equity": float(current_equity),
+                    "cash": float(available_cash),
+                    "position_value": float(position_qty * bar.close),
+                    "bar_idx": i,
+                }
+            )
 
         # Close any remaining open position
         if position_qty > 0 and filtered_bars and filtered_times and filtered_indices:
@@ -608,31 +633,42 @@ class Backtester:
             last_time = filtered_times[-1]
             last_idx = filtered_indices[-1]
             fp, slip = self.executor.simulate_fill(
-                BacktestOrder(id="final", ticker=self.ticker, side="sell",
-                              order_type="market", quantity=position_qty,
-                              limit_price=None, submitted_bar_idx=last_idx),
-                last_bar, "sell"
+                BacktestOrder(
+                    id="final",
+                    ticker=self.ticker,
+                    side="sell",
+                    order_type="market",
+                    quantity=position_qty,
+                    limit_price=None,
+                    submitted_bar_idx=last_idx,
+                ),
+                last_bar,
+                "sell",
             )
             raw_pnl = (fp - position_entry_price) * position_qty
-            trades.append(BacktestTrade(
-                id=str(uuid.uuid4())[:8],
-                ticker=self.ticker,
-                entry_price=position_entry_price,
-                exit_price=fp,
-                quantity=position_qty,
-                side="buy",
-                pnl=raw_pnl,
-                pnl_pct=(raw_pnl / (position_entry_price * position_qty) * 100).quantize(Decimal("0.01")),
-                entry_bar_idx=position_entry_idx,
-                exit_bar_idx=last_idx,
-                entry_time=bar_times[position_entry_idx],
-                exit_time=last_time,
-                exit_reason="backtest_end",
-                slippage_cost=remaining_entry_slippage + slip,
-                holding_bars=last_idx - position_entry_idx,
-                mfe=(mfe_high - position_entry_price) * position_qty,
-                mae=(position_entry_price - mae_low) * position_qty,
-            ))
+            trades.append(
+                BacktestTrade(
+                    id=str(uuid.uuid4())[:8],
+                    ticker=self.ticker,
+                    entry_price=position_entry_price,
+                    exit_price=fp,
+                    quantity=position_qty,
+                    side="buy",
+                    pnl=raw_pnl,
+                    pnl_pct=(raw_pnl / (position_entry_price * position_qty) * 100).quantize(
+                        Decimal("0.01")
+                    ),
+                    entry_bar_idx=position_entry_idx,
+                    exit_bar_idx=last_idx,
+                    entry_time=bar_times[position_entry_idx],
+                    exit_time=last_time,
+                    exit_reason="backtest_end",
+                    slippage_cost=remaining_entry_slippage + slip,
+                    holding_bars=last_idx - position_entry_idx,
+                    mfe=(mfe_high - position_entry_price) * position_qty,
+                    mae=(position_entry_price - mae_low) * position_qty,
+                )
+            )
             available_cash += fp * position_qty - self.commission_per_trade
             total_commission_cost += self.commission_per_trade
 
@@ -640,8 +676,10 @@ class Backtester:
         result = BacktestResult(
             strategy_name=type(self.strategy).__name__,
             ticker=self.ticker,
-            start_date=self.start_date or (filtered_times[0].date() if filtered_times else date.today()),
-            end_date=self.end_date or (filtered_times[-1].date() if filtered_times else date.today()),
+            start_date=self.start_date
+            or (filtered_times[0].date() if filtered_times else date.today()),
+            end_date=self.end_date
+            or (filtered_times[-1].date() if filtered_times else date.today()),
             initial_capital=self.initial_capital,
             final_capital=final_capital,
             trades=trades,
@@ -655,9 +693,7 @@ class Backtester:
                 result.benchmark_return_pct = (
                     (last_close - first_close) / first_close * 100
                 ).quantize(Decimal("0.01"))
-            result.exposure_pct = Decimal(
-                str(round(exposure_bars / len(filtered_times) * 100, 2))
-            )
+            result.exposure_pct = Decimal(str(round(exposure_bars / len(filtered_times) * 100, 2)))
         return _compute_metrics(result)
 
 
@@ -679,7 +715,9 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
     days = (result.end_date - result.start_date).days or 1
     if days > 0:
         years = days / 365
-        ann = ((float(result.final_capital) / float(result.initial_capital)) ** (1 / years) - 1) * 100
+        ann = (
+            (float(result.final_capital) / float(result.initial_capital)) ** (1 / years) - 1
+        ) * 100
         result.annualised_return_pct = Decimal(str(round(ann, 2)))
 
     # Drawdown
@@ -726,8 +764,15 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
     result.avg_loss = Decimal(str(round(sum(losses) / len(losses), 2))) if losses else Decimal("0")
     result.expectancy = Decimal(str(round(statistics.mean(pnls), 2)))
     result.expectancy_pct = Decimal(str(round(statistics.mean(pnl_pcts), 2)))
-    result.profit_factor = Decimal(str(round(sum(wins) / abs(sum(losses)), 3))) if losses and sum(losses) != 0 else Decimal("0")
-    result.total_slippage_cost = sum(t.slippage_cost for t in trades)
+    result.profit_factor = (
+        Decimal(str(round(sum(wins) / abs(sum(losses)), 3)))
+        if losses and sum(losses) != 0
+        else Decimal("0")
+    )
+    result.total_slippage_cost = sum(
+        (trade.slippage_cost for trade in trades),
+        Decimal("0"),
+    )
     result.gross_pnl = (
         result.net_pnl + result.total_slippage_cost + result.total_commission_cost
     ).quantize(Decimal("0.01"))
@@ -736,7 +781,9 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
     )
     result.avg_mfe = Decimal(str(round(float(sum(t.mfe for t in trades)) / len(trades), 2)))
     result.avg_mae = Decimal(str(round(float(sum(t.mae for t in trades)) / len(trades), 2)))
-    result.avg_holding_bars = Decimal(str(round(sum(t.holding_bars for t in trades) / len(trades), 1)))
+    result.avg_holding_bars = Decimal(
+        str(round(sum(t.holding_bars for t in trades) / len(trades), 1))
+    )
     turnover_notional = sum(
         (trade.entry_price * trade.quantity) + (trade.exit_price * trade.quantity)
         for trade in trades
@@ -750,7 +797,7 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
         mean_pnl = statistics.mean(pnls)
         std_pnl = statistics.stdev(pnls)
         if std_pnl > 0:
-            sharpe = (mean_pnl / std_pnl) * (252 ** 0.5)
+            sharpe = (mean_pnl / std_pnl) * (252**0.5)
             result.sharpe_ratio = Decimal(str(round(sharpe, 3)))
 
     # Sortino ratio (downside deviation only)
@@ -759,7 +806,7 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
         downside_std = statistics.stdev(downside)
         if downside_std > 0:
             mean_pnl = statistics.mean(pnls)
-            sortino = (mean_pnl / downside_std) * (252 ** 0.5)
+            sortino = (mean_pnl / downside_std) * (252**0.5)
             result.sortino_ratio = Decimal(str(round(sortino, 3)))
 
     # Consecutive losses
@@ -791,6 +838,7 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
 
 # ── Walk-forward validator ────────────────────────────────────────────────────
 
+
 class WalkForwardValidator:
     """
     Walk-forward validation (out-of-sample testing).
@@ -806,10 +854,17 @@ class WalkForwardValidator:
         strategy_class: Any,
         ticker: str,
         initial_capital: Decimal,
-        in_sample_bars: int = 2000,     # ~13 months of 5-min bars
-        out_sample_bars: int = 500,     # ~3 months
-        step_bars: int = 250,           # Roll forward by ~1.5 months
+        in_sample_bars: int = 2000,  # ~13 months of 5-min bars
+        out_sample_bars: int = 500,  # ~3 months
+        step_bars: int = 250,  # Roll forward by ~1.5 months
     ) -> None:
+        for parameter_name, parameter_value in (
+            ("in_sample_bars", in_sample_bars),
+            ("out_sample_bars", out_sample_bars),
+            ("step_bars", step_bars),
+        ):
+            if parameter_value <= 0:
+                raise ValueError(f"{parameter_name} must be positive")
         self.strategy_class = strategy_class
         self.ticker = ticker
         self.initial_capital = initial_capital
@@ -829,6 +884,7 @@ class WalkForwardValidator:
         param_grid: list of parameter dicts to try during in-sample optimisation.
         Returns list of out-of-sample results per window.
         """
+        validate_bar_series(bars, bar_times, label="walk-forward bar series")
         results = []
         total = len(bars)
         start = 0
@@ -839,9 +895,9 @@ class WalkForwardValidator:
             is_end = start + self.in_sample_bars
             oos_end = is_end + self.out_sample_bars
 
-            is_bars   = bars[start:is_end]
-            is_times  = bar_times[start:is_end]
-            oos_bars  = bars[is_end:oos_end]
+            is_bars = bars[start:is_end]
+            is_times = bar_times[start:is_end]
+            oos_bars = bars[is_end:oos_end]
             oos_times = bar_times[is_end:oos_end]
 
             # Optimise on in-sample
@@ -852,20 +908,22 @@ class WalkForwardValidator:
             bt = Backtester(strategy, self.ticker, self.initial_capital)
             oos_result = bt.run(oos_bars, oos_times)
 
-            results.append({
-                "window": window_num,
-                "is_start": is_times[0].date().isoformat() if is_times else "",
-                "is_end":   is_times[-1].date().isoformat() if is_times else "",
-                "oos_start": oos_times[0].date().isoformat() if oos_times else "",
-                "oos_end":   oos_times[-1].date().isoformat() if oos_times else "",
-                "best_params": best_params,
-                "oos_return_pct": float(oos_result.total_return_pct),
-                "oos_sharpe": float(oos_result.sharpe_ratio or 0),
-                "oos_max_dd": float(oos_result.max_drawdown_pct),
-                "oos_win_rate": float(oos_result.win_rate),
-                "oos_profit_factor": float(oos_result.profit_factor),
-                "oos_trades": oos_result.total_trades,
-            })
+            results.append(
+                {
+                    "window": window_num,
+                    "is_start": is_times[0].date().isoformat() if is_times else "",
+                    "is_end": is_times[-1].date().isoformat() if is_times else "",
+                    "oos_start": oos_times[0].date().isoformat() if oos_times else "",
+                    "oos_end": oos_times[-1].date().isoformat() if oos_times else "",
+                    "best_params": best_params,
+                    "oos_return_pct": float(oos_result.total_return_pct),
+                    "oos_sharpe": float(oos_result.sharpe_ratio or 0),
+                    "oos_max_dd": float(oos_result.max_drawdown_pct),
+                    "oos_win_rate": float(oos_result.win_rate),
+                    "oos_profit_factor": float(oos_result.profit_factor),
+                    "oos_trades": oos_result.total_trades,
+                }
+            )
 
             log.info(
                 "walk_forward.window_complete",

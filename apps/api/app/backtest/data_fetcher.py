@@ -3,17 +3,18 @@ Backtest data fetcher.
 Downloads historical OHLCV bars from Polygon.io for backtesting.
 Caches locally to avoid repeated API calls.
 """
+
 from __future__ import annotations
 
 import json
-import os
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+from app.backtest.data_contract import validate_bar_series
 from app.strategies.indicators import Bar
 
 log = structlog.get_logger()
@@ -51,10 +52,15 @@ class BacktestDataFetcher:
             data = json.loads(cache_file.read_text())
             return self._parse_cached(data)
 
-        log.info("backtest_data.fetching", ticker=ticker,
-                 from_date=from_date.isoformat(), to_date=to_date.isoformat())
+        log.info(
+            "backtest_data.fetching",
+            ticker=ticker,
+            from_date=from_date.isoformat(),
+            to_date=to_date.isoformat(),
+        )
 
         import httpx
+
         all_results = []
         current_from = from_date
 
@@ -67,40 +73,59 @@ class BacktestDataFetcher:
                 f"/{current_from.isoformat()}/{chunk_to.isoformat()}"
             )
             async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(url, params={
-                    "adjusted": "true",
-                    "sort": "asc",
-                    "limit": 50000,
-                    "apiKey": self.api_key,
-                })
+                resp = await client.get(
+                    url,
+                    params={
+                        "adjusted": "true",
+                        "sort": "asc",
+                        "limit": 50000,
+                        "apiKey": self.api_key,
+                    },
+                )
                 if resp.status_code == 200:
                     data = resp.json()
-                    all_results.extend(data.get("results", []))
+                    if data.get("status") == "ERROR":
+                        raise RuntimeError(
+                            f"Polygon request failed for {ticker}: "
+                            f"{data.get('error') or data.get('message') or 'unknown provider error'}"
+                        )
+                    results = data.get("results", [])
+                    if not isinstance(results, list):
+                        raise RuntimeError(
+                            f"Polygon returned an invalid results payload for {ticker}"
+                        )
+                    all_results.extend(results)
                 elif resp.status_code == 403:
                     raise ValueError("Polygon API key invalid or insufficient permissions")
                 else:
-                    log.warning("backtest_data.fetch_error",
-                                status=resp.status_code, ticker=ticker)
+                    raise RuntimeError(
+                        f"Polygon request failed for {ticker} with HTTP {resp.status_code}"
+                    )
 
             current_from = chunk_to + timedelta(days=1)
 
-        # Cache results
+        bars, times = self._parse_raw(all_results)
+
+        # Cache only after the complete response satisfies the research contract.
         cache_file.write_text(json.dumps(all_results))
         log.info("backtest_data.fetched", ticker=ticker, bars=len(all_results))
 
-        return self._parse_raw(all_results)
+        return bars, times
 
     def _parse_raw(self, results: list[dict[str, Any]]) -> tuple[list[Bar], list[datetime]]:
         bars, times = [], []
         for r in results:
-            bars.append(Bar(
-                open=Decimal(str(r["o"])),
-                high=Decimal(str(r["h"])),
-                low=Decimal(str(r["l"])),
-                close=Decimal(str(r["c"])),
-                volume=Decimal(str(r.get("v", 0))),
-            ))
-            times.append(datetime.fromtimestamp(r["t"] / 1000, tz=timezone.utc))
+            bars.append(
+                Bar(
+                    open=Decimal(str(r["o"])),
+                    high=Decimal(str(r["h"])),
+                    low=Decimal(str(r["l"])),
+                    close=Decimal(str(r["c"])),
+                    volume=Decimal(str(r.get("v", 0))),
+                )
+            )
+            times.append(datetime.fromtimestamp(r["t"] / 1000, tz=UTC))
+        validate_bar_series(bars, times, label="Polygon bar series")
         return bars, times
 
     def _parse_cached(self, results: list[dict[str, Any]]) -> tuple[list[Bar], list[datetime]]:
