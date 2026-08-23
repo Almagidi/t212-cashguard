@@ -14,6 +14,7 @@ from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 
 from app.backtest.data_contract import validate_bar_series
+from app.execution.paper_policy import evaluate_paper_fill
 
 if TYPE_CHECKING:
     from datetime import date, datetime
@@ -30,11 +31,21 @@ class PortfolioTrade:
     ticker: str
     side: str
     shares: Decimal
+    quote_price: Decimal
     price: Decimal
     notional: Decimal
+    slippage_cost: Decimal
+    fee_cost: Decimal
     cost: Decimal
     reason: str
     target_weight: Decimal
+
+
+@dataclass(frozen=True)
+class PortfolioExecutionFill:
+    price: Decimal
+    shares: Decimal
+    fee: Decimal
 
 
 @dataclass
@@ -68,6 +79,9 @@ class PortfolioBacktestResult:
     rebalance_count: int
     turnover_pct: Decimal
     avg_exposure_pct: Decimal
+    total_slippage_cost: Decimal
+    total_fee_cost: Decimal
+    total_execution_cost: Decimal
     equity_curve: list[PortfolioAllocationPoint] = field(default_factory=list)
     trades: list[PortfolioTrade] = field(default_factory=list)
     latest_weights: dict[str, Decimal] = field(default_factory=dict)
@@ -141,14 +155,46 @@ class PortfolioBacktester:
         initial_capital: Decimal,
         start_date: date,
         end_date: date,
-        transaction_cost_bps: Decimal = Decimal("10"),
+        transaction_cost_bps: Decimal | None = None,
     ) -> None:
         self.strategy = strategy
         self.universe = sorted(dict.fromkeys(universe))
         self.initial_capital = initial_capital
         self.start_date = start_date
         self.end_date = end_date
-        self.transaction_cost_rate = transaction_cost_bps / Decimal("10000")
+        if transaction_cost_bps is not None and transaction_cost_bps < 0:
+            raise ValueError("transaction_cost_bps cannot be negative")
+        self.transaction_cost_rate = (
+            transaction_cost_bps / Decimal("10000") if transaction_cost_bps is not None else None
+        )
+
+    def _execute(
+        self,
+        *,
+        side: str,
+        shares: Decimal,
+        quote_price: Decimal,
+    ) -> PortfolioExecutionFill:
+        """Apply the canonical paper policy unless a legacy bps override is explicit."""
+        if self.transaction_cost_rate is not None:
+            return PortfolioExecutionFill(
+                price=quote_price,
+                shares=shares,
+                fee=(shares * quote_price * self.transaction_cost_rate).quantize(Decimal("0.01")),
+            )
+        decision = evaluate_paper_fill(
+            side=side,
+            quantity=shares,
+            quote_price=quote_price,
+            profile="standard",
+        )
+        if decision.outcome != "filled" or decision.fill_price is None:
+            raise ValueError(f"Paper execution rejected portfolio fill: {decision.rejection_code}")
+        return PortfolioExecutionFill(
+            price=decision.fill_price,
+            shares=decision.filled_quantity,
+            fee=decision.fee_amount,
+        )
 
     def _run_benchmark(
         self,
@@ -159,6 +205,7 @@ class PortfolioBacktester:
         open_equity = self.initial_capital
         weight = Decimal("1") / Decimal(str(len(history)))
         shares: dict[str, Decimal] = {}
+        residual_cash = open_equity
 
         for ticker, bars in history.items():
             open_price = bars[first_index].open
@@ -166,8 +213,9 @@ class PortfolioBacktester:
                 continue
             allocation = open_equity * weight
             shares[ticker] = (allocation / open_price).quantize(SHARE_QUANT, rounding=ROUND_DOWN)
+            residual_cash -= shares[ticker] * open_price
 
-        final_equity = Decimal("0")
+        final_equity = residual_cash
         for ticker, bars in history.items():
             final_equity += shares.get(ticker, Decimal("0")) * bars[-1].close
 
@@ -318,6 +366,8 @@ class PortfolioBacktester:
             turnover_pct = ((total_turnover / avg_equity) * Decimal("100")).quantize(
                 Decimal("0.01")
             )
+        total_slippage_cost = sum((trade.slippage_cost for trade in trades), Decimal("0"))
+        total_fee_cost = sum((trade.fee_cost for trade in trades), Decimal("0"))
 
         return PortfolioBacktestResult(
             strategy_name=self.strategy.label,
@@ -339,6 +389,9 @@ class PortfolioBacktester:
             rebalance_count=rebalance_count,
             turnover_pct=turnover_pct,
             avg_exposure_pct=avg_exposure_pct,
+            total_slippage_cost=total_slippage_cost,
+            total_fee_cost=total_fee_cost,
+            total_execution_cost=total_slippage_cost + total_fee_cost,
             equity_curve=equity_curve,
             trades=trades,
             latest_weights=equity_curve[-1].weights if equity_curve else {},
@@ -385,20 +438,24 @@ class PortfolioBacktester:
             )
             if shares_to_sell <= 0:
                 continue
-            notional = shares_to_sell * open_price
-            cost = (notional * self.transaction_cost_rate).quantize(Decimal("0.01"))
-            updated_holdings[ticker] -= shares_to_sell
-            updated_cash += notional - cost
+            fill = self._execute(side="sell", shares=shares_to_sell, quote_price=open_price)
+            notional = fill.shares * fill.price
+            slippage_cost = abs(fill.price - open_price) * fill.shares
+            updated_holdings[ticker] -= fill.shares
+            updated_cash += notional - fill.fee
             turnover += notional
             trades.append(
                 PortfolioTrade(
                     date=current_date,
                     ticker=ticker,
                     side="sell",
-                    shares=shares_to_sell,
-                    price=open_price,
+                    shares=fill.shares,
+                    quote_price=open_price,
+                    price=fill.price,
                     notional=notional.quantize(Decimal("0.01")),
-                    cost=cost,
+                    slippage_cost=slippage_cost.quantize(Decimal("0.00000001")),
+                    fee_cost=fill.fee,
+                    cost=(slippage_cost + fill.fee).quantize(Decimal("0.00000001")),
                     reason=reason,
                     target_weight=target_weights.get(ticker, Decimal("0")).quantize(
                         Decimal("0.0001")
@@ -415,30 +472,41 @@ class PortfolioBacktester:
             delta_value = target_value - current_value
             if delta_value <= 0:
                 continue
-            affordable_shares = (
-                updated_cash / (open_price * (Decimal("1") + self.transaction_cost_rate))
-            ).quantize(
-                SHARE_QUANT,
-                rounding=ROUND_DOWN,
-            )
             desired_shares = (delta_value / open_price).quantize(SHARE_QUANT, rounding=ROUND_DOWN)
-            shares_to_buy = min(desired_shares, affordable_shares)
+            shares_to_buy = min(
+                desired_shares,
+                (updated_cash / open_price).quantize(SHARE_QUANT, rounding=ROUND_DOWN),
+            )
             if shares_to_buy <= 0:
                 continue
-            notional = shares_to_buy * open_price
-            cost = (notional * self.transaction_cost_rate).quantize(Decimal("0.01"))
-            updated_holdings[ticker] += shares_to_buy
-            updated_cash -= notional + cost
+            fill = self._execute(side="buy", shares=shares_to_buy, quote_price=open_price)
+            if fill.price * fill.shares + fill.fee > updated_cash:
+                spendable = updated_cash - fill.fee
+                if spendable <= 0:
+                    continue
+                shares_to_buy = (spendable / fill.price).quantize(SHARE_QUANT, rounding=ROUND_DOWN)
+                if shares_to_buy <= 0:
+                    continue
+                fill = self._execute(side="buy", shares=shares_to_buy, quote_price=open_price)
+                if fill.price * fill.shares + fill.fee > updated_cash:
+                    continue
+            notional = fill.shares * fill.price
+            slippage_cost = abs(fill.price - open_price) * fill.shares
+            updated_holdings[ticker] += fill.shares
+            updated_cash -= notional + fill.fee
             turnover += notional
             trades.append(
                 PortfolioTrade(
                     date=current_date,
                     ticker=ticker,
                     side="buy",
-                    shares=shares_to_buy,
-                    price=open_price,
+                    shares=fill.shares,
+                    quote_price=open_price,
+                    price=fill.price,
                     notional=notional.quantize(Decimal("0.01")),
-                    cost=cost,
+                    slippage_cost=slippage_cost.quantize(Decimal("0.00000001")),
+                    fee_cost=fill.fee,
+                    cost=(slippage_cost + fill.fee).quantize(Decimal("0.00000001")),
                     reason=reason,
                     target_weight=target_weights.get(ticker, Decimal("0")).quantize(
                         Decimal("0.0001")
