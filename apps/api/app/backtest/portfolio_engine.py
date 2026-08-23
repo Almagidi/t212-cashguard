@@ -4,14 +4,21 @@ Portfolio-level event-driven backtester for lower-turnover long-only strategies.
 This complements the intraday single-symbol engine by supporting basket-based
 allocation research that more closely matches Trading 212 Pie workflows.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
-from decimal import Decimal, ROUND_DOWN
-from typing import Any
+from datetime import UTC
+from decimal import ROUND_DOWN, Decimal
+from itertools import pairwise
+from typing import TYPE_CHECKING, Any
 
-from app.strategies.indicators import Bar
+from app.backtest.data_contract import validate_bar_series
+
+if TYPE_CHECKING:
+    from datetime import date, datetime
+
+    from app.strategies.indicators import Bar
 
 
 SHARE_QUANT = Decimal("0.0001")
@@ -77,7 +84,7 @@ def _stddev(values: list[float]) -> float:
         return 0.0
     mean = sum(values) / len(values)
     variance = sum((value - mean) ** 2 for value in values) / len(values)
-    return variance ** 0.5
+    return float(variance**0.5)
 
 
 def _align_histories(
@@ -87,7 +94,15 @@ def _align_histories(
     common_dates: set[date] | None = None
 
     for ticker, (bars, bar_times) in histories.items():
-        per_day = {bar_time.date(): bar for bar_time, bar in zip(bar_times, bars, strict=True)}
+        validate_bar_series(bars, bar_times, label=f"portfolio bar series for {ticker}")
+        per_day: dict[date, Bar] = {}
+        for bar_time, bar in zip(bar_times, bars, strict=True):
+            bar_date = bar_time.astimezone(UTC).date()
+            if bar_date in per_day:
+                raise ValueError(
+                    f"portfolio bar series for {ticker}: duplicate date {bar_date.isoformat()}"
+                )
+            per_day[bar_date] = bar
         date_maps[ticker] = per_day
         ticker_dates = set(per_day)
         common_dates = ticker_dates if common_dates is None else common_dates & ticker_dates
@@ -160,7 +175,9 @@ class PortfolioBacktester:
             return Decimal("0")
         return ((final_equity / self.initial_capital) - Decimal("1")) * Decimal("100")
 
-    def run(self, histories: dict[str, tuple[list[Bar], list[datetime]]]) -> PortfolioBacktestResult:
+    def run(
+        self, histories: dict[str, tuple[list[Bar], list[datetime]]]
+    ) -> PortfolioBacktestResult:
         dates, history = _align_histories(histories)
         min_history = int(getattr(self.strategy, "min_history_bars", 0))
         if len(dates) <= min_history:
@@ -185,10 +202,18 @@ class PortfolioBacktester:
                 current_date,
                 getattr(self.strategy, "rebalance_frequency", "monthly"),
             ):
-                target_weights = self.strategy.target_weights(history, as_of_index=index - 1 if index > 0 else 0)
+                observed_history = {
+                    ticker: ticker_bars[:index] for ticker, ticker_bars in history.items()
+                }
+                target_weights = self.strategy.target_weights(
+                    observed_history,
+                    as_of_index=index - 1,
+                )
                 if sum(target_weights.values(), Decimal("0")) > Decimal("1.0001"):
                     total_weight = sum(target_weights.values(), Decimal("0"))
-                    target_weights = {ticker: weight / total_weight for ticker, weight in target_weights.items()}
+                    target_weights = {
+                        ticker: weight / total_weight for ticker, weight in target_weights.items()
+                    }
                 traded = self._rebalance_portfolio(
                     current_date=current_date,
                     history=history,
@@ -239,14 +264,17 @@ class PortfolioBacktester:
         final_equity = equity_curve[-1].equity
         total_return_pct = Decimal("0")
         if self.initial_capital > 0:
-            total_return_pct = ((final_equity / self.initial_capital) - Decimal("1")) * Decimal("100")
+            total_return_pct = ((final_equity / self.initial_capital) - Decimal("1")) * Decimal(
+                "100"
+            )
         day_count = max(1, (dates[-1] - dates[first_trade_index]).days)
         annualised_return_pct = Decimal("0")
         if self.initial_capital > 0 and final_equity > 0:
             annualised_return_pct = Decimal(
                 str(
                     (
-                        (float(final_equity) / float(self.initial_capital)) ** (365.0 / float(day_count))
+                        (float(final_equity) / float(self.initial_capital))
+                        ** (365.0 / float(day_count))
                         - 1.0
                     )
                     * 100.0
@@ -255,7 +283,7 @@ class PortfolioBacktester:
 
         daily_returns: list[float] = []
         downside_returns: list[float] = []
-        for prev, current in zip(equity_curve, equity_curve[1:]):
+        for prev, current in pairwise(equity_curve):
             if prev.equity <= 0:
                 continue
             daily_return = float((current.equity / prev.equity) - Decimal("1"))
@@ -269,10 +297,10 @@ class PortfolioBacktester:
             daily_mean = sum(daily_returns) / len(daily_returns)
             daily_std = _stddev(daily_returns)
             if daily_std > 0:
-                sharpe = Decimal(str(round((daily_mean / daily_std) * (252 ** 0.5), 3)))
+                sharpe = Decimal(str(round((daily_mean / daily_std) * (252**0.5), 3)))
             downside_std = _stddev(downside_returns) if downside_returns else 0.0
             if downside_std > 0:
-                sortino = Decimal(str(round((daily_mean / downside_std) * (252 ** 0.5), 3)))
+                sortino = Decimal(str(round((daily_mean / downside_std) * (252**0.5), 3)))
 
         max_drawdown_pct = max((point.drawdown_pct for point in equity_curve), default=Decimal("0"))
         calmar = None
@@ -281,11 +309,15 @@ class PortfolioBacktester:
 
         benchmark_return_pct = self._run_benchmark(history=history, first_index=first_trade_index)
         alpha_vs_benchmark_pct = total_return_pct - benchmark_return_pct
-        avg_exposure_pct = _decimal_mean([point.exposure_pct for point in equity_curve]).quantize(Decimal("0.01"))
+        avg_exposure_pct = _decimal_mean([point.exposure_pct for point in equity_curve]).quantize(
+            Decimal("0.01")
+        )
         turnover_pct = Decimal("0")
         avg_equity = _decimal_mean([point.equity for point in equity_curve])
         if avg_equity > 0:
-            turnover_pct = ((total_turnover / avg_equity) * Decimal("100")).quantize(Decimal("0.01"))
+            turnover_pct = ((total_turnover / avg_equity) * Decimal("100")).quantize(
+                Decimal("0.01")
+            )
 
         return PortfolioBacktestResult(
             strategy_name=self.strategy.label,
@@ -333,7 +365,10 @@ class PortfolioBacktester:
             equity_at_open += updated_holdings[ticker] * bars[index].open
 
         allocatable_equity = equity_at_open * Decimal("0.998")
-        target_values = {ticker: allocatable_equity * target_weights.get(ticker, Decimal("0")) for ticker in history}
+        target_values = {
+            ticker: allocatable_equity * target_weights.get(ticker, Decimal("0"))
+            for ticker in history
+        }
 
         for ticker, bars in history.items():
             open_price = bars[index].open
@@ -365,7 +400,9 @@ class PortfolioBacktester:
                     notional=notional.quantize(Decimal("0.01")),
                     cost=cost,
                     reason=reason,
-                    target_weight=target_weights.get(ticker, Decimal("0")).quantize(Decimal("0.0001")),
+                    target_weight=target_weights.get(ticker, Decimal("0")).quantize(
+                        Decimal("0.0001")
+                    ),
                 )
             )
 
@@ -378,7 +415,9 @@ class PortfolioBacktester:
             delta_value = target_value - current_value
             if delta_value <= 0:
                 continue
-            affordable_shares = (updated_cash / (open_price * (Decimal("1") + self.transaction_cost_rate))).quantize(
+            affordable_shares = (
+                updated_cash / (open_price * (Decimal("1") + self.transaction_cost_rate))
+            ).quantize(
                 SHARE_QUANT,
                 rounding=ROUND_DOWN,
             )
@@ -401,7 +440,9 @@ class PortfolioBacktester:
                     notional=notional.quantize(Decimal("0.01")),
                     cost=cost,
                     reason=reason,
-                    target_weight=target_weights.get(ticker, Decimal("0")).quantize(Decimal("0.0001")),
+                    target_weight=target_weights.get(ticker, Decimal("0")).quantize(
+                        Decimal("0.0001")
+                    ),
                 )
             )
 
