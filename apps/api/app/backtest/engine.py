@@ -12,12 +12,14 @@ Design principles:
 from __future__ import annotations
 
 import inspect
+import math
 import random
 import statistics
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import ROUND_DOWN, Decimal
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
@@ -107,6 +109,7 @@ class BacktestResult:
     expectancy_pct: Decimal = Decimal("0")
     avg_rr_achieved: Decimal = Decimal("0")
     total_trades: int = 0
+    completed_positions: int = 0
     winning_trades: int = 0
     losing_trades: int = 0
     avg_holding_bars: Decimal = Decimal("0")
@@ -117,6 +120,16 @@ class BacktestResult:
     avg_mfe: Decimal = Decimal("0")
     avg_mae: Decimal = Decimal("0")
     consecutive_losses_max: int = 0
+
+
+@dataclass(frozen=True)
+class ParameterSelectionResult:
+    """Auditable outcome of a train/validation parameter search."""
+
+    params: dict[str, Any] | None
+    combinations_tested: int
+    eligible_candidates: int
+    validation_sharpe: float | None
 
 
 class StrategyProtocol(Protocol):
@@ -172,43 +185,86 @@ def summarise_walk_forward_results(results: list[dict[str, Any]]) -> dict[str, A
     if not results:
         return None
 
-    profitable = sum(1 for item in results if item["oos_return_pct"] > 0)
-    positive_sharpe = sum(1 for item in results if item["oos_sharpe"] > 0.5)
-    controlled_drawdown = sum(1 for item in results if item["oos_max_dd"] <= 15.0)
-    robustness_score = round(
-        (
-            0.5 * (profitable / len(results))
-            + 0.3 * (positive_sharpe / len(results))
-            + 0.2 * (controlled_drawdown / len(results))
+    selected = [item for item in results if item.get("selection_status") == "selected"]
+    profitable = sum(1 for item in selected if item["oos_return_pct"] > 0)
+    positive_sharpe = sum(
+        1 for item in selected if item["oos_sharpe"] is not None and item["oos_sharpe"] > 0.5
+    )
+    controlled_drawdown = sum(1 for item in selected if item["oos_max_dd"] <= 15.0)
+    selected_count = len(selected)
+    robustness_score = (
+        round(
+            (
+                0.5 * (profitable / selected_count)
+                + 0.3 * (positive_sharpe / selected_count)
+                + 0.2 * (controlled_drawdown / selected_count)
+            )
+            * 100,
+            1,
         )
-        * 100,
-        1,
+        if selected
+        else 0.0
     )
 
-    verdict = "fragile"
-    if robustness_score >= 75:
-        verdict = "robust"
-    elif robustness_score >= 60:
-        verdict = "promising"
-    elif robustness_score >= 40:
-        verdict = "mixed"
+    performance_assessment = "unassessed" if not selected else "fragile"
+    if selected and robustness_score >= 75:
+        performance_assessment = "favourable"
+    elif selected and robustness_score >= 40:
+        performance_assessment = "mixed"
 
-    oos_returns = [item["oos_return_pct"] for item in results]
-    oos_drawdowns = [item["oos_max_dd"] for item in results]
-    oos_sharpes = [item["oos_sharpe"] for item in results]
+    oos_returns = [item["oos_return_pct"] for item in selected]
+    oos_drawdowns = [item["oos_max_dd"] for item in selected]
+    oos_sharpes = [item["oos_sharpe"] for item in selected if item["oos_sharpe"] is not None]
+    total_oos_positions = sum(int(item["oos_positions"]) for item in selected)
+    minimum_window_positions_met = bool(selected) and all(
+        int(item["oos_positions"]) >= 10 for item in selected
+    )
+    evidence_reasons = []
+    if selected_count < 3:
+        evidence_reasons.append("need at least 3 selected held-out windows")
+    if not minimum_window_positions_met:
+        evidence_reasons.append("need at least 10 independent positions in every held-out window")
+    if total_oos_positions < 30:
+        evidence_reasons.append("need at least 30 independent held-out positions in total")
+
+    verdict = "insufficient_evidence" if evidence_reasons else "research_only"
+    message = (
+        "Insufficient evidence: " + "; ".join(evidence_reasons) + "."
+        if evidence_reasons
+        else "Evidence gates passed for research comparison only; this is not a promotion decision."
+    )
 
     return {
         "windows": len(results),
+        "selected_windows": selected_count,
+        "selection_failures": len(results) - selected_count,
+        "total_oos_positions": total_oos_positions,
+        "minimum_oos_positions_per_window": 10,
+        "minimum_selected_windows": 3,
+        "parameter_combinations_tested": max(
+            (int(item.get("parameter_combinations_tested", 0)) for item in results),
+            default=0,
+        ),
+        "candidate_evaluations": sum(
+            int(item.get("parameter_combinations_tested", 0)) for item in results
+        ),
+        "eligible_candidate_evaluations": sum(
+            int(item.get("eligible_candidates", 0)) for item in results
+        ),
         "profitable_windows": profitable,
         "positive_sharpe_windows": positive_sharpe,
         "controlled_drawdown_windows": controlled_drawdown,
-        "avg_oos_return_pct": round(statistics.mean(oos_returns), 2),
-        "median_oos_return_pct": round(statistics.median(oos_returns), 2),
-        "avg_oos_sharpe": round(statistics.mean(oos_sharpes), 3),
-        "median_oos_sharpe": round(statistics.median(oos_sharpes), 3),
-        "worst_oos_max_dd": round(max(oos_drawdowns), 2),
+        "avg_oos_return_pct": round(statistics.mean(oos_returns), 2) if oos_returns else None,
+        "median_oos_return_pct": (
+            round(statistics.median(oos_returns), 2) if oos_returns else None
+        ),
+        "avg_oos_sharpe": round(statistics.mean(oos_sharpes), 3) if oos_sharpes else None,
+        "median_oos_sharpe": (round(statistics.median(oos_sharpes), 3) if oos_sharpes else None),
+        "worst_oos_max_dd": round(max(oos_drawdowns), 2) if oos_drawdowns else None,
         "robustness_score": robustness_score,
+        "performance_assessment": performance_assessment,
         "verdict": verdict,
+        "message": message,
     }
 
 
@@ -888,6 +944,51 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
         result.total_return_pct - result.benchmark_return_pct
     ).quantize(Decimal("0.01"))
 
+    # Risk-adjusted ratios use the marked-to-market equity return path. Trade
+    # P&L observations are not time-series returns and change when identical
+    # fills are split into multiple trade records.
+    equity_returns: list[float] = []
+    for previous, current in pairwise(result.equity_curve):
+        previous_equity = float(previous["equity"])
+        if previous_equity > 0:
+            equity_returns.append((float(current["equity"]) / previous_equity) - 1)
+
+    periods_per_year = 252.0
+    equity_times: list[datetime] = []
+    for point in result.equity_curve:
+        raw_time = point.get("time")
+        if isinstance(raw_time, str):
+            try:
+                equity_times.append(datetime.fromisoformat(raw_time))
+            except ValueError:
+                equity_times = []
+                break
+    if len(equity_times) > 1:
+        intervals = [
+            (current - previous).total_seconds()
+            for previous, current in pairwise(equity_times)
+            if current > previous
+        ]
+        if intervals:
+            median_interval = statistics.median(intervals)
+            if median_interval < 12 * 60 * 60:
+                periods_per_trading_day = min((6.5 * 60 * 60) / median_interval, 390.0)
+                periods_per_year = 252.0 * periods_per_trading_day
+
+    if len(equity_returns) > 1:
+        mean_return = statistics.mean(equity_returns)
+        std_return = statistics.stdev(equity_returns)
+        if std_return > 0:
+            sharpe = (mean_return / std_return) * math.sqrt(periods_per_year)
+            result.sharpe_ratio = Decimal(str(round(sharpe, 3)))
+
+        downside_deviation = math.sqrt(
+            statistics.mean(min(period_return, 0.0) ** 2 for period_return in equity_returns)
+        )
+        if downside_deviation > 0:
+            sortino = (mean_return / downside_deviation) * math.sqrt(periods_per_year)
+            result.sortino_ratio = Decimal(str(round(sortino, 3)))
+
     if not trades:
         return result
 
@@ -897,6 +998,7 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
     losses = [p for p in pnls if p <= 0]
 
     result.total_trades = len(trades)
+    result.completed_positions = len({(trade.ticker, trade.entry_bar_idx) for trade in trades})
     result.winning_trades = len(wins)
     result.losing_trades = len(losses)
     result.win_rate = Decimal(str(round(len(wins) / len(trades), 4)))
@@ -932,23 +1034,6 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
         str(round(float(turnover_notional / result.initial_capital * 100), 2))
     )
 
-    # Sharpe ratio (annualised, risk-free = 0 for simplicity)
-    if len(pnls) > 1:
-        mean_pnl = statistics.mean(pnls)
-        std_pnl = statistics.stdev(pnls)
-        if std_pnl > 0:
-            sharpe = (mean_pnl / std_pnl) * (252**0.5)
-            result.sharpe_ratio = Decimal(str(round(sharpe, 3)))
-
-    # Sortino ratio (downside deviation only)
-    downside = [p for p in pnls if p < 0]
-    if downside and len(downside) > 1:
-        downside_std = statistics.stdev(downside)
-        if downside_std > 0:
-            mean_pnl = statistics.mean(pnls)
-            sortino = (mean_pnl / downside_std) * (252**0.5)
-            result.sortino_ratio = Decimal(str(round(sortino, 3)))
-
     # Consecutive losses
     max_consec = 0
     current_consec = 0
@@ -981,12 +1066,11 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
 
 class WalkForwardValidator:
     """
-    Walk-forward validation (out-of-sample testing).
+    Nested walk-forward validation with disjoint chronological blocks.
 
-    Splits data into in-sample (optimisation) and out-of-sample (validation) windows.
-    Rolls forward, re-optimising each time.
-
-    Standard: 70% in-sample, 30% out-of-sample, 50% overlap between windows.
+    Every block has train, validation, and held-out test partitions. Candidate
+    eligibility is checked on train, selection is performed on validation, and
+    the chosen candidate is evaluated once on test. Blocks never overlap.
     """
 
     def __init__(
@@ -996,7 +1080,7 @@ class WalkForwardValidator:
         initial_capital: Decimal,
         in_sample_bars: int = 2000,  # ~13 months of 5-min bars
         out_sample_bars: int = 500,  # ~3 months
-        step_bars: int = 250,  # Roll forward by ~1.5 months
+        step_bars: int = 250,
     ) -> None:
         for parameter_name, parameter_value in (
             ("in_sample_bars", in_sample_bars),
@@ -1021,8 +1105,9 @@ class WalkForwardValidator:
         """
         Run walk-forward validation.
 
-        param_grid: list of parameter dicts to try during in-sample optimisation.
-        Returns list of out-of-sample results per window.
+        ``step_bars`` is retained for API compatibility, but the effective
+        stride is never smaller than a complete train/validation/test block.
+        The returned OOS metrics are exclusively from held-out test partitions.
         """
         validate_bar_series(bars, bar_times, label="walk-forward bar series")
         results = []
@@ -1030,72 +1115,137 @@ class WalkForwardValidator:
         start = 0
 
         window_num = 0
-        while start + self.in_sample_bars + self.out_sample_bars <= total:
+        block_bars = self.in_sample_bars + (2 * self.out_sample_bars)
+        stride_bars = max(self.step_bars, block_bars)
+        while start + block_bars <= total:
             window_num += 1
-            is_end = start + self.in_sample_bars
-            oos_end = is_end + self.out_sample_bars
+            train_end = start + self.in_sample_bars
+            validation_end = train_end + self.out_sample_bars
+            test_end = validation_end + self.out_sample_bars
 
-            is_bars = bars[start:is_end]
-            is_times = bar_times[start:is_end]
-            oos_bars = bars[is_end:oos_end]
-            oos_times = bar_times[is_end:oos_end]
+            train_bars = bars[start:train_end]
+            train_times = bar_times[start:train_end]
+            validation_bars = bars[train_end:validation_end]
+            validation_times = bar_times[train_end:validation_end]
+            test_bars = bars[validation_end:test_end]
+            test_times = bar_times[validation_end:test_end]
 
-            # Optimise on in-sample
-            best_params = self._optimise(is_bars, is_times, param_grid)
-
-            # Validate on out-of-sample
-            strategy = self.strategy_class(best_params)
-            bt = Backtester(strategy, self.ticker, self.initial_capital)
-            oos_result = bt.run(oos_bars, oos_times)
-
-            results.append(
-                {
-                    "window": window_num,
-                    "is_start": is_times[0].date().isoformat() if is_times else "",
-                    "is_end": is_times[-1].date().isoformat() if is_times else "",
-                    "oos_start": oos_times[0].date().isoformat() if oos_times else "",
-                    "oos_end": oos_times[-1].date().isoformat() if oos_times else "",
-                    "best_params": best_params,
-                    "oos_return_pct": float(oos_result.total_return_pct),
-                    "oos_sharpe": float(oos_result.sharpe_ratio or 0),
-                    "oos_max_dd": float(oos_result.max_drawdown_pct),
-                    "oos_win_rate": float(oos_result.win_rate),
-                    "oos_profit_factor": float(oos_result.profit_factor),
-                    "oos_trades": oos_result.total_trades,
-                }
+            selection = self._optimise(
+                train_bars,
+                train_times,
+                validation_bars,
+                validation_times,
+                param_grid,
             )
+
+            window_result: dict[str, Any] = {
+                "window": window_num,
+                "is_start": train_times[0].date().isoformat() if train_times else "",
+                "is_end": train_times[-1].date().isoformat() if train_times else "",
+                "validation_start": (
+                    validation_times[0].date().isoformat() if validation_times else ""
+                ),
+                "validation_end": (
+                    validation_times[-1].date().isoformat() if validation_times else ""
+                ),
+                "oos_start": test_times[0].date().isoformat() if test_times else "",
+                "oos_end": test_times[-1].date().isoformat() if test_times else "",
+                "selection_status": (
+                    "selected" if selection.params is not None else "no_eligible_candidate"
+                ),
+                "best_params": selection.params,
+                "selection_criterion": "validation_equity_sharpe",
+                "validation_sharpe": selection.validation_sharpe,
+                "parameter_combinations_tested": selection.combinations_tested,
+                "eligible_candidates": selection.eligible_candidates,
+                "oos_return_pct": None,
+                "oos_sharpe": None,
+                "oos_max_dd": None,
+                "oos_win_rate": None,
+                "oos_profit_factor": None,
+                "oos_trades": 0,
+                "oos_positions": 0,
+            }
+
+            if selection.params is not None:
+                strategy = self.strategy_class(selection.params)
+                oos_result = Backtester(strategy, self.ticker, self.initial_capital).run(
+                    test_bars, test_times
+                )
+                window_result.update(
+                    {
+                        "oos_return_pct": float(oos_result.total_return_pct),
+                        "oos_sharpe": (
+                            float(oos_result.sharpe_ratio)
+                            if oos_result.sharpe_ratio is not None
+                            and math.isfinite(float(oos_result.sharpe_ratio))
+                            else None
+                        ),
+                        "oos_max_dd": float(oos_result.max_drawdown_pct),
+                        "oos_win_rate": float(oos_result.win_rate),
+                        "oos_profit_factor": float(oos_result.profit_factor),
+                        "oos_trades": oos_result.total_trades,
+                        "oos_positions": oos_result.completed_positions,
+                    }
+                )
+
+            results.append(window_result)
 
             log.info(
                 "walk_forward.window_complete",
                 window=window_num,
-                oos_return=float(oos_result.total_return_pct),
-                oos_sharpe=float(oos_result.sharpe_ratio or 0),
+                selection_status=window_result["selection_status"],
+                oos_return=window_result["oos_return_pct"],
+                oos_sharpe=window_result["oos_sharpe"],
             )
-            start += self.step_bars
+            start += stride_bars
 
         return results
 
     def _optimise(
         self,
-        bars: list[Bar],
-        bar_times: list[datetime],
+        train_bars: list[Bar],
+        train_times: list[datetime],
+        validation_bars: list[Bar],
+        validation_times: list[datetime],
         param_grid: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        """Grid search on in-sample data. Returns best params by Sharpe ratio."""
-        best_sharpe = -9999.0
-        best_params: dict[str, Any] = param_grid[0] if param_grid else {}
+    ) -> ParameterSelectionResult:
+        """Select by validation Sharpe without reading held-out test data."""
+        best_sharpe = -math.inf
+        best_params: dict[str, Any] | None = None
+        eligible_candidates = 0
 
         for params in param_grid:
             try:
-                strategy = self.strategy_class(params)
-                bt = Backtester(strategy, "", self.initial_capital)
-                result = bt.run(bars, bar_times)
-                sharpe = float(result.sharpe_ratio or -9999)
-                # Require minimum trades to avoid over-fitting
-                if result.total_trades >= 10 and sharpe > best_sharpe:
+                train_strategy = self.strategy_class(params)
+                train_result = Backtester(train_strategy, self.ticker, self.initial_capital).run(
+                    train_bars, train_times
+                )
+                if train_result.completed_positions < 10:
+                    continue
+
+                validation_strategy = self.strategy_class(params)
+                validation_result = Backtester(
+                    validation_strategy, self.ticker, self.initial_capital
+                ).run(validation_bars, validation_times)
+                if validation_result.completed_positions < 10:
+                    continue
+
+                if validation_result.sharpe_ratio is None:
+                    continue
+                sharpe = float(validation_result.sharpe_ratio)
+                if not math.isfinite(sharpe):
+                    continue
+                eligible_candidates += 1
+                if sharpe > best_sharpe:
                     best_sharpe = sharpe
                     best_params = params
             except Exception:
                 continue
 
-        return best_params
+        return ParameterSelectionResult(
+            params=best_params,
+            combinations_tested=len(param_grid),
+            eligible_candidates=eligible_candidates,
+            validation_sharpe=best_sharpe if best_params is not None else None,
+        )
