@@ -666,6 +666,14 @@ _KRAKEN_STRATEGY_TYPES: frozenset[str] = frozenset(
 )
 
 
+def _reject_reserved_strategy_params(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if value is not None and "promotion" in value:
+        raise ValueError(
+            "The 'promotion' strategy parameter is reserved for the promotion service."
+        )
+    return value
+
+
 class StrategyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     type: StrategyType
@@ -678,6 +686,11 @@ class StrategyCreate(BaseModel):
     extended_hours: bool = False
     eod_flatten: bool = True
     venue: VenueType = "t212"
+
+    @field_validator("params")
+    @classmethod
+    def reject_reserved_promotion_state(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _reject_reserved_strategy_params(value) or {}
 
     @model_validator(mode="after")
     def venue_must_match_strategy_type(self) -> StrategyCreate:

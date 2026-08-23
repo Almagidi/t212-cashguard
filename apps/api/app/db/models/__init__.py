@@ -278,6 +278,7 @@ class Strategy(Base):
     eod_flatten: Mapped[bool] = mapped_column(Boolean, default=True)
     venue: Mapped[str] = mapped_column(String(50), nullable=False, default="t212", index=True)
     last_signal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -286,6 +287,8 @@ class Strategy(Base):
     risk_profile: Mapped[RiskProfile | None] = relationship("RiskProfile")
     signals: Mapped[list[Signal]] = relationship("Signal", back_populates="strategy")
     runs: Mapped[list[StrategyRun]] = relationship("StrategyRun", back_populates="strategy")
+
+    __mapper_args__ = {"version_id_col": version}  # noqa: RUF012
 
 
 class StrategyRun(Base):

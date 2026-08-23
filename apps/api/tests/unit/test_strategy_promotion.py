@@ -6,8 +6,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException
+from pydantic import ValidationError
 
+from app.api.schemas import StrategyCreate, StrategyUpdate
 from app.core.config import settings
+from app.db.repositories import StrategyRepository
 from app.services.strategy_promotion import (
     StrategyPromotionError,
     StrategyPromotionService,
@@ -41,6 +45,164 @@ def _order(generated_at, *, is_dry_run, status):
         is_dry_run=is_dry_run,
         status=status,
     )
+
+
+@pytest.mark.parametrize(
+    ("schema", "payload"),
+    [
+        (
+            StrategyCreate,
+            {
+                "name": "Forged promotion candidate",
+                "type": "orb",
+                "params": {"promotion": {"live_approved_at": "2026-08-23T00:00:00Z"}},
+            },
+        ),
+    ],
+)
+def test_generic_strategy_schemas_reject_reserved_promotion_state(schema, payload):
+    with pytest.raises(ValidationError, match="reserved"):
+        schema(**payload)
+
+
+def _generic_update_subject(*, promotion: dict[str, str] | None):
+    strategy = _strategy(params={"min_rvol": 1.5, "promotion": promotion})
+    repo = SimpleNamespace(
+        get_by_id_for_update=AsyncMock(return_value=strategy),
+        get_by_id=AsyncMock(return_value=strategy),
+    )
+    db = MagicMock()
+    db.flush = AsyncMock()
+    db.refresh = AsyncMock()
+    return strategy, repo, db
+
+
+@pytest.mark.asyncio
+async def test_strategy_repository_locked_read_uses_for_update():
+    strategy = _strategy()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = strategy
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=result)
+
+    loaded = await StrategyRepository(db).get_by_id_for_update(strategy.id)
+
+    assert loaded is strategy
+    statement = db.execute.await_args.args[0]
+    assert "FOR UPDATE" in str(statement)
+
+
+@pytest.mark.asyncio
+async def test_generic_params_update_preserves_server_owned_promotion(monkeypatch):
+    from app.api.v1.routes import strategies as strategy_routes
+
+    promotion = {"demo_promoted_at": "2026-08-21T00:00:00+00:00"}
+    strategy, repo, db = _generic_update_subject(promotion=promotion)
+    monkeypatch.setattr(strategy_routes, "StrategyRepository", lambda _db: repo)
+
+    updated = await strategy_routes.update_strategy(
+        strategy.id,
+        StrategyUpdate(params={"min_rvol": 2.0}),
+        SimpleNamespace(email="admin@example.test"),
+        db,
+    )
+
+    assert updated.params == {"min_rvol": 2.0, "promotion": promotion}
+
+
+@pytest.mark.asyncio
+async def test_generic_params_update_preserves_stored_null_promotion_key(monkeypatch):
+    from app.api.v1.routes import strategies as strategy_routes
+
+    strategy, repo, db = _generic_update_subject(promotion=None)
+    monkeypatch.setattr(strategy_routes, "StrategyRepository", lambda _db: repo)
+
+    updated = await strategy_routes.update_strategy(
+        strategy.id,
+        StrategyUpdate(params={"min_rvol": 2.0}),
+        SimpleNamespace(email="admin@example.test"),
+        db,
+    )
+
+    assert updated.params == {"min_rvol": 2.0, "promotion": None}
+
+
+@pytest.mark.asyncio
+async def test_generic_params_update_accepts_identical_promotion_roundtrip(monkeypatch):
+    from app.api.v1.routes import strategies as strategy_routes
+
+    promotion = {"demo_promoted_at": "2026-08-21T00:00:00+00:00"}
+    strategy, repo, db = _generic_update_subject(promotion=promotion)
+    monkeypatch.setattr(strategy_routes, "StrategyRepository", lambda _db: repo)
+
+    updated = await strategy_routes.update_strategy(
+        strategy.id,
+        StrategyUpdate(params={"min_rvol": 2.0, "promotion": promotion}),
+        SimpleNamespace(email="admin@example.test"),
+        db,
+    )
+
+    assert updated.params == {"min_rvol": 2.0, "promotion": promotion}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "submitted_promotion",
+    [
+        {"live_approved_at": "2026-08-23T00:00:00+00:00"},
+        None,
+    ],
+)
+async def test_generic_params_update_rejects_changed_promotion_state(
+    monkeypatch,
+    submitted_promotion,
+):
+    from app.api.v1.routes import strategies as strategy_routes
+
+    promotion = {"demo_promoted_at": "2026-08-21T00:00:00+00:00"}
+    strategy, repo, db = _generic_update_subject(promotion=promotion)
+    monkeypatch.setattr(strategy_routes, "StrategyRepository", lambda _db: repo)
+
+    with pytest.raises(HTTPException, match="dedicated promotion flow") as exc_info:
+        await strategy_routes.update_strategy(
+            strategy.id,
+            StrategyUpdate(
+                params={
+                    "min_rvol": 2.0,
+                    "promotion": submitted_promotion,
+                }
+            ),
+            SimpleNamespace(email="admin@example.test"),
+            db,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert strategy.params == {"min_rvol": 1.5, "promotion": promotion}
+    db.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generic_params_update_rejects_null_when_promotion_is_absent(monkeypatch):
+    from app.api.v1.routes import strategies as strategy_routes
+
+    strategy = _strategy(params={"min_rvol": 1.5})
+    repo = SimpleNamespace(get_by_id_for_update=AsyncMock(return_value=strategy))
+    db = MagicMock()
+    db.flush = AsyncMock()
+    db.refresh = AsyncMock()
+    monkeypatch.setattr(strategy_routes, "StrategyRepository", lambda _db: repo)
+
+    with pytest.raises(HTTPException, match="dedicated promotion flow") as exc_info:
+        await strategy_routes.update_strategy(
+            strategy.id,
+            StrategyUpdate(params={"min_rvol": 2.0, "promotion": None}),
+            SimpleNamespace(email="admin@example.test"),
+            db,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert strategy.params == {"min_rvol": 1.5}
+    db.flush.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -123,9 +285,7 @@ async def test_evaluate_strategy_surfaces_dry_run_blockers(monkeypatch):
         allowed_tickers=[],
     )
     service = StrategyPromotionService(MagicMock())
-    service._load_strategy_activity = AsyncMock(
-        return_value=([_signal(strategy.id, now)], [])
-    )
+    service._load_strategy_activity = AsyncMock(return_value=([_signal(strategy.id, now)], []))
 
     status = await service.evaluate_strategy(strategy)
 
@@ -222,9 +382,7 @@ async def test_execution_gate_allows_dry_run_strategy_in_live_mode(monkeypatch):
     ],
 )
 async def test_apply_action_updates_promotion_state_and_audits(action, status, expected_key):
-    strategy = _strategy(
-        params={"promotion": {"live_approved_at": "2024-01-02T09:30:00Z"}}
-    )
+    strategy = _strategy(params={"promotion": {"live_approved_at": "2024-01-02T09:30:00Z"}})
     db = MagicMock()
     db.flush = AsyncMock()
     db.refresh = AsyncMock()
@@ -241,6 +399,7 @@ async def test_apply_action_updates_promotion_state_and_audits(action, status, e
 
     assert result == {"after": action}
     assert strategy.params["promotion"][expected_key] == "reviewed"
+    service._get_strategy.assert_awaited_once_with(strategy.id, for_update=True)
     db.add.assert_called_once()
     db.flush.assert_awaited_once()
     db.refresh.assert_awaited_once_with(strategy)

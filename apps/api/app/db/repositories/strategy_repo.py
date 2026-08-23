@@ -1,14 +1,19 @@
 """Strategy repository."""
+
 from __future__ import annotations
 
-import uuid
-from typing import Sequence
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.models import RiskProfile, Signal, Strategy
+
+if TYPE_CHECKING:
+    import uuid
+    from collections.abc import Sequence
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class StrategyRepository:
@@ -20,6 +25,15 @@ class StrategyRepository:
             select(Strategy)
             .where(Strategy.id == strategy_id)
             .options(selectinload(Strategy.risk_profile))
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_id_for_update(self, strategy_id: uuid.UUID) -> Strategy | None:
+        result = await self.db.execute(
+            select(Strategy)
+            .where(Strategy.id == strategy_id)
+            .options(selectinload(Strategy.risk_profile))
+            .with_for_update()
         )
         return result.scalar_one_or_none()
 
@@ -44,9 +58,7 @@ class StrategyRepository:
         await self.db.flush()
         return strategy
 
-    async def get_signals(
-        self, strategy_id: uuid.UUID, limit: int = 50
-    ) -> Sequence[Signal]:
+    async def get_signals(self, strategy_id: uuid.UUID, limit: int = 50) -> Sequence[Signal]:
         result = await self.db.execute(
             select(Signal)
             .where(Signal.strategy_id == strategy_id)
