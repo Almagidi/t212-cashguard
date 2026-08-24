@@ -1083,29 +1083,46 @@ export interface WalkForwardWindow {
   window: number;
   is_start: string;
   is_end: string;
+  validation_start: string;
+  validation_end: string;
   oos_start: string;
   oos_end: string;
-  best_params: Record<string, unknown>;
-  oos_return_pct: number;
-  oos_sharpe: number;
-  oos_max_dd: number;
-  oos_win_rate: number;
-  oos_profit_factor: number;
+  selection_status: 'selected' | 'no_eligible_candidate';
+  selection_criterion: 'validation_equity_sharpe';
+  validation_sharpe: number | null;
+  parameter_combinations_tested: number;
+  eligible_candidates: number;
+  best_params: Record<string, unknown> | null;
+  oos_return_pct: number | null;
+  oos_sharpe: number | null;
+  oos_max_dd: number | null;
+  oos_win_rate: number | null;
+  oos_profit_factor: number | null;
   oos_trades: number;
+  oos_positions: number;
 }
 
 export interface WalkForwardSummary {
   windows: number;
   verdict: string;
   message?: string;
+  selected_windows?: number;
+  selection_failures?: number;
+  total_oos_positions?: number;
+  minimum_oos_positions_per_window?: number;
+  minimum_selected_windows?: number;
+  parameter_combinations_tested?: number;
+  candidate_evaluations?: number;
+  eligible_candidate_evaluations?: number;
+  performance_assessment?: string;
   profitable_windows?: number;
   positive_sharpe_windows?: number;
   controlled_drawdown_windows?: number;
-  avg_oos_return_pct?: number;
-  median_oos_return_pct?: number;
-  avg_oos_sharpe?: number;
-  median_oos_sharpe?: number;
-  worst_oos_max_dd?: number;
+  avg_oos_return_pct?: number | null;
+  median_oos_return_pct?: number | null;
+  avg_oos_sharpe?: number | null;
+  median_oos_sharpe?: number | null;
+  worst_oos_max_dd?: number | null;
   robustness_score?: number;
 }
 

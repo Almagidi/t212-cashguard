@@ -182,11 +182,11 @@ function WalkForwardCard({
           <>
             <div className="grid grid-cols-2 gap-3">
               <StatCard label="Robustness" value={<span>{formatPercent(summary.robustness_score || 0)}</span>} />
-              <StatCard label="Avg OOS Return" value={<span className={pnlClass(summary.avg_oos_return_pct || 0)}>{formatPercent(summary.avg_oos_return_pct || 0)}</span>} />
+              <StatCard label="Avg OOS Return" value={<span className={pnlClass(summary.avg_oos_return_pct ?? 0)}>{summary.avg_oos_return_pct == null ? '—' : formatPercent(summary.avg_oos_return_pct)}</span>} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <StatCard label="Median OOS Sharpe" value={<span className={ratioClass(summary.median_oos_sharpe ?? null, 1)}>{summary.median_oos_sharpe?.toFixed(2) ?? '—'}</span>} />
-              <StatCard label="Worst OOS DD" value={<span className={drawdownClass(summary.worst_oos_max_dd || 0)}>{formatPercent(-(summary.worst_oos_max_dd || 0))}</span>} />
+              <StatCard label="Worst OOS DD" value={<span className={summary.worst_oos_max_dd == null ? 'text-muted-foreground' : drawdownClass(summary.worst_oos_max_dd)}>{summary.worst_oos_max_dd == null ? '—' : formatPercent(-summary.worst_oos_max_dd)}</span>} />
             </div>
             <div className="grid grid-cols-3 gap-3 text-xs text-muted-foreground">
               <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
@@ -216,9 +216,9 @@ function WalkForwardCard({
             {windows.slice(0, 4).map((windowResult) => (
               <div key={windowResult.window} className="grid grid-cols-4 px-3 py-2 text-sm">
                 <span>#{windowResult.window}</span>
-                <span className={pnlClass(windowResult.oos_return_pct)}>{formatPercent(windowResult.oos_return_pct)}</span>
-                <span className={ratioClass(windowResult.oos_sharpe, 1)}>{windowResult.oos_sharpe.toFixed(2)}</span>
-                <span className={drawdownClass(windowResult.oos_max_dd)}>{formatPercent(-windowResult.oos_max_dd)}</span>
+                <span className={pnlClass(windowResult.oos_return_pct ?? 0)}>{windowResult.oos_return_pct == null ? 'No selection' : formatPercent(windowResult.oos_return_pct)}</span>
+                <span className={ratioClass(windowResult.oos_sharpe, 1)}>{windowResult.oos_sharpe?.toFixed(2) ?? '—'}</span>
+                <span className={windowResult.oos_max_dd == null ? 'text-muted-foreground' : drawdownClass(windowResult.oos_max_dd)}>{windowResult.oos_max_dd == null ? '—' : formatPercent(-windowResult.oos_max_dd)}</span>
               </div>
             ))}
           </div>

@@ -270,7 +270,7 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
         # Walk-forward if requested
         wf_results = None
         wf_summary = None
-        if body.run_walk_forward and len(bars) > 3000:
+        if body.run_walk_forward and len(bars) >= 3000:
             validator = WalkForwardValidator(
                 strategy_class=strategy_class,
                 ticker=body.ticker,
@@ -281,7 +281,7 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
         elif body.run_walk_forward:
             wf_summary = {
                 "windows": 0,
-                "verdict": "insufficient_data",
+                "verdict": "insufficient_evidence",
                 "message": f"Walk-forward requires more history; only {len(bars)} bars were available.",
             }
 
