@@ -12,6 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
 from app.api.deps import get_current_user
+from app.backtest.portfolio_engine import InsufficientPortfolioEvidence
 from app.backtest.portfolio_strategies import (
     get_portfolio_backtest_strategy,
     list_portfolio_backtest_strategies,
@@ -343,7 +344,7 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
             "status": "complete",
             "tickers": body.tickers,
             "strategy_type": body.strategy_type,
-            "bars_used": min(len(history[0]) for history in histories.values()),
+            "bars_used": len(result.coverage_report.retained_session_ids),
             "result": _serialize_portfolio_backtest_result(
                 result=result,
                 strategy_type=body.strategy_type,
@@ -351,6 +352,17 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
                 rationale=str(strategy_config["rationale"]),
             ),
             "interpretation": _interpret_portfolio_results(result),
+        }
+    except InsufficientPortfolioEvidence as exc:
+        _portfolio_jobs[job_id] = {
+            "status": "complete",
+            "tickers": body.tickers,
+            "strategy_type": body.strategy_type,
+            "bars_used": len(exc.report.retained_session_ids),
+            "verdict": exc.verdict,
+            "evidence_reasons": list(exc.reasons),
+            "coverage": _serialize_portfolio_coverage(exc.report),
+            "result": None,
         }
     except Exception as exc:
         import traceback
@@ -465,6 +477,7 @@ def _serialize_portfolio_backtest_result(
         "total_slippage_cost": float(result.total_slippage_cost),
         "total_fee_cost": float(result.total_fee_cost),
         "total_execution_cost": float(result.total_execution_cost),
+        "coverage": _serialize_portfolio_coverage(result.coverage_report),
         "latest_weights": {
             ticker: float(weight) for ticker, weight in result.latest_weights.items()
         },
@@ -497,6 +510,32 @@ def _serialize_portfolio_backtest_result(
             for trade in result.trades[-250:]
         ],
         "rationale": rationale,
+    }
+
+
+def _serialize_portfolio_coverage(report: Any) -> dict[str, Any]:
+    return {
+        "calendar": report.calendar,
+        "exchange_timezone": report.exchange_timezone,
+        "requested_from": report.requested_start.isoformat(),
+        "requested_to": report.requested_end.isoformat(),
+        "minimum_coverage_pct": float(report.minimum_coverage_pct),
+        "retained_coverage_pct": float(report.retained_coverage_pct),
+        "complete": report.complete,
+        "expected_session_ids": list(report.expected_session_ids),
+        "retained_session_ids": list(report.retained_session_ids),
+        "dropped_session_ids": list(report.dropped_session_ids),
+        "symbols": [
+            {
+                "ticker": item.ticker,
+                "expected_session_ids": list(item.expected_session_ids),
+                "observed_session_ids": list(item.observed_session_ids),
+                "missing_session_ids": list(item.missing_session_ids),
+                "extra_session_ids": list(item.extra_session_ids),
+                "coverage_pct": float(item.coverage_pct),
+            }
+            for item in report.symbols
+        ],
     }
 
 
@@ -550,6 +589,19 @@ def _interpret_results(result: Any) -> dict[str, Any]:
 
 
 def _interpret_portfolio_results(result: Any) -> dict[str, Any]:
+    if not result.coverage_report.complete:
+        return {
+            "verdict": "insufficient_evidence",
+            "summary": (
+                "Incomplete session coverage prevents a positive evidence classification. "
+                "Review the disclosed missing sessions before further research use."
+            ),
+            "warnings": [
+                f"Only {result.coverage_report.retained_coverage_pct}% of expected sessions "
+                "were retained across the full universe."
+            ],
+        }
+
     verdict = "mixed"
     sharpe = float(result.sharpe_ratio or 0)
     if float(result.total_return_pct) <= 0:

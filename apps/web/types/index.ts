@@ -1215,6 +1215,29 @@ export interface PortfolioBacktestEquityPoint {
   weights: Record<string, number>;
 }
 
+export interface PortfolioSymbolSessionCoverage {
+  ticker: string;
+  expected_session_ids: string[];
+  observed_session_ids: string[];
+  missing_session_ids: string[];
+  extra_session_ids: string[];
+  coverage_pct: number;
+}
+
+export interface PortfolioSessionCoverageReport {
+  calendar: string;
+  exchange_timezone: string;
+  requested_from: string;
+  requested_to: string;
+  minimum_coverage_pct: number;
+  retained_coverage_pct: number;
+  complete: boolean;
+  expected_session_ids: string[];
+  retained_session_ids: string[];
+  dropped_session_ids: string[];
+  symbols: PortfolioSymbolSessionCoverage[];
+}
+
 export interface PortfolioBacktestResult {
   strategy: string;
   strategy_name: string;
@@ -1240,6 +1263,7 @@ export interface PortfolioBacktestResult {
   total_slippage_cost: number;
   total_fee_cost: number;
   total_execution_cost: number;
+  coverage: PortfolioSessionCoverageReport;
   latest_weights: Record<string, number>;
   equity_curve: PortfolioBacktestEquityPoint[];
   trades: PortfolioBacktestTrade[];
@@ -1252,8 +1276,11 @@ export interface PortfolioBacktestJob {
   tickers?: string[];
   strategy_type?: PortfolioBacktestStrategyType;
   bars_used?: number;
-  result?: PortfolioBacktestResult;
+  result?: PortfolioBacktestResult | null;
   interpretation?: BacktestInterpretation;
+  verdict?: "insufficient_evidence";
+  evidence_reasons?: string[];
+  coverage?: PortfolioSessionCoverageReport;
   error?: string;
   traceback?: string;
 }

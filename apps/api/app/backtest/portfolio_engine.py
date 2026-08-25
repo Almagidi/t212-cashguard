@@ -12,9 +12,11 @@ from datetime import UTC
 from decimal import ROUND_DOWN, Decimal
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 from app.backtest.data_contract import validate_bar_series
 from app.execution.paper_policy import evaluate_paper_fill
+from app.market_data.exchange_calendar import calendar_for_venue
 
 if TYPE_CHECKING:
     from datetime import date, datetime
@@ -23,6 +25,7 @@ if TYPE_CHECKING:
 
 
 SHARE_QUANT = Decimal("0.0001")
+MIN_PORTFOLIO_COVERAGE_PCT = Decimal("95")
 
 
 @dataclass
@@ -82,9 +85,60 @@ class PortfolioBacktestResult:
     total_slippage_cost: Decimal
     total_fee_cost: Decimal
     total_execution_cost: Decimal
+    coverage_report: PortfolioSessionCoverageReport
     equity_curve: list[PortfolioAllocationPoint] = field(default_factory=list)
     trades: list[PortfolioTrade] = field(default_factory=list)
     latest_weights: dict[str, Decimal] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class PortfolioCoveragePolicy:
+    """Explicit calendar and minimum completeness required for portfolio research."""
+
+    calendar_venue: str = "XNYS"
+    minimum_coverage_pct: Decimal = Decimal("100")
+
+    def __post_init__(self) -> None:
+        if not MIN_PORTFOLIO_COVERAGE_PCT <= self.minimum_coverage_pct <= Decimal("100"):
+            raise ValueError(
+                f"minimum_coverage_pct must be between {MIN_PORTFOLIO_COVERAGE_PCT} and 100"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolSessionCoverage:
+    ticker: str
+    expected_session_ids: tuple[str, ...]
+    observed_session_ids: tuple[str, ...]
+    missing_session_ids: tuple[str, ...]
+    extra_session_ids: tuple[str, ...]
+    coverage_pct: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class PortfolioSessionCoverageReport:
+    calendar: str
+    exchange_timezone: str
+    requested_start: date
+    requested_end: date
+    minimum_coverage_pct: Decimal
+    retained_coverage_pct: Decimal
+    complete: bool
+    expected_session_ids: tuple[str, ...]
+    retained_session_ids: tuple[str, ...]
+    dropped_session_ids: tuple[str, ...]
+    symbols: tuple[SymbolSessionCoverage, ...]
+
+
+class InsufficientPortfolioEvidence(ValueError):
+    """Raised before strategy invocation when session coverage is ineligible."""
+
+    verdict = "insufficient_evidence"
+
+    def __init__(self, report: PortfolioSessionCoverageReport, reasons: list[str]) -> None:
+        self.report = report
+        self.reasons = tuple(reasons)
+        super().__init__(f"{self.verdict}: {'; '.join(reasons)}")
 
 
 def _decimal_mean(values: list[Decimal]) -> Decimal:
@@ -104,9 +158,10 @@ def _stddev(values: list[float]) -> float:
 def _align_histories(
     histories: dict[str, tuple[list[Bar], list[datetime]]],
 ) -> tuple[list[date], dict[str, list[Bar]]]:
+    """Align operational portfolio histories without changing its legacy contract."""
+
     date_maps: dict[str, dict[date, Bar]] = {}
     common_dates: set[date] | None = None
-
     for ticker, (bars, bar_times) in histories.items():
         validate_bar_series(bars, bar_times, label=f"portfolio bar series for {ticker}")
         per_day: dict[date, Bar] = {}
@@ -123,13 +178,127 @@ def _align_histories(
 
     if not common_dates:
         raise ValueError("No common dates across the requested universe.")
-
     ordered_dates = sorted(common_dates)
     aligned = {
         ticker: [date_maps[ticker][current_date] for current_date in ordered_dates]
         for ticker in sorted(date_maps)
     }
     return ordered_dates, aligned
+
+
+def _align_research_histories(
+    histories: dict[str, tuple[list[Bar], list[datetime]]],
+    *,
+    universe: list[str],
+    start_date: date,
+    end_date: date,
+    coverage_policy: PortfolioCoveragePolicy,
+) -> tuple[list[date], dict[str, list[Bar]], PortfolioSessionCoverageReport]:
+    if set(histories) != set(universe):
+        raise ValueError(
+            "Portfolio history symbols must exactly match the requested universe: "
+            f"expected {sorted(universe)}, got {sorted(histories)}"
+        )
+
+    calendar = calendar_for_venue(coverage_policy.calendar_venue)
+    exchange_timezone = ZoneInfo(calendar.exchange_timezone)
+    expected_sessions = calendar.expected_sessions(start_date, end_date)
+    if not expected_sessions:
+        raise ValueError("No expected exchange sessions in the requested portfolio range.")
+
+    expected_dates = tuple(session.local_date for session in expected_sessions)
+    expected_date_set = set(expected_dates)
+    expected_session_ids = tuple(session.session_id for session in expected_sessions)
+    date_maps: dict[str, dict[date, Bar]] = {}
+    common_dates: set[date] | None = None
+    symbol_reports: list[SymbolSessionCoverage] = []
+    reasons: list[str] = []
+
+    for ticker in sorted(histories):
+        bars, bar_times = histories[ticker]
+        validate_bar_series(bars, bar_times, label=f"portfolio bar series for {ticker}")
+        per_day: dict[date, Bar] = {}
+        for bar_time, bar in zip(bar_times, bars, strict=True):
+            bar_date = bar_time.astimezone(exchange_timezone).date()
+            if bar_date in per_day:
+                raise ValueError(
+                    f"portfolio bar series for {ticker}: duplicate date {bar_date.isoformat()}"
+                )
+            per_day[bar_date] = bar
+        date_maps[ticker] = per_day
+        observed_dates = set(per_day)
+        covered_dates = observed_dates & expected_date_set
+        missing_dates = expected_date_set - observed_dates
+        extra_dates = observed_dates - expected_date_set
+        raw_coverage_pct = (
+            Decimal(len(covered_dates)) * Decimal("100") / Decimal(len(expected_dates))
+        )
+        coverage_pct = raw_coverage_pct.quantize(Decimal("0.01"))
+        symbol_reports.append(
+            SymbolSessionCoverage(
+                ticker=ticker,
+                expected_session_ids=expected_session_ids,
+                observed_session_ids=tuple(
+                    f"{calendar.venue}:{item.isoformat()}" for item in sorted(observed_dates)
+                ),
+                missing_session_ids=tuple(
+                    f"{calendar.venue}:{item.isoformat()}" for item in sorted(missing_dates)
+                ),
+                extra_session_ids=tuple(
+                    f"{calendar.venue}:{item.isoformat()}" for item in sorted(extra_dates)
+                ),
+                coverage_pct=coverage_pct,
+            )
+        )
+        if extra_dates:
+            reasons.append(f"{ticker} has extra session dates outside the expected calendar/range")
+        if raw_coverage_pct < coverage_policy.minimum_coverage_pct:
+            reasons.append(
+                f"{ticker} coverage {coverage_pct}% is below "
+                f"{coverage_policy.minimum_coverage_pct}%"
+            )
+        ticker_dates = covered_dates
+        common_dates = ticker_dates if common_dates is None else common_dates & ticker_dates
+
+    ordered_dates = sorted(common_dates or set())
+    raw_retained_coverage_pct = (
+        Decimal(len(ordered_dates)) * Decimal("100") / Decimal(len(expected_dates))
+    )
+    retained_coverage_pct = raw_retained_coverage_pct.quantize(Decimal("0.01"))
+    if raw_retained_coverage_pct < coverage_policy.minimum_coverage_pct:
+        reasons.append(
+            f"retained intersection coverage {retained_coverage_pct}% is below "
+            f"{coverage_policy.minimum_coverage_pct}%"
+        )
+    if not ordered_dates:
+        reasons.append("no common expected sessions across the requested universe")
+    retained_session_ids = tuple(f"{calendar.venue}:{item.isoformat()}" for item in ordered_dates)
+    dropped_session_ids = tuple(
+        f"{calendar.venue}:{item.isoformat()}"
+        for item in expected_dates
+        if item not in (common_dates or set())
+    )
+    report = PortfolioSessionCoverageReport(
+        calendar=calendar.venue,
+        exchange_timezone=calendar.exchange_timezone,
+        requested_start=start_date,
+        requested_end=end_date,
+        minimum_coverage_pct=coverage_policy.minimum_coverage_pct,
+        retained_coverage_pct=retained_coverage_pct,
+        complete=not reasons and not dropped_session_ids,
+        expected_session_ids=expected_session_ids,
+        retained_session_ids=retained_session_ids,
+        dropped_session_ids=dropped_session_ids,
+        symbols=tuple(symbol_reports),
+    )
+    if reasons:
+        raise InsufficientPortfolioEvidence(report, reasons)
+
+    aligned = {
+        ticker: [date_maps[ticker][current_date] for current_date in ordered_dates]
+        for ticker in sorted(date_maps)
+    }
+    return ordered_dates, aligned, report
 
 
 def _rebalance_due(previous: date | None, current: date, frequency: str) -> bool:
@@ -156,12 +325,14 @@ class PortfolioBacktester:
         start_date: date,
         end_date: date,
         transaction_cost_bps: Decimal | None = None,
+        coverage_policy: PortfolioCoveragePolicy | None = None,
     ) -> None:
         self.strategy = strategy
         self.universe = sorted(dict.fromkeys(universe))
         self.initial_capital = initial_capital
         self.start_date = start_date
         self.end_date = end_date
+        self.coverage_policy = coverage_policy or PortfolioCoveragePolicy()
         if transaction_cost_bps is not None and transaction_cost_bps < 0:
             raise ValueError("transaction_cost_bps cannot be negative")
         self.transaction_cost_rate = (
@@ -226,7 +397,13 @@ class PortfolioBacktester:
     def run(
         self, histories: dict[str, tuple[list[Bar], list[datetime]]]
     ) -> PortfolioBacktestResult:
-        dates, history = _align_histories(histories)
+        dates, history, coverage_report = _align_research_histories(
+            histories,
+            universe=self.universe,
+            start_date=self.start_date,
+            end_date=self.end_date,
+            coverage_policy=self.coverage_policy,
+        )
         min_history = int(getattr(self.strategy, "min_history_bars", 0))
         if len(dates) <= min_history:
             raise ValueError(
@@ -392,6 +569,7 @@ class PortfolioBacktester:
             total_slippage_cost=total_slippage_cost,
             total_fee_cost=total_fee_cost,
             total_execution_cost=total_slippage_cost + total_fee_cost,
+            coverage_report=coverage_report,
             equity_curve=equity_curve,
             trades=trades,
             latest_weights=equity_curve[-1].weights if equity_curve else {},

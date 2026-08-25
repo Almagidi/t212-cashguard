@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from app.backtest.portfolio_engine import PortfolioBacktester
@@ -10,6 +10,7 @@ from app.backtest.portfolio_strategies import (
     TrendFollowingTacticalStrategy,
 )
 from app.execution.paper_policy import evaluate_paper_fill
+from app.market_data.exchange_calendar import calendar_for_venue
 from app.strategies.indicators import Bar
 
 
@@ -35,7 +36,7 @@ def make_history(
     bars: list[Bar] = []
     bar_times: list[datetime] = []
     current = start_open
-    start = datetime(2021, 1, 1, tzinfo=UTC)
+    session_times = _session_times(length)
 
     for index in range(length):
         open_price = current
@@ -48,7 +49,7 @@ def make_history(
                 low=f"{min(open_price, close_price) - intraday_spread}",
             )
         )
-        bar_times.append(start + timedelta(days=index))
+        bar_times.append(session_times[index])
         current = close_price
 
     return bars, bar_times
@@ -60,7 +61,7 @@ def make_volatile_history(
     bars: list[Bar] = []
     bar_times: list[datetime] = []
     current = start_open
-    start = datetime(2021, 1, 1, tzinfo=UTC)
+    session_times = _session_times(len(steps))
 
     for index, step in enumerate(steps):
         open_price = current
@@ -72,10 +73,21 @@ def make_volatile_history(
                 f"{open_price}", f"{close_price}", high=f"{high_price}", low=f"{low_price}"
             )
         )
-        bar_times.append(start + timedelta(days=index))
+        bar_times.append(session_times[index])
         current = close_price
 
     return bars, bar_times
+
+
+def _session_times(length: int) -> list[datetime]:
+    start = date(2021, 1, 4)
+    sessions = calendar_for_venue("XNYS").expected_sessions(
+        start,
+        start + timedelta(days=length * 2 + 30),
+    )
+    if len(sessions) < length:
+        raise AssertionError("test fixture did not allocate enough XNYS sessions")
+    return [session.close_at.astimezone(UTC) for session in sessions[:length]]
 
 
 class TestPortfolioStrategies:
