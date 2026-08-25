@@ -38,6 +38,7 @@ import {
   Spinner,
   StatCard,
 } from '@/components/ui'
+import { PortfolioEvidenceCard } from '@/components/backtest/portfolio-evidence-card'
 import { cn, formatCurrency, formatPercent, pnlClass } from '@/lib/utils'
 import api from '@/services/api'
 import type {
@@ -552,7 +553,11 @@ export default function BacktestPage() {
             setPortfolioJob(data)
             setPortfolioStatus('complete')
             window.clearInterval(interval)
-            toast.success('Portfolio backtest complete.')
+            if (data.verdict === 'insufficient_evidence') {
+              toast.error('Portfolio backtest stopped: insufficient historical evidence.')
+            } else {
+              toast.success('Portfolio backtest complete.')
+            }
           } else if (data.status === 'error') {
             setPortfolioJob(data)
             setPortfolioStatus('error')
@@ -1012,6 +1017,10 @@ export default function BacktestPage() {
                   </div>
                 </CardContent>
               </Card>
+            )}
+
+            {portfolioStatus === 'complete' && portfolioJob?.verdict === 'insufficient_evidence' && (
+              <PortfolioEvidenceCard job={portfolioJob} />
             )}
 
             {portfolioStatus === 'complete' && portfolioResult && (

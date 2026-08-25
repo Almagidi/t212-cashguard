@@ -11,6 +11,7 @@ from app.backtest.data_fetcher import BacktestDataFetcher
 from app.backtest.engine import Backtester, WalkForwardValidator
 from app.backtest.portfolio_engine import PortfolioBacktester
 from app.backtest.portfolio_strategies import EqualWeightRebalanceStrategy
+from app.market_data.exchange_calendar import calendar_for_venue
 from app.strategies.indicators import Bar
 
 
@@ -176,7 +177,7 @@ def test_portfolio_backtester_rejects_duplicate_dates_before_strategy_invocation
             return super().target_weights(history, as_of_index=as_of_index)
 
     strategy = CapturePortfolioStrategy()
-    first = datetime(2026, 1, 5, tzinfo=UTC)
+    first = datetime(2026, 1, 5, 15, tzinfo=UTC)
     same_date = datetime(2026, 1, 5, 16, tzinfo=UTC)
     history = ([make_bar(), make_bar()], [first, same_date])
     backtester = PortfolioBacktester(
@@ -220,8 +221,11 @@ def test_portfolio_strategy_cannot_observe_future_bars() -> None:
             close=str(close),
         )
 
-    start = datetime(2026, 1, 1, tzinfo=UTC)
-    bar_times = [start + timedelta(days=index) for index in range(65)]
+    sessions = calendar_for_venue("XNYS").expected_sessions(
+        datetime(2026, 1, 2, tzinfo=UTC).date(),
+        datetime(2026, 5, 1, tzinfo=UTC).date(),
+    )
+    bar_times = [session.close_at.astimezone(UTC) for session in sessions[:65]]
     bars = [daily_bar(Decimal("100") + index) for index in range(65)]
     mutated_bars = [
         *bars[:40],
