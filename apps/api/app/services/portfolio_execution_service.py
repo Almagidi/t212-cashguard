@@ -22,7 +22,14 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.backtest.portfolio_engine import SHARE_QUANT, _align_histories, _rebalance_due
+from app.backtest.portfolio_engine import (
+    SHARE_QUANT,
+    InsufficientPortfolioEvidence,
+    PortfolioSessionCoverageReport,
+    _align_operational_histories,
+    _latest_completed_session,
+    _rebalance_due,
+)
 from app.backtest.portfolio_strategies import (
     PORTFOLIO_STRATEGY_TYPES,
     get_portfolio_backtest_strategy,
@@ -39,6 +46,7 @@ from app.core.config import settings
 from app.db.models import AppSettings, AuditLog, BrokerConnection, Instrument, Signal, Strategy
 from app.execution.engine import ExecutionEngine
 from app.market_data import get_live_provider, get_provider_name
+from app.market_data.exchange_calendar import calendar_for_venue
 from app.risk.engine import RiskEngine, RiskViolation
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
 from app.services.market_regime import MarketRegimeService
@@ -248,11 +256,19 @@ class PortfolioExecutionService:
 
         config = get_portfolio_backtest_strategy(strategy.type)
         strategy_impl = config["strategy_class"](strategy.params or {})
-        min_history = (
-            max(int(config["min_history_bars"]), int(strategy.params.get("lookback_bars", 0))) + 5
+        required_history = int(
+            getattr(
+                strategy_impl,
+                "min_history_bars",
+                config["min_history_bars"],
+            )
         )
+        bars_needed = required_history + 5
 
-        market_snapshot = await self._load_market_snapshot(strategy.allowed_tickers, min_history)
+        decision_as_of = self._decision_now()
+        market_snapshot = await self._load_market_snapshot(
+            strategy.allowed_tickers, bars_needed, decision_as_of
+        )
         if settings.APP_MODE == "live" and market_snapshot.provider_name == "polygon_delayed":
             await self._update_strategy_state(
                 strategy,
@@ -279,8 +295,23 @@ class PortfolioExecutionService:
             )
             return {"status": "skipped", "reason": "insufficient_market_data"}
 
-        decision_date, aligned_history = self._aligned_decision_history(market_snapshot.histories)
-        if decision_date is None or not aligned_history:
+        try:
+            decision_date, aligned_history, coverage_report = self._aligned_decision_history(
+                market_snapshot.histories,
+                universe=strategy.allowed_tickers,
+                as_of=decision_as_of,
+            )
+        except InsufficientPortfolioEvidence as exc:
+            self._record_history_evidence(strategy, exc.report, reasons=exc.reasons)
+            await self._update_strategy_state(
+                strategy,
+                status="skipped",
+                reason="insufficient_session_coverage",
+                actor=actor,
+            )
+            return {"status": "skipped", "reason": "insufficient_session_coverage"}
+        except ValueError as exc:
+            log.warning("portfolio_execution.history_alignment_failed", reason=str(exc))
             await self._update_strategy_state(
                 strategy,
                 status="skipped",
@@ -288,6 +319,18 @@ class PortfolioExecutionService:
                 actor=actor,
             )
             return {"status": "skipped", "reason": "alignment_failed"}
+
+        self._record_history_evidence(strategy, coverage_report)
+        history_length = len(next(iter(aligned_history.values())))
+        if history_length < required_history:
+            await self._update_strategy_state(
+                strategy,
+                status="skipped",
+                reason="insufficient_history",
+                actor=actor,
+                decision_date=decision_date,
+            )
+            return {"status": "skipped", "reason": "insufficient_history"}
 
         previous_rebalance = self._parse_last_rebalance_date(strategy)
         rebalance_frequency = str(getattr(strategy_impl, "rebalance_frequency", "monthly"))
@@ -624,7 +667,7 @@ class PortfolioExecutionService:
             return create_trading212_provider_adapter(
                 BrokerProviderRequest(
                     broker_id="trading212",
-                    environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                    environment=cast("BrokerRuntimeEnvironment", conn.environment),
                     purpose="worker_portfolio_execution",
                     user_id=conn.user_id,
                 ),
@@ -646,15 +689,26 @@ class PortfolioExecutionService:
             )
             return None
 
-    async def _load_market_snapshot(self, tickers: list[str], bars_needed: int) -> MarketSnapshot:
+    async def _load_market_snapshot(
+        self,
+        tickers: list[str],
+        bars_needed: int,
+        decision_as_of: datetime,
+    ) -> MarketSnapshot:
         provider = get_live_provider()
         if hasattr(provider, "__aenter__"):
             async with provider as active_provider:
-                return await self._snapshot_from_provider(active_provider, tickers, bars_needed)
-        return await self._snapshot_from_provider(provider, tickers, bars_needed)
+                return await self._snapshot_from_provider(
+                    active_provider, tickers, bars_needed, decision_as_of
+                )
+        return await self._snapshot_from_provider(provider, tickers, bars_needed, decision_as_of)
 
     async def _snapshot_from_provider(
-        self, provider: Any, tickers: list[str], bars_needed: int
+        self,
+        provider: Any,
+        tickers: list[str],
+        bars_needed: int,
+        decision_as_of: datetime,
     ) -> MarketSnapshot:
         histories: dict[str, tuple[list[Bar], list[datetime]]] = {}
         latest_prices: dict[str, Decimal] = {}
@@ -663,7 +717,9 @@ class PortfolioExecutionService:
         for raw_ticker in tickers:
             ticker = raw_ticker.upper()
             try:
-                bars, bar_times = await self._fetch_daily_bars(provider, ticker, bars_needed)
+                bars, bar_times = await self._fetch_daily_bars(
+                    provider, ticker, bars_needed, decision_as_of
+                )
             except Exception as exc:
                 log.warning("portfolio_execution.history_failed", ticker=ticker, error=str(exc))
                 continue
@@ -701,14 +757,24 @@ class PortfolioExecutionService:
         )
 
     async def _fetch_daily_bars(
-        self, provider: Any, ticker: str, bars_needed: int
+        self,
+        provider: Any,
+        ticker: str,
+        bars_needed: int,
+        decision_as_of: datetime,
     ) -> tuple[list[Bar], list[datetime]]:
         if hasattr(provider, "get_bars"):
+            from_date, to_date = self._daily_history_range(
+                as_of=decision_as_of,
+                bars_needed=bars_needed,
+            )
             raw_bars = await self._maybe_await(
                 provider.get_bars(
                     ticker,
                     multiplier=1,
                     timespan="day",
+                    from_date=from_date,
+                    to_date=to_date,
                     limit=bars_needed,
                 )
             )
@@ -739,6 +805,17 @@ class PortfolioExecutionService:
         bar_times = [datetime.fromisoformat(str(bar["timestamp"])) for bar in raw]
         return bars, bar_times
 
+    @staticmethod
+    def _daily_history_range(*, as_of: datetime, bars_needed: int) -> tuple[date, date]:
+        if bars_needed <= 0:
+            raise ValueError("bars_needed must be positive")
+        calendar = calendar_for_venue("XNYS")
+        latest = _latest_completed_session(venue="XNYS", as_of=as_of)
+        earliest = latest
+        for _ in range(bars_needed - 1):
+            earliest = calendar.previous_session(earliest)
+        return earliest.local_date, latest.local_date
+
     async def _load_regime_payload(self) -> dict[str, Any]:
         if settings.APP_MODE == "mock":
             return {
@@ -748,7 +825,7 @@ class PortfolioExecutionService:
                 "detail": "Mock mode uses neutral allocator regime assumptions.",
             }
         try:
-            return cast(dict[str, Any], await MarketRegimeService().evaluate())
+            return await MarketRegimeService().evaluate()
         except Exception as exc:
             log.warning("portfolio_execution.regime_failed", error=str(exc))
             return {"regime": "unknown", "active_strategies": [], "suppressed_strategies": []}
@@ -756,27 +833,58 @@ class PortfolioExecutionService:
     def _aligned_decision_history(
         self,
         histories: dict[str, tuple[list[Bar], list[datetime]]],
-    ) -> tuple[date | None, dict[str, list[Bar]]]:
-        try:
-            aligned_dates, aligned_history = _align_histories(histories)
-        except ValueError:
-            return None, {}
+        *,
+        universe: list[str],
+        as_of: datetime,
+    ) -> tuple[date, dict[str, list[Bar]], PortfolioSessionCoverageReport]:
+        _aligned_dates, aligned_history, report = _align_operational_histories(
+            histories,
+            universe=universe,
+            as_of=as_of,
+        )
+        calendar = calendar_for_venue(report.calendar)
+        active_session = calendar.session_for_timestamp(as_of)
+        if active_session is not None:
+            decision_date = active_session.local_date
+        else:
+            latest_completed = _latest_completed_session(venue=report.calendar, as_of=as_of)
+            decision_date = calendar.next_session(latest_completed).local_date
+        return decision_date, aligned_history, report
 
-        if not aligned_dates:
-            return None, {}
+    @staticmethod
+    def _decision_now() -> datetime:
+        return datetime.now(UTC)
 
-        decision_index = len(aligned_dates) - 1
-        today = datetime.now(UTC).date()
-        if aligned_dates[-1] >= today and len(aligned_dates) >= 2:
-            decision_index -= 1
-
-        if decision_index < 0:
-            return None, {}
-
-        sliced_history = {
-            ticker: bars[: decision_index + 1] for ticker, bars in aligned_history.items()
-        }
-        return aligned_dates[decision_index], sliced_history
+    @staticmethod
+    def _record_history_evidence(
+        strategy: Strategy,
+        report: PortfolioSessionCoverageReport,
+        *,
+        reasons: tuple[str, ...] = (),
+    ) -> None:
+        params = dict(strategy.params or {})
+        state = dict(params.get(PORTFOLIO_STATE_KEY, {}))
+        state["last_history_calendar"] = report.calendar
+        state["last_history_exchange_timezone"] = report.exchange_timezone
+        state["last_history_coverage_complete"] = report.complete
+        state["last_history_policy"] = report.policy
+        state["last_history_policy_id"] = report.policy_id
+        state["last_history_eligible"] = report.eligible
+        state["last_history_common_start"] = (
+            report.common_start.isoformat() if report.common_start else None
+        )
+        state["last_history_common_end"] = (
+            report.common_end.isoformat() if report.common_end else None
+        )
+        state["last_history_requested_start"] = report.requested_start.isoformat()
+        state["last_history_requested_end"] = report.requested_end.isoformat()
+        state["last_history_expected_sessions"] = len(report.expected_session_ids)
+        state["last_history_retained_sessions"] = len(report.retained_session_ids)
+        state["last_history_dropped_sessions"] = len(report.dropped_session_ids)
+        state["last_history_dropped_session_ids"] = list(report.dropped_session_ids[:20])
+        state["last_history_reasons"] = list(reasons[:20])
+        params[PORTFOLIO_STATE_KEY] = state
+        strategy.params = params
 
     def _build_rebalance_plan(
         self,
@@ -865,9 +973,7 @@ class PortfolioExecutionService:
             entry_price=order_plan["price"],
             suggested_quantity=order_plan["quantity"],
             confidence=Decimal("1.0"),
-            reason=(
-                f"Portfolio rebalance toward target weight " f"{order_plan['target_weight']:.4f}"
-            ),
+            reason=(f"Portfolio rebalance toward target weight {order_plan['target_weight']:.4f}"),
             params_snapshot={
                 "strategy_type": strategy.type,
                 "target_weight": float(order_plan["target_weight"]),
@@ -1043,6 +1149,16 @@ class PortfolioExecutionService:
                 "reason": reason,
                 "mode": mode,
                 "decision_date": decision_date.isoformat() if decision_date else None,
+                "history_policy": state.get("last_history_policy"),
+                "history_policy_id": state.get("last_history_policy_id"),
+                "history_eligible": state.get("last_history_eligible"),
+                "history_common_start": state.get("last_history_common_start"),
+                "history_common_end": state.get("last_history_common_end"),
+                "history_expected_sessions": state.get("last_history_expected_sessions"),
+                "history_retained_sessions": state.get("last_history_retained_sessions"),
+                "history_dropped_sessions": state.get("last_history_dropped_sessions"),
+                "history_dropped_session_ids": state.get("last_history_dropped_session_ids", []),
+                "history_reasons": state.get("last_history_reasons", []),
             },
         )
 

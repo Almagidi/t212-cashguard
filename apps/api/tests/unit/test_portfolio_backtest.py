@@ -8,6 +8,7 @@ from app.backtest.portfolio_strategies import (
     CrossSectionalMomentumStrategy,
     LowVolatilityTiltStrategy,
     TrendFollowingTacticalStrategy,
+    list_portfolio_backtest_strategies,
 )
 from app.execution.paper_policy import evaluate_paper_fill
 from app.market_data.exchange_calendar import calendar_for_venue
@@ -91,6 +92,12 @@ def _session_times(length: int) -> list[datetime]:
 
 
 class TestPortfolioStrategies:
+    def test_strategy_catalog_advertises_executable_default_minimums(self):
+        catalog = {item.type: item for item in list_portfolio_backtest_strategies()}
+
+        assert catalog["cross_sectional_momentum"].min_history_bars == 148
+        assert catalog["low_volatility_tilt"].min_history_bars == 64
+
     def test_cross_sectional_momentum_selects_recent_winners(self):
         winner_bars, _ = make_history(
             length=220, start_open=Decimal("100"), daily_step=Decimal("1.0")
@@ -106,6 +113,18 @@ class TestPortfolioStrategies:
         )
 
         assert weights == {"WIN": Decimal("1.0000")}
+
+    def test_cross_sectional_momentum_declared_minimum_is_sufficient(self):
+        winner_bars, _ = make_history(length=4, start_open=Decimal("100"), daily_step=Decimal("1"))
+        flat_bars, _ = make_history(length=4, start_open=Decimal("100"), daily_step=Decimal("0"))
+        strategy = CrossSectionalMomentumStrategy(
+            {"lookback_bars": 2, "skip_recent_bars": 1, "top_n": 1}
+        )
+
+        assert strategy.min_history_bars == 4
+        assert strategy.target_weights({"WIN": winner_bars, "FLAT": flat_bars}, as_of_index=3) == {
+            "WIN": Decimal("1.0000")
+        }
 
     def test_low_volatility_tilt_prefers_quieter_series(self):
         calm_bars, _ = make_history(
@@ -124,6 +143,19 @@ class TestPortfolioStrategies:
         )
 
         assert weights == {"CALM": Decimal("1.0000")}
+
+    def test_low_volatility_declared_minimum_is_sufficient(self):
+        calm_bars, _ = make_history(length=4, start_open=Decimal("100"), daily_step=Decimal("1"))
+        wild_bars, _ = make_volatile_history(
+            start_open=Decimal("100"),
+            steps=[Decimal("10"), Decimal("-15"), Decimal("20"), Decimal("-10")],
+        )
+        strategy = LowVolatilityTiltStrategy({"lookback_bars": 3, "selection_count": 1})
+
+        assert strategy.min_history_bars == 4
+        assert strategy.target_weights({"CALM": calm_bars, "WILD": wild_bars}, as_of_index=3) == {
+            "CALM": Decimal("1.0000")
+        }
 
     def test_trend_following_moves_to_assets_above_sma(self):
         uptrend_bars, _ = make_history(

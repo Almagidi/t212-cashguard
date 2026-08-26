@@ -3,11 +3,12 @@ from __future__ import annotations
 import ast
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -317,9 +318,10 @@ def _portfolio_strategy(*, is_live: bool = False) -> SimpleNamespace:
 
 
 def _market_snapshot() -> MarketSnapshot:
+    exchange_timezone = ZoneInfo("America/New_York")
     dates = [
-        datetime(2026, 1, 2, tzinfo=UTC),
-        datetime(2026, 1, 5, tzinfo=UTC),
+        datetime.combine(date(2026, 1, 2), time(0), exchange_timezone).astimezone(UTC),
+        datetime.combine(date(2026, 1, 5), time(0), exchange_timezone).astimezone(UTC),
     ]
     bars = [
         Bar(
@@ -768,6 +770,7 @@ async def test_run_strategy_once_routes_dry_run_rebalance_orders_through_executi
     monkeypatch.setattr(portfolio_execution_service, "SignalAllocator", AllowingSignalAllocator)
     monkeypatch.setattr(service, "_load_market_snapshot", _load_market_snapshot)
     monkeypatch.setattr(service, "_load_regime_payload", _load_regime_payload)
+    monkeypatch.setattr(service, "_decision_now", lambda: datetime(2026, 1, 6, 15, 0, tzinfo=UTC))
 
     summary = await service.run_strategy_once(
         strategy,
@@ -816,6 +819,7 @@ async def test_run_strategy_once_preserves_live_promotion_gate_before_order_inte
     monkeypatch.setattr(settings, "APP_MODE", "demo")
     monkeypatch.setattr(portfolio_execution_service, "ExecutionEngine", RecordingExecutionEngine)
     monkeypatch.setattr(service, "_load_market_snapshot", _load_market_snapshot)
+    monkeypatch.setattr(service, "_decision_now", lambda: datetime(2026, 1, 6, 15, 0, tzinfo=UTC))
 
     class BlockingPromotionService:
         def __init__(self, _db: FakeSession) -> None:
