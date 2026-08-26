@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -162,6 +162,41 @@ def test_future_mutation_cannot_change_prior_strategy_inputs() -> None:
     assert mutated_strategy.calls[:5] == baseline_strategy.calls[:5]
 
 
+@pytest.mark.asyncio
+async def test_single_symbol_job_requests_previous_xnys_session_as_warmup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api.v1.routes import backtest as route
+    from app.backtest.data_fetcher import BacktestDataFetcher
+
+    requested_from: list[date] = []
+
+    async def capture_fetch(
+        self: BacktestDataFetcher,
+        ticker: str,
+        from_date: date,
+        to_date: date,
+        **kwargs: object,
+    ) -> tuple[list[Bar], list[datetime]]:
+        del self, ticker, to_date, kwargs
+        requested_from.append(from_date)
+        raise RuntimeError("stop after request capture")
+
+    monkeypatch.setattr(BacktestDataFetcher, "fetch_bars", capture_fetch)
+    job_id = "warmup-request-test"
+    body = route.BacktestRequest(
+        ticker="AAPL",
+        strategy_type="orb",
+        from_date=datetime(2025, 1, 6, tzinfo=UTC).date(),
+        to_date=datetime(2025, 1, 10, tzinfo=UTC).date(),
+    )
+
+    await route._run_backtest_job(job_id, body)
+    route._jobs.pop(job_id)
+
+    assert requested_from == [datetime(2025, 1, 3, tzinfo=UTC).date()]
+
+
 def test_portfolio_backtester_rejects_duplicate_dates_before_strategy_invocation() -> None:
     class CapturePortfolioStrategy(EqualWeightRebalanceStrategy):
         def __init__(self) -> None:
@@ -291,6 +326,89 @@ def test_walk_forward_rejects_timestamp_regression_across_window_boundary() -> N
             [start, start + timedelta(minutes=10), start + timedelta(minutes=5)],
             [{}],
         )
+
+
+def test_walk_forward_partitions_are_session_aligned_with_prior_warmup(monkeypatch) -> None:
+    calls: list[tuple[date | None, list[datetime]]] = []
+
+    class FakeStrategy:
+        def __init__(self, params: dict[str, object]) -> None:
+            self.params = params
+
+    class FakeBacktester:
+        def __init__(self, _strategy: object, _ticker: str, _capital: Decimal, **kwargs: object):
+            self.start_date = kwargs.get("start_date")
+
+        def run(self, _bars: list[Bar], times: list[datetime]) -> Any:
+            calls.append((self.start_date, times))
+            return type(
+                "Result",
+                (),
+                {
+                    "total_trades": 10,
+                    "completed_positions": 10,
+                    "total_return_pct": Decimal("1"),
+                    "sharpe_ratio": Decimal("1"),
+                    "max_drawdown_pct": Decimal("1"),
+                    "win_rate": Decimal("0.5"),
+                    "profit_factor": Decimal("1.2"),
+                },
+            )()
+
+    monkeypatch.setattr("app.backtest.engine.Backtester", FakeBacktester)
+    session_dates = [date(2025, 1, 2), date(2025, 1, 3), date(2025, 1, 6), date(2025, 1, 7)]
+    times = [
+        timestamp
+        for session_date in session_dates
+        for timestamp in (
+            datetime.combine(session_date, datetime.min.time(), UTC).replace(hour=14, minute=30),
+            datetime.combine(session_date, datetime.min.time(), UTC).replace(hour=20, minute=55),
+        )
+    ]
+    bars = [
+        make_bar(
+            open_=str(100 + index),
+            high=str(101 + index),
+            low=str(99 + index),
+            close=str(100 + index),
+        )
+        for index in range(len(times))
+    ]
+    validator = WalkForwardValidator(
+        strategy_class=FakeStrategy,
+        ticker="AAPL",
+        initial_capital=Decimal("10000"),
+        in_sample_bars=2,
+        out_sample_bars=2,
+        step_bars=1,
+    )
+
+    result = validator.run(bars, times, [{}])
+
+    assert len(result) == 1
+    assert [start for start, _ in calls] == session_dates[1:]
+    assert [partition[0].date() for _, partition in calls] == session_dates[:3]
+    assert [partition[-1].date() for _, partition in calls] == session_dates[1:]
+
+
+def test_walk_forward_rejects_session_that_starts_after_exchange_open() -> None:
+    validator = WalkForwardValidator(
+        strategy_class=CaptureStrategy,
+        ticker="AAPL",
+        initial_capital=Decimal("10000"),
+        in_sample_bars=2,
+        out_sample_bars=2,
+        step_bars=1,
+    )
+    times = [
+        datetime(2025, 1, 3, 14, 30, tzinfo=UTC),
+        datetime(2025, 1, 3, 20, 55, tzinfo=UTC),
+        datetime(2025, 1, 6, 15, 0, tzinfo=UTC),
+        datetime(2025, 1, 6, 20, 55, tzinfo=UTC),
+    ]
+
+    with pytest.raises(ValueError, match="does not begin at session open"):
+        validator.run([make_bar() for _ in times], times, [{}])
 
 
 def test_data_fetcher_rejects_invalid_provider_rows() -> None:

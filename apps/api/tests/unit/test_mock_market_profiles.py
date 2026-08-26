@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -52,6 +53,34 @@ def test_default_profile_keeps_existing_random_generator(monkeypatch: pytest.Mon
 
     assert len(rows) == 4
     assert calls > 0
+
+
+def test_default_equity_timestamps_use_xnys_grid_and_retain_prior_terminal_bar() -> None:
+    times = MockMarketDataProvider._equity_bar_times(
+        interval_minutes=5,
+        bars=80,
+        as_of=datetime(2025, 1, 6, 15, 5, tzinfo=UTC),
+    )
+
+    assert times[-1] == datetime(2025, 1, 6, 15, 0, tzinfo=UTC)
+    assert datetime(2025, 1, 3, 20, 55, tzinfo=UTC) in times
+    assert all(timestamp.second == 0 and timestamp.microsecond == 0 for timestamp in times)
+
+
+def test_default_equity_timestamps_never_emit_future_premarket_bars() -> None:
+    as_of = datetime(2025, 1, 6, 13, 0, tzinfo=UTC)
+
+    times = MockMarketDataProvider._equity_bar_times(
+        interval_minutes=5,
+        bars=2,
+        as_of=as_of,
+    )
+
+    assert times == [
+        datetime(2025, 1, 3, 20, 50, tzinfo=UTC),
+        datetime(2025, 1, 3, 20, 55, tzinfo=UTC),
+    ]
+    assert all(timestamp < as_of for timestamp in times)
 
 
 def test_explicit_mock_provider_uses_configured_profile(monkeypatch: pytest.MonkeyPatch) -> None:

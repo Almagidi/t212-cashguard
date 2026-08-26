@@ -19,6 +19,7 @@ from app.backtest.engine import (
     summarise_walk_forward_results,
 )
 from app.execution.paper_policy import evaluate_paper_fill
+from app.market_data.exchange_calendar import calendar_for_venue
 from app.strategies.indicators import Bar
 
 
@@ -62,6 +63,39 @@ def make_trade(pnl: str) -> BacktestTrade:
     )
 
 
+def add_previous_session_warmup(
+    bars: list[Bar],
+    bar_times: list[datetime],
+) -> tuple[list[Bar], list[datetime]]:
+    return (
+        [make_bar("100", "101", "99", "100"), *bars],
+        [datetime(2026, 1, 2, 20, 55, tzinfo=UTC), *bar_times],
+    )
+
+
+def terminal_session_series(values: list[int]) -> tuple[list[Bar], list[datetime]]:
+    calendar = calendar_for_venue("XNYS")
+    sessions = calendar.expected_sessions(
+        datetime(2026, 1, 2, tzinfo=UTC).date(),
+        datetime(2026, 2, 27, tzinfo=UTC).date(),
+    )[: len(values)]
+    return (
+        [
+            make_bar(str(value), str(value), str(value), str(value))
+            for value in values
+            for _ in range(2)
+        ],
+        [
+            timestamp
+            for session in sessions
+            for timestamp in (
+                calendar.session_open(session),
+                calendar.session_close(session) - timedelta(minutes=5),
+            )
+        ],
+    )
+
+
 class PrevCloseAwareStrategy:
     def generate_signal(
         self,
@@ -92,7 +126,7 @@ class SessionOpenAwareStrategy:
 
 class CaptureSessionStrategy:
     def __init__(self) -> None:
-        self.calls: list[dict[str, Decimal | None | int]] = []
+        self.calls: list[dict[str, object]] = []
 
     def generate_signal(
         self,
@@ -103,6 +137,9 @@ class CaptureSessionStrategy:
         available_cash: Decimal,
         current_time_utc: str,
         prev_close: Decimal | None,
+        bar_times: list[datetime] | None = None,
+        history_bars: list[Bar] | None = None,
+        history_bar_times: list[datetime] | None = None,
     ) -> None:
         self.calls.append(
             {
@@ -110,6 +147,10 @@ class CaptureSessionStrategy:
                 "session_open": bars[0].open if bars else None,
                 "last_close": bars[-1].close if bars else None,
                 "prev_close": prev_close,
+                "current_time_utc": current_time_utc,
+                "bar_times": tuple(bar_times or []),
+                "history_bars": tuple(history_bars or []),
+                "history_bar_times": tuple(history_bar_times or []),
             }
         )
         return None
@@ -184,12 +225,14 @@ class TestBacktestHelpers:
             datetime(2026, 1, 5, 14, 30, tzinfo=UTC),
             datetime(2026, 1, 5, 14, 35, tzinfo=UTC),
         ]
+        bars, bar_times = add_previous_session_warmup(bars, bar_times)
         result = Backtester(
             strategy=OneShotStrategy(),
             ticker="AAPL",
             initial_capital=Decimal("10000"),
             risk_per_trade_pct=Decimal("100"),
             max_position_pct=Decimal("100"),
+            start_date=datetime(2026, 1, 5, tzinfo=UTC).date(),
         ).run(bars, bar_times)
         buy = evaluate_paper_fill(
             side="buy",
@@ -231,12 +274,14 @@ class TestBacktestHelpers:
             datetime(2026, 1, 5, 14, 30, tzinfo=UTC),
             datetime(2026, 1, 5, 14, 35, tzinfo=UTC),
         ]
+        bars, bar_times = add_previous_session_warmup(bars, bar_times)
         result = Backtester(
             strategy=OneShotStrategy(quantity=Decimal("100000")),
             ticker="AAPL",
             initial_capital=Decimal("10000"),
             risk_per_trade_pct=Decimal("0.05"),
             max_position_pct=Decimal("10"),
+            start_date=datetime(2026, 1, 5, tzinfo=UTC).date(),
         ).run(bars, bar_times)
 
         trade = result.trades[0]
@@ -253,11 +298,13 @@ class TestBacktestHelpers:
             datetime(2026, 1, 5, 14, 30, tzinfo=UTC),
             datetime(2026, 1, 5, 14, 35, tzinfo=UTC),
         ]
+        bars, bar_times = add_previous_session_warmup(bars, bar_times)
         result = Backtester(
             strategy=OneShotStrategy(),
             ticker="AAPL",
             risk_per_trade_pct=Decimal("100"),
             max_position_pct=Decimal("100"),
+            start_date=datetime(2026, 1, 5, tzinfo=UTC).date(),
         ).run(bars, bar_times)
         expected = evaluate_paper_fill(
             side="sell",
@@ -278,12 +325,14 @@ class TestBacktestHelpers:
             datetime(2026, 1, 5, 14, 30, tzinfo=UTC),
             datetime(2026, 1, 5, 14, 35, tzinfo=UTC),
         ]
+        bars, bar_times = add_previous_session_warmup(bars, bar_times)
         free = Backtester(
             strategy=OneShotStrategy(),
             ticker="AAPL",
             risk_per_trade_pct=Decimal("100"),
             max_position_pct=Decimal("100"),
             commission_per_trade=Decimal("0"),
+            start_date=datetime(2026, 1, 5, tzinfo=UTC).date(),
         ).run(bars, bar_times)
         costly = Backtester(
             strategy=OneShotStrategy(),
@@ -291,6 +340,7 @@ class TestBacktestHelpers:
             risk_per_trade_pct=Decimal("100"),
             max_position_pct=Decimal("100"),
             commission_per_trade=Decimal("1"),
+            start_date=datetime(2026, 1, 5, tzinfo=UTC).date(),
         ).run(bars, bar_times)
 
         assert costly.final_capital < free.final_capital
@@ -305,9 +355,14 @@ class TestBacktestHelpers:
             datetime(2026, 1, 5, 14, 30, tzinfo=UTC),
             datetime(2026, 1, 5, 14, 35, tzinfo=UTC),
         ]
+        bars, bar_times = add_previous_session_warmup(bars, bar_times)
 
         with pytest.raises(ValueError, match="long-only"):
-            Backtester(strategy=OneShotStrategy(side="sell"), ticker="AAPL").run(bars, bar_times)
+            Backtester(
+                strategy=OneShotStrategy(side="sell"),
+                ticker="AAPL",
+                start_date=datetime(2026, 1, 5, tzinfo=UTC).date(),
+            ).run(bars, bar_times)
 
     def test_generate_strategy_signal_passes_prev_close_when_supported(self):
         result = generate_strategy_signal(
@@ -494,11 +549,16 @@ class TestBacktestHelpers:
                 self.params = params
 
         class FakeBacktester:
-            def __init__(self, strategy, *_args, **_kwargs) -> None:
+            def __init__(self, strategy, *_args, **kwargs) -> None:
                 self.strategy = strategy
+                self.start_date = kwargs["start_date"]
 
-            def run(self, bars, _times):
-                marker = int(bars[0].close)
+            def run(self, bars, times):
+                marker = next(
+                    int(bar.close)
+                    for bar, timestamp in zip(bars, times, strict=True)
+                    if timestamp.date() >= self.start_date
+                )
                 name = str(self.strategy.params["name"])
                 calls.append((marker, name))
                 validation_sharpes = {
@@ -522,16 +582,16 @@ class TestBacktestHelpers:
             strategy_class=FakeStrategy,
             ticker="AAPL",
             initial_capital=Decimal("10000"),
-            in_sample_bars=2,
-            out_sample_bars=1,
+            in_sample_bars=4,
+            out_sample_bars=2,
             step_bars=1,
         )
-        start = datetime(2026, 1, 5, 14, 30, tzinfo=UTC)
-        times = [start.replace(minute=start.minute + index * 5) for index in range(4)]
-        base_bars = [
-            make_bar(str(value), str(value), str(value), str(value)) for value in (1, 2, 3, 4)
+        base_bars, times = terminal_session_series([100, 1, 2, 3, 4])
+        mutated_bars = [
+            *base_bars[:8],
+            make_bar("400", "400", "400", "400"),
+            make_bar("400", "400", "400", "400"),
         ]
-        mutated_bars = [*base_bars[:3], make_bar("400", "400", "400", "400")]
         grid = [{"name": "a"}, {"name": "b"}, {"name": "z"}]
 
         baseline = validator.run(base_bars, times, grid)
@@ -572,13 +632,11 @@ class TestBacktestHelpers:
             strategy_class=FakeStrategy,
             ticker="AAPL",
             initial_capital=Decimal("10000"),
-            in_sample_bars=2,
-            out_sample_bars=1,
+            in_sample_bars=4,
+            out_sample_bars=2,
             step_bars=1,
         )
-        start = datetime(2026, 1, 5, 14, 30, tzinfo=UTC)
-        times = [start.replace(minute=start.minute + index * 5) for index in range(4)]
-        bars = [make_bar(str(value), str(value), str(value), str(value)) for value in (1, 2, 3, 4)]
+        bars, times = terminal_session_series([100, 1, 2, 3, 4])
 
         result = validator.run(bars, times, [{"name": "a"}, {"name": "b"}])
 
@@ -601,11 +659,17 @@ class TestBacktestHelpers:
                 self.params = params
 
         class FakeBacktester:
-            def __init__(self, *_args, **_kwargs) -> None:
-                pass
+            def __init__(self, *_args, **kwargs) -> None:
+                self.start_date = kwargs["start_date"]
 
-            def run(self, bars, _times):
-                calls.append(int(bars[0].close))
+            def run(self, bars, times):
+                calls.append(
+                    next(
+                        int(bar.close)
+                        for bar, timestamp in zip(bars, times, strict=True)
+                        if timestamp.date() >= self.start_date
+                    )
+                )
                 return SimpleNamespace(
                     total_trades=10,
                     completed_positions=10,
@@ -621,13 +685,11 @@ class TestBacktestHelpers:
             strategy_class=FakeStrategy,
             ticker="AAPL",
             initial_capital=Decimal("10000"),
-            in_sample_bars=2,
-            out_sample_bars=1,
+            in_sample_bars=4,
+            out_sample_bars=2,
             step_bars=1,
         )
-        start = datetime(2026, 1, 5, 14, 30, tzinfo=UTC)
-        times = [start + timedelta(minutes=index * 5) for index in range(8)]
-        bars = [make_bar(str(value), str(value), str(value), str(value)) for value in range(1, 9)]
+        bars, times = terminal_session_series([100, *range(1, 9)])
 
         results = validator.run(bars, times, [{"name": "a"}])
 
@@ -665,7 +727,7 @@ class TestBacktestHelpers:
         bar_times = [
             datetime(2026, 1, 5, 14, 30, tzinfo=UTC),
             datetime(2026, 1, 5, 14, 35, tzinfo=UTC),
-            datetime(2026, 1, 5, 14, 40, tzinfo=UTC),
+            datetime(2026, 1, 5, 20, 55, tzinfo=UTC),
             datetime(2026, 1, 6, 14, 30, tzinfo=UTC),
             datetime(2026, 1, 6, 14, 35, tzinfo=UTC),
         ]
@@ -680,3 +742,264 @@ class TestBacktestHelpers:
         )
         assert second_session_first_call["bars"] == 1
         assert second_session_first_call["prev_close"] == Decimal("102")
+
+    def test_backtester_retains_prior_session_as_start_date_warmup(self):
+        strategy = CaptureSessionStrategy()
+        bars = [
+            make_bar("100", "101", "99", "100"),
+            make_bar("110", "111", "109", "110"),
+            make_bar("110", "112", "109", "111"),
+        ]
+        bar_times = [
+            datetime(2025, 1, 3, 20, 55, tzinfo=UTC),
+            datetime(2025, 1, 6, 14, 30, tzinfo=UTC),
+            datetime(2025, 1, 6, 14, 35, tzinfo=UTC),
+        ]
+
+        Backtester(
+            strategy=strategy,
+            ticker="AAPL",
+            initial_capital=Decimal("10000"),
+            start_date=datetime(2025, 1, 6, tzinfo=UTC).date(),
+        ).run(bars, bar_times)
+
+        assert strategy.calls[0]["session_open"] == Decimal("110")
+        assert strategy.calls[0]["prev_close"] == Decimal("100")
+        assert len(strategy.calls[0]["history_bars"]) == 2
+
+    def test_backtester_excludes_first_session_when_warmup_is_missing(self):
+        strategy = CaptureSessionStrategy()
+
+        result = Backtester(strategy=strategy, ticker="AAPL").run(
+            [
+                make_bar("110", "111", "109", "110"),
+                make_bar("110", "112", "109", "111"),
+            ],
+            [
+                datetime(2025, 1, 6, 14, 30, tzinfo=UTC),
+                datetime(2025, 1, 6, 14, 35, tzinfo=UTC),
+            ],
+        )
+
+        assert strategy.calls == []
+        assert result.equity_curve == []
+
+    def test_backtester_rejects_incomplete_prior_session_as_warmup(self):
+        strategy = CaptureSessionStrategy()
+
+        Backtester(
+            strategy=strategy,
+            ticker="AAPL",
+            start_date=datetime(2025, 1, 6, tzinfo=UTC).date(),
+        ).run(
+            [
+                make_bar("100", "101", "99", "100"),
+                make_bar("110", "111", "109", "110"),
+            ],
+            [
+                datetime(2025, 1, 3, 15, 0, tzinfo=UTC),
+                datetime(2025, 1, 6, 14, 30, tzinfo=UTC),
+            ],
+        )
+
+        assert strategy.calls == []
+
+    def test_backtester_excludes_session_when_opening_bar_is_missing(self):
+        strategy = CaptureSessionStrategy()
+
+        result = Backtester(
+            strategy=strategy,
+            ticker="AAPL",
+            start_date=datetime(2025, 1, 6, tzinfo=UTC).date(),
+        ).run(
+            [
+                make_bar("100", "101", "99", "100"),
+                make_bar("110", "111", "109", "110"),
+                make_bar("110", "112", "109", "111"),
+            ],
+            [
+                datetime(2025, 1, 3, 20, 55, tzinfo=UTC),
+                datetime(2025, 1, 6, 15, 0, tzinfo=UTC),
+                datetime(2025, 1, 6, 15, 5, tzinfo=UTC),
+            ],
+        )
+
+        assert strategy.calls == []
+        assert result.equity_curve == []
+
+    def test_backtester_passes_dst_invariant_reference_clock_to_strategy(self):
+        from app.strategies.opening_fade import OpeningFadeStrategy
+
+        strategy = CaptureSessionStrategy()
+
+        Backtester(
+            strategy=strategy,
+            ticker="AAPL",
+            start_date=datetime(2025, 3, 10, tzinfo=UTC).date(),
+        ).run(
+            [
+                make_bar("100", "101", "99", "100"),
+                make_bar("110", "111", "109", "110"),
+                make_bar("110", "112", "109", "111"),
+            ],
+            [
+                datetime(2025, 3, 7, 20, 55, tzinfo=UTC),
+                datetime(2025, 3, 10, 13, 30, tzinfo=UTC),
+                datetime(2025, 3, 10, 13, 35, tzinfo=UTC),
+            ],
+        )
+
+        assert strategy.calls[-1]["current_time_utc"] == "14:35"
+        assert strategy.calls[-1]["bar_times"][-1].strftime("%H:%M") == "14:35"
+        assert OpeningFadeStrategy()._time_in_fade_window(
+            str(strategy.calls[-1]["current_time_utc"])
+        )
+
+    def test_backtester_blocks_entries_on_early_close_sessions(self):
+        strategy = CaptureSessionStrategy()
+
+        result = Backtester(
+            strategy=strategy,
+            ticker="AAPL",
+            start_date=datetime(2025, 7, 3, tzinfo=UTC).date(),
+        ).run(
+            [
+                make_bar("100", "101", "99", "100"),
+                make_bar("110", "111", "109", "110"),
+                make_bar("110", "112", "109", "111"),
+            ],
+            [
+                datetime(2025, 7, 2, 19, 55, tzinfo=UTC),
+                datetime(2025, 7, 3, 13, 30, tzinfo=UTC),
+                datetime(2025, 7, 3, 16, 55, tzinfo=UTC),
+            ],
+        )
+
+        assert strategy.calls == []
+        assert len(result.equity_curve) == 2
+
+    def test_pending_entry_cannot_fill_across_session_boundary_into_early_close(self):
+        class LateSessionEntry(OneShotStrategy):
+            def generate_signal(self, **kwargs: object) -> SimpleNamespace | None:
+                if kwargs["current_time_utc"] != "20:55":
+                    return None
+                return super().generate_signal(**kwargs)
+
+        result = Backtester(
+            strategy=LateSessionEntry(),
+            ticker="AAPL",
+            start_date=datetime(2025, 7, 2, tzinfo=UTC).date(),
+        ).run(
+            [
+                make_bar("100", "101", "99", "100"),
+                make_bar("101", "102", "100", "101"),
+                make_bar("102", "103", "101", "102"),
+                make_bar("103", "104", "102", "103"),
+                make_bar("104", "105", "103", "104"),
+            ],
+            [
+                datetime(2025, 7, 1, 19, 55, tzinfo=UTC),
+                datetime(2025, 7, 2, 13, 30, tzinfo=UTC),
+                datetime(2025, 7, 2, 19, 55, tzinfo=UTC),
+                datetime(2025, 7, 3, 13, 30, tzinfo=UTC),
+                datetime(2025, 7, 3, 16, 55, tzinfo=UTC),
+            ],
+        )
+
+        assert result.trades == []
+        assert result.final_capital == Decimal("10000")
+
+    def test_backtest_and_runtime_runner_share_session_and_previous_close_context(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.services.strategy_runner import StrategyRunner
+
+        strategy = CaptureSessionStrategy()
+        bars = [
+            make_bar("100", "101", "99", "100"),
+            make_bar("105", "106", "104", "105"),
+            make_bar("110", "111", "109", "110"),
+            make_bar("110", "112", "109", "111"),
+        ]
+        bar_times = [
+            datetime(2025, 1, 3, 20, 55, tzinfo=UTC),
+            datetime(2025, 1, 6, 13, 0, tzinfo=UTC),
+            datetime(2025, 1, 6, 14, 30, tzinfo=UTC),
+            datetime(2025, 1, 6, 14, 35, tzinfo=UTC),
+        ]
+        runner_db = MagicMock()
+        runner_db.execute = AsyncMock(side_effect=AssertionError("DB must not be called"))
+        runner = StrategyRunner(runner_db)
+
+        runtime_bars, runtime_times, runtime_prev_close = runner._extract_session_context(
+            bars,
+            bar_times,
+            session_open_utc="14:30",
+        )
+        Backtester(
+            strategy=strategy,
+            ticker="AAPL",
+            initial_capital=Decimal("10000"),
+            start_date=datetime(2025, 1, 6, tzinfo=UTC).date(),
+        ).run(
+            [bars[0], *runtime_bars],
+            [bar_times[0], *runtime_times],
+        )
+
+        assert runtime_prev_close == Decimal("100")
+        assert strategy.calls[0]["prev_close"] == runtime_prev_close
+        assert strategy.calls[0]["session_open"] == runtime_bars[0].open
+        assert len(strategy.calls[0]["history_bars"]) == 2
+        runtime_regular_history = [
+            bar
+            for bar, bar_time in zip(bars, bar_times, strict=True)
+            if calendar_for_venue("XNYS").session_for_timestamp(bar_time) is not None
+        ]
+        assert len(strategy.calls[-1]["history_bars"]) == len(runtime_regular_history)
+
+    def test_backtester_default_history_horizon_matches_runtime_cap(self):
+        strategy = CaptureSessionStrategy()
+        calendar = calendar_for_venue("XNYS")
+        sessions = calendar.expected_sessions(
+            datetime(2025, 1, 2, tzinfo=UTC).date(),
+            datetime(2025, 6, 30, tzinfo=UTC).date(),
+        )[:92]
+        bars = [
+            make_bar("100", "101", "99", "100") for _session in sessions for _timestamp in range(2)
+        ]
+        times = [
+            timestamp
+            for session in sessions
+            for timestamp in (
+                calendar.session_open(session),
+                calendar.session_close(session) - timedelta(minutes=5),
+            )
+        ]
+
+        Backtester(
+            strategy=strategy,
+            ticker="AAPL",
+            start_date=sessions[1].local_date,
+        ).run(bars, times)
+
+        assert len(strategy.calls[-1]["history_bars"]) == 180
+
+    def test_backtester_rejects_out_of_regular_session_bars_before_strategy(self):
+        strategy = CaptureSessionStrategy()
+        bars = [
+            make_bar("105", "106", "104", "105"),
+            make_bar("110", "111", "109", "110"),
+        ]
+        bar_times = [
+            datetime(2025, 1, 6, 13, 0, tzinfo=UTC),
+            datetime(2025, 1, 6, 14, 30, tzinfo=UTC),
+        ]
+
+        with pytest.raises(ValueError, match="outside XNYS regular session"):
+            Backtester(
+                strategy=strategy,
+                ticker="AAPL",
+                initial_capital=Decimal("10000"),
+            ).run(bars, bar_times)
+
+        assert strategy.calls == []

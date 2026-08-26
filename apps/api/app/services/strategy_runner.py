@@ -54,6 +54,7 @@ from app.db.models import AppSettings, AuditLog, BrokerConnection, Signal, Strat
 from app.db.repositories.venue_config_repo import VenueConfigRepository
 from app.execution.engine import ExecutionEngine
 from app.execution.paper_engine import PaperExecutionError
+from app.market_data.exchange_calendar import calendar_for_venue
 from app.risk.engine import RiskEngine, RiskViolation
 from app.services.alert_service import (
     alert_daily_summary,
@@ -291,32 +292,66 @@ class StrategyRunner:
         bar_times: list[datetime],
         *,
         session_open_utc: str,
+        bar_interval_minutes: int = 5,
     ) -> tuple[list[Bar], list[datetime], Decimal | None]:
         if not bars or not bar_times or len(bars) != len(bar_times):
             return bars, bar_times, None
 
-        session_clock = self._parse_session_open(session_open_utc)
-        candidate_dates = sorted({bar_time.date() for bar_time in bar_times}, reverse=True)
-        for candidate_date in candidate_dates:
-            session_start = datetime.combine(candidate_date, session_clock)
-            session_pairs = [
-                (bar, bar_time)
-                for bar, bar_time in zip(bars, bar_times, strict=True)
-                if bar_time >= session_start and bar_time.date() == candidate_date
-            ]
-            if not session_pairs:
-                continue
-            session_bars = [bar for bar, _ in session_pairs]
-            session_times = [bar_time for _, bar_time in session_pairs]
-            previous_bars = [
-                bar
-                for bar, bar_time in zip(bars, bar_times, strict=True)
-                if bar_time < session_start
-            ]
-            prev_close = previous_bars[-1].close if previous_bars else None
-            return session_bars, session_times, prev_close
+        del session_open_utc
+        calendar = calendar_for_venue("XNYS")
+        regular_pairs = [
+            (bar, bar_time, session)
+            for bar, bar_time in zip(bars, bar_times, strict=True)
+            if (session := calendar.session_for_timestamp(bar_time)) is not None
+        ]
+        if not regular_pairs:
+            return [], [], None
 
-        return bars, bar_times, None
+        current_session = max(
+            (session for _, _, session in regular_pairs),
+            key=lambda session: session.local_date,
+        )
+        session_pairs = [
+            (bar, bar_time)
+            for bar, bar_time, session in regular_pairs
+            if session.session_id == current_session.session_id
+        ]
+        previous_session = calendar.previous_session(current_session)
+        previous_pairs = [
+            (bar, bar_time)
+            for bar, bar_time, session in regular_pairs
+            if session.session_id == previous_session.session_id
+        ]
+        prev_close = None
+        if previous_pairs and calendar.is_terminal_bar(
+            previous_session,
+            previous_pairs[-1][1],
+            interval_minutes=bar_interval_minutes,
+        ):
+            prev_close = previous_pairs[-1][0].close
+        return (
+            [bar for bar, _ in session_pairs],
+            [bar_time for _, bar_time in session_pairs],
+            prev_close,
+        )
+
+    @staticmethod
+    def _context_matches_current_session(
+        session_times: list[datetime],
+        *,
+        now: datetime,
+    ) -> bool:
+        """Fail closed unless fetched bars belong to the active XNYS session."""
+        if not session_times:
+            return False
+        calendar = calendar_for_venue("XNYS")
+        current_session = calendar.session_for_timestamp(now)
+        selected_session = calendar.session_for_timestamp(session_times[-1])
+        return (
+            current_session is not None
+            and selected_session is not None
+            and selected_session.session_id == current_session.session_id
+        )
 
     async def _fetch_kraken_context(
         self,
@@ -379,7 +414,8 @@ class StrategyRunner:
         gap-based strategies operate on the real current session instead of an
         arbitrary rolling window.
         """
-        now_utc = datetime.now(UTC).strftime("%H:%M")
+        now = datetime.now(UTC)
+        now_utc = now.strftime("%H:%M")
 
         if data_provider_type == "kraken":
             return await self._fetch_kraken_context(
@@ -403,11 +439,11 @@ class StrategyRunner:
                     from_date = date.today() - timedelta(days=max(history_days + 2, 5))
                     raw_bars = await md.get_bars(
                         ticker,
-                        multiplier=5,
+                        multiplier=bar_interval_minutes,
                         timespan="minute",
                         from_date=from_date,
                         to_date=date.today(),
-                        limit=max_bars,
+                        limit=max_bars * 3,
                     )
                     with suppress(Exception):
                         latest_quote = await md.get_quote(ticker)
@@ -420,7 +456,11 @@ class StrategyRunner:
                         return [], [], [], [], None, now_utc
             else:
                 # Sync mock provider
-                raw_bars = provider.get_ohlcv(ticker, interval_minutes=5, bars=max_bars)
+                raw_bars = provider.get_ohlcv(
+                    ticker,
+                    interval_minutes=bar_interval_minutes,
+                    bars=max_bars * 3,
+                )
 
             bars: list[Bar] = []
             bar_times: list[datetime] = []
@@ -457,10 +497,38 @@ class StrategyRunner:
                 bars,
                 bar_times,
                 session_open_utc=session_open_utc,
+                bar_interval_minutes=bar_interval_minutes,
             )
-            if session_times:
-                now_utc = session_times[-1].strftime("%H:%M")
-            return session_bars, session_times, bars, bar_times, prev_close, now_utc
+            if not self._context_matches_current_session(session_times, now=now):
+                log.info(
+                    "runner.no_current_regular_session",
+                    ticker=ticker,
+                    venue="XNYS",
+                )
+                return [], [], [], [], None, now_utc
+            calendar = calendar_for_venue("XNYS")
+            regular_history_all = [
+                (bar, bar_time)
+                for bar, bar_time in zip(bars, bar_times, strict=True)
+                if calendar.session_for_timestamp(bar_time) is not None
+            ]
+            regular_history = regular_history_all[-max_bars:]
+            excluded_count = len(bars) - len(regular_history_all)
+            if excluded_count:
+                log.info(
+                    "runner.extended_hours_filtered",
+                    ticker=ticker,
+                    venue=calendar.venue,
+                    excluded_bars=excluded_count,
+                )
+            return (
+                session_bars,
+                session_times,
+                [bar for bar, _ in regular_history],
+                [bar_time for _, bar_time in regular_history],
+                prev_close,
+                now_utc,
+            )
         except Exception as exc:
             log.warning("runner.data_error", ticker=ticker, error=str(exc))
             return [], [], [], [], None, now_utc
@@ -858,6 +926,28 @@ class StrategyRunner:
         if len(session_bars) < max(4, int(getattr(engine, "required_bars", 4))):
             return 0, 0, 0
 
+        if data_provider_type == "kraken":
+            strategy_session_times = session_times
+            strategy_history_times = history_bar_times
+            strategy_now_utc = now_utc
+        else:
+            calendar = calendar_for_venue("XNYS")
+            strategy_session_times = [
+                calendar.to_reference_session_clock(
+                    bar_time,
+                    reference_open_utc=session_open_utc,
+                )
+                for bar_time in session_times
+            ]
+            strategy_history_times = [
+                calendar.to_reference_session_clock(
+                    bar_time,
+                    reference_open_utc=session_open_utc,
+                )
+                for bar_time in history_bar_times
+            ]
+            strategy_now_utc = strategy_session_times[-1].strftime("%H:%M")
+
         # Exit check if position open
         if ticker in pos_map:
             pos = pos_map[ticker]
@@ -877,6 +967,33 @@ class StrategyRunner:
                 )
                 return (1 if submitted is not None else 0), (submitted or 0), 0
             return 0, 0, 0
+
+        if data_provider_type != "kraken":
+            calendar = calendar_for_venue("XNYS")
+            current_session = calendar.session_for_timestamp(session_times[-1])
+            if prev_close is None:
+                log.info(
+                    "runner.missing_previous_session_close",
+                    ticker=ticker,
+                    venue="XNYS",
+                )
+                return 0, 0, 0
+            if current_session is None:
+                return 0, 0, 0
+            if session_times[0].astimezone(UTC) != calendar.session_open(current_session):
+                log.info(
+                    "runner.missing_session_open",
+                    ticker=ticker,
+                    venue="XNYS",
+                )
+                return 0, 0, 0
+            if current_session.is_early_close:
+                log.info(
+                    "runner.early_close_entry_blocked",
+                    ticker=ticker,
+                    venue="XNYS",
+                )
+                return 0, 0, 0
 
         watchlist_context = self._watchlist_context(strategy, ticker)
         try:
@@ -901,12 +1018,12 @@ class StrategyRunner:
                 engine,
                 ticker=ticker,
                 bars=session_bars,
-                bar_times=session_times,
+                bar_times=strategy_session_times,
                 history_bars=history_bars,
-                history_bar_times=history_bar_times,
+                history_bar_times=strategy_history_times,
                 account_value=total,
                 available_cash=cash,
-                current_time_utc=now_utc,
+                current_time_utc=strategy_now_utc,
                 prev_close=prev_close,
             )
         )

@@ -101,5 +101,5 @@ def test_bar_offset_is_harness_only_and_mock_guarded() -> None:
 
     assert "mock bar offset requires APP_MODE=mock" in source
     assert "mock bar offset must be a non-zero whole number of minutes" in source
-    shifted = inspect.getsource(launcher._install_mock_bar_offset)
+    shifted = inspect.getsource(launcher._install_mock_session_clock)
     assert "timedelta(minutes=offset_minutes)" in shifted
