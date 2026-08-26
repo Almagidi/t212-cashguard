@@ -11,7 +11,7 @@ import json
 import math
 import os
 import socket
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, NoReturn
 
 if TYPE_CHECKING:
@@ -133,20 +133,40 @@ def _install_precommit_fault() -> None:
     tasks._complete_task = fail_once
 
 
-def _install_mock_bar_offset(offset_minutes: int) -> None:
-    """Shift deterministic mock bars to prove a genuinely new decision key."""
+def _install_mock_session_clock(offset_minutes: int = 0) -> None:
+    """Pin disposable mock evidence to complete adjacent XNYS sessions."""
     from app.market_data.mock_provider import MockMarketDataProvider
+    from app.services import strategy_runner
 
     original_bars = MockMarketDataProvider._orb_breakout_bars
+    current_open = datetime(2026, 1, 7, 14, 30, tzinfo=UTC) + timedelta(minutes=offset_minutes)
+    previous_terminal = datetime(2026, 1, 6, 20, 55, tzinfo=UTC) + timedelta(minutes=offset_minutes)
+    fixed_now = datetime(2026, 1, 7, 16, 35, tzinfo=UTC) + timedelta(minutes=offset_minutes)
 
-    def shifted_bars(self: Any, ticker: str, *, interval_minutes: int, bars: int) -> Any:
+    def session_bars(self: Any, ticker: str, *, interval_minutes: int, bars: int) -> Any:
         rows = original_bars(self, ticker, interval_minutes=interval_minutes, bars=bars)
-        for row in rows:
-            timestamp = datetime.fromisoformat(str(row["timestamp"]))
-            row["timestamp"] = (timestamp + timedelta(minutes=offset_minutes)).isoformat()
+        for index, row in enumerate(rows):
+            row["timestamp"] = (
+                current_open + timedelta(minutes=index * interval_minutes)
+            ).isoformat()
+        if rows:
+            prior = dict(rows[0])
+            prior["timestamp"] = previous_terminal.isoformat()
+            rows.insert(0, prior)
         return rows
 
-    MockMarketDataProvider._orb_breakout_bars = shifted_bars
+    class HarnessDateTime(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return fixed_now if tz is None else fixed_now.astimezone(tz)
+
+    MockMarketDataProvider._orb_breakout_bars = session_bars
+    strategy_runner.datetime = HarnessDateTime
+
+
+def _install_mock_bar_offset(offset_minutes: int) -> None:
+    """Shift the complete mock session to prove a genuinely new decision key."""
+    _install_mock_session_clock(offset_minutes)
 
 
 def main() -> int:
@@ -219,6 +239,8 @@ def main() -> int:
         ):
             parser.error("mock bar offset must be a non-zero whole number of minutes")
         _install_mock_bar_offset(int(offset))
+    elif os.environ.get("APP_MODE", "").lower() == "mock":
+        _install_mock_session_clock()
     print(
         "CASHGUARD_BROKER_TRIPWIRES_ARMED CASHGUARD_NETWORK_TRIPWIRE_ARMED",
         flush=True,

@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
+
+from app.market_data.exchange_calendar import calendar_for_venue
 
 
 @dataclass
@@ -122,6 +125,55 @@ class MockMarketDataProvider:
             is_stale=False,
         )
 
+    @staticmethod
+    def _equity_bar_times(
+        *,
+        interval_minutes: int,
+        bars: int,
+        as_of: datetime | None = None,
+    ) -> list[datetime]:
+        """Return exact XNYS regular-session bar-open timestamps, oldest first."""
+        if interval_minutes <= 0:
+            raise ValueError("interval_minutes must be positive")
+        if bars <= 0:
+            return []
+
+        calendar = calendar_for_venue("XNYS")
+        now = (as_of or datetime.now(UTC)).astimezone(UTC)
+        local_date = now.astimezone(ZoneInfo(calendar.exchange_timezone)).date()
+        sessions = calendar.expected_sessions(local_date - timedelta(days=14), local_date)
+        if not sessions:
+            return []
+        session = sessions[-1]
+        active_session = calendar.session_for_timestamp(now)
+        if active_session is not None:
+            session = active_session
+            elapsed_minutes = int((now - calendar.session_open(session)).total_seconds() // 60)
+            completed_intervals = elapsed_minutes // interval_minutes
+            if completed_intervals > 0:
+                cursor = calendar.session_open(session) + timedelta(
+                    minutes=(completed_intervals - 1) * interval_minutes
+                )
+            else:
+                session = calendar.previous_session(session)
+                cursor = calendar.session_close(session) - timedelta(minutes=interval_minutes)
+        else:
+            if now < calendar.session_open(session):
+                session = calendar.previous_session(session)
+            cursor = calendar.session_close(session) - timedelta(minutes=interval_minutes)
+
+        timestamps: list[datetime] = []
+        while len(timestamps) < bars:
+            session_open = calendar.session_open(session)
+            if cursor < session_open:
+                session = calendar.previous_session(session)
+                cursor = calendar.session_close(session) - timedelta(minutes=interval_minutes)
+                continue
+            timestamps.append(cursor)
+            cursor -= timedelta(minutes=interval_minutes)
+        timestamps.reverse()
+        return timestamps
+
     def get_ohlcv(
         self,
         ticker: str,
@@ -132,12 +184,21 @@ class MockMarketDataProvider:
         if self.profile == "orb_breakout":
             return self._orb_breakout_bars(ticker, interval_minutes=interval_minutes, bars=bars)
         base = MOCK_BASE_PRICES.get(ticker, 100.0)
-        now = datetime.now(UTC)
         result = []
 
+        if interval_minutes < 24 * 60:
+            timestamps = self._equity_bar_times(
+                interval_minutes=interval_minutes,
+                bars=bars,
+            )
+        else:
+            now = datetime.now(UTC).replace(second=0, microsecond=0)
+            timestamps = [
+                now - timedelta(minutes=index * interval_minutes) for index in range(bars, 0, -1)
+            ]
+
         price = base
-        for i in range(bars, 0, -1):
-            ts = now - timedelta(minutes=i * interval_minutes)
+        for ts in timestamps:
             o = price
             h = o * (1 + random.uniform(0, 0.01))
             low = o * (1 - random.uniform(0, 0.01))

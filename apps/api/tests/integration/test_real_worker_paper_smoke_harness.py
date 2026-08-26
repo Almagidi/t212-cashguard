@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -76,6 +77,31 @@ def test_harness_neutralizes_ambient_notification_and_sentry_configuration() -> 
 
     for key in smoke.DISABLED_EXTERNAL_INTEGRATIONS:
         assert env[key] == ""
+
+
+def test_worker_mock_clock_has_adjacent_complete_xnys_context() -> None:
+    from app.market_data.exchange_calendar import calendar_for_venue
+    from app.market_data.mock_provider import MockMarketDataProvider
+    from app.services import strategy_runner
+
+    original_bars = MockMarketDataProvider._orb_breakout_bars
+    original_datetime = strategy_runner.datetime
+    try:
+        worker_launcher._install_mock_session_clock()
+        rows = MockMarketDataProvider(profile="orb_breakout").get_ohlcv("NVDA", bars=540)
+        times = [datetime.fromisoformat(str(row["timestamp"])) for row in rows]
+        calendar = calendar_for_venue("XNYS")
+        current = calendar.session_for_timestamp(times[-1])
+
+        assert strategy_runner.datetime.now(UTC) == datetime(2026, 1, 7, 16, 35, tzinfo=UTC)
+        assert current is not None
+        assert calendar.session_for_timestamp(strategy_runner.datetime.now(UTC)) == current
+        previous = calendar.previous_session(current)
+        assert calendar.is_terminal_bar(previous, times[0], interval_minutes=5)
+        assert times[1] == calendar.session_open(current)
+    finally:
+        MockMarketDataProvider._orb_breakout_bars = original_bars
+        strategy_runner.datetime = original_datetime
 
 
 def test_worker_network_tripwire_rejects_non_loopback_connections() -> None:

@@ -160,37 +160,135 @@ class TestExtractSessionContext:
     def test_mismatched_lengths_returns_unchanged(self):
         bars = _bars([100.0, 101.0])
         times = [datetime(2024, 1, 2, 9, 30, tzinfo=UTC)]
-        bars_out, times_out, prev = self.r._extract_session_context(
+        bars_out, _times_out, _prev = self.r._extract_session_context(
             bars, times, session_open_utc="09:30"
         )
         assert bars_out is bars
 
     def test_session_bars_sliced_from_open(self):
-        # Pre-session bars at 08:00-09:00, session bars at 09:30+
-        times = self._bar_times("2024-01-02", [8, 9, 9, 10, 11])
-        times[2] = times[2].replace(minute=30)
+        # January XNYS opens at 14:30 UTC; earlier same-day bars are excluded.
+        times = [
+            datetime(2025, 1, 6, 13, 0, tzinfo=UTC),
+            datetime(2025, 1, 6, 14, 0, tzinfo=UTC),
+            datetime(2025, 1, 6, 14, 30, tzinfo=UTC),
+            datetime(2025, 1, 6, 15, 0, tzinfo=UTC),
+            datetime(2025, 1, 6, 16, 0, tzinfo=UTC),
+        ]
         bars = _bars([99.0, 99.5, 100.0, 101.0, 102.0])
 
-        session_bars, session_times, prev = self.r._extract_session_context(
+        session_bars, session_times, _prev = self.r._extract_session_context(
             bars, times, session_open_utc="09:30"
         )
 
-        # Only bars at or after 09:30 should be in session
-        assert len(session_bars) >= 1
-        for t in session_times:
-            assert t.hour >= 9
+        assert [bar.close for bar in session_bars] == [
+            Decimal("100.0"),
+            Decimal("101.0"),
+            Decimal("102.0"),
+        ]
+        assert session_times[0] == datetime(2025, 1, 6, 14, 30, tzinfo=UTC)
 
-    def test_prev_close_is_last_pre_session_bar(self):
+    def test_prev_close_is_last_bar_of_immediately_previous_session(self):
         times = [
-            datetime(2024, 1, 2, 8, 0, tzinfo=UTC),  # pre-session
-            datetime(2024, 1, 2, 9, 0, tzinfo=UTC),  # pre-session
-            datetime(2024, 1, 2, 9, 30, tzinfo=UTC),  # session open
-            datetime(2024, 1, 2, 10, 0, tzinfo=UTC),  # session
+            datetime(2025, 1, 3, 20, 50, tzinfo=UTC),
+            datetime(2025, 1, 3, 20, 55, tzinfo=UTC),
+            datetime(2025, 1, 6, 14, 30, tzinfo=UTC),
+            datetime(2025, 1, 6, 14, 35, tzinfo=UTC),
         ]
         bars = _bars([98.0, 99.0, 100.0, 101.0])
 
-        _, _, prev = self.r._extract_session_context(bars, times, session_open_utc="09:30")
+        _, _, prev = self.r._extract_session_context(bars, times, session_open_utc="14:30")
         assert prev == Decimal("99.0")
+
+    def test_same_session_premarket_bar_is_not_previous_close(self):
+        times = [
+            datetime(2025, 1, 3, 20, 55, tzinfo=UTC),
+            datetime(2025, 1, 6, 13, 0, tzinfo=UTC),
+            datetime(2025, 1, 6, 14, 30, tzinfo=UTC),
+            datetime(2025, 1, 6, 14, 35, tzinfo=UTC),
+        ]
+        bars = _bars([100.0, 105.0, 110.0, 111.0])
+
+        session_bars, session_times, prev = self.r._extract_session_context(
+            bars,
+            times,
+            session_open_utc="14:30",
+        )
+
+        assert [bar.close for bar in session_bars] == [Decimal("110.0"), Decimal("111.0")]
+        assert [item.hour for item in session_times] == [14, 14]
+        assert prev == Decimal("100.0")
+
+    def test_dst_shifted_xnys_open_does_not_depend_on_fixed_utc_config(self):
+        times = [
+            datetime(2025, 3, 7, 20, 55, tzinfo=UTC),
+            datetime(2025, 3, 10, 13, 30, tzinfo=UTC),
+            datetime(2025, 3, 10, 13, 35, tzinfo=UTC),
+            datetime(2025, 3, 10, 14, 30, tzinfo=UTC),
+        ]
+        bars = _bars([100.0, 110.0, 111.0, 112.0])
+
+        session_bars, session_times, prev = self.r._extract_session_context(
+            bars,
+            times,
+            session_open_utc="14:30",
+        )
+
+        assert session_times[0] == datetime(2025, 3, 10, 13, 30, tzinfo=UTC)
+        assert [bar.close for bar in session_bars] == [
+            Decimal("110.0"),
+            Decimal("111.0"),
+            Decimal("112.0"),
+        ]
+        assert prev == Decimal("100.0")
+
+    def test_missing_immediately_previous_session_does_not_use_older_close(self):
+        times = [
+            datetime(2025, 1, 2, 20, 55, tzinfo=UTC),
+            datetime(2025, 1, 6, 14, 30, tzinfo=UTC),
+        ]
+        bars = _bars([99.0, 110.0])
+
+        _, _, prev = self.r._extract_session_context(
+            bars,
+            times,
+            session_open_utc="14:30",
+        )
+
+        assert prev is None
+
+    def test_incomplete_previous_session_is_not_accepted_as_previous_close(self):
+        times = [
+            datetime(2025, 1, 3, 15, 0, tzinfo=UTC),
+            datetime(2025, 1, 6, 14, 30, tzinfo=UTC),
+        ]
+        bars = _bars([99.0, 110.0])
+
+        _, _, prev = self.r._extract_session_context(
+            bars,
+            times,
+            session_open_utc="14:30",
+            bar_interval_minutes=5,
+        )
+
+        assert prev is None
+
+    def test_stale_session_does_not_match_current_regular_session(self):
+        assert not self.r._context_matches_current_session(
+            [datetime(2025, 1, 3, 20, 55, tzinfo=UTC)],
+            now=datetime(2025, 1, 6, 14, 35, tzinfo=UTC),
+        )
+
+    def test_context_is_rejected_outside_regular_market_hours(self):
+        assert not self.r._context_matches_current_session(
+            [datetime(2025, 1, 6, 20, 55, tzinfo=UTC)],
+            now=datetime(2025, 1, 6, 22, 0, tzinfo=UTC),
+        )
+
+    def test_context_matches_only_the_active_regular_session(self):
+        assert self.r._context_matches_current_session(
+            [datetime(2025, 1, 6, 14, 35, tzinfo=UTC)],
+            now=datetime(2025, 1, 6, 14, 40, tzinfo=UTC),
+        )
 
     def test_no_pre_session_bars_prev_close_is_none(self):
         times = [
@@ -199,24 +297,29 @@ class TestExtractSessionContext:
         ]
         bars = _bars([100.0, 101.0])
 
-        _, _, prev = self.r._extract_session_context(bars, times, session_open_utc="09:30")
+        session_bars, session_times, prev = self.r._extract_session_context(
+            bars, times, session_open_utc="09:30"
+        )
+        assert session_bars == []
+        assert session_times == []
         assert prev is None
 
     def test_uses_most_recent_date_with_session_bars(self):
         """Multi-day slice: most recent date's session should be returned."""
         times = [
-            datetime(2024, 1, 1, 9, 30, tzinfo=UTC),
-            datetime(2024, 1, 1, 10, 0, tzinfo=UTC),
-            datetime(2024, 1, 2, 9, 30, tzinfo=UTC),
-            datetime(2024, 1, 2, 10, 0, tzinfo=UTC),
+            datetime(2024, 1, 2, 14, 30, tzinfo=UTC),
+            datetime(2024, 1, 2, 15, 0, tzinfo=UTC),
+            datetime(2024, 1, 3, 14, 30, tzinfo=UTC),
+            datetime(2024, 1, 3, 15, 0, tzinfo=UTC),
         ]
         bars = _bars([90.0, 91.0, 100.0, 101.0])
-        session_bars, session_times, _ = self.r._extract_session_context(
+        _session_bars, session_times, _ = self.r._extract_session_context(
             bars, times, session_open_utc="09:30"
         )
-        # Should return the 2024-01-02 session
+        assert session_times
+        # Should return the 2024-01-03 session.
         assert all(t.date() == session_times[0].date() for t in session_times)
-        assert all(t.day == 2 for t in session_times)
+        assert all(t.day == 3 for t in session_times)
 
 
 # ── _get_tickers ──────────────────────────────────────────────────────────────
@@ -577,10 +680,130 @@ class TestBuildSignalKwargs:
 
 class TestProcessTickerSafetyOrder:
     @pytest.mark.asyncio
+    async def test_missing_previous_close_blocks_equity_entry_before_risk_checks(self):
+        runner = _runner()
+        bars = _bars([100.0, 101.0, 102.0, 103.0])
+        bar_times = [datetime(2024, 1, 2, 14, 30 + idx, tzinfo=UTC) for idx in range(len(bars))]
+        runner._fetch_market_context = AsyncMock(
+            return_value=(bars, bar_times, bars, bar_times, None, "14:33")
+        )
+
+        strategy = _strategy(params={"session_open_utc": "14:30"})
+        engine = MagicMock()
+        engine.params = strategy.params
+        engine.required_bars = 4
+        engine.history_days = 5
+        engine.max_history_bars = 180
+        engine.DATA_PROVIDER_TYPE = "equity"
+        engine.generate_signal = MagicMock()
+        risk = MagicMock()
+        risk.check_market_conditions = AsyncMock()
+
+        result = await runner._process_ticker(
+            ticker="AAPL",
+            strategy=strategy,
+            engine=engine,
+            risk=risk,
+            broker=MagicMock(),
+            cash=Decimal("10000"),
+            total=Decimal("10000"),
+            n_open=0,
+            pos_map={},
+            all_positions=[],
+            intelligence={"regime": {"regime": "trending_up"}},
+            allocator=SignalAllocator(),
+            allocation_state=SignalAllocator().new_state(),
+        )
+
+        assert result == (0, 0, 0)
+        risk.check_market_conditions.assert_not_awaited()
+        engine.generate_signal.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_early_close_session_blocks_equity_entry_before_risk_checks(self):
+        runner = _runner()
+        bars = _bars([100.0, 101.0, 102.0, 103.0])
+        bar_times = [datetime(2025, 7, 3, 13, 30 + idx, tzinfo=UTC) for idx in range(len(bars))]
+        runner._fetch_market_context = AsyncMock(
+            return_value=(bars, bar_times, bars, bar_times, Decimal("99"), "13:33")
+        )
+
+        strategy = _strategy(params={"session_open_utc": "14:30"})
+        engine = MagicMock()
+        engine.params = strategy.params
+        engine.required_bars = 4
+        engine.history_days = 5
+        engine.max_history_bars = 180
+        engine.DATA_PROVIDER_TYPE = "equity"
+        engine.generate_signal = MagicMock()
+        risk = MagicMock()
+        risk.check_market_conditions = AsyncMock()
+
+        result = await runner._process_ticker(
+            ticker="AAPL",
+            strategy=strategy,
+            engine=engine,
+            risk=risk,
+            broker=MagicMock(),
+            cash=Decimal("10000"),
+            total=Decimal("10000"),
+            n_open=0,
+            pos_map={},
+            all_positions=[],
+            intelligence={"regime": {"regime": "trending_up"}},
+            allocator=SignalAllocator(),
+            allocation_state=SignalAllocator().new_state(),
+        )
+
+        assert result == (0, 0, 0)
+        risk.check_market_conditions.assert_not_awaited()
+        engine.generate_signal.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_opening_bar_blocks_equity_entry_before_risk_checks(self):
+        runner = _runner()
+        bars = _bars([100.0, 101.0, 102.0, 103.0])
+        bar_times = [datetime(2024, 1, 2, 15, idx, tzinfo=UTC) for idx in range(len(bars))]
+        runner._fetch_market_context = AsyncMock(
+            return_value=(bars, bar_times, bars, bar_times, Decimal("99"), "15:03")
+        )
+
+        strategy = _strategy(params={"session_open_utc": "14:30"})
+        engine = MagicMock()
+        engine.params = strategy.params
+        engine.required_bars = 4
+        engine.history_days = 5
+        engine.max_history_bars = 180
+        engine.DATA_PROVIDER_TYPE = "equity"
+        engine.generate_signal = MagicMock()
+        risk = MagicMock()
+        risk.check_market_conditions = AsyncMock()
+
+        result = await runner._process_ticker(
+            ticker="AAPL",
+            strategy=strategy,
+            engine=engine,
+            risk=risk,
+            broker=MagicMock(),
+            cash=Decimal("10000"),
+            total=Decimal("10000"),
+            n_open=0,
+            pos_map={},
+            all_positions=[],
+            intelligence={"regime": {"regime": "trending_up"}},
+            allocator=SignalAllocator(),
+            allocation_state=SignalAllocator().new_state(),
+        )
+
+        assert result == (0, 0, 0)
+        risk.check_market_conditions.assert_not_awaited()
+        engine.generate_signal.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_existing_position_exit_runs_before_entry_regime_gate(self):
         runner = _runner()
         bars = _bars([100.0, 101.0, 102.0, 103.0])
-        bar_times = [datetime(2024, 1, 1, 14, 30 + idx, tzinfo=UTC) for idx in range(len(bars))]
+        bar_times = [datetime(2024, 1, 2, 14, 30 + idx, tzinfo=UTC) for idx in range(len(bars))]
         runner._fetch_market_context = AsyncMock(
             return_value=(bars, bar_times, bars, bar_times, Decimal("99.0"), "14:33")
         )
@@ -646,7 +869,7 @@ class TestProcessTickerSafetyOrder:
     ):
         runner = _runner()
         bars = _bars([100.0, 101.0, 102.0, 103.0])
-        bar_times = [datetime(2024, 1, 1, 14, 30 + idx, tzinfo=UTC) for idx in range(len(bars))]
+        bar_times = [datetime(2024, 1, 2, 14, 30 + idx, tzinfo=UTC) for idx in range(len(bars))]
         runner._fetch_market_context = AsyncMock(
             return_value=(bars, bar_times, bars, bar_times, Decimal("99.0"), "14:33")
         )

@@ -20,6 +20,7 @@ from app.backtest.portfolio_strategies import (
 from app.backtest.strategy_registry import get_backtest_strategy, list_backtest_strategies
 from app.core.config import settings
 from app.db.session import get_db
+from app.market_data.exchange_calendar import calendar_for_venue
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -241,16 +242,30 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
         )
 
         fetcher = BacktestDataFetcher(settings.POLYGON_API_KEY)
+        calendar = calendar_for_venue("XNYS")
+        requested_sessions = calendar.expected_sessions(body.from_date, body.to_date)
+        if not requested_sessions:
+            raise ValueError("Requested range contains no XNYS regular sessions")
+        warmup_from = calendar.previous_session(requested_sessions[0]).local_date
         bars, bar_times = await fetcher.fetch_bars(
             ticker=body.ticker,
-            from_date=body.from_date,
+            from_date=warmup_from,
             to_date=body.to_date,
         )
 
-        if len(bars) < 50:
+        requested_bar_count = sum(
+            1
+            for bar_time in bar_times
+            if (session := calendar.session_for_timestamp(bar_time)) is not None
+            and body.from_date <= session.local_date <= body.to_date
+        )
+        if requested_bar_count < 50:
             _jobs[job_id] = {
                 "status": "error",
-                "error": f"Only {len(bars)} bars fetched — need at least 50",
+                "error": (
+                    f"Only {requested_bar_count} requested-period regular bars fetched"
+                    " — need at least 50"
+                ),
             }
             return
 
@@ -271,7 +286,7 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
         # Walk-forward if requested
         wf_results = None
         wf_summary = None
-        if body.run_walk_forward and len(bars) >= 3000:
+        if body.run_walk_forward and requested_bar_count >= 3000:
             validator = WalkForwardValidator(
                 strategy_class=strategy_class,
                 ticker=body.ticker,
@@ -283,14 +298,17 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
             wf_summary = {
                 "windows": 0,
                 "verdict": "insufficient_evidence",
-                "message": f"Walk-forward requires more history; only {len(bars)} bars were available.",
+                "message": (
+                    "Walk-forward requires more history; only "
+                    f"{requested_bar_count} requested-period regular bars were available."
+                ),
             }
 
         _jobs[job_id] = {
             "status": "complete",
             "ticker": body.ticker,
             "strategy_type": body.strategy_type,
-            "bars_used": len(bars),
+            "bars_used": requested_bar_count,
             "result": _serialize_backtest_result(
                 result=result,
                 strategy_type=body.strategy_type,

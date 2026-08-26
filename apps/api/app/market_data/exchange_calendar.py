@@ -145,6 +145,48 @@ class XNYSCalendar:
         self._validate_session(session)
         return session.is_early_close
 
+    def is_terminal_bar(
+        self,
+        session: TradingSession,
+        timestamp: datetime,
+        *,
+        interval_minutes: int,
+    ) -> bool:
+        """Return whether ``timestamp`` opens the session's final regular bar."""
+        self._validate_session(session)
+        self._validate_timestamp(timestamp)
+        if interval_minutes <= 0:
+            raise ValueError("interval_minutes must be positive")
+        expected = self.session_close(session) - timedelta(minutes=interval_minutes)
+        return timestamp.astimezone(UTC) == expected
+
+    def to_reference_session_clock(
+        self,
+        timestamp: datetime,
+        *,
+        reference_open_utc: str,
+    ) -> datetime:
+        """Map a regular bar to a stable session-relative UTC clock.
+
+        Strategy parameters historically use winter UTC values (14:30 for the
+        XNYS open). Mapping by elapsed exchange-session time preserves those
+        parameter meanings across DST without changing the source timestamp.
+        """
+        session = self.session_for_timestamp(timestamp)
+        if session is None:
+            raise ValueError("timestamp must be inside an XNYS regular session")
+        try:
+            hours, minutes = map(int, reference_open_utc.split(":"))
+            reference_open = datetime.combine(
+                session.local_date,
+                time(hours, minutes),
+                UTC,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("reference_open_utc must use HH:MM") from exc
+        elapsed = timestamp.astimezone(UTC) - self.session_open(session)
+        return reference_open + elapsed
+
     def previous_session(self, session: TradingSession) -> TradingSession:
         self._validate_session(session)
         return self._adjacent_session(session.local_date, direction=-1)

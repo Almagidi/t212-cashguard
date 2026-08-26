@@ -383,7 +383,7 @@ def _bars() -> list[Bar]:
 
 
 def _bar_times() -> list[datetime]:
-    return [datetime(2026, 1, 2, 14, minute, tzinfo=UTC) for minute in range(16)]
+    return [datetime(2026, 1, 2, 14, minute, tzinfo=UTC) for minute in range(30, 46)]
 
 
 def _entry_signal() -> SimpleNamespace:

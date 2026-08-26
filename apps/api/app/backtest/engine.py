@@ -17,7 +17,7 @@ import random
 import statistics
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import ROUND_DOWN, Decimal
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any, Protocol
@@ -26,6 +26,7 @@ import structlog
 
 from app.backtest.data_contract import validate_bar_series
 from app.execution.paper_policy import PaperFillDecision, evaluate_paper_fill
+from app.market_data.exchange_calendar import TradingSession, calendar_for_venue
 
 if TYPE_CHECKING:
     from app.strategies.indicators import Bar
@@ -430,6 +431,7 @@ class Backtester:
         commission_per_trade: Decimal | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
+        bar_interval_minutes: int = 5,
     ) -> None:
         if initial_capital <= 0:
             raise ValueError("Backtest initial capital must be positive")
@@ -439,6 +441,8 @@ class Backtester:
             raise ValueError("max_position_pct must be greater than 0 and at most 100")
         if commission_per_trade is not None and commission_per_trade < 0:
             raise ValueError("commission_per_trade cannot be negative")
+        if bar_interval_minutes <= 0:
+            raise ValueError("bar_interval_minutes must be positive")
         self.strategy = strategy
         self.ticker = ticker
         self.initial_capital = initial_capital
@@ -449,6 +453,7 @@ class Backtester:
         self.commission_per_trade = commission_per_trade
         self.start_date = start_date
         self.end_date = end_date
+        self.bar_interval_minutes = bar_interval_minutes
         self.executor = ExecutionSimulator()
 
     def _fill_fee(self, fill: SimulatedFill) -> Decimal:
@@ -528,6 +533,24 @@ class Backtester:
         bar_times: matching list of datetime for each bar
         """
         validate_bar_series(bars, bar_times)
+        calendar = calendar_for_venue("XNYS")
+        bar_sessions = []
+        for index, bar_time in enumerate(bar_times):
+            session = calendar.session_for_timestamp(bar_time)
+            if session is None:
+                raise ValueError(
+                    f"bar series: timestamp at index {index} is outside XNYS regular session"
+                )
+            bar_sessions.append(session)
+        strategy_params = getattr(self.strategy, "params", {})
+        reference_open_utc = str(strategy_params.get("session_open_utc", "14:30"))
+        strategy_bar_times = [
+            calendar.to_reference_session_clock(
+                bar_time,
+                reference_open_utc=reference_open_utc,
+            )
+            for bar_time in bar_times
+        ]
 
         capital = self.initial_capital
         available_cash = capital
@@ -547,9 +570,15 @@ class Backtester:
         filtered_bars: list[Bar] = []
         filtered_times: list[datetime] = []
         filtered_indices: list[int] = []
+        filtered_session_dates: list[date] = []
+        history_bars: list[Bar] = []
+        strategy_history_times: list[datetime] = []
         session_bars: list[Bar] = []
-        current_session_date: date | None = None
+        session_strategy_times: list[datetime] = []
+        current_session_id: str | None = None
         previous_session_close: Decimal | None = None
+        session_is_eligible = False
+        terminal_session_closes: dict[str, Decimal] = {}
         exposure_bars = 0
         total_commission_cost = Decimal("0")
 
@@ -557,25 +586,55 @@ class Backtester:
         mfe_high = Decimal("0")
         mae_low = Decimal("9999999")
 
-        for i, (bar, ts) in enumerate(zip(bars, bar_times, strict=True)):
-            # Filter date range
-            if self.start_date and ts.date() < self.start_date:
-                continue
-            if self.end_date and ts.date() > self.end_date:
-                continue
-
-            if current_session_date != ts.date():
-                if session_bars:
-                    previous_session_close = session_bars[-1].close
-                current_session_date = ts.date()
+        for i, (bar, ts, session, strategy_ts) in enumerate(
+            zip(bars, bar_times, bar_sessions, strategy_bar_times, strict=True)
+        ):
+            if current_session_id != session.session_id:
+                if current_session_id is not None and pending_orders:
+                    for order in pending_orders:
+                        if order.status == "pending":
+                            order.status = "cancelled"
+                    pending_orders = []
+                previous_session = calendar.previous_session(session)
+                previous_session_close = terminal_session_closes.get(previous_session.session_id)
+                session_is_eligible = previous_session_close is not None and ts.astimezone(
+                    UTC
+                ) == calendar.session_open(session)
+                current_session_id = session.session_id
                 session_bars = []
+                session_strategy_times = []
+
+            history_bars.append(bar)
+            strategy_history_times.append(strategy_ts)
+
+            # Retain earlier regular sessions only as warm-up context.
+            if self.start_date and session.local_date < self.start_date:
+                if calendar.is_terminal_bar(
+                    session,
+                    ts,
+                    interval_minutes=self.bar_interval_minutes,
+                ):
+                    terminal_session_closes[session.session_id] = bar.close
+                continue
+            if self.end_date and session.local_date > self.end_date:
+                break
+            if not session_is_eligible:
+                if calendar.is_terminal_bar(
+                    session,
+                    ts,
+                    interval_minutes=self.bar_interval_minutes,
+                ):
+                    terminal_session_closes[session.session_id] = bar.close
+                continue
 
             filtered_bars.append(bar)
             filtered_times.append(ts)
             filtered_indices.append(i)
+            filtered_session_dates.append(session.local_date)
             session_bars.append(bar)
+            session_strategy_times.append(strategy_ts)
 
-            current_time_utc = ts.strftime("%H:%M")
+            current_time_utc = strategy_ts.strftime("%H:%M")
 
             # Process pending orders first (fills happen at open of next bar)
             if i > 0 and pending_orders:
@@ -758,14 +817,23 @@ class Backtester:
                     capital = available_cash + position_qty * bar.close
 
             # Only generate entry signals when flat
-            if position_qty <= 0 and not pending_orders:
+            if (
+                position_qty <= 0
+                and not pending_orders
+                and previous_session_close is not None
+                and not calendar.is_early_close(session)
+            ):
+                history_limit = max(
+                    1,
+                    int(getattr(self.strategy, "max_history_bars", 180)),
+                )
                 signal = generate_strategy_signal(
                     self.strategy,
                     ticker=self.ticker,
                     bars=session_bars,
-                    bar_times=filtered_times[-len(session_bars) :],
-                    history_bars=filtered_bars,
-                    history_bar_times=filtered_times,
+                    bar_times=session_strategy_times,
+                    history_bars=history_bars[-history_limit:],
+                    history_bar_times=strategy_history_times[-history_limit:],
                     account_value=capital,
                     available_cash=available_cash,
                     current_time_utc=current_time_utc,
@@ -812,6 +880,12 @@ class Backtester:
                     "bar_idx": i,
                 }
             )
+            if calendar.is_terminal_bar(
+                session,
+                ts,
+                interval_minutes=self.bar_interval_minutes,
+            ):
+                terminal_session_closes[session.session_id] = bar.close
 
         # Close any remaining open position
         if position_qty > 0 and filtered_bars and filtered_times and filtered_indices:
@@ -873,9 +947,9 @@ class Backtester:
             strategy_name=type(self.strategy).__name__,
             ticker=self.ticker,
             start_date=self.start_date
-            or (filtered_times[0].date() if filtered_times else date.today()),
+            or (filtered_session_dates[0] if filtered_session_dates else date.today()),
             end_date=self.end_date
-            or (filtered_times[-1].date() if filtered_times else date.today()),
+            or (filtered_session_dates[-1] if filtered_session_dates else date.today()),
             initial_capital=self.initial_capital,
             final_capital=final_capital,
             trades=trades,
@@ -1081,11 +1155,13 @@ class WalkForwardValidator:
         in_sample_bars: int = 2000,  # ~13 months of 5-min bars
         out_sample_bars: int = 500,  # ~3 months
         step_bars: int = 250,
+        bar_interval_minutes: int = 5,
     ) -> None:
         for parameter_name, parameter_value in (
             ("in_sample_bars", in_sample_bars),
             ("out_sample_bars", out_sample_bars),
             ("step_bars", step_bars),
+            ("bar_interval_minutes", bar_interval_minutes),
         ):
             if parameter_value <= 0:
                 raise ValueError(f"{parameter_name} must be positive")
@@ -1095,6 +1171,7 @@ class WalkForwardValidator:
         self.in_sample_bars = in_sample_bars
         self.out_sample_bars = out_sample_bars
         self.step_bars = step_bars
+        self.bar_interval_minutes = bar_interval_minutes
 
     def run(
         self,
@@ -1110,25 +1187,93 @@ class WalkForwardValidator:
         The returned OOS metrics are exclusively from held-out test partitions.
         """
         validate_bar_series(bars, bar_times, label="walk-forward bar series")
+        calendar = calendar_for_venue("XNYS")
+        session_groups: list[tuple[TradingSession, int, int]] = []
+        for index, bar_time in enumerate(bar_times):
+            session = calendar.session_for_timestamp(bar_time)
+            if session is None:
+                raise ValueError(
+                    "walk-forward bar series: timestamp at index "
+                    f"{index} is outside XNYS regular session"
+                )
+            if not session_groups or session_groups[-1][0].session_id != session.session_id:
+                session_groups.append((session, index, index + 1))
+            else:
+                prior_session, group_start, _ = session_groups[-1]
+                session_groups[-1] = (prior_session, group_start, index + 1)
+
+        for session, first_bar, after_last_bar in session_groups:
+            if bar_times[first_bar].astimezone(UTC) != calendar.session_open(session):
+                raise ValueError(
+                    f"walk-forward session {session.session_id} does not begin at session open"
+                )
+            if not calendar.is_terminal_bar(
+                session,
+                bar_times[after_last_bar - 1],
+                interval_minutes=self.bar_interval_minutes,
+            ):
+                raise ValueError(
+                    f"walk-forward session {session.session_id} does not include its terminal bar"
+                )
+
+        def take_complete_sessions(start_group: int, minimum_bars: int) -> int | None:
+            count = 0
+            end_group = start_group
+            while end_group < len(session_groups) and count < minimum_bars:
+                _, first_bar, after_last_bar = session_groups[end_group]
+                count += after_last_bar - first_bar
+                end_group += 1
+            return end_group if count >= minimum_bars else None
+
+        def partition(
+            eligible_start_group: int,
+            eligible_end_group: int,
+        ) -> tuple[list[Bar], list[datetime], date, date]:
+            warmup_group = eligible_start_group - 1
+            first_bar = session_groups[warmup_group][1]
+            after_last_bar = session_groups[eligible_end_group - 1][2]
+            return (
+                bars[first_bar:after_last_bar],
+                bar_times[first_bar:after_last_bar],
+                session_groups[eligible_start_group][0].local_date,
+                session_groups[eligible_end_group - 1][0].local_date,
+            )
+
         results = []
-        total = len(bars)
-        start = 0
+        warmup_group = 0
 
         window_num = 0
-        block_bars = self.in_sample_bars + (2 * self.out_sample_bars)
-        stride_bars = max(self.step_bars, block_bars)
-        while start + block_bars <= total:
-            window_num += 1
-            train_end = start + self.in_sample_bars
-            validation_end = train_end + self.out_sample_bars
-            test_end = validation_end + self.out_sample_bars
+        while warmup_group + 1 < len(session_groups):
+            train_start_group = warmup_group + 1
+            train_end_group = take_complete_sessions(train_start_group, self.in_sample_bars)
+            if train_end_group is None:
+                break
+            validation_end_group = take_complete_sessions(
+                train_end_group,
+                self.out_sample_bars,
+            )
+            if validation_end_group is None:
+                break
+            test_end_group = take_complete_sessions(
+                validation_end_group,
+                self.out_sample_bars,
+            )
+            if test_end_group is None:
+                break
 
-            train_bars = bars[start:train_end]
-            train_times = bar_times[start:train_end]
-            validation_bars = bars[train_end:validation_end]
-            validation_times = bar_times[train_end:validation_end]
-            test_bars = bars[validation_end:test_end]
-            test_times = bar_times[validation_end:test_end]
+            window_num += 1
+            train_bars, train_times, train_start, train_end = partition(
+                train_start_group,
+                train_end_group,
+            )
+            validation_bars, validation_times, validation_start, validation_end = partition(
+                train_end_group,
+                validation_end_group,
+            )
+            test_bars, test_times, test_start, test_end = partition(
+                validation_end_group,
+                test_end_group,
+            )
 
             selection = self._optimise(
                 train_bars,
@@ -1136,20 +1281,20 @@ class WalkForwardValidator:
                 validation_bars,
                 validation_times,
                 param_grid,
+                train_start_date=train_start,
+                train_end_date=train_end,
+                validation_start_date=validation_start,
+                validation_end_date=validation_end,
             )
 
             window_result: dict[str, Any] = {
                 "window": window_num,
-                "is_start": train_times[0].date().isoformat() if train_times else "",
-                "is_end": train_times[-1].date().isoformat() if train_times else "",
-                "validation_start": (
-                    validation_times[0].date().isoformat() if validation_times else ""
-                ),
-                "validation_end": (
-                    validation_times[-1].date().isoformat() if validation_times else ""
-                ),
-                "oos_start": test_times[0].date().isoformat() if test_times else "",
-                "oos_end": test_times[-1].date().isoformat() if test_times else "",
+                "is_start": train_start.isoformat(),
+                "is_end": train_end.isoformat(),
+                "validation_start": validation_start.isoformat(),
+                "validation_end": validation_end.isoformat(),
+                "oos_start": test_start.isoformat(),
+                "oos_end": test_end.isoformat(),
                 "selection_status": (
                     "selected" if selection.params is not None else "no_eligible_candidate"
                 ),
@@ -1169,9 +1314,14 @@ class WalkForwardValidator:
 
             if selection.params is not None:
                 strategy = self.strategy_class(selection.params)
-                oos_result = Backtester(strategy, self.ticker, self.initial_capital).run(
-                    test_bars, test_times
-                )
+                oos_result = Backtester(
+                    strategy,
+                    self.ticker,
+                    self.initial_capital,
+                    start_date=test_start,
+                    end_date=test_end,
+                    bar_interval_minutes=self.bar_interval_minutes,
+                ).run(test_bars, test_times)
                 window_result.update(
                     {
                         "oos_return_pct": float(oos_result.total_return_pct),
@@ -1198,7 +1348,17 @@ class WalkForwardValidator:
                 oos_return=window_result["oos_return_pct"],
                 oos_sharpe=window_result["oos_sharpe"],
             )
-            start += stride_bars
+            eligible_block_bars = sum(
+                group_end - group_start
+                for _, group_start, group_end in session_groups[train_start_group:test_end_group]
+            )
+            next_eligible_group = test_end_group
+            stride_bars = eligible_block_bars
+            while next_eligible_group < len(session_groups) and stride_bars < self.step_bars:
+                _, group_start, group_end = session_groups[next_eligible_group]
+                stride_bars += group_end - group_start
+                next_eligible_group += 1
+            warmup_group = next_eligible_group - 1
 
         return results
 
@@ -1209,6 +1369,11 @@ class WalkForwardValidator:
         validation_bars: list[Bar],
         validation_times: list[datetime],
         param_grid: list[dict[str, Any]],
+        *,
+        train_start_date: date,
+        train_end_date: date,
+        validation_start_date: date,
+        validation_end_date: date,
     ) -> ParameterSelectionResult:
         """Select by validation Sharpe without reading held-out test data."""
         best_sharpe = -math.inf
@@ -1218,15 +1383,25 @@ class WalkForwardValidator:
         for params in param_grid:
             try:
                 train_strategy = self.strategy_class(params)
-                train_result = Backtester(train_strategy, self.ticker, self.initial_capital).run(
-                    train_bars, train_times
-                )
+                train_result = Backtester(
+                    train_strategy,
+                    self.ticker,
+                    self.initial_capital,
+                    start_date=train_start_date,
+                    end_date=train_end_date,
+                    bar_interval_minutes=self.bar_interval_minutes,
+                ).run(train_bars, train_times)
                 if train_result.completed_positions < 10:
                     continue
 
                 validation_strategy = self.strategy_class(params)
                 validation_result = Backtester(
-                    validation_strategy, self.ticker, self.initial_capital
+                    validation_strategy,
+                    self.ticker,
+                    self.initial_capital,
+                    start_date=validation_start_date,
+                    end_date=validation_end_date,
+                    bar_interval_minutes=self.bar_interval_minutes,
                 ).run(validation_bars, validation_times)
                 if validation_result.completed_positions < 10:
                     continue

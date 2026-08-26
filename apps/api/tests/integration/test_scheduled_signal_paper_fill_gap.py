@@ -12,7 +12,7 @@ chain. Broker constructors remain fail-fast tripwires in both surfaces.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -85,8 +85,9 @@ async def _fake_market_context(
     *_args: Any, **_kwargs: Any
 ) -> tuple[list[Bar], list[datetime], list[Bar], list[datetime], Decimal | None, str]:
     bars = _deterministic_breakout_bars()
-    times = [datetime(2026, 1, 2, 14, minute, tzinfo=UTC) for minute in range(len(bars))]
-    return bars, times, bars, times, None, "15:00"
+    session_open = datetime(2026, 1, 2, 14, 30, tzinfo=UTC)
+    times = [session_open + timedelta(minutes=5 * index) for index in range(len(bars))]
+    return bars, times, bars, times, Decimal("99"), "16:30"
 
 
 class _AllowingRiskEngine:

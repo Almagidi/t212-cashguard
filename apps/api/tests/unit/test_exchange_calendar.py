@@ -90,6 +90,41 @@ def test_official_early_closes_are_explicit(
     assert session.close_at.astimezone(NY).time().isoformat() == "13:00:00"
 
 
+@pytest.mark.parametrize(
+    ("session_date", "terminal_bar_utc"),
+    [
+        (date(2025, 1, 6), datetime(2025, 1, 6, 20, 55, tzinfo=UTC)),
+        (date(2025, 7, 3), datetime(2025, 7, 3, 16, 55, tzinfo=UTC)),
+    ],
+)
+def test_terminal_bar_recognises_regular_and_early_closes(
+    session_date: date,
+    terminal_bar_utc: datetime,
+) -> None:
+    calendar = calendar_for_venue("XNYS")
+    (session,) = calendar.expected_sessions(session_date, session_date)
+
+    assert calendar.is_terminal_bar(session, terminal_bar_utc, interval_minutes=5)
+    assert not calendar.is_terminal_bar(
+        session,
+        terminal_bar_utc - timedelta(minutes=5),
+        interval_minutes=5,
+    )
+
+
+def test_reference_session_clock_preserves_exchange_local_offset_across_dst() -> None:
+    calendar = calendar_for_venue("XNYS")
+    winter = datetime(2025, 1, 6, 14, 35, tzinfo=UTC)
+    summer = datetime(2025, 3, 10, 13, 35, tzinfo=UTC)
+
+    assert calendar.to_reference_session_clock(winter, reference_open_utc="14:30") == datetime(
+        2025, 1, 6, 14, 35, tzinfo=UTC
+    )
+    assert calendar.to_reference_session_clock(summer, reference_open_utc="14:30") == datetime(
+        2025, 3, 10, 14, 35, tzinfo=UTC
+    )
+
+
 def test_timestamp_boundaries_are_half_open_and_timezone_aware() -> None:
     calendar = calendar_for_venue("XNYS")
     (session,) = calendar.expected_sessions(date(2025, 1, 6), date(2025, 1, 6))
