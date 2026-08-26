@@ -197,6 +197,45 @@ async def test_single_symbol_job_requests_previous_xnys_session_as_warmup(
     assert requested_from == [datetime(2025, 1, 3, tzinfo=UTC).date()]
 
 
+@pytest.mark.asyncio
+async def test_single_symbol_job_attaches_immutable_dataset_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api.v1.routes import backtest as route
+    from app.backtest.data_fetcher import BacktestDataFetcher
+
+    async def fake_fetch(
+        self: BacktestDataFetcher,
+        ticker: str,
+        **kwargs: object,
+    ) -> tuple[list[Bar], list[datetime]]:
+        del kwargs
+        self._manifests[ticker] = {
+            "manifest_id": "manifest-AAPL",
+            "canonical_sha256": "content-AAPL",
+        }
+        start = datetime(2025, 1, 6, 14, 30, tzinfo=UTC)
+        times = [start + timedelta(minutes=5 * index) for index in range(60)]
+        return [make_bar() for _ in times], times
+
+    monkeypatch.setattr(BacktestDataFetcher, "fetch_bars", fake_fetch)
+    job_id = "dataset-manifest-test"
+    body = route.BacktestRequest(
+        ticker="AAPL",
+        strategy_type="orb",
+        from_date=date(2025, 1, 6),
+        to_date=date(2025, 1, 6),
+    )
+
+    await route._run_backtest_job(job_id, body)
+    payload = route._jobs.pop(job_id)
+
+    assert payload["status"] == "complete"
+    assert payload["datasets"] == [
+        {"manifest_id": "manifest-AAPL", "canonical_sha256": "content-AAPL"}
+    ]
+
+
 def test_portfolio_backtester_rejects_duplicate_dates_before_strategy_invocation() -> None:
     class CapturePortfolioStrategy(EqualWeightRebalanceStrategy):
         def __init__(self) -> None:
@@ -430,6 +469,164 @@ def test_data_fetcher_rejects_invalid_provider_rows() -> None:
 
 
 @pytest.mark.asyncio
+async def test_data_fetcher_publishes_and_reuses_verified_secret_free_dataset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    import httpx
+
+    class SuccessfulResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "status": "OK",
+                "resultsCount": 2,
+                "results": [
+                    {
+                        "o": 100,
+                        "h": 101,
+                        "l": 99,
+                        "c": 100,
+                        "v": 1000,
+                        "t": 1767623400000,
+                    },
+                    {
+                        "o": 101,
+                        "h": 102,
+                        "l": 100,
+                        "c": 101,
+                        "v": 1100,
+                        "t": 1767623700000,
+                    },
+                ],
+            }
+
+    class SuccessfulClient:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+
+        async def __aenter__(self) -> SuccessfulClient:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            del args
+
+        async def get(self, *args: Any, **kwargs: Any) -> SuccessfulResponse:
+            del args, kwargs
+            return SuccessfulResponse()
+
+    monkeypatch.setattr("app.backtest.data_fetcher.CACHE_DIR", tmp_path)
+    monkeypatch.setattr(httpx, "AsyncClient", SuccessfulClient)
+    monkeypatch.setenv("T212_CODE_SHA", "f" * 40)
+    first_fetcher = BacktestDataFetcher("secret-test-key")
+    first = await first_fetcher.fetch_bars(
+        "AAPL",
+        date(2026, 1, 5),
+        date(2026, 1, 5),
+    )
+
+    class ForbiddenClient:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+            raise AssertionError("cache hit must not contact provider")
+
+    monkeypatch.setattr(httpx, "AsyncClient", ForbiddenClient)
+    second_fetcher = BacktestDataFetcher("different-secret-key")
+    second = await second_fetcher.fetch_bars(
+        "AAPL",
+        date(2026, 1, 5),
+        date(2026, 1, 5),
+    )
+
+    assert second == first
+    assert second_fetcher.manifest_for("AAPL") == first_fetcher.manifest_for("AAPL")
+    persisted = "".join(path.read_text() for path in tmp_path.rglob("*.json"))
+    assert "secret-test-key" not in persisted
+    assert "different-secret-key" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_data_fetcher_fails_closed_on_dangling_cache_reference(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    import httpx
+
+    from app.backtest.dataset_cache import ImmutableDatasetCache
+
+    class SuccessfulResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "status": "OK",
+                "resultsCount": 1,
+                "results": [
+                    {
+                        "o": 100,
+                        "h": 101,
+                        "l": 99,
+                        "c": 100,
+                        "v": 1000,
+                        "t": 1767623400000,
+                    }
+                ],
+            }
+
+    class SuccessfulClient:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+
+        async def __aenter__(self) -> SuccessfulClient:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            del args
+
+        async def get(self, *args: Any, **kwargs: Any) -> SuccessfulResponse:
+            del args, kwargs
+            return SuccessfulResponse()
+
+    monkeypatch.setattr("app.backtest.data_fetcher.CACHE_DIR", tmp_path)
+    monkeypatch.setattr(httpx, "AsyncClient", SuccessfulClient)
+    monkeypatch.setenv("T212_CODE_SHA", "f" * 40)
+    initial_fetcher = BacktestDataFetcher("test-key")
+    await initial_fetcher.fetch_bars(
+        "AAPL",
+        date(2026, 1, 5),
+        date(2026, 1, 5),
+    )
+
+    request = initial_fetcher._request(
+        "AAPL",
+        date(2026, 1, 5),
+        date(2026, 1, 5),
+        5,
+        "minute",
+        "single_symbol_request",
+        None,
+    )
+    cache = ImmutableDatasetCache(tmp_path)
+    cache.object_path(initial_fetcher.manifest_for("AAPL")["canonical_sha256"]).unlink()
+    assert cache.reference_path(request).exists()
+
+    class ForbiddenClient:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+            raise AssertionError("dangling cache reference must not contact provider")
+
+    monkeypatch.setattr(httpx, "AsyncClient", ForbiddenClient)
+
+    with pytest.raises(FileNotFoundError):
+        await BacktestDataFetcher("test-key").fetch_bars(
+            "AAPL",
+            date(2026, 1, 5),
+            date(2026, 1, 5),
+        )
+
+
+@pytest.mark.asyncio
 async def test_data_fetcher_fails_closed_on_provider_chunk_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
@@ -491,3 +688,57 @@ async def test_data_fetcher_fails_closed_on_provider_chunk_error(
 
     assert FailedClient.calls == 2
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_data_fetcher_rejects_partial_provider_page(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    import httpx
+
+    class PartialResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "status": "OK",
+                "resultsCount": 1,
+                "next_url": "https://api.polygon.io/v2/aggs/next-page",
+                "results": [
+                    {
+                        "o": 100,
+                        "h": 101,
+                        "l": 99,
+                        "c": 100,
+                        "v": 1000,
+                        "t": 1767623400000,
+                    }
+                ],
+            }
+
+    class PartialClient:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+
+        async def __aenter__(self) -> PartialClient:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            del args
+
+        async def get(self, *args: Any, **kwargs: Any) -> PartialResponse:
+            del args, kwargs
+            return PartialResponse()
+
+    monkeypatch.setattr("app.backtest.data_fetcher.CACHE_DIR", tmp_path)
+    monkeypatch.setattr(httpx, "AsyncClient", PartialClient)
+
+    with pytest.raises(RuntimeError, match="partial provider page"):
+        await BacktestDataFetcher("test-key").fetch_bars(
+            "AAPL",
+            date(2026, 1, 5),
+            date(2026, 1, 5),
+        )
+
+    assert list(tmp_path.rglob("*.json")) == []

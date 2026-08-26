@@ -252,6 +252,7 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
             from_date=warmup_from,
             to_date=body.to_date,
         )
+        dataset_manifest = fetcher.manifest_for(body.ticker)
 
         requested_bar_count = sum(
             1
@@ -309,6 +310,7 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
             "ticker": body.ticker,
             "strategy_type": body.strategy_type,
             "bars_used": requested_bar_count,
+            "datasets": [dataset_manifest],
             "result": _serialize_backtest_result(
                 result=result,
                 strategy_type=body.strategy_type,
@@ -330,6 +332,7 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
 
 
 async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestRequest) -> None:
+    dataset_manifests: list[dict[str, Any]] = []
     try:
         from app.backtest.data_fetcher import BacktestDataFetcher
         from app.backtest.portfolio_engine import PortfolioBacktester
@@ -343,7 +346,10 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
                 to_date=body.to_date,
                 multiplier=1,
                 timespan="day",
+                membership_source="research_only_survivor_biased",
+                universe=tuple(body.tickers),
             )
+            dataset_manifests.append(fetcher.manifest_for(ticker))
 
         strategy_config = get_portfolio_backtest_strategy(body.strategy_type)
         strategy_class = strategy_config["strategy_class"]
@@ -363,6 +369,7 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
             "tickers": body.tickers,
             "strategy_type": body.strategy_type,
             "bars_used": len(result.coverage_report.retained_session_ids),
+            "datasets": dataset_manifests,
             "result": _serialize_portfolio_backtest_result(
                 result=result,
                 strategy_type=body.strategy_type,
@@ -377,6 +384,7 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
             "tickers": body.tickers,
             "strategy_type": body.strategy_type,
             "bars_used": len(exc.report.retained_session_ids),
+            "datasets": dataset_manifests,
             "verdict": exc.verdict,
             "evidence_reasons": list(exc.reasons),
             "coverage": _serialize_portfolio_coverage(exc.report),
