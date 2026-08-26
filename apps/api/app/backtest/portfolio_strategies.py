@@ -6,14 +6,16 @@ current repo does not yet have a validated fundamentals/dividends data layer.
 That keeps the research honest and reproducible with the existing Polygon
 historical bar pipeline.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
 from statistics import pstdev
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from app.strategies.indicators import Bar
+if TYPE_CHECKING:
+    from app.strategies.indicators import Bar
 
 
 def _closes(bars: list[Bar], as_of_index: int) -> list[Decimal]:
@@ -25,14 +27,16 @@ def _normalize(weights: dict[str, Decimal]) -> dict[str, Decimal]:
     total = sum(positive.values(), Decimal("0"))
     if total <= 0:
         return {}
-    return {ticker: (weight / total).quantize(Decimal("0.0001")) for ticker, weight in positive.items()}
+    return {
+        ticker: (weight / total).quantize(Decimal("0.0001")) for ticker, weight in positive.items()
+    }
 
 
 def _equal_weight(tickers: list[str]) -> dict[str, Decimal]:
     if not tickers:
         return {}
     weight = (Decimal("1") / Decimal(str(len(tickers)))).quantize(Decimal("0.0001"))
-    return {ticker: weight for ticker in tickers}
+    return dict.fromkeys(tickers, weight)
 
 
 def _sma(values: list[Decimal], period: int) -> Decimal | None:
@@ -67,7 +71,7 @@ def _annualised_volatility(values: list[Decimal], lookback: int) -> Decimal | No
         returns.append(float((current_close / prev_close) - Decimal("1")))
     if not returns:
         return None
-    return Decimal(str(pstdev(returns) * (252 ** 0.5)))
+    return Decimal(str(pstdev(returns) * (252**0.5)))
 
 
 class PortfolioStrategyProtocol(Protocol):
@@ -103,7 +107,9 @@ class CoreBuyHoldStrategy:
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         self.params = params or {}
 
-    def target_weights(self, history: dict[str, list[Bar]], *, as_of_index: int) -> dict[str, Decimal]:
+    def target_weights(
+        self, history: dict[str, list[Bar]], *, as_of_index: int
+    ) -> dict[str, Decimal]:
         return _equal_weight(sorted(history))
 
 
@@ -117,7 +123,9 @@ class EqualWeightRebalanceStrategy:
         self.params = params or {}
         self.rebalance_frequency = str(self.params.get("rebalance_frequency", "quarterly"))
 
-    def target_weights(self, history: dict[str, list[Bar]], *, as_of_index: int) -> dict[str, Decimal]:
+    def target_weights(
+        self, history: dict[str, list[Bar]], *, as_of_index: int
+    ) -> dict[str, Decimal]:
         return _equal_weight(sorted(history))
 
 
@@ -125,7 +133,7 @@ class CrossSectionalMomentumStrategy:
     label = "Cross-Sectional Momentum"
     description = "Buys recent winners from a diversified universe and rotates monthly."
     rebalance_frequency = "monthly"
-    min_history_bars = 147  # 126-day lookback, skip most recent 21 days
+    min_history_bars = 148  # 126-day return needs both endpoints, then skips 21 closes
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         self.params = params or {}
@@ -133,9 +141,11 @@ class CrossSectionalMomentumStrategy:
         self.skip_recent_bars = int(self.params.get("skip_recent_bars", 21))
         self.top_n = int(self.params.get("top_n", 0))
         self.min_positive_return = Decimal(str(self.params.get("min_positive_return", "0.0")))
-        self.min_history_bars = self.lookback_bars + self.skip_recent_bars
+        self.min_history_bars = self.lookback_bars + self.skip_recent_bars + 1
 
-    def target_weights(self, history: dict[str, list[Bar]], *, as_of_index: int) -> dict[str, Decimal]:
+    def target_weights(
+        self, history: dict[str, list[Bar]], *, as_of_index: int
+    ) -> dict[str, Decimal]:
         ranked: list[tuple[str, Decimal]] = []
         for ticker, bars in history.items():
             score = _return(_closes(bars, as_of_index), self.lookback_bars, self.skip_recent_bars)
@@ -154,17 +164,21 @@ class CrossSectionalMomentumStrategy:
 
 class LowVolatilityTiltStrategy:
     label = "Low-Volatility Tilt"
-    description = "Allocates toward the least volatile assets in the universe with monthly rebalancing."
+    description = (
+        "Allocates toward the least volatile assets in the universe with monthly rebalancing."
+    )
     rebalance_frequency = "monthly"
-    min_history_bars = 63
+    min_history_bars = 64
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         self.params = params or {}
         self.lookback_bars = int(self.params.get("lookback_bars", 63))
         self.selection_count = int(self.params.get("selection_count", 0))
-        self.min_history_bars = self.lookback_bars
+        self.min_history_bars = self.lookback_bars + 1
 
-    def target_weights(self, history: dict[str, list[Bar]], *, as_of_index: int) -> dict[str, Decimal]:
+    def target_weights(
+        self, history: dict[str, list[Bar]], *, as_of_index: int
+    ) -> dict[str, Decimal]:
         ranked: list[tuple[str, Decimal]] = []
         for ticker, bars in history.items():
             vol = _annualised_volatility(_closes(bars, as_of_index), self.lookback_bars)
@@ -194,7 +208,9 @@ class TrendFollowingTacticalStrategy:
         self.distance_weighted = bool(self.params.get("distance_weighted", False))
         self.min_history_bars = self.sma_period
 
-    def target_weights(self, history: dict[str, list[Bar]], *, as_of_index: int) -> dict[str, Decimal]:
+    def target_weights(
+        self, history: dict[str, list[Bar]], *, as_of_index: int
+    ) -> dict[str, Decimal]:
         selected: dict[str, Decimal] = {}
         for ticker, bars in history.items():
             closes = _closes(bars, as_of_index)
@@ -205,7 +221,9 @@ class TrendFollowingTacticalStrategy:
             if close <= sma_value:
                 continue
             distance = (close / sma_value) - Decimal("1")
-            selected[ticker] = max(distance, Decimal("0.0001")) if self.distance_weighted else Decimal("1")
+            selected[ticker] = (
+                max(distance, Decimal("0.0001")) if self.distance_weighted else Decimal("1")
+            )
         return _normalize(selected)
 
 
@@ -263,7 +281,9 @@ def get_portfolio_backtest_strategy(strategy_type: str) -> dict[str, Any]:
     strategy = PORTFOLIO_STRATEGY_REGISTRY.get(strategy_type)
     if strategy is None:
         supported = ", ".join(sorted(PORTFOLIO_STRATEGY_REGISTRY))
-        raise ValueError(f"Unsupported portfolio strategy '{strategy_type}'. Supported: {supported}")
+        raise ValueError(
+            f"Unsupported portfolio strategy '{strategy_type}'. Supported: {supported}"
+        )
     return strategy
 
 

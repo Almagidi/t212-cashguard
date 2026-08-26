@@ -174,6 +174,45 @@ class MockMarketDataProvider:
         timestamps.reverse()
         return timestamps
 
+    @staticmethod
+    def _equity_daily_bar_times(
+        *,
+        bars: int,
+        as_of: datetime | None = None,
+    ) -> list[datetime]:
+        """Return exchange-local daily labels on valid XNYS sessions."""
+        if bars <= 0:
+            return []
+
+        calendar = calendar_for_venue("XNYS")
+        exchange_timezone = ZoneInfo(calendar.exchange_timezone)
+        now = (as_of or datetime.now(UTC)).astimezone(UTC)
+        local_date = now.astimezone(exchange_timezone).date()
+        local_sessions = calendar.expected_sessions(local_date, local_date)
+        if local_sessions:
+            session = local_sessions[0]
+            if now < calendar.session_open(session):
+                session = calendar.previous_session(session)
+        else:
+            sessions = calendar.expected_sessions(local_date - timedelta(days=14), local_date)
+            if not sessions:
+                return []
+            session = sessions[-1]
+
+        sessions_desc = [session]
+        while len(sessions_desc) < bars:
+            session = calendar.previous_session(session)
+            sessions_desc.append(session)
+        sessions_desc.reverse()
+        return [
+            datetime.combine(
+                session.local_date,
+                datetime.min.time(),
+                exchange_timezone,
+            ).astimezone(UTC)
+            for session in sessions_desc
+        ]
+
     def get_ohlcv(
         self,
         ticker: str,
@@ -191,6 +230,8 @@ class MockMarketDataProvider:
                 interval_minutes=interval_minutes,
                 bars=bars,
             )
+        elif interval_minutes == 24 * 60:
+            timestamps = self._equity_daily_bar_times(bars=bars)
         else:
             now = datetime.now(UTC).replace(second=0, microsecond=0)
             timestamps = [
@@ -218,15 +259,16 @@ class MockMarketDataProvider:
 
         return result
 
+    @staticmethod
+    def _equity_market_is_open(*, as_of: datetime | None = None) -> bool:
+        calendar = calendar_for_venue("XNYS")
+        now = (as_of or datetime.now(UTC)).astimezone(UTC)
+        return calendar.session_for_timestamp(now) is not None
+
     def is_market_open(self, ticker: str = "AAPL") -> bool:
-        """Check if market is open based on current UTC time."""
-        now = datetime.now(UTC)
-        # NYSE/NASDAQ: 14:30-21:00 UTC on weekdays
-        if now.weekday() >= 5:  # Weekend
-            return False
-        market_open = now.replace(hour=14, minute=30, second=0, microsecond=0)
-        market_close = now.replace(hour=21, minute=0, second=0, microsecond=0)
-        return market_open <= now <= market_close
+        """Check the current XNYS regular-session state."""
+        del ticker
+        return self._equity_market_is_open()
 
     def validate_staleness(self, quote: Quote, max_age_seconds: int = 60) -> bool:
         """Return True if quote is fresh enough."""

@@ -84,8 +84,16 @@ def test_missing_symbol_session_is_insufficient_before_strategy_invocation() -> 
     bbb = next(item for item in report.symbols if item.ticker == "BBB")
     assert bbb.missing_session_ids == ("XNYS:2025-01-07",)
     assert bbb.coverage_pct == Decimal("66.67")
+    assert bbb.longest_missing_run == 1
+    assert bbb.first_valid_session_id == "XNYS:2025-01-06"
+    assert bbb.last_valid_session_id == "XNYS:2025-01-08"
     assert report.retained_session_ids == ("XNYS:2025-01-06", "XNYS:2025-01-08")
     assert report.dropped_session_ids == ("XNYS:2025-01-07",)
+    assert report.policy == "strict_complete"
+    assert report.policy_id == "portfolio_session_coverage:strict_complete:v1"
+    assert report.eligible is False
+    assert report.common_start == date(2025, 1, 6)
+    assert report.common_end == date(2025, 1, 8)
 
 
 def test_explicit_lower_threshold_runs_with_intersection_disclosed_and_no_fill() -> None:
@@ -113,6 +121,14 @@ def test_explicit_lower_threshold_runs_with_intersection_disclosed_and_no_fill()
 
     assert [point.date for point in result.equity_curve] == partial_dates
     assert result.coverage_report.complete is False
+    assert result.coverage_report.eligible is True
+    assert result.coverage_report.policy == "intersection_with_disclosure"
+    assert (
+        result.coverage_report.policy_id
+        == "portfolio_session_coverage:intersection_with_disclosure:v1"
+    )
+    assert result.coverage_report.common_start == partial_dates[0]
+    assert result.coverage_report.common_end == partial_dates[-1]
     assert result.coverage_report.dropped_session_ids == (f"XNYS:{missing_date.isoformat()}",)
     assert result.coverage_report.minimum_coverage_pct == Decimal("95")
 
@@ -166,7 +182,61 @@ def test_complete_histories_report_full_coverage() -> None:
     )
     assert report.retained_session_ids == report.expected_session_ids
     assert report.dropped_session_ids == ()
-    assert all(item.coverage_pct == Decimal("100.00") for item in report.symbols)
+    assert report.policy == "strict_complete"
+    assert report.eligible is True
+    assert report.common_start == date(2025, 1, 6)
+    assert report.common_end == date(2025, 1, 8)
+    assert all(
+        item.coverage_pct == Decimal("100.00")
+        and item.longest_missing_run == 0
+        and item.first_valid_session_id == "XNYS:2025-01-06"
+        and item.last_valid_session_id == "XNYS:2025-01-08"
+        for item in report.symbols
+    )
+
+
+def test_coverage_reports_consecutive_missing_run() -> None:
+    sessions = calendar_for_venue("XNYS").expected_sessions(
+        date(2025, 1, 6),
+        date(2025, 1, 10),
+    )
+    session_dates = [session.local_date for session in sessions]
+    bbb_dates = [session_dates[0], *session_dates[3:]]
+
+    with pytest.raises(InsufficientPortfolioEvidence) as exc_info:
+        PortfolioBacktester(
+            strategy=CaptureStrategy(),
+            universe=["AAA", "BBB"],
+            initial_capital=Decimal("10000"),
+            start_date=session_dates[0],
+            end_date=session_dates[-1],
+        ).run(
+            {
+                "AAA": _history_for_dates(session_dates),
+                "BBB": _history_for_dates(bbb_dates),
+            }
+        )
+
+    bbb = next(item for item in exc_info.value.report.symbols if item.ticker == "BBB")
+    assert bbb.longest_missing_run == 2
+    assert bbb.first_valid_session_id == f"XNYS:{session_dates[0].isoformat()}"
+    assert bbb.last_valid_session_id == f"XNYS:{session_dates[-1].isoformat()}"
+
+
+def test_no_common_period_is_explicitly_ineligible() -> None:
+    with pytest.raises(InsufficientPortfolioEvidence) as exc_info:
+        PortfolioBacktester(
+            strategy=CaptureStrategy(),
+            universe=["AAA", "BBB"],
+            initial_capital=Decimal("10000"),
+            start_date=date(2025, 1, 6),
+            end_date=date(2025, 1, 7),
+        ).run({"AAA": _history(6), "BBB": _history(7)})
+
+    report = exc_info.value.report
+    assert report.eligible is False
+    assert report.common_start is None
+    assert report.common_end is None
 
 
 def test_extra_non_session_date_is_insufficient_before_strategy_invocation() -> None:
@@ -308,6 +378,11 @@ def test_portfolio_api_serialization_includes_coverage_report() -> None:
         "minimum_coverage_pct": 100.0,
         "retained_coverage_pct": 100.0,
         "complete": True,
+        "policy": "strict_complete",
+        "policy_id": "portfolio_session_coverage:strict_complete:v1",
+        "eligible": True,
+        "common_from": "2025-01-06",
+        "common_to": "2025-01-06",
         "expected_session_ids": ["XNYS:2025-01-06"],
         "retained_session_ids": ["XNYS:2025-01-06"],
         "dropped_session_ids": [],
@@ -319,6 +394,9 @@ def test_portfolio_api_serialization_includes_coverage_report() -> None:
                 "missing_session_ids": [],
                 "extra_session_ids": [],
                 "coverage_pct": 100.0,
+                "longest_missing_run": 0,
+                "first_valid_session_id": "XNYS:2025-01-06",
+                "last_valid_session_id": "XNYS:2025-01-06",
             }
         ],
     }

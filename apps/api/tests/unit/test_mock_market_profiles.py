@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -81,6 +82,30 @@ def test_default_equity_timestamps_never_emit_future_premarket_bars() -> None:
         datetime(2025, 1, 3, 20, 55, tzinfo=UTC),
     ]
     assert all(timestamp < as_of for timestamp in times)
+
+
+def test_default_daily_equity_timestamps_use_xnys_sessions() -> None:
+    times = MockMarketDataProvider._equity_daily_bar_times(
+        bars=4,
+        as_of=datetime(2026, 1, 20, 15, 0, tzinfo=UTC),
+    )
+
+    exchange_timezone = ZoneInfo("America/New_York")
+    assert [timestamp.astimezone(exchange_timezone).date() for timestamp in times] == [
+        date(2026, 1, 14),
+        date(2026, 1, 15),
+        date(2026, 1, 16),
+        date(2026, 1, 20),
+    ]
+
+
+def test_mock_market_open_uses_xnys_dst_and_holiday_rules() -> None:
+    assert MockMarketDataProvider._equity_market_is_open(
+        as_of=datetime(2026, 7, 6, 13, 45, tzinfo=UTC)
+    )
+    assert not MockMarketDataProvider._equity_market_is_open(
+        as_of=datetime(2026, 7, 3, 14, 45, tzinfo=UTC)
+    )
 
 
 def test_explicit_mock_provider_uses_configured_profile(monkeypatch: pytest.MonkeyPatch) -> None:

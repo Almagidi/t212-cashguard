@@ -540,6 +540,11 @@ def _serialize_portfolio_coverage(report: Any) -> dict[str, Any]:
         "minimum_coverage_pct": float(report.minimum_coverage_pct),
         "retained_coverage_pct": float(report.retained_coverage_pct),
         "complete": report.complete,
+        "policy": report.policy,
+        "policy_id": report.policy_id,
+        "eligible": report.eligible,
+        "common_from": report.common_start.isoformat() if report.common_start else None,
+        "common_to": report.common_end.isoformat() if report.common_end else None,
         "expected_session_ids": list(report.expected_session_ids),
         "retained_session_ids": list(report.retained_session_ids),
         "dropped_session_ids": list(report.dropped_session_ids),
@@ -551,6 +556,9 @@ def _serialize_portfolio_coverage(report: Any) -> dict[str, Any]:
                 "missing_session_ids": list(item.missing_session_ids),
                 "extra_session_ids": list(item.extra_session_ids),
                 "coverage_pct": float(item.coverage_pct),
+                "longest_missing_run": item.longest_missing_run,
+                "first_valid_session_id": item.first_valid_session_id,
+                "last_valid_session_id": item.last_valid_session_id,
             }
             for item in report.symbols
         ],

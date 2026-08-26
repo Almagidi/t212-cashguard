@@ -5,7 +5,7 @@ Integration tests: full API flows via HTTP client.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -183,9 +183,16 @@ class FakePortfolioQuote:
 
 class FakePortfolioProvider:
     async def get_bars(
-        self, ticker: str, *, multiplier: int = 1, timespan: str = "day", limit: int = 50
+        self,
+        ticker: str,
+        *,
+        multiplier: int = 1,
+        timespan: str = "day",
+        from_date: date | None = None,
+        to_date: date | None = None,
+        limit: int = 50,
     ):
-        del multiplier, timespan
+        del multiplier, timespan, from_date, to_date
         base_map = {
             "SPY": Decimal("500"),
             "QQQ": Decimal("430"),
@@ -196,14 +203,18 @@ class FakePortfolioProvider:
             "QQQ": Decimal("0.8"),
             "IWM": Decimal("0.25"),
         }
-        now = datetime(2026, 4, 10, tzinfo=UTC)
-        start = now - timedelta(days=240)
+        from app.market_data.mock_provider import MockMarketDataProvider
+
+        daily_times = MockMarketDataProvider._equity_daily_bar_times(
+            bars=240,
+            as_of=datetime.now(UTC),
+        )
         all_bars = []
-        for idx in range(240):
+        for idx, bar_time in enumerate(daily_times):
             close = base_map.get(ticker, Decimal("100")) + slope_map.get(
                 ticker, Decimal("0.2")
             ) * Decimal(str(idx))
-            all_bars.append(FakePortfolioBar(start + timedelta(days=idx), close))
+            all_bars.append(FakePortfolioBar(bar_time, close))
         return all_bars[-limit:]
 
     async def get_quote(self, ticker: str):
@@ -223,15 +234,28 @@ class FakeRegimeProvider(FakePortfolioProvider):
         return None
 
     async def get_bars(
-        self, ticker: str, *, multiplier: int = 1, timespan: str = "day", limit: int = 50
+        self,
+        ticker: str,
+        *,
+        multiplier: int = 1,
+        timespan: str = "day",
+        from_date: date | None = None,
+        to_date: date | None = None,
+        limit: int = 50,
     ):
-        del ticker
+        del ticker, from_date, to_date
         now = datetime(2026, 4, 10, tzinfo=UTC)
         bars = []
         if timespan == "day":
-            for idx in range(limit):
+            from app.market_data.mock_provider import MockMarketDataProvider
+
+            daily_times = MockMarketDataProvider._equity_daily_bar_times(
+                bars=limit,
+                as_of=datetime.now(UTC),
+            )
+            for idx, bar_time in enumerate(daily_times):
                 close = Decimal("500") + Decimal(str(idx))
-                bars.append(FakePortfolioBar(now - timedelta(days=limit - idx), close))
+                bars.append(FakePortfolioBar(bar_time, close))
             return bars
         for idx in range(limit):
             close = Decimal("560") + Decimal(str(idx)) * Decimal("0.2")

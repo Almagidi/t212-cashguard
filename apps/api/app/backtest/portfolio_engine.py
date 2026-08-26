@@ -8,7 +8,7 @@ allocation research that more closely matches Trading 212 Pie workflows.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC
+from datetime import date, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any
@@ -16,11 +16,9 @@ from zoneinfo import ZoneInfo
 
 from app.backtest.data_contract import validate_bar_series
 from app.execution.paper_policy import evaluate_paper_fill
-from app.market_data.exchange_calendar import calendar_for_venue
+from app.market_data.exchange_calendar import TradingSession, calendar_for_venue
 
 if TYPE_CHECKING:
-    from datetime import date, datetime
-
     from app.strategies.indicators import Bar
 
 
@@ -104,6 +102,16 @@ class PortfolioCoveragePolicy:
                 f"minimum_coverage_pct must be between {MIN_PORTFOLIO_COVERAGE_PCT} and 100"
             )
 
+    @property
+    def name(self) -> str:
+        if self.minimum_coverage_pct == Decimal("100"):
+            return "strict_complete"
+        return "intersection_with_disclosure"
+
+    @property
+    def policy_id(self) -> str:
+        return f"portfolio_session_coverage:{self.name}:v1"
+
 
 @dataclass(frozen=True, slots=True)
 class SymbolSessionCoverage:
@@ -113,6 +121,9 @@ class SymbolSessionCoverage:
     missing_session_ids: tuple[str, ...]
     extra_session_ids: tuple[str, ...]
     coverage_pct: Decimal
+    longest_missing_run: int
+    first_valid_session_id: str | None
+    last_valid_session_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +135,11 @@ class PortfolioSessionCoverageReport:
     minimum_coverage_pct: Decimal
     retained_coverage_pct: Decimal
     complete: bool
+    policy: str
+    policy_id: str
+    eligible: bool
+    common_start: date | None
+    common_end: date | None
     expected_session_ids: tuple[str, ...]
     retained_session_ids: tuple[str, ...]
     dropped_session_ids: tuple[str, ...]
@@ -155,35 +171,158 @@ def _stddev(values: list[float]) -> float:
     return float(variance**0.5)
 
 
-def _align_histories(
+def _latest_completed_session(*, venue: str, as_of: datetime) -> TradingSession:
+    if as_of.tzinfo is None or as_of.utcoffset() is None:
+        raise ValueError("as_of must be timezone-aware")
+    calendar = calendar_for_venue(venue)
+    exchange_timezone = ZoneInfo(calendar.exchange_timezone)
+    local_date = as_of.astimezone(exchange_timezone).date()
+    sessions = calendar.expected_sessions(local_date - timedelta(days=14), local_date)
+    completed = [session for session in sessions if calendar.session_close(session) <= as_of]
+    if not completed:
+        raise ValueError("No completed exchange session is available for operational history.")
+    return completed[-1]
+
+
+def _ineligible_operational_report(
+    *,
+    venue: str,
+    latest_completed_date: date,
+) -> PortfolioSessionCoverageReport:
+    calendar = calendar_for_venue(venue)
+    session = calendar.expected_sessions(latest_completed_date, latest_completed_date)[0]
+    return PortfolioSessionCoverageReport(
+        calendar=calendar.venue,
+        exchange_timezone=calendar.exchange_timezone,
+        requested_start=latest_completed_date,
+        requested_end=latest_completed_date,
+        minimum_coverage_pct=Decimal("100"),
+        retained_coverage_pct=Decimal("0"),
+        complete=False,
+        policy="strict_complete",
+        policy_id="portfolio_session_coverage:strict_complete:v1",
+        eligible=False,
+        common_start=None,
+        common_end=None,
+        expected_session_ids=(session.session_id,),
+        retained_session_ids=(),
+        dropped_session_ids=(session.session_id,),
+        symbols=(),
+    )
+
+
+def _longest_missing_run(expected_dates: tuple[date, ...], observed_dates: set[date]) -> int:
+    longest = 0
+    current = 0
+    for session_date in expected_dates:
+        if session_date in observed_dates:
+            current = 0
+            continue
+        current += 1
+        longest = max(longest, current)
+    return longest
+
+
+def _align_operational_histories(
     histories: dict[str, tuple[list[Bar], list[datetime]]],
-) -> tuple[list[date], dict[str, list[Bar]]]:
-    """Align operational portfolio histories without changing its legacy contract."""
+    *,
+    universe: list[str],
+    as_of: datetime,
+    calendar_venue: str = "XNYS",
+) -> tuple[list[date], dict[str, list[Bar]], PortfolioSessionCoverageReport]:
+    """Build strict complete-session history for one operational decision.
 
-    date_maps: dict[str, dict[date, Bar]] = {}
-    common_dates: set[date] | None = None
-    for ticker, (bars, bar_times) in histories.items():
+    Daily provider bars are labelled by their exchange-local date. A bar for the
+    current not-yet-complete session is expected from some providers and is
+    excluded explicitly; every earlier expected session must then be present for
+    every requested symbol.
+    """
+
+    calendar = calendar_for_venue(calendar_venue)
+    latest_completed = _latest_completed_session(venue=calendar_venue, as_of=as_of)
+    latest_completed_date = latest_completed.local_date
+    expected_symbols = {ticker.upper() for ticker in universe}
+    observed_symbols = {ticker.upper() for ticker in histories}
+    if observed_symbols != expected_symbols:
+        report = _ineligible_operational_report(
+            venue=calendar_venue,
+            latest_completed_date=latest_completed_date,
+        )
+        raise InsufficientPortfolioEvidence(
+            report,
+            [
+                "operational portfolio history symbols must exactly match the requested universe: "
+                f"expected {sorted(expected_symbols)}, got {sorted(observed_symbols)}"
+            ],
+        )
+
+    exchange_timezone = ZoneInfo(calendar.exchange_timezone)
+    local_date = as_of.astimezone(exchange_timezone).date()
+    local_sessions = calendar.expected_sessions(local_date, local_date)
+    incomplete_session_date = None
+    if local_sessions and calendar.session_close(local_sessions[0]) > as_of:
+        incomplete_session_date = local_sessions[0].local_date
+
+    filtered_histories: dict[str, tuple[list[Bar], list[datetime]]] = {}
+    retained_dates: list[date] = []
+    for raw_ticker, (bars, bar_times) in histories.items():
+        ticker = raw_ticker.upper()
         validate_bar_series(bars, bar_times, label=f"portfolio bar series for {ticker}")
-        per_day: dict[date, Bar] = {}
-        for bar_time, bar in zip(bar_times, bars, strict=True):
-            bar_date = bar_time.astimezone(UTC).date()
-            if bar_date in per_day:
-                raise ValueError(
-                    f"portfolio bar series for {ticker}: duplicate date {bar_date.isoformat()}"
+        filtered_bars: list[Bar] = []
+        filtered_times: list[datetime] = []
+        seen_dates: set[date] = set()
+        for bar, bar_time in zip(bars, bar_times, strict=True):
+            bar_date = bar_time.astimezone(exchange_timezone).date()
+            if bar_date in seen_dates:
+                report = _ineligible_operational_report(
+                    venue=calendar_venue,
+                    latest_completed_date=latest_completed_date,
                 )
-            per_day[bar_date] = bar
-        date_maps[ticker] = per_day
-        ticker_dates = set(per_day)
-        common_dates = ticker_dates if common_dates is None else common_dates & ticker_dates
+                raise InsufficientPortfolioEvidence(
+                    report,
+                    [f"{ticker} has duplicate operational daily date {bar_date.isoformat()}"],
+                )
+            seen_dates.add(bar_date)
+            if bar_date == incomplete_session_date:
+                continue
+            filtered_bars.append(bar)
+            filtered_times.append(bar_time)
+            retained_dates.append(bar_date)
+        filtered_histories[ticker] = (filtered_bars, filtered_times)
 
-    if not common_dates:
-        raise ValueError("No common dates across the requested universe.")
-    ordered_dates = sorted(common_dates)
-    aligned = {
-        ticker: [date_maps[ticker][current_date] for current_date in ordered_dates]
-        for ticker in sorted(date_maps)
-    }
-    return ordered_dates, aligned
+    if not retained_dates:
+        report = _ineligible_operational_report(
+            venue=calendar_venue,
+            latest_completed_date=latest_completed_date,
+        )
+        raise InsufficientPortfolioEvidence(
+            report,
+            ["no completed operational portfolio sessions were supplied"],
+        )
+
+    requested_start = min(retained_dates)
+    if requested_start > latest_completed_date:
+        report = _ineligible_operational_report(
+            venue=calendar_venue,
+            latest_completed_date=latest_completed_date,
+        )
+        raise InsufficientPortfolioEvidence(
+            report,
+            [
+                "operational portfolio history contains no bar on or before the latest completed session"
+            ],
+        )
+
+    return _align_research_histories(
+        filtered_histories,
+        universe=sorted(expected_symbols),
+        start_date=requested_start,
+        end_date=latest_completed_date,
+        coverage_policy=PortfolioCoveragePolicy(
+            calendar_venue=calendar_venue,
+            minimum_coverage_pct=Decimal("100"),
+        ),
+    )
 
 
 def _align_research_histories(
@@ -234,6 +373,7 @@ def _align_research_histories(
             Decimal(len(covered_dates)) * Decimal("100") / Decimal(len(expected_dates))
         )
         coverage_pct = raw_coverage_pct.quantize(Decimal("0.01"))
+        ordered_covered_dates = sorted(covered_dates)
         symbol_reports.append(
             SymbolSessionCoverage(
                 ticker=ticker,
@@ -248,6 +388,17 @@ def _align_research_histories(
                     f"{calendar.venue}:{item.isoformat()}" for item in sorted(extra_dates)
                 ),
                 coverage_pct=coverage_pct,
+                longest_missing_run=_longest_missing_run(expected_dates, observed_dates),
+                first_valid_session_id=(
+                    f"{calendar.venue}:{ordered_covered_dates[0].isoformat()}"
+                    if ordered_covered_dates
+                    else None
+                ),
+                last_valid_session_id=(
+                    f"{calendar.venue}:{ordered_covered_dates[-1].isoformat()}"
+                    if ordered_covered_dates
+                    else None
+                ),
             )
         )
         if extra_dates:
@@ -286,6 +437,11 @@ def _align_research_histories(
         minimum_coverage_pct=coverage_policy.minimum_coverage_pct,
         retained_coverage_pct=retained_coverage_pct,
         complete=not reasons and not dropped_session_ids,
+        policy=coverage_policy.name,
+        policy_id=coverage_policy.policy_id,
+        eligible=not reasons,
+        common_start=ordered_dates[0] if ordered_dates else None,
+        common_end=ordered_dates[-1] if ordered_dates else None,
         expected_session_ids=expected_session_ids,
         retained_session_ids=retained_session_ids,
         dropped_session_ids=dropped_session_ids,
