@@ -414,13 +414,23 @@ async def test_portfolio_job_represents_coverage_failure_as_insufficient_evidenc
         date(2025, 2, 10),
     )[:20]
     session_dates = [session.local_date for session in sessions]
+    membership_requests: list[tuple[str, tuple[str, ...]]] = []
 
     async def fake_fetch(
         self: BacktestDataFetcher,
         ticker: str,
         **kwargs: object,
     ) -> tuple[list[Bar], list[datetime]]:
-        del self, kwargs
+        membership_requests.append(
+            (
+                str(kwargs["membership_source"]),
+                tuple(kwargs["universe"]),
+            )
+        )
+        self._manifests[ticker] = {
+            "manifest_id": f"manifest-{ticker}",
+            "canonical_sha256": f"content-{ticker}",
+        }
         omitted_index = 10 if ticker == "AAA" else 11
         observed_dates = [
             item for index, item in enumerate(session_dates) if index != omitted_index
@@ -442,6 +452,14 @@ async def test_portfolio_job_represents_coverage_failure_as_insufficient_evidenc
     assert payload["status"] == "complete"
     assert payload["verdict"] == "insufficient_evidence"
     assert payload["bars_used"] == 18
+    assert payload["datasets"] == [
+        {"manifest_id": "manifest-AAA", "canonical_sha256": "content-AAA"},
+        {"manifest_id": "manifest-BBB", "canonical_sha256": "content-BBB"},
+    ]
+    assert membership_requests == [
+        ("research_only_survivor_biased", ("AAA", "BBB")),
+        ("research_only_survivor_biased", ("AAA", "BBB")),
+    ]
     assert payload["coverage"]["retained_coverage_pct"] == 90.0
     assert len(payload["coverage"]["dropped_session_ids"]) == 2
     assert "traceback" not in payload
