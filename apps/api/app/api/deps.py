@@ -35,7 +35,7 @@ async def _resolve_token(
     if cg_token:
         return cg_token
     if credentials:
-        return cast(str, credentials.credentials)
+        return cast("str", credentials.credentials)
     return None
 
 
@@ -161,9 +161,10 @@ async def get_broker(
         return create_trading212_provider_adapter(
             BrokerProviderRequest(
                 broker_id="trading212",
-                environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                environment=cast("BrokerRuntimeEnvironment", conn.environment),
                 purpose="dependency",
                 user_id=current_user.id,
+                account_id=getattr(conn, "account_id", None),
             ),
             BrokerProviderCredentials(api_key=api_key, api_secret=api_secret),
             app_mode=settings.APP_MODE,

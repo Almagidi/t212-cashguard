@@ -8,6 +8,7 @@ _check_daily_loss_with_unrealized logic.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -491,77 +492,52 @@ class TestCheckDailyLoss:
 
 
 class TestEodFlatten:
+    @staticmethod
+    def _strategy():
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            venue="t212",
+            session_end="16:00",
+        )
+
+    async def test_not_due_avoids_broker_construction(self, db):
+        monitor = PositionMonitor(db)
+        with patch.object(
+            monitor,
+            "_get_broker",
+            new_callable=AsyncMock,
+            side_effect=AssertionError("broker must not be constructed before the due window"),
+        ):
+            result = await monitor.eod_flatten(
+                [self._strategy()],
+                now_utc=datetime(2026, 7, 6, 16, 5, tzinfo=UTC),
+            )
+        assert result["reason"] == "not_due"
+
     async def test_no_broker_returns_early(self, db):
         monitor = PositionMonitor(db)
         with patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=None):
-            result = await monitor.eod_flatten()
-        assert result == {"flattened": 0, "reason": "no_broker"}
+            result = await monitor.eod_flatten(
+                [self._strategy()],
+                now_utc=datetime(2026, 7, 6, 20, 5, tzinfo=UTC),
+            )
+        assert result["reason"] == "no_broker"
 
-    async def test_no_positions_flattens_zero(self, db):
-        broker = _FakeBroker(positions=[], account={"total": 10_000})
+    async def test_due_window_delegates_to_scoped_eod_service(self, db, monkeypatch):
+        monkeypatch.setattr(settings, "APP_MODE", "demo")
+        broker = _FakeBroker()
         monitor = PositionMonitor(db)
         with (
             patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=broker),
-            patch("app.services.position_monitor.ExecutionEngine") as MockEngine,
+            patch("app.services.position_monitor.EodFlattenService") as Service,
         ):
-            instance = MockEngine.return_value
-            instance.create_order_intent = AsyncMock()
-            instance.submit_order = AsyncMock()
-            result = await monitor.eod_flatten()
-        assert result["flattened"] == 0
-        instance.create_order_intent.assert_not_called()
+            Service.return_value.run = AsyncMock(return_value={"flattened": 1})
+            strategy = self._strategy()
+            result = await monitor.eod_flatten(
+                [strategy],
+                now_utc=datetime(2026, 7, 6, 20, 5, tzinfo=UTC),
+            )
 
-    async def test_flattens_positive_qty_positions(self, db):
-        positions = [
-            {"ticker": "AAPL", "quantity": 10, "currentPrice": 150.0, "averagePrice": 148.0},
-            {"ticker": "TSLA", "quantity": 5, "currentPrice": 200.0, "averagePrice": 195.0},
-            {"ticker": "ZERO", "quantity": 0, "currentPrice": 50.0},  # skipped
-        ]
-        broker = _FakeBroker(positions=positions, account={"total": 10_000})
-
-        mock_order = MagicMock()
-        mock_order.id = uuid.uuid4()
-
-        monitor = PositionMonitor(db)
-        with (
-            patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=broker),
-            patch("app.services.position_monitor.ExecutionEngine") as MockEngine,
-        ):
-            instance = MockEngine.return_value
-            instance.create_order_intent = AsyncMock(return_value=mock_order)
-            instance.submit_order = AsyncMock(return_value=mock_order)
-            result = await monitor.eod_flatten()
-
-        assert result["flattened"] == 2  # AAPL + TSLA, ZERO skipped
-        assert instance.create_order_intent.call_count == 2
-
-    async def test_eod_flatten_writes_audit_log(self, db):
-        from sqlalchemy import select
-
-        from app.db.models import AuditLog
-
-        broker = _FakeBroker(
-            positions=[{"ticker": "SPY", "quantity": 3, "currentPrice": 500.0}],
-            account={"total": 10_000},
-        )
-        mock_order = MagicMock()
-        mock_order.id = uuid.uuid4()
-
-        monitor = PositionMonitor(db)
-        with (
-            patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=broker),
-            patch("app.services.position_monitor.ExecutionEngine") as MockEngine,
-        ):
-            instance = MockEngine.return_value
-            instance.create_order_intent = AsyncMock(return_value=mock_order)
-            instance.submit_order = AsyncMock(return_value=mock_order)
-            await monitor.eod_flatten()
-
-        await db.commit()
-        logs = (
-            (await db.execute(select(AuditLog).where(AuditLog.action == "eod_flatten_executed")))
-            .scalars()
-            .all()
-        )
-        assert len(logs) == 1
-        assert logs[0].payload["flattened"] == 1
+        assert result == {"flattened": 1}
+        Service.assert_called_once_with(db, broker)
+        Service.return_value.run.assert_awaited_once()

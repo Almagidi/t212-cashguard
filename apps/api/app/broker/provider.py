@@ -7,6 +7,7 @@ sites remain responsible for credential lookup and safety-policy context.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -92,6 +93,7 @@ class BrokerProviderRequest:
     environment: BrokerRuntimeEnvironment
     purpose: BrokerProviderPurpose
     user_id: UUID | None = None
+    account_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -187,6 +189,20 @@ def validate_broker_provider_credentials(
     return credentials
 
 
+def trading212_account_scope(request: BrokerProviderRequest) -> str | None:
+    """Return one canonical, non-secret scope for the selected broker account.
+
+    The broker-reported account ID prevents credentials rotated to a different
+    account from inheriting the previous account's attributable fills. The raw
+    identifier is hashed before persistence or audit use.
+    """
+    if request.user_id is None or not request.account_id or not request.account_id.strip():
+        return None
+    raw_identity = f"{request.environment}:{request.user_id}:{request.account_id.strip()}"
+    digest = hashlib.sha256(raw_identity.encode()).hexdigest()[:32]
+    return f"trading212:{request.environment}:account:{digest}"
+
+
 def create_trading212_provider_adapter(
     request: BrokerProviderRequest,
     credentials: BrokerProviderCredentials,
@@ -209,8 +225,10 @@ def create_trading212_provider_adapter(
 
     from app.broker.trading212 import Trading212Adapter
 
-    return Trading212Adapter(
+    adapter = Trading212Adapter(
         validated_credentials.api_key,
         validated_credentials.api_secret,
         validated_request.environment,
     )
+    adapter.account_scope = trading212_account_scope(validated_request)
+    return adapter

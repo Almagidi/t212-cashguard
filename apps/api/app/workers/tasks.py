@@ -338,6 +338,7 @@ def reconcile_pending_orders(self: Any) -> dict[str, Any]:
                             environment=cast("BrokerRuntimeEnvironment", conn.environment),
                             purpose="worker_reconcile",
                             user_id=conn.user_id,
+                            account_id=getattr(conn, "account_id", None),
                         ),
                         BrokerProviderCredentials(
                             api_key=api_key,
@@ -439,6 +440,7 @@ def sync_account_snapshot(self: Any) -> dict[str, Any]:
                             environment=cast("BrokerRuntimeEnvironment", conn.environment),
                             purpose="worker_account_sync",
                             user_id=conn.user_id,
+                            account_id=getattr(conn, "account_id", None),
                         ),
                         BrokerProviderCredentials(
                             api_key=api_key,
@@ -505,9 +507,6 @@ def check_eod_flatten(self: Any) -> dict[str, Any]:
                     summary = {"flattened": 0, "reason": "kill_switch"}
                     return await _complete_task(db, "check_eod_flatten", summary)
 
-                now_utc = datetime.now(UTC)
-                current_hhmm = now_utc.strftime("%H:%M")
-
                 result2 = await db.execute(
                     select(Strategy).where(
                         Strategy.is_enabled,
@@ -516,14 +515,11 @@ def check_eod_flatten(self: Any) -> dict[str, Any]:
                     )
                 )
                 strategies = result2.scalars().all()
-                should_flatten = any(current_hhmm >= st.session_end for st in strategies)
-
-                if not should_flatten:
-                    summary = {"flattened": 0, "reason": "not_due"}
-                    return await _complete_task(db, "check_eod_flatten", summary)
-
                 monitor = PositionMonitor(db)
-                result3 = await monitor.eod_flatten()
+                result3 = await monitor.eod_flatten(
+                    list(strategies),
+                    now_utc=datetime.now(UTC),
+                )
                 return await _complete_task(db, "check_eod_flatten", result3)
 
     return run_monitored_task("check_eod_flatten", _run)
@@ -653,6 +649,7 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
                             environment=cast("BrokerRuntimeEnvironment", conn.environment),
                             purpose="worker_cancel_timed_out_orders",
                             user_id=conn.user_id,
+                            account_id=getattr(conn, "account_id", None),
                         ),
                         BrokerProviderCredentials(
                             api_key=api_key,
@@ -994,6 +991,7 @@ def track_cfd_funding(self: Any) -> dict[str, Any]:
                             environment=cast("BrokerRuntimeEnvironment", conn.environment),
                             purpose="worker_cfd_funding",
                             user_id=conn.user_id,
+                            account_id=getattr(conn, "account_id", None),
                         ),
                         BrokerProviderCredentials(
                             api_key=api_key,

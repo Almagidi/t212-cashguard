@@ -193,6 +193,61 @@ async def test_execution_engine_allows_distinct_recent_intent(db):
 
 
 @pytest.mark.asyncio
+async def test_execution_engine_stable_operation_identity_survives_terminal_order(db):
+    engine = ExecutionEngine(db, DummyBroker())
+    operation_identity = "eod_flatten:strategy-1:t212:2026-07-06:AAPL"
+
+    first = await engine.create_order_intent(
+        ticker="AAPL",
+        side="sell",
+        order_type="market",
+        quantity=Decimal("2"),
+        is_dry_run=True,
+        stable_operation_identity=operation_identity,
+    )
+    first.status = "filled"
+    first.filled_quantity = first.quantity
+    await db.flush()
+
+    replay = await engine.create_order_intent(
+        ticker="AAPL",
+        side="sell",
+        order_type="market",
+        quantity=Decimal("2"),
+        is_dry_run=True,
+        stable_operation_identity=operation_identity,
+    )
+
+    assert replay.id == first.id
+    assert replay.client_order_key == first.client_order_key
+
+
+@pytest.mark.asyncio
+async def test_execution_engine_distinct_operation_identities_do_not_deduplicate(db):
+    engine = ExecutionEngine(db, DummyBroker())
+
+    first = await engine.create_order_intent(
+        ticker="AAPL",
+        side="sell",
+        order_type="market",
+        quantity=Decimal("2"),
+        is_dry_run=True,
+        stable_operation_identity="eod_flatten:strategy-1:t212:2026-07-06:AAPL",
+    )
+    second = await engine.create_order_intent(
+        ticker="AAPL",
+        side="sell",
+        order_type="market",
+        quantity=Decimal("2"),
+        is_dry_run=True,
+        stable_operation_identity="eod_flatten:strategy-1:t212:2026-07-07:AAPL",
+    )
+
+    assert second.id != first.id
+    assert second.client_order_key != first.client_order_key
+
+
+@pytest.mark.asyncio
 async def test_execution_engine_records_execution_quality_and_slippage_alert(db):
     engine = ExecutionEngine(db, FilledBroker())
 

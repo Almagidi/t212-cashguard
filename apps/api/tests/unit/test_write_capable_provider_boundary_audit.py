@@ -221,9 +221,9 @@ def test_position_monitor_is_provider_backed_and_write_capable_for_exits_and_eod
     assert "BrokerProviderCredentials" in source
     assert "worker_position_monitor" in ast.unparse(get_broker)
     assert {"create_order_intent", "submit_order"} <= _call_names(monitor_position)
-    assert {"get_positions", "create_order_intent", "submit_order"} <= _call_names(eod_flatten)
+    assert {"EodFlattenService", "eod_due_window", "run"} <= _call_names(eod_flatten)
     assert _source_contains(monitor_position, "side='sell'")
-    assert _source_contains(eod_flatten, "side='sell'")
+    assert "get_positions" not in _call_names(eod_flatten)
 
 
 def test_strategy_runner_is_provider_backed_and_write_capable_for_entries_and_exits() -> None:
