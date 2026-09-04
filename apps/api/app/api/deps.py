@@ -35,7 +35,7 @@ async def _resolve_token(
     if cg_token:
         return cg_token
     if credentials:
-        return cast("str", credentials.credentials)
+        return credentials.credentials
     return None
 
 
