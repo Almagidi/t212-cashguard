@@ -959,6 +959,14 @@ def track_cfd_funding(self: Any) -> dict[str, Any]:
                     log.warning("track_cfd_funding.no_broker")
                     return await _complete_task(db, "track_cfd_funding", {"recorded": 0})
                 try:
+                    require_broker_environment(conn.environment, action="worker cfd funding")
+                except SafetyPolicyViolation as exc:
+                    return await _complete_task(
+                        db,
+                        "track_cfd_funding",
+                        {"recorded": 0, "skipped": exc.decision_code, "reason": exc.reason},
+                    )
+                try:
                     api_key = decrypt_field(conn.api_key_encrypted)
                     api_secret = decrypt_field(conn.api_secret_encrypted)
                 except CredentialDecryptionError as exc:
@@ -975,14 +983,6 @@ def track_cfd_funding(self: Any) -> dict[str, Any]:
                         db,
                         "track_cfd_funding",
                         {"recorded": 0, "skipped": "credential_error"},
-                    )
-                try:
-                    require_broker_environment(conn.environment, action="worker cfd funding")
-                except SafetyPolicyViolation as exc:
-                    return await _complete_task(
-                        db,
-                        "track_cfd_funding",
-                        {"recorded": 0, "skipped": exc.decision_code, "reason": exc.reason},
                     )
                 try:
                     trading212_broker = create_trading212_provider_adapter(

@@ -252,7 +252,13 @@ def test_provider_not_called_before_live_disabled_mismatch_is_rejected(
     summaries: list[dict[str, Any]] = []
     fake_db = FakeSession(results=[_active_conn(environment="live")])
     _install_session(monkeypatch, fake_db, summaries)
-    _install_decrypt(monkeypatch)
+    decrypt_calls: list[str] = []
+
+    def forbidden_decrypt(value: str) -> str:
+        decrypt_calls.append(value)
+        raise AssertionError("environment policy must run before credential decryption")
+
+    monkeypatch.setattr("app.core.security.decrypt_field", forbidden_decrypt)
     monkeypatch.setattr(settings, "APP_MODE", "live")
     monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
     monkeypatch.setattr(
@@ -267,6 +273,7 @@ def test_provider_not_called_before_live_disabled_mismatch_is_rejected(
     }
 
     assert provider_calls == []
+    assert decrypt_calls == []
     assert RecordingBroker.positions_calls == 0
     assert fake_db.added == []
 

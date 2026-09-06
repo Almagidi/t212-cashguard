@@ -312,8 +312,8 @@ class DemoReconciliationScheduler:
             run_on_startup=settings.DEMO_RECONCILIATION_SCHEDULER_RUN_ON_STARTUP,
             last_run_started_at=self._parse_datetime(latest.get("started_at")),
             last_run_finished_at=self._parse_datetime(latest.get("finished_at")),
-            last_run_duration_ms=cast(int | None, latest.get("duration_ms")),
-            last_run_outcome=cast(str | None, latest.get("outcome")),
+            last_run_duration_ms=cast("int | None", latest.get("duration_ms")),
+            last_run_outcome=cast("str | None", latest.get("outcome")),
             last_run_summary=last_summary if isinstance(last_summary, dict) else None,
             next_run_at=self._parse_datetime(latest.get("next_run_at")),
             next_run_not_before=self._parse_datetime(latest.get("next_run_not_before")),
@@ -323,7 +323,7 @@ class DemoReconciliationScheduler:
             total_successful_runs=int(latest.get("total_successful_runs") or 0),
             total_failed_runs=int(latest.get("total_failed_runs") or 0),
             total_rate_limited_runs=int(latest.get("total_rate_limited_runs") or 0),
-            last_error_message=cast(str | None, latest.get("last_error_message")),
+            last_error_message=cast("str | None", latest.get("last_error_message")),
             safety_state="safe" if not warnings else "blocked",
             warnings=warnings,
             no_broker_order_sent=True,
@@ -378,7 +378,7 @@ class DemoReconciliationScheduler:
             total_successful_runs=int(previous.get("total_successful_runs") or 0),
             total_failed_runs=int(previous.get("total_failed_runs") or 0),
             total_rate_limited_runs=int(previous.get("total_rate_limited_runs") or 0),
-            last_error_message=cast(str | None, previous.get("last_error_message")),
+            last_error_message=cast("str | None", previous.get("last_error_message")),
         )
         audit_id = await self._audit(
             "demo_reconciliation_scheduler_tick_skipped",
@@ -541,11 +541,11 @@ class DemoReconciliationScheduler:
 
     @staticmethod
     def _result_payload(result: DemoReconciliationSchedulerRunResult) -> dict[str, Any]:
-        return cast(dict[str, Any], to_jsonable(asdict(result)))
+        return cast("dict[str, Any]", to_jsonable(asdict(result)))
 
     @staticmethod
     def _worker_summary_payload(summary: DemoReconciliationWorkerRunSummary) -> dict[str, Any]:
-        return cast(dict[str, Any], to_jsonable(asdict(summary)))
+        return cast("dict[str, Any]", to_jsonable(asdict(summary)))
 
     @staticmethod
     def _parse_datetime(value: object) -> datetime | None:
@@ -610,8 +610,8 @@ async def start_global_demo_reconciliation_scheduler() -> asyncio.Task[None] | N
 
         while True:
             try:
-                api_key = settings.T212_DEMO_API_KEY or settings.T212_API_KEY
-                api_secret = settings.T212_DEMO_API_SECRET or settings.T212_API_SECRET
+                api_key = settings.T212_DEMO_API_KEY
+                api_secret = settings.T212_DEMO_API_SECRET
                 if not api_key or not api_secret:
                     log.warning("demo_reconciliation_scheduler.credentials_missing")
                 else:

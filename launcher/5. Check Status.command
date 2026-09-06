@@ -169,7 +169,8 @@ echo ""
 echo "  Configuration:"
 if [ -f "$PROJECT_ROOT/.env" ]; then
     MODE="${APP_MODE:-mock}"
-    T212="${T212_API_KEY:-}"
+    T212_DEMO_CONFIGURED=false
+    [ -n "${T212_DEMO_API_KEY:-}" ] && T212_DEMO_CONFIGURED=true
     POLY="${POLYGON_API_KEY:-}"
     T212_ENV="${T212_ENVIRONMENT:-demo}"
 
@@ -179,9 +180,9 @@ if [ -f "$PROJECT_ROOT/.env" ]; then
         *)    echo -e "  Mode:         ${CYAN}MOCK (simulated data)${RESET}" ;;
     esac
 
-    [ -n "$T212" ] && \
-        echo "  Trading 212:  ✓ Key set (${T212_ENV} environment)" || \
-        echo -e "  Trading 212:  ${YELLOW}⚠  Not configured${RESET}"
+    [ "$T212_DEMO_CONFIGURED" = true ] && \
+        echo "  Trading 212:  ✓ Demo credential configured (${T212_ENV} environment)" || \
+        echo -e "  Trading 212:  ${YELLOW}⚠  Demo credential not configured${RESET}"
     [ -n "$POLY" ] && \
         echo "  Polygon.io:   ✓ Key set" || \
         echo -e "  Polygon.io:   ${YELLOW}⚠  Not configured (using simulated/backfill data)${RESET}"

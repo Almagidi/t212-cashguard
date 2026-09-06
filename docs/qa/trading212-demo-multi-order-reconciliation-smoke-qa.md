@@ -23,7 +23,7 @@ This milestone verifies the reliability layer after controlled DEMO order placem
 - Does not enable live trading.
 
 
-> Credential note: the smoke script prefers `T212_DEMO_API_KEY` and `T212_DEMO_API_SECRET`. It falls back to generic `T212_API_KEY` and `T212_API_SECRET` only if the demo-specific names are absent.
+> Credential note: the smoke script accepts only `T212_DEMO_API_KEY` and `T212_DEMO_API_SECRET`. Generic and live credential variables are ignored.
 
 ## Required Env Vars
 

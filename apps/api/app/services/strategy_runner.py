@@ -230,6 +230,12 @@ class StrategyRunner:
         from app.core.security import CredentialDecryptionError, decrypt_field
 
         try:
+            require_broker_environment(conn.environment, action="strategy runner broker access")
+        except SafetyPolicyViolation as exc:
+            log.error("runner.broker_policy_block", reason=exc.reason)
+            return None
+
+        try:
             api_key = decrypt_field(conn.api_key_encrypted)
             api_secret = decrypt_field(conn.api_secret_encrypted)
         except CredentialDecryptionError as exc:
@@ -240,11 +246,6 @@ class StrategyRunner:
                 str(exc),
                 actor="strategy_runner",
             )
-            return None
-        try:
-            require_broker_environment(conn.environment, action="strategy runner broker access")
-        except SafetyPolicyViolation as exc:
-            log.error("runner.broker_policy_block", reason=exc.reason)
             return None
         try:
             return create_trading212_provider_adapter(

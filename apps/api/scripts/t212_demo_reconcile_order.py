@@ -55,8 +55,8 @@ async def main() -> int:
     if not order_id_raw and not broker_order_id:
         raise SystemExit("Set T212_DEMO_RECONCILE_ORDER_ID or T212_DEMO_RECONCILE_BROKER_ORDER_ID.")
 
-    api_key = _env("T212_API_KEY")
-    api_secret = _env("T212_API_SECRET")
+    api_key = _env("T212_DEMO_API_KEY")
+    api_secret = _env("T212_DEMO_API_SECRET")
 
     print("Trading 212 DEMO order reconciliation")
     print("Mode: demo")

@@ -546,7 +546,13 @@ async def test_get_broker_policy_rejection_happens_before_adapter_construction(
     db = FakeSession(results=[conn])
     service = StrategyRunner(db)
     monkeypatch.setattr(settings, "APP_MODE", "demo")
-    monkeypatch.setattr(security_module, "decrypt_field", _decrypt)
+    decrypt_calls: list[str] = []
+
+    def forbidden_decrypt(value: str) -> str:
+        decrypt_calls.append(value)
+        raise AssertionError("environment policy must run before credential decryption")
+
+    monkeypatch.setattr(security_module, "decrypt_field", forbidden_decrypt)
     monkeypatch.setattr("app.broker.trading212.Trading212Adapter", _adapter_sentinel)
     monkeypatch.setattr(
         strategy_runner,
@@ -567,11 +573,12 @@ async def test_get_broker_policy_rejection_happens_before_adapter_construction(
 
     assert broker is None
     assert gate_calls == [("live", "strategy runner broker access")]
+    assert decrypt_calls == []
     assert RecordingTrading212Adapter.constructed == []
 
 
 @pytest.mark.asyncio
-async def test_get_broker_calls_provider_after_lookup_decrypt_and_environment_gate(
+async def test_get_broker_calls_provider_after_lookup_environment_gate_and_decrypt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -616,9 +623,9 @@ async def test_get_broker_calls_provider_after_lookup_decrypt_and_environment_ga
     assert isinstance(broker, RecordingTrading212Adapter)
     assert events == [
         "db_execute",
+        "gate:live:strategy runner broker access",
         "decrypt:encrypted-live-key",
         "decrypt:encrypted-live-secret",
-        "gate:live:strategy runner broker access",
         "provider:live:worker_strategy_runner",
     ]
     assert provider_calls[0]["request"].broker_id == "trading212"

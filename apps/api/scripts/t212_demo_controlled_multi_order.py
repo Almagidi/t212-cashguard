@@ -61,7 +61,7 @@ class OrderPlanItem:
 class Credentials:
     api_key: str
     api_secret: str
-    source: Literal["demo-specific", "generic-fallback"]
+    source: Literal["demo-specific"]
 
 
 @dataclass(frozen=True)
@@ -147,14 +147,9 @@ def require_safety_env(env: Mapping[str, str] = os.environ) -> None:
 
 
 def select_credentials(env: Mapping[str, str] = os.environ) -> Credentials:
-    demo_key = _env_value(env, "T212_DEMO_API_KEY")
-    demo_secret = _env_value(env, "T212_DEMO_API_SECRET")
-    if demo_key and demo_secret:
-        return Credentials(demo_key, demo_secret, "demo-specific")
-
-    api_key = _require_env(env, "T212_API_KEY")
-    api_secret = _require_env(env, "T212_API_SECRET")
-    return Credentials(api_key, api_secret, "generic-fallback")
+    demo_key = _require_env(env, "T212_DEMO_API_KEY")
+    demo_secret = _require_env(env, "T212_DEMO_API_SECRET")
+    return Credentials(demo_key, demo_secret, "demo-specific")
 
 
 def ensure_demo_adapter_environment(environment: str) -> None:

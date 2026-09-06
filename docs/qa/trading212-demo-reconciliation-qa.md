@@ -48,8 +48,8 @@ Run from the repo root after the controlled demo-order DB contains the local
 order to reconcile. Use either the local order id or broker order id.
 
 ```bash
-T212_API_KEY=... \
-T212_API_SECRET=... \
+T212_DEMO_API_KEY=... \
+T212_DEMO_API_SECRET=... \
 T212_DEMO_RECONCILE_CONFIRM=READ_DEMO_ORDER_HISTORY \
 T212_DEMO_RECONCILE_BROKER_ORDER_ID=48850886521 \
 make t212-demo-reconcile-order

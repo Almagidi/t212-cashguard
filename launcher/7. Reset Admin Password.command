@@ -21,12 +21,11 @@ $PYTHON "$PROJECT_ROOT/reset_password.py"
 STATUS=$?
 
 if [ $STATUS -eq 0 ]; then
-    PW=$(grep "^ADMIN_PASSWORD=" "$PROJECT_ROOT/.env" | cut -d= -f2)
     echo ""
     echo -e "${GREEN}  ✓ Done! Login at http://localhost:3000${RESET}"
     echo ""
     echo "  Email:    admin@localhost"
-    echo "  Password: $PW"
+    echo "  Password: reset to the configured value (not displayed)"
 else
     echo ""
     echo -e "${RED}  ✗ Reset failed — check that the app is running${RESET}"

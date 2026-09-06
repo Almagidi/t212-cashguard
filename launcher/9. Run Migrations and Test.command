@@ -56,6 +56,12 @@ if [ -f "$PROJECT_ROOT/.env" ]; then
   set +a
 fi
 
+# This maintenance launcher may start an API process, so it always forces the
+# broker-isolated test boundary regardless of values inherited from .env.
+export APP_MODE=mock
+export MARKET_DATA_PROVIDER=mock
+export LIVE_TRADING_ENABLED=false
+
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@localhost}"
 POSTGRES_USER="${POSTGRES_USER:-cashguard}"
 

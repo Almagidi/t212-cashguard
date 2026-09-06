@@ -69,8 +69,6 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = "change-me"
 
     # Trading 212
-    T212_API_KEY: str = ""
-    T212_API_SECRET: str = ""
     T212_DEMO_API_KEY: str = ""
     T212_DEMO_API_SECRET: str = ""
     T212_LIVE_API_KEY: str = ""

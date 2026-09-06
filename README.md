@@ -2,7 +2,7 @@
 
 A **cash-only, local-first** intraday trading automation platform for [Trading 212](https://www.trading212.com/).
 
-> **Safety first.** This application will never connect to your bank, initiate deposits, use leverage, exceed your available cash balance, or enable live trading without your explicit action.
+> **Safety first.** This application will never connect to your bank, initiate deposits, use leverage, exceed your available cash balance, or enable live trading through supported launchers.
 
 ---
 
@@ -19,7 +19,7 @@ A **cash-only, local-first** intraday trading automation platform for [Trading 2
 - **Cash-only enforcement** — every order is gated against available cash, hardcoded, cannot be disabled
 - **Mock mode** — runs fully without any Trading 212 credentials
 - **Demo mode** — connects to Trading 212 demo environment for real API testing
-- **Live mode** — explicitly gated, off by default, requires env var + manual confirmation
+- **Live mode** — prohibited during the current safety-remediation programme
 - **Opening Range Breakout** strategy (working implementation)
 - **Portfolio Research Lab** — daily-bar portfolio backtests for five lower-friction long-only strategies
 - **Hard risk engine** — kill switch, daily loss limit, position sizing, consecutive loss stop, dedup
@@ -46,6 +46,15 @@ A **cash-only, local-first** intraday trading automation platform for [Trading 2
 git clone <repo> t212-cashguard
 cd t212-cashguard
 cp .env.example .env
+```
+
+The checked-in configuration is deliberately broker-isolated even if external
+provider keys already exist in your shell:
+
+```bash
+APP_MODE=mock
+MARKET_DATA_PROVIDER=mock
+LIVE_TRADING_ENABLED=false
 ```
 
 Edit `.env` and set secure values for:
@@ -122,7 +131,8 @@ make demo-mock
 Open `http://localhost:3002/app/operator`, sign in with
 `admin@localhost` / `change-me`, and confirm the page shows Paper-only, Mock
 execution, No broker order sent, and Live disabled. This flow is separate from
-normal demo/live Trading 212 credential setup.
+an explicitly configured demo connection. Live Trading 212 setup is not
+supported during the safety-remediation programme.
 
 ---
 
@@ -132,6 +142,7 @@ normal demo/live Trading 212 credential setup.
 
 ```bash
 APP_MODE=mock
+MARKET_DATA_PROVIDER=mock
 ```
 
 All broker calls return realistic fake data. Safe for UI development and testing. Orders are simulated locally as dry-runs. Mock broker status is synthetic and does not mean a real Trading 212 account is connected.
@@ -140,31 +151,18 @@ All broker calls return realistic fake data. Safe for UI development and testing
 
 ```bash
 APP_MODE=demo
-T212_API_KEY=your-demo-key
-T212_API_SECRET=your-demo-secret
 T212_ENVIRONMENT=demo
 ```
 
-Connects to Trading 212 demo environment. Real API calls, no real money.
+Mode selection does not store credentials. Start the app, sign in, and add a
+demo connection on the Broker page; the application encrypts it before database
+storage. Demo mode can make real API calls to the demo endpoint, but not real-money trades.
 
-### Live Mode (real trades — explicit gating required)
+### Live Mode
 
-```bash
-APP_MODE=live
-T212_API_KEY=your-live-key
-T212_API_SECRET=your-live-secret
-T212_ENVIRONMENT=live
-```
-
-> **WARNING**: Live mode places real orders with real money. It requires:
-> 1. `APP_MODE=live` in server environment
-> 2. `LIVE_TRADING_ENABLED=true` in `.env`
-> 3. A live Trading 212 connection that has passed a recent broker test
-> 4. Telegram supervision configured and verified
-> 5. Demo soak review, broker review, Telegram review, and kill-switch drill recorded on the Settings page
-> 6. Explicit live unlock in the Settings page before auto-trading can be resumed
->
-> Live mode shows persistent red banners throughout the UI.
+Live trading is prohibited during the current safety-remediation programme.
+No supported launcher collects live credentials, writes live settings, or starts
+the application with live trading enabled.
 
 ---
 
@@ -193,9 +191,8 @@ See [`.env.example`](.env.example) for the full list. Key variables:
 | `REDIS_URL` | Redis URL with auth | localhost default |
 | `ADMIN_EMAIL` | First admin account email | `admin@localhost` |
 | `ADMIN_PASSWORD` | First admin account password | `change-me` |
-| `T212_API_KEY` | Trading 212 API key | empty |
-| `T212_API_SECRET` | Trading 212 API secret | empty |
 | `T212_ENVIRONMENT` | `demo` or `live` | `demo` |
+| `MARKET_DATA_PROVIDER` | Market-data provider selected explicitly for this runtime | `mock` |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token | empty |
 | `TELEGRAM_CHAT_ID` | Telegram alert chat id | empty |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | CSV allowlist for Telegram control chats | empty |

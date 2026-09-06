@@ -68,8 +68,8 @@ async def main() -> int:
     if _live_enabled():
         raise SystemExit("Refusing to run: LIVE_TRADING_ENABLED must be false")
 
-    api_key = _env("T212_API_KEY")
-    api_secret = _env("T212_API_SECRET")
+    api_key = _env("T212_DEMO_API_KEY")
+    api_secret = _env("T212_DEMO_API_SECRET")
 
     print("Trading 212 demo read-only smoke")
     print("Mode: demo")

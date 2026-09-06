@@ -15,7 +15,7 @@ Validate a terminal-only, explicitly confirmed Trading 212 demo order path throu
 - `LIVE_TRADING_ENABLED=false`
 - `T212_DEMO_ORDER_ENABLED=true`
 - `T212_DEMO_ORDER_CONFIRM=PLACE_DEMO_ORDER`
-- Manual `T212_API_KEY` and `T212_API_SECRET` loaded only in terminal
+- Manual `T212_DEMO_API_KEY` and `T212_DEMO_API_SECRET` loaded only in terminal
 - Disposable SQLite DB: `/tmp/t212_demo_controlled_order.db`
 - Kill switch disabled only in the disposable demo-order DB
 - Auto-trading enabled only in the disposable demo-order DB
