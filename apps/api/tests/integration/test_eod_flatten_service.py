@@ -164,6 +164,34 @@ async def test_flattens_only_strategy_attributable_quantity_and_leaves_manual_ho
 
 
 @pytest.mark.asyncio
+async def test_live_mode_is_rejected_before_any_broker_access(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "live")
+    await _ready_settings(db)
+    strategy = await _strategy(db, "Live EOD prohibited")
+    await _filled_strategy_order(db, strategy, ticker="AAPL", side="buy", quantity="2")
+    broker = SnapshotOnlyBroker(
+        [{"ticker": "AAPL", "quantity": "2", "maxSell": "2", "currentPrice": "190"}]
+    )
+
+    summary = await EodFlattenService(db, broker).run([strategy], now_utc=DUE_AT)
+
+    assert summary == {
+        "flattened": 0,
+        "operations_created": 0,
+        "manual_reconciliation_required": 0,
+        "reentries_blocked": 0,
+        "reason": "live_eod_prohibited",
+    }
+    assert await db.scalar(select(func.count()).select_from(EodFlattenOperation)) == 0
+    assert await db.scalar(select(func.count()).select_from(RiskEvent)) == 0
+    assert await db.scalar(select(func.count()).select_from(Alert)) == 0
+    assert broker.read_calls == 0
+    assert broker.write_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_shared_ticker_strategies_get_distinct_scoped_orders_without_over_liquidation(
     db,
 ) -> None:
@@ -199,6 +227,44 @@ async def test_shared_ticker_strategies_get_distinct_scoped_orders_without_over_
     assert [order.quantity for order in orders] == [Decimal("2"), Decimal("3")]
     assert sum((order.quantity for order in orders), Decimal("0")) == Decimal("5")
     assert broker.write_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_shared_ticker_aggregate_above_broker_quantity_fails_closed_for_all_strategies(
+    db,
+) -> None:
+    await _ready_settings(db)
+    first = await _strategy(db, "Aggregate one")
+    second = await _strategy(db, "Aggregate two")
+    await _filled_strategy_order(db, first, ticker="MSFT", side="buy", quantity="5")
+    await _filled_strategy_order(db, second, ticker="MSFT", side="buy", quantity="6")
+    broker = SnapshotOnlyBroker(
+        [{"ticker": "MSFT", "quantity": "8", "maxSell": "8", "currentPrice": "410"}]
+    )
+
+    summary = await EodFlattenService(db, broker).run([first, second], now_utc=DUE_AT)
+
+    operations = (
+        (await db.execute(select(EodFlattenOperation).order_by(EodFlattenOperation.strategy_id)))
+        .scalars()
+        .all()
+    )
+    assert summary["flattened"] == 0
+    assert summary["operations_created"] == 2
+    assert summary["manual_reconciliation_required"] == 2
+    assert len(operations) == 2
+    assert all(operation.order_id is None for operation in operations)
+    assert all(operation.status == "manual_reconciliation_required" for operation in operations)
+    assert all(operation.requires_manual_reconciliation is True for operation in operations)
+    reasons = {operation.details["reason"] for operation in operations}
+    assert len(reasons) == 1
+    reason = reasons.pop()
+    assert reason.startswith("Attributable quantity 11")
+    assert reason.endswith("exceeds broker sellable quantity 8.")
+    assert await db.scalar(select(func.count()).select_from(RiskEvent)) == 2
+    assert await db.scalar(select(func.count()).select_from(Alert)) == 2
+    assert broker.read_calls == 1
+    assert broker.write_calls == 0
 
 
 @pytest.mark.asyncio

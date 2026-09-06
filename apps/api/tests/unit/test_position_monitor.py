@@ -523,6 +523,24 @@ class TestEodFlatten:
             )
         assert result["reason"] == "no_broker"
 
+    async def test_paper_mode_without_authoritative_broker_fails_closed(self, db, monkeypatch):
+        monkeypatch.setattr(settings, "APP_MODE", "paper")
+        monitor = PositionMonitor(db)
+        with patch("app.services.position_monitor.EodFlattenService") as service:
+            result = await monitor.eod_flatten(
+                [self._strategy()],
+                now_utc=datetime(2026, 7, 6, 20, 5, tzinfo=UTC),
+            )
+
+        assert result == {
+            "flattened": 0,
+            "operations_created": 0,
+            "manual_reconciliation_required": 0,
+            "reentries_blocked": 0,
+            "reason": "no_broker",
+        }
+        service.assert_not_called()
+
     async def test_due_window_delegates_to_scoped_eod_service(self, db, monkeypatch):
         monkeypatch.setattr(settings, "APP_MODE", "demo")
         broker = _FakeBroker()
