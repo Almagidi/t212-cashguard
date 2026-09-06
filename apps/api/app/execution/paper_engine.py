@@ -621,6 +621,7 @@ class PaperExecutionEngine:
             quantity=quantity,
             status="pending_intent",
             execution_environment=PAPER_EXECUTION_ENVIRONMENT,
+            broker_account_scope=f"paper:mock:user:{user.id}",
             expected_fill_price=body.estimated_price,
             fee_amount=decision.fee_amount,
             venue=body.venue,

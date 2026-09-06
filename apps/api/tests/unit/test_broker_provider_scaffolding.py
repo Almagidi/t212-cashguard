@@ -622,7 +622,33 @@ def test_valid_demo_trading212_provider_request_constructs_adapter_with_supplied
 
     assert isinstance(adapter, RecordingTrading212Adapter)
     assert adapter.environment == "demo"
+    assert adapter.account_scope is None
     assert RecordingTrading212Adapter.calls == [("demo-key", "demo-secret", "demo")]
+
+
+def test_user_scoped_provider_assigns_non_secret_account_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.broker.trading212 as trading212
+
+    monkeypatch.setattr(trading212, "Trading212Adapter", RecordingTrading212Adapter)
+    user_id = uuid.uuid4()
+    adapter = create_trading212_provider_adapter(
+        BrokerProviderRequest(
+            broker_id="trading212",
+            environment="demo",
+            purpose="worker_position_monitor",
+            user_id=user_id,
+            account_id="ACCOUNT-123",
+        ),
+        BrokerProviderCredentials(api_key="demo-key", api_secret="demo-secret"),
+        app_mode="demo",
+        live_trading_enabled=False,
+    )
+
+    assert adapter.account_scope is not None
+    assert adapter.account_scope.startswith("trading212:demo:account:")
+    assert "ACCOUNT-123" not in adapter.account_scope
 
 
 def test_live_adapter_construction_blocked_without_live_trading_flag(

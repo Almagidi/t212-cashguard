@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from sqlalchemy import select
 
@@ -123,8 +123,10 @@ def require_broker_environment(
 
 
 async def _get_app_settings(db: Any) -> AppSettings | None:
-    result = await db.execute(select(AppSettings).where(AppSettings.id == 1))
-    return result.scalar_one_or_none()
+    result = await db.execute(
+        select(AppSettings).where(AppSettings.id == 1).execution_options(populate_existing=True)
+    )
+    return cast("AppSettings | None", result.scalar_one_or_none())
 
 
 async def audit_safety_decision(
@@ -153,6 +155,7 @@ async def audit_safety_decision(
                 "quantity": str(order.quantity),
                 "order_id": str(order.id),
                 "execution_environment": order.execution_environment,
+                "broker_account_scope": order.broker_account_scope,
                 "is_dry_run": order.is_dry_run,
             }
         )

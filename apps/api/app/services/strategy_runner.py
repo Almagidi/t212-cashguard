@@ -253,6 +253,7 @@ class StrategyRunner:
                     environment=cast("BrokerRuntimeEnvironment", conn.environment),
                     purpose="worker_strategy_runner",
                     user_id=conn.user_id,
+                    account_id=getattr(conn, "account_id", None),
                 ),
                 BrokerProviderCredentials(
                     api_key=api_key,

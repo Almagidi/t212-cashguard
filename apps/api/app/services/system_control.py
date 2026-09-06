@@ -121,6 +121,7 @@ class SystemControlService:
                     environment=cast("BrokerRuntimeEnvironment", conn.environment),
                     purpose=purpose,
                     user_id=conn.user_id,
+                    account_id=getattr(conn, "account_id", None),
                 ),
                 BrokerProviderCredentials(api_key=api_key, api_secret=api_secret),
                 app_mode=settings.APP_MODE,

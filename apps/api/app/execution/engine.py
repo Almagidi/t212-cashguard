@@ -7,6 +7,7 @@ Trading 212 order placement is NOT idempotent — app-level dedup is mandatory.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -69,9 +70,14 @@ class ExecutionEngine:
         side: str,
         signal_id: str | None,
         salt: str = "",
+        stable_operation_identity: str | None = None,
     ) -> str:
         """Deterministic client key for dedup. Based on signal + ticker + side."""
-        raw = f"{signal_id or 'manual'}:{ticker}:{side}:{salt}"
+        raw = (
+            f"operation:{stable_operation_identity}"
+            if stable_operation_identity is not None
+            else f"{signal_id or 'manual'}:{ticker}:{side}:{salt}"
+        )
         return hashlib.sha256(raw.encode()).hexdigest()[:40]
 
     async def _log_order_event(
@@ -108,6 +114,7 @@ class ExecutionEngine:
         available_cash: Decimal | None = None,
         estimated_price: Decimal | None = None,
         venue: str = "t212",
+        stable_operation_identity: str | None = None,
     ) -> Order:
         """
         Create an order intent in the DB before any broker call.
@@ -115,7 +122,11 @@ class ExecutionEngine:
         """
         salt = str(uuid.uuid4())[:8]  # Small salt for non-signal orders
         client_key = self._make_client_order_key(
-            ticker, side, str(signal_id) if signal_id else None, salt if not signal_id else ""
+            ticker,
+            side,
+            str(signal_id) if signal_id else None,
+            salt if not signal_id else "",
+            stable_operation_identity,
         )
 
         # Dedup check
@@ -124,17 +135,19 @@ class ExecutionEngine:
         if existing:
             return existing
 
-        duplicate = await self._find_recent_duplicate_intent(
-            ticker=ticker,
-            side=side,
-            order_type=order_type,
-            quantity=quantity,
-            signal_id=signal_id,
-            limit_price=limit_price,
-            stop_price=stop_price,
-            time_validity=time_validity,
-            is_dry_run=is_dry_run,
-        )
+        duplicate = None
+        if stable_operation_identity is None:
+            duplicate = await self._find_recent_duplicate_intent(
+                ticker=ticker,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                signal_id=signal_id,
+                limit_price=limit_price,
+                stop_price=stop_price,
+                time_validity=time_validity,
+                is_dry_run=is_dry_run,
+            )
         if duplicate:
             await self._log_order_event(
                 duplicate.id,
@@ -155,6 +168,10 @@ class ExecutionEngine:
             cash_used = quantity * estimated_price
         expected_fill_price = estimated_price or limit_price or stop_price
 
+        broker_account_scope = inspect.getattr_static(self.broker, "account_scope", None)
+        if not isinstance(broker_account_scope, str) or not broker_account_scope.strip():
+            broker_account_scope = None
+
         order = Order(
             id=uuid.uuid4(),
             signal_id=signal_id,
@@ -170,6 +187,7 @@ class ExecutionEngine:
             is_dry_run=is_dry_run,
             venue=venue,
             execution_environment="dry_run" if is_dry_run else settings.APP_MODE,
+            broker_account_scope=broker_account_scope,
             expected_fill_price=expected_fill_price,
             cash_used=cash_used,
             available_cash_at_submission=available_cash,

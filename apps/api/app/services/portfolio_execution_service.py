@@ -670,6 +670,7 @@ class PortfolioExecutionService:
                     environment=cast("BrokerRuntimeEnvironment", conn.environment),
                     purpose="worker_portfolio_execution",
                     user_id=conn.user_id,
+                    account_id=getattr(conn, "account_id", None),
                 ),
                 BrokerProviderCredentials(
                     api_key=api_key,

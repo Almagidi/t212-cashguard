@@ -10,10 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
 from app.api.deps import get_broker, get_current_admin, get_current_user
-from app.broker.protocols import ReconciliationHistoryBrokerProtocol
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.broker.protocols import ReconciliationHistoryBrokerProtocol
 from app.api.schemas import (
     BrokerConnectRequest,
     BrokerStatusOut,
@@ -202,7 +203,7 @@ async def connect_broker(
             # Credential tests intentionally allow demo/live validation through the provider.
             BrokerProviderRequest(
                 broker_id="trading212",
-                environment=cast(BrokerRuntimeEnvironment, body.environment),
+                environment=cast("BrokerRuntimeEnvironment", body.environment),
                 purpose="credential_test",
                 user_id=current_user.id,
             ),
@@ -325,9 +326,10 @@ async def test_connection(
             # Credential tests intentionally allow demo/live validation through the provider.
             BrokerProviderRequest(
                 broker_id="trading212",
-                environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                environment=cast("BrokerRuntimeEnvironment", conn.environment),
                 purpose="credential_test",
                 user_id=current_user.id,
+                account_id=getattr(conn, "account_id", None),
             ),
             BrokerProviderCredentials(api_key=api_key, api_secret=api_secret),
             app_mode=settings.APP_MODE,
@@ -447,14 +449,14 @@ async def run_demo_reconciliation_once(
     try:
         if hasattr(broker, "__aenter__"):
             async with broker as active_broker:  # type: ignore[attr-defined]
-                history_broker = cast(ReconciliationHistoryBrokerProtocol, active_broker)
+                history_broker = cast("ReconciliationHistoryBrokerProtocol", active_broker)
                 summary = await DemoReconciliationWorker(
                     db,
                     history_broker,
                     actor=str(current_user.id),
                 ).run_once()
         else:
-            history_broker = cast(ReconciliationHistoryBrokerProtocol, broker)
+            history_broker = cast("ReconciliationHistoryBrokerProtocol", broker)
             summary = await DemoReconciliationWorker(
                 db,
                 history_broker,
@@ -491,14 +493,14 @@ async def run_demo_reconciliation_scheduler_once(
     try:
         if hasattr(broker, "__aenter__"):
             async with broker as active_broker:  # type: ignore[attr-defined]
-                history_broker = cast(ReconciliationHistoryBrokerProtocol, active_broker)
+                history_broker = cast("ReconciliationHistoryBrokerProtocol", active_broker)
                 result = await DemoReconciliationScheduler(
                     db,
                     history_broker,
                     actor=str(current_user.id),
                 ).run_once()
         else:
-            history_broker = cast(ReconciliationHistoryBrokerProtocol, broker)
+            history_broker = cast("ReconciliationHistoryBrokerProtocol", broker)
             result = await DemoReconciliationScheduler(
                 db,
                 history_broker,

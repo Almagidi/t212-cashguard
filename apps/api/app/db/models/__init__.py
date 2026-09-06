@@ -395,6 +395,7 @@ class Order(Base):
     filled_quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     execution_environment: Mapped[str | None] = mapped_column(String(20))
+    broker_account_scope: Mapped[str | None] = mapped_column(String(160), index=True)
     expected_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     slippage_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
     slippage_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
@@ -500,6 +501,70 @@ class OrderEvent(Base):
     )
 
     order: Mapped[Order] = relationship("Order", back_populates="events")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Durable EOD flatten operations
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class EodFlattenOperation(Base):
+    """One non-retryable flatten decision for a strategy/exchange session/ticker."""
+
+    __tablename__ = "eod_flatten_operations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    operation_kind: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="eod_flatten", server_default="eod_flatten"
+    )
+    strategy_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("strategies.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    venue: Mapped[str] = mapped_column(String(50), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(20), nullable=False)
+    execution_environment: Mapped[str] = mapped_column(String(20), nullable=False)
+    broker_account_scope: Mapped[str | None] = mapped_column(String(160))
+    exchange_session_date: Mapped[date] = mapped_column(Date, nullable=False)
+    ticker: Mapped[str] = mapped_column(String(50), nullable=False)
+    attributable_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    order_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("orders.id", ondelete="SET NULL"),
+    )
+    status: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="claimed", server_default="claimed"
+    )
+    requires_manual_reconciliation: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    strategy: Mapped[Strategy] = relationship("Strategy")
+    order: Mapped[Order | None] = relationship("Order")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "operation_kind",
+            "strategy_id",
+            "venue",
+            "exchange_session_date",
+            "ticker",
+            name="uq_eod_flatten_operation_identity",
+        ),
+        UniqueConstraint("order_id", name="uq_eod_flatten_operation_order"),
+        Index(
+            "ix_eod_flatten_operations_session",
+            "exchange",
+            "exchange_session_date",
+            "status",
+        ),
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────

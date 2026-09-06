@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -341,7 +342,14 @@ def _last_entry_signal(strategy_id: uuid.UUID | None = None) -> SimpleNamespace:
 
 
 def _strategy(strategy_id: uuid.UUID) -> SimpleNamespace:
-    return SimpleNamespace(id=strategy_id, is_enabled=True, is_live=True, params={})
+    return SimpleNamespace(
+        id=strategy_id,
+        is_enabled=True,
+        is_live=True,
+        params={},
+        venue="t212",
+        session_end="16:00",
+    )
 
 
 def test_position_monitor_source_uses_provider_final_construction_and_remains_write_capable() -> (
@@ -369,9 +377,9 @@ def test_position_monitor_source_uses_provider_final_construction_and_remains_wr
     assert {"get_positions", "get_account_summary"} <= _call_names(run)
     assert "get_positions" in _call_names(check_daily_loss)
     assert {"create_order_intent", "submit_order"} <= _call_names(monitor_position)
-    assert {"get_positions", "create_order_intent", "submit_order"} <= _call_names(eod_flatten)
+    assert {"EodFlattenService", "eod_due_window", "run"} <= _call_names(eod_flatten)
     assert "position_exit_automated" in ast.unparse(monitor_position)
-    assert "eod_flatten_executed" in ast.unparse(eod_flatten)
+    assert "get_positions" not in _call_names(eod_flatten)
     assert "ExecutionEngine" in ast.unparse(service)
 
 
@@ -771,50 +779,36 @@ async def test_monitor_position_dry_run_flag_is_currently_app_mode_mock_only(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("app_mode", "expected_dry_run"),
-    [("demo", False), ("mock", True)],
-)
-async def test_eod_flatten_reads_positions_and_routes_sell_orders_through_execution_engine_only(
+async def test_eod_flatten_enters_provider_then_delegates_to_scoped_service(
     monkeypatch: pytest.MonkeyPatch,
-    app_mode: str,
-    expected_dry_run: bool,
 ) -> None:
-    positions = [
-        {"ticker": "AAPL", "quantity": "2", "currentPrice": "170.25"},
-        {"ticker": "MSFT", "quantity": "0", "currentPrice": "300"},
-        {"ticker": "TSLA", "quantity": "-1", "currentPrice": "250"},
-    ]
-    broker = RecordingBroker(positions=positions)
+    broker = RecordingBroker()
     db = FakeSession(results=[])
     service = PositionMonitor(db)
-    monkeypatch.setattr(settings, "APP_MODE", app_mode)
+    strategy = _strategy(uuid.uuid4())
+    calls: list[tuple[Any, Any, list[Any], datetime]] = []
+
+    class RecordingEodService:
+        def __init__(self, service_db: Any, service_broker: Any) -> None:
+            self.service_db = service_db
+            self.service_broker = service_broker
+
+        async def run(self, strategies: list[Any], *, now_utc: datetime) -> dict[str, Any]:
+            calls.append((self.service_db, self.service_broker, strategies, now_utc))
+            return {"flattened": 1, "operations_created": 1}
 
     async def get_broker() -> RecordingBroker:
         return broker
 
     monkeypatch.setattr(service, "_get_broker", get_broker)
+    monkeypatch.setattr(position_monitor, "EodFlattenService", RecordingEodService)
 
-    summary = await service.eod_flatten()
+    now_utc = datetime(2026, 7, 6, 20, 5, tzinfo=UTC)
+    summary = await service.eod_flatten([strategy], now_utc=now_utc)
 
-    assert summary == {"flattened": 1}
-    assert broker.read_calls == ["get_positions"]
+    assert summary == {"flattened": 1, "operations_created": 1}
+    assert broker.read_calls == []
     assert broker.write_calls == []
-    assert RecordingExecutionEngine.brokers == [broker]
-    assert RecordingExecutionEngine.order_intents == [
-        {
-            "ticker": "AAPL",
-            "side": "sell",
-            "order_type": "market",
-            "quantity": Decimal("2"),
-            "is_dry_run": expected_dry_run,
-            "estimated_price": Decimal("170.25"),
-        }
-    ]
-    assert RecordingExecutionEngine.submitted_orders[0].side == "sell"
-    assert RecordingExecutionEngine.submitted_orders[0].is_dry_run is expected_dry_run
-    assert [entry.action for entry in db.added if hasattr(entry, "action")] == [
-        "eod_flatten_executed"
-    ]
-    # Runtime commits the audit record after routing flatten orders through the engine.
-    assert db.committed == 1
+    assert broker.entered == 1
+    assert broker.exited == 1
+    assert calls == [(db, broker, [strategy], now_utc)]

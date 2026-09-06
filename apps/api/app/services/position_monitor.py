@@ -37,11 +37,13 @@ from app.db.models import (
     Signal,
     Strategy,
     Trade,
+    User,
 )
 from app.execution.engine import ExecutionEngine
 from app.risk.engine import activate_kill_switch
 from app.services.alert_service import AlertService, alert_kill_switch_activated
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
+from app.services.eod_flatten import EodFlattenService, eod_due_window
 from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 from app.strategies.indicators import Bar, atr
 from app.strategies.orb_production import OpeningRangeBreakoutStrategy, ORBState
@@ -109,9 +111,10 @@ class PositionMonitor:
             return create_trading212_provider_adapter(
                 BrokerProviderRequest(
                     broker_id="trading212",
-                    environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                    environment=cast("BrokerRuntimeEnvironment", conn.environment),
                     purpose="worker_position_monitor",
                     user_id=conn.user_id,
+                    account_id=getattr(conn, "account_id", None),
                 ),
                 BrokerProviderCredentials(
                     api_key=api_key,
@@ -583,44 +586,48 @@ class PositionMonitor:
 
         return result
 
-    async def eod_flatten(self) -> dict[str, Any]:
-        """
-        Force-close all positions at end of session.
-        Only runs for strategies with eod_flatten=True.
-        """
+    async def eod_flatten(
+        self,
+        strategies: list[Strategy],
+        *,
+        now_utc: datetime,
+    ) -> dict[str, Any]:
+        """Route due strategies through the scoped, durable EOD safety service."""
+        if not any(eod_due_window(strategy, now_utc) is not None for strategy in strategies):
+            return {
+                "flattened": 0,
+                "operations_created": 0,
+                "manual_reconciliation_required": 0,
+                "reentries_blocked": 0,
+                "reason": "not_due",
+            }
         broker = await self._get_broker()
         if broker is None:
-            return {"flattened": 0, "reason": "no_broker"}
+            return {
+                "flattened": 0,
+                "operations_created": 0,
+                "manual_reconciliation_required": 0,
+                "reentries_blocked": 0,
+                "reason": "no_broker",
+            }
+
+        if settings.APP_MODE == "mock":
+            paper_user = await self.db.scalar(
+                select(User).where(
+                    User.email == settings.ADMIN_EMAIL,
+                    User.is_active.is_(True),
+                    User.is_admin.is_(True),
+                )
+            )
+            if paper_user is None:
+                return {
+                    "flattened": 0,
+                    "operations_created": 0,
+                    "manual_reconciliation_required": 0,
+                    "reentries_blocked": 0,
+                    "reason": "no_paper_admin",
+                }
+            broker.account_scope = f"paper:mock:user:{paper_user.id}"
 
         async with broker as b:
-            positions = await b.get_positions()
-            engine = ExecutionEngine(self.db, b)
-            flattened = 0
-            for pos in positions:
-                qty = Decimal(str(pos.get("quantity", 0)))
-                if qty > 0:
-                    order = await engine.create_order_intent(
-                        ticker=pos["ticker"],
-                        side="sell",
-                        order_type="market",
-                        quantity=qty,
-                        is_dry_run=(settings.APP_MODE == "mock"),
-                        estimated_price=Decimal(
-                            str(pos.get("currentPrice", 0) or pos.get("averagePrice", 0) or 0)
-                        ),
-                    )
-                    await engine.submit_order(order)
-                    flattened += 1
-
-        self.db.add(
-            AuditLog(
-                action="eod_flatten_executed",
-                actor="position_monitor",
-                payload={"flattened": flattened},
-                occurred_at=datetime.now(UTC),
-            )
-        )
-        await self.db.commit()
-
-        log.info("position_monitor.eod_flatten", positions=flattened)
-        return {"flattened": flattened}
+            return await EodFlattenService(self.db, b).run(strategies, now_utc=now_utc)
