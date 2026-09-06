@@ -59,8 +59,8 @@ def _require_safety_env() -> tuple[str, bool]:
 
 async def main() -> int:
     app_mode, live_trading_enabled = _require_safety_env()
-    api_key = _env("T212_API_KEY")
-    api_secret = _env("T212_API_SECRET")
+    api_key = _env("T212_DEMO_API_KEY")
+    api_secret = _env("T212_DEMO_API_SECRET")
 
     print("Trading 212 DEMO reconciliation worker")
     print("Mode: demo")

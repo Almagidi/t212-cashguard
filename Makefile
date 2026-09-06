@@ -596,7 +596,7 @@ operator-manual-check: ## Curl manual QA endpoints with auth against API :8002
 # ─── Local validation baseline ───────────────────────────────────────────────
 .PHONY: validate validate-api validate-web validate-e2e
 
-t212-demo-readonly-smoke: ## Run Trading 212 demo read-only smoke test; requires T212_API_KEY/T212_API_SECRET
+t212-demo-readonly-smoke: ## Run Trading 212 demo read-only smoke test; requires demo-specific credentials
 	@echo "$(YELLOW)→ Running Trading 212 demo read-only smoke test...$(RESET)"
 	cd apps/api && \
 		APP_MODE=demo \
@@ -776,10 +776,10 @@ t212-demo-app-readonly: ## Start Trading 212 demo app in read-only mode on API :
 	@echo "  When finished run: make t212-demo-app-readonly-stop"
 
 
-t212-demo-app-readonly-connect: ## Store Trading 212 demo credentials from T212_API_KEY/T212_API_SECRET into local demo DB
+t212-demo-app-readonly-connect: ## Store demo-specific Trading 212 credentials in the encrypted local demo DB
 	@echo "$(YELLOW)→ Connecting Trading 212 demo credentials to local read-only demo DB...$(RESET)"
-	@test -n "$$T212_API_KEY" || (echo "$(RED)T212_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
-	@test -n "$$T212_API_SECRET" || (echo "$(RED)T212_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_KEY" || (echo "$(RED)T212_DEMO_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)T212_DEMO_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
 	@set -e; \
 		login_tmp=$$(mktemp); \
 		login_code=$$(curl -sS -o "$$login_tmp" -w '%{http_code}' -X POST http://127.0.0.1:$(T212_DEMO_API_PORT)/v1/auth/login -H 'Content-Type: application/json' -d '{"email":"admin@localhost","password":"change-me"}' || true); \
@@ -789,11 +789,8 @@ t212-demo-app-readonly-connect: ## Store Trading 212 demo credentials from T212_
 		fi; \
 		TOKEN=$$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1]))["access_token"])' "$$login_tmp"); \
 		rm -f "$$login_tmp"; \
-		payload_tmp=$$(mktemp); \
-		python3 -c 'import json, os, sys; json.dump({"api_key": os.environ["T212_API_KEY"].strip(), "api_secret": os.environ["T212_API_SECRET"].strip(), "environment": "demo"}, open(sys.argv[1], "w"))' "$$payload_tmp"; \
 		out_tmp=$$(mktemp); \
-		code=$$(curl -sS -o "$$out_tmp" -w '%{http_code}' -X POST http://127.0.0.1:$(T212_DEMO_API_PORT)/v1/broker/trading212/connect -H "Authorization: Bearer $$TOKEN" -H 'Content-Type: application/json' --data-binary "@$$payload_tmp" || true); \
-		rm -f "$$payload_tmp"; \
+		code=$$(python3 -c 'import json, os, sys; json.dump({"api_key": os.environ["T212_DEMO_API_KEY"].strip(), "api_secret": os.environ["T212_DEMO_API_SECRET"].strip(), "environment": "demo"}, sys.stdout)' | curl -sS -o "$$out_tmp" -w '%{http_code}' -X POST http://127.0.0.1:$(T212_DEMO_API_PORT)/v1/broker/trading212/connect -H "Authorization: Bearer $$TOKEN" -H 'Content-Type: application/json' --data-binary @- || true); \
 		if [ "$$code" != "200" ]; then \
 			echo "$(RED)/v1/broker/trading212/connect -> $$code$(RESET)"; \
 			cat "$$out_tmp"; echo; rm -f "$$out_tmp"; exit 1; \
@@ -916,8 +913,8 @@ t212-demo-controlled-order-arm: ## Disable kill switch only in disposable contro
 t212-demo-controlled-order-test: ## Place one tiny Trading 212 DEMO order; requires explicit env confirmation
 	@echo "$(YELLOW)→ Running controlled Trading 212 DEMO order test...$(RESET)"
 	@test "$$T212_DEMO_ORDER_CONFIRM" = "PLACE_DEMO_ORDER" || (echo "$(RED)Set T212_DEMO_ORDER_CONFIRM=PLACE_DEMO_ORDER to confirm this demo-order test.$(RESET)" && exit 1)
-	@test -n "$$T212_API_KEY" || (echo "$(RED)T212_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
-	@test -n "$$T212_API_SECRET" || (echo "$(RED)T212_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_KEY" || (echo "$(RED)T212_DEMO_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)T212_DEMO_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
 	@cd apps/api && \
 		APP_MODE=demo \
 		T212_ENVIRONMENT=demo \
@@ -944,11 +941,7 @@ t212-demo-controlled-multi-order: ## Place tiny bounded Trading 212 DEMO orders;
 	@echo "$(YELLOW)→ Running controlled Trading 212 DEMO multi-order placement smoke...$(RESET)"
 	@test "$$T212_DEMO_MULTI_ORDER_CONFIRM" = "PLACE_MULTI_DEMO_ORDERS" || (echo "$(RED)Set T212_DEMO_MULTI_ORDER_CONFIRM=PLACE_MULTI_DEMO_ORDERS to confirm this demo multi-order placement smoke.$(RESET)" && exit 1)
 	@test -n "$$T212_DEMO_MULTI_ORDER_PLAN" || (echo "$(RED)Set T212_DEMO_MULTI_ORDER_PLAN, for example AAPL_US_EQ:0.01,MSFT_US_EQ:0.01.$(RESET)" && exit 1)
-	@if [ -n "$$T212_DEMO_API_KEY" ] || [ -n "$$T212_DEMO_API_SECRET" ]; then \
-		test -n "$$T212_DEMO_API_KEY" -a -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)Both T212_DEMO_API_KEY and T212_DEMO_API_SECRET must be loaded when using demo-specific credentials.$(RESET)" && exit 1); \
-	else \
-		test -n "$$T212_API_KEY" -a -n "$$T212_API_SECRET" || (echo "$(RED)T212_DEMO_API_KEY/T212_DEMO_API_SECRET or T212_API_KEY/T212_API_SECRET must be loaded in this terminal.$(RESET)" && exit 1); \
-	fi
+	@test -n "$$T212_DEMO_API_KEY" -a -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)Both T212_DEMO_API_KEY and T212_DEMO_API_SECRET must be loaded.$(RESET)" && exit 1)
 	@test "$${LIVE_TRADING_ENABLED:-false}" != "true" || (echo "$(RED)LIVE_TRADING_ENABLED must be false.$(RESET)" && exit 1)
 	@test "$${DEMO_RECONCILIATION_SCHEDULER_ENABLED:-false}" != "true" || (echo "$(RED)DEMO_RECONCILIATION_SCHEDULER_ENABLED must be false for this placement smoke.$(RESET)" && exit 1)
 	@cd apps/api && \
@@ -968,8 +961,8 @@ t212-demo-controlled-multi-order: ## Place tiny bounded Trading 212 DEMO orders;
 t212-demo-reconcile-order: ## Reconcile one local Trading 212 DEMO order from read-only broker history
 	@echo "$(YELLOW)→ Running Trading 212 DEMO order reconciliation...$(RESET)"
 	@test "$$T212_DEMO_RECONCILE_CONFIRM" = "READ_DEMO_ORDER_HISTORY" || (echo "$(RED)Set T212_DEMO_RECONCILE_CONFIRM=READ_DEMO_ORDER_HISTORY to confirm this read-only demo history check.$(RESET)" && exit 1)
-	@test -n "$$T212_API_KEY" || (echo "$(RED)T212_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
-	@test -n "$$T212_API_SECRET" || (echo "$(RED)T212_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_KEY" || (echo "$(RED)T212_DEMO_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)T212_DEMO_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
 	@if [ -z "$$T212_DEMO_RECONCILE_ORDER_ID" ] && [ -z "$$T212_DEMO_RECONCILE_BROKER_ORDER_ID" ]; then \
 		echo "$(RED)Set T212_DEMO_RECONCILE_ORDER_ID or T212_DEMO_RECONCILE_BROKER_ORDER_ID.$(RESET)"; \
 		exit 1; \
@@ -988,8 +981,8 @@ t212-demo-reconcile-order: ## Reconcile one local Trading 212 DEMO order from re
 t212-demo-reconciliation-worker: ## Run one read-only Trading 212 DEMO reconciliation worker pass
 	@echo "$(YELLOW)→ Running Trading 212 DEMO reconciliation worker...$(RESET)"
 	@test "$$T212_DEMO_RECONCILE_CONFIRM" = "READ_DEMO_ORDER_HISTORY" || (echo "$(RED)Set T212_DEMO_RECONCILE_CONFIRM=READ_DEMO_ORDER_HISTORY to confirm this read-only demo history check.$(RESET)" && exit 1)
-	@test -n "$$T212_API_KEY" || (echo "$(RED)T212_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
-	@test -n "$$T212_API_SECRET" || (echo "$(RED)T212_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_KEY" || (echo "$(RED)T212_DEMO_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)T212_DEMO_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
 	@test "$${LIVE_TRADING_ENABLED:-false}" != "true" || (echo "$(RED)LIVE_TRADING_ENABLED must be false.$(RESET)" && exit 1)
 	@cd apps/api && \
 		DATABASE_URL="$${DATABASE_URL:-sqlite+aiosqlite:///$(T212_DEMO_ORDER_DB_PATH)}" \
@@ -1005,8 +998,8 @@ t212-demo-reconciliation-worker: ## Run one read-only Trading 212 DEMO reconcili
 t212-demo-multi-order-reconciliation-smoke: ## Run read-only Trading 212 DEMO multi-order reconciliation smoke
 	@echo "$(YELLOW)→ Running Trading 212 DEMO multi-order reconciliation smoke...$(RESET)"
 	@test "$$T212_DEMO_RECONCILE_CONFIRM" = "READ_DEMO_ORDER_HISTORY" || (echo "$(RED)Set T212_DEMO_RECONCILE_CONFIRM=READ_DEMO_ORDER_HISTORY to confirm this read-only demo history check.$(RESET)" && exit 1)
-	@test -n "$$T212_DEMO_API_KEY" -o -n "$$T212_API_KEY" || (echo "$(RED)T212_DEMO_API_KEY or T212_API_KEY must be loaded in this terminal.$(RESET)" && exit 1)
-	@test -n "$$T212_DEMO_API_SECRET" -o -n "$$T212_API_SECRET" || (echo "$(RED)T212_DEMO_API_SECRET or T212_API_SECRET must be loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_KEY" || (echo "$(RED)T212_DEMO_API_KEY must be loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)T212_DEMO_API_SECRET must be loaded in this terminal.$(RESET)" && exit 1)
 	@test "$${LIVE_TRADING_ENABLED:-false}" != "true" || (echo "$(RED)LIVE_TRADING_ENABLED must be false.$(RESET)" && exit 1)
 	@test "$${DEMO_RECONCILIATION_SCHEDULER_ENABLED:-false}" != "true" || (echo "$(RED)DEMO_RECONCILIATION_SCHEDULER_ENABLED must be false for this manual smoke.$(RESET)" && exit 1)
 	@cd apps/api && \

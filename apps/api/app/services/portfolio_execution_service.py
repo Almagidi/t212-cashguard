@@ -647,6 +647,11 @@ class PortfolioExecutionService:
         from app.core.security import CredentialDecryptionError, decrypt_field
 
         try:
+            require_broker_environment(conn.environment, action="portfolio execution broker access")
+        except SafetyPolicyViolation:
+            return None
+
+        try:
             api_key = decrypt_field(conn.api_key_encrypted)
             api_secret = decrypt_field(conn.api_secret_encrypted)
         except CredentialDecryptionError as exc:
@@ -656,11 +661,6 @@ class PortfolioExecutionService:
                 str(exc),
                 actor="portfolio_execution",
             )
-            return None
-
-        try:
-            require_broker_environment(conn.environment, action="portfolio execution broker access")
-        except SafetyPolicyViolation:
             return None
 
         try:

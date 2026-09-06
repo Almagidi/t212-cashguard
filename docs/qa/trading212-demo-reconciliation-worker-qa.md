@@ -35,8 +35,8 @@ Use the controlled demo-order database created by the existing demo order flow, 
 
 ```bash
 T212_DEMO_RECONCILE_CONFIRM=READ_DEMO_ORDER_HISTORY \
-T212_API_KEY=... \
-T212_API_SECRET=... \
+T212_DEMO_API_KEY=... \
+T212_DEMO_API_SECRET=... \
 make t212-demo-reconciliation-worker
 ```
 

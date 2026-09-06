@@ -125,8 +125,6 @@ async def test_real_orb_profile_reaches_paper_fill_and_default_profile_does_not(
 
     monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", "mock")
     monkeypatch.setattr(settings, "MOCK_MARKET_SEED", 212)
-    monkeypatch.setattr(settings, "T212_API_KEY", "unit1-dummy-key")
-    monkeypatch.setattr(settings, "T212_API_SECRET", "unit1-dummy-secret")
     monkeypatch.setattr(settings, "T212_DEMO_API_KEY", "unit1-dummy-demo-key")
     monkeypatch.setattr(settings, "T212_DEMO_API_SECRET", "unit1-dummy-demo-secret")
     monkeypatch.setattr(strategy_runner, "datetime", _FrozenDateTime)

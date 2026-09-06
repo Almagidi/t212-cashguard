@@ -49,13 +49,6 @@ def _env(name: str) -> str:
     return value
 
 
-def _credential(preferred_name: str, fallback_name: str) -> str:
-    preferred = os.getenv(preferred_name, "").strip()
-    if preferred:
-        return preferred
-    return _env(fallback_name)
-
-
 def _enabled(name: str) -> bool:
     return os.getenv(name, "").lower() in {"1", "true", "yes", "on"}
 
@@ -107,8 +100,8 @@ def _print_order_rows(order_results: list[dict[str, Any]]) -> None:
 
 async def main() -> int:
     _require_safety_env()
-    api_key = _credential("T212_DEMO_API_KEY", "T212_API_KEY")
-    api_secret = _credential("T212_DEMO_API_SECRET", "T212_API_SECRET")
+    api_key = _env("T212_DEMO_API_KEY")
+    api_secret = _env("T212_DEMO_API_SECRET")
 
     print("Trading 212 DEMO multi-order reconciliation smoke")
     print("Mode: demo")
