@@ -139,21 +139,16 @@ def _install_mock_session_clock(offset_minutes: int = 0) -> None:
     from app.services import strategy_runner
 
     original_bars = MockMarketDataProvider._orb_breakout_bars
-    current_open = datetime(2026, 1, 7, 14, 30, tzinfo=UTC) + timedelta(minutes=offset_minutes)
-    previous_terminal = datetime(2026, 1, 6, 20, 55, tzinfo=UTC) + timedelta(minutes=offset_minutes)
     fixed_now = datetime(2026, 1, 7, 16, 35, tzinfo=UTC) + timedelta(minutes=offset_minutes)
 
     def session_bars(self: Any, ticker: str, *, interval_minutes: int, bars: int) -> Any:
-        rows = original_bars(self, ticker, interval_minutes=interval_minutes, bars=bars)
-        for index, row in enumerate(rows):
-            row["timestamp"] = (
-                current_open + timedelta(minutes=index * interval_minutes)
-            ).isoformat()
-        if rows:
-            prior = dict(rows[0])
-            prior["timestamp"] = previous_terminal.isoformat()
-            rows.insert(0, prior)
-        return rows
+        return original_bars(
+            self,
+            ticker,
+            interval_minutes=interval_minutes,
+            bars=bars,
+            as_of=fixed_now,
+        )
 
     class HarnessDateTime(datetime):
         @classmethod
