@@ -330,7 +330,20 @@ async def test_broker_snapshot_failure_fails_closed_with_manual_evidence(db) -> 
 
 
 @pytest.mark.asyncio
-async def test_active_sell_for_ticker_blocks_flatten_as_ambiguous(db) -> None:
+@pytest.mark.parametrize(
+    ("execution_environment", "broker_account_scope"),
+    [
+        ("demo", SnapshotOnlyBroker.account_scope),
+        ("demo", None),
+        (None, None),
+    ],
+    ids=["current-scope", "legacy-null-scope", "legacy-null-environment-and-scope"],
+)
+async def test_active_sell_for_ticker_blocks_flatten_as_ambiguous(
+    db,
+    execution_environment: str | None,
+    broker_account_scope: str | None,
+) -> None:
     await _ready_settings(db)
     strategy = await _strategy(db, "Active sell")
     await _filled_strategy_order(db, strategy, ticker="AAPL", side="buy", quantity="2")
@@ -344,8 +357,8 @@ async def test_active_sell_for_ticker_blocks_flatten_as_ambiguous(db) -> None:
             quantity=Decimal("1"),
             status="accepted",
             venue="t212",
-            execution_environment="demo",
-            broker_account_scope=SnapshotOnlyBroker.account_scope,
+            execution_environment=execution_environment,
+            broker_account_scope=broker_account_scope,
             is_dry_run=False,
         )
     )

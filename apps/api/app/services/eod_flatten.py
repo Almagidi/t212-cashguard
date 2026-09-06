@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
@@ -335,8 +335,14 @@ class EodFlattenService:
                         select(Order.ticker).where(
                             Order.side == "sell",
                             Order.status.in_(ACTIVE_ORDER_STATUSES),
-                            Order.execution_environment == self._execution_environment,
-                            Order.broker_account_scope == self._broker_account_scope,
+                            or_(
+                                Order.execution_environment == self._execution_environment,
+                                Order.execution_environment.is_(None),
+                            ),
+                            or_(
+                                Order.broker_account_scope == self._broker_account_scope,
+                                Order.broker_account_scope.is_(None),
+                            ),
                         )
                     )
                 )
