@@ -56,42 +56,80 @@ class MockMarketDataProvider:
         self.seed = seed
 
     def _orb_breakout_bars(
-        self, ticker: str, *, interval_minutes: int, bars: int
+        self,
+        ticker: str,
+        *,
+        interval_minutes: int,
+        bars: int,
+        as_of: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        """Return a stable valid session with a genuine high-volume ORB breakout."""
+        """Return a current XNYS session with a genuine high-volume ORB breakout."""
+        if interval_minutes <= 0:
+            raise ValueError("interval_minutes must be positive")
+        if bars <= 0:
+            return []
+
         rng = random.Random(f"{self.seed}:{ticker.upper()}")
         base = MOCK_BASE_PRICES.get(ticker, 100.0) * (1 + rng.uniform(-0.02, 0.02))
-        anchor = datetime(2026, 1, 2, 14, 30, tzinfo=UTC)
+        calendar = calendar_for_venue("XNYS")
+        now = (as_of or datetime.now(UTC)).astimezone(UTC)
+        local_date = now.astimezone(ZoneInfo(calendar.exchange_timezone)).date()
+        sessions = calendar.expected_sessions(local_date - timedelta(days=14), local_date)
+        if not sessions:
+            return []
+
+        session = calendar.session_for_timestamp(now)
+        if session is None:
+            session = sessions[-1]
+            if now < calendar.session_close(session):
+                session = calendar.previous_session(session)
+
+        session_open = calendar.session_open(session)
+        session_close = calendar.session_close(session)
+        completed_through = min(now, session_close)
+        current_bar_times: list[datetime] = []
+        cursor = session_open
+        interval = timedelta(minutes=interval_minutes)
+        while cursor + interval <= completed_through:
+            current_bar_times.append(cursor)
+            cursor += interval
+
+        previous_session = calendar.previous_session(session)
+        previous_terminal = calendar.session_close(previous_session) - interval
+        timestamps = [previous_terminal, *current_bar_times][:bars]
+        if not timestamps:
+            return []
+
         result: list[dict[str, Any]] = []
-        for index in range(min(max(bars, 0), 25)):
-            if index < 3:
-                open_price, high, low, close, volume = (
-                    base,
-                    base * 1.012,
-                    base * 0.992,
-                    base * (1 + index * 0.002),
-                    20_000,
-                )
-            elif index == 24:
-                open_price, high, low, close, volume = (
-                    base * 1.036,
-                    base * 1.05,
-                    base * 1.032,
-                    base * 1.045,
-                    70_000,
-                )
+        previous_close = base * 0.999
+        for index, timestamp in enumerate(timestamps):
+            if index == 0:
+                open_price = base * 0.9988
+                close = previous_close
+                high = max(open_price, close) * 1.0005
+                low = min(open_price, close) * 0.9995
+                volume = 20_000
             else:
-                close_factor = 1.014 + (index - 3) * 0.0011
-                open_price, high, low, close, volume = (
-                    base * (close_factor - 0.002),
-                    base * (close_factor + 0.004),
-                    base * (close_factor - 0.005),
-                    base * close_factor,
-                    20_000,
-                )
+                session_index = index - 1
+                if session_index < 3:
+                    close_factors = (1.0001, 1.0004, 1.0007)
+                    high_factors = (1.0012, 1.0014, 1.0015)
+                    low_factors = (0.9992, 0.9994, 0.9997)
+                    open_price = base if session_index == 0 else previous_close
+                    close = base * close_factors[session_index]
+                    high = base * high_factors[session_index]
+                    low = base * low_factors[session_index]
+                else:
+                    open_price = previous_close
+                    close_factor = 1.0027 + (session_index - 3) * 0.0027
+                    close = base * close_factor
+                    high = max(open_price, close) * 1.0004
+                    low = min(open_price, close) * 0.9996
+                volume = 70_000 if index == len(timestamps) - 1 else 20_000
+                previous_close = close
             result.append(
                 {
-                    "timestamp": (anchor + timedelta(minutes=index * interval_minutes)).isoformat(),
+                    "timestamp": timestamp.isoformat(),
                     "open": round(open_price, 4),
                     "high": round(high, 4),
                     "low": round(low, 4),
