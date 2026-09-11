@@ -8,7 +8,7 @@ aiosqlite==0.22.1
 redis[hiredis]==5.2.1
 celery[redis]==5.4.0
 pydantic==2.13.4
-pydantic-settings==2.6.1
+pydantic-settings==2.14.2
 email-validator==2.3.0
 httpx==0.28.1
 tenacity==9.1.4
