@@ -221,7 +221,15 @@ POSTGRES_USER="${POSTGRES_USER:-cashguard}"
 REDIS_PASSWORD="${REDIS_PASSWORD:-cashguard_redis}"
 APP_MODE_VALUE="${APP_MODE:-mock}"
 ADMIN_EMAIL_VALUE="${ADMIN_EMAIL:-admin@localhost}"
-T212_KEY_VALUE="${T212_API_KEY:-}"
+T212_DEMO_KEY_CONFIGURED=false
+[ -n "${T212_DEMO_API_KEY:-}" ] && T212_DEMO_KEY_CONFIGURED=true
+LIVE_TRADING_VALUE=$(printf '%s' "${LIVE_TRADING_ENABLED:-false}" | tr '[:upper:]' '[:lower:]')
+
+if [ "$APP_MODE_VALUE" = "live" ] || [[ "$LIVE_TRADING_VALUE" =~ ^(1|true|yes|on)$ ]]; then
+    fail "Live trading is prohibited; refusing to start from this launcher."
+    echo "  Set APP_MODE=mock and LIVE_TRADING_ENABLED=false, then try again."
+    exit 2
+fi
 
 # - Refuse stale or unrelated listeners on normal ports -----------------------
 step "Checking normal launcher ports ($NORMAL_API_PORT and $NORMAL_WEB_PORT)..."
@@ -398,11 +406,11 @@ echo "  Logs:      $PROJECT_ROOT/logs/"
 echo ""
 
 echo "  Login:     $ADMIN_EMAIL_VALUE"
-if [ -n "${ADMIN_PASSWORD:-}" ]; then
-    echo "  Password:  ${ADMIN_PASSWORD}"
-fi
+echo "  Password:  value configured in .env"
 echo "  Mode:      $APP_MODE_VALUE"
-[ -z "$T212_KEY_VALUE" ] && echo -e "  ${YELLOW}⚠  No Trading 212 key - running in mock mode${RESET}"
+if [ "$APP_MODE_VALUE" = "demo" ] && [ "$T212_DEMO_KEY_CONFIGURED" = false ]; then
+    echo -e "  ${YELLOW}⚠  No demo credential in the environment; use the Broker page${RESET}"
+fi
 
 echo ""
 echo -e "  ${BOLD}Keep this window open while the app is running.${RESET}"

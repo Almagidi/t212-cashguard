@@ -666,6 +666,14 @@ _KRAKEN_STRATEGY_TYPES: frozenset[str] = frozenset(
 )
 
 
+def _reject_reserved_strategy_params(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if value is not None and "promotion" in value:
+        raise ValueError(
+            "The 'promotion' strategy parameter is reserved for the promotion service."
+        )
+    return value
+
+
 class StrategyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     type: StrategyType
@@ -678,6 +686,11 @@ class StrategyCreate(BaseModel):
     extended_hours: bool = False
     eod_flatten: bool = True
     venue: VenueType = "t212"
+
+    @field_validator("params")
+    @classmethod
+    def reject_reserved_promotion_state(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _reject_reserved_strategy_params(value) or {}
 
     @model_validator(mode="after")
     def venue_must_match_strategy_type(self) -> StrategyCreate:
@@ -1088,14 +1101,15 @@ class PaperOrderCreate(BaseModel):
 
     ticker: str = Field(min_length=1, max_length=50)
     side: Literal["buy", "sell"]
-    quantity: Decimal | None = Field(default=None, gt=0)
-    notional: Decimal | None = Field(default=None, gt=0)
-    estimated_price: Decimal = Field(default=Decimal("100"), gt=0)
+    quantity: Decimal | None = Field(default=None, gt=0, max_digits=20, decimal_places=8)
+    notional: Decimal | None = Field(default=None, gt=0, max_digits=20, decimal_places=8)
+    estimated_price: Decimal = Field(default=Decimal("100"), gt=0, max_digits=20, decimal_places=8)
     order_type: Literal["market"] = "market"
     strategy: str | None = Field(default=None, max_length=100)
     source: str = Field(default="manual_qa", min_length=1, max_length=100)
     venue: Literal["paper", "mock"] = "paper"
     paper_only: Literal[True] = True
+    simulation_profile: Literal["standard", "partial_fill", "no_liquidity"] = "standard"
 
     @model_validator(mode="after")
     def validate_quantity_or_notional(self) -> PaperOrderCreate:
@@ -1123,11 +1137,13 @@ class OrderOut(BaseSchema):
     status: str
     broker_order_id: str | None
     filled_quantity: Decimal | None
+    remaining_quantity: Decimal
     avg_fill_price: Decimal | None
     execution_environment: str | None = None
     expected_fill_price: Decimal | None = None
     slippage_pct: Decimal | None = None
     slippage_value: Decimal | None = None
+    fee_amount: Decimal | None = None
     submitted_at: datetime | None = None
     first_ack_at: datetime | None = None
     filled_at: datetime | None = None

@@ -183,7 +183,11 @@ def test_run_strategy_signals_uses_task_lock_and_invokes_runner(
     lock_calls: list[tuple[str, int]] = []
 
     @asynccontextmanager
-    async def recording_task_lock(name: str, *, ttl_seconds: int) -> Any:
+    async def recording_task_lock(
+        name: str,
+        *,
+        ttl_seconds: int,
+    ) -> Any:
         lock_calls.append((name, ttl_seconds))
         yield True
 
@@ -231,6 +235,60 @@ def test_run_strategy_signals_skips_when_lock_not_acquired_without_touching_sess
     assert result == {"skipped": True, "reason": "already_running"}
     assert FakeStrategyRunner.constructed_with == []
     assert FakeStrategyRunner.run_all_enabled_calls == 0
+
+
+def test_run_strategy_signals_does_not_commit_a_summary_with_unexpected_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_db = FakeSession()
+    FakeStrategyRunner.summary = {
+        "strategies_run": 1,
+        "signals_generated": 1,
+        "orders_submitted": 1,
+        "risk_blocks": 0,
+        "errors": ["momentum: deterministic pre-commit failure"],
+    }
+
+    async def unexpected_complete(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("an errored runner summary must not reach the commit boundary")
+
+    monkeypatch.setattr("app.core.redis.task_lock", _acquired_task_lock)
+    monkeypatch.setattr("app.db.session.AsyncSessionLocal", lambda: fake_db)
+    monkeypatch.setattr("app.services.strategy_runner.StrategyRunner", FakeStrategyRunner)
+    monkeypatch.setattr(tasks, "_complete_task", unexpected_complete)
+
+    with pytest.raises(RuntimeError, match="strategy execution failed"):
+        tasks.run_strategy_signals.run()
+
+    assert fake_db.commits == 0
+
+
+def test_demo_summary_errors_preserve_existing_commit_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    fake_db = FakeSession()
+    FakeStrategyRunner.summary = {
+        "strategies_run": 1,
+        "signals_generated": 1,
+        "orders_submitted": 1,
+        "risk_blocks": 0,
+        "errors": ["later ticker failed after an external submission"],
+    }
+
+    async def complete_task(
+        _db: FakeSession, _task_name: str, summary: dict[str, Any]
+    ) -> dict[str, Any]:
+        await _db.commit()
+        return summary
+
+    monkeypatch.setattr("app.core.redis.task_lock", _acquired_task_lock)
+    monkeypatch.setattr("app.db.session.AsyncSessionLocal", lambda: fake_db)
+    monkeypatch.setattr("app.services.strategy_runner.StrategyRunner", FakeStrategyRunner)
+    monkeypatch.setattr(tasks, "_complete_task", complete_task)
+
+    assert tasks.run_strategy_signals.run() == FakeStrategyRunner.summary
+    assert fake_db.commits == 1
 
 
 # ─── Runner safety contracts propagate through the real task entrypoint ──────

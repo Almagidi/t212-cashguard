@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -63,6 +64,7 @@ class FakeSession:
         self.executed: list[Any] = []
         self.added: list[Any] = []
         self.flushed = 0
+        self.nested_begins = 0
 
     async def execute(self, statement: Any) -> ExecuteResult:
         if self.events is not None:
@@ -77,6 +79,11 @@ class FakeSession:
 
     async def flush(self) -> None:
         self.flushed += 1
+
+    @asynccontextmanager
+    async def begin_nested(self) -> Any:
+        self.nested_begins += 1
+        yield
 
 
 @dataclass
@@ -376,7 +383,7 @@ def _bars() -> list[Bar]:
 
 
 def _bar_times() -> list[datetime]:
-    return [datetime(2026, 1, 2, 14, minute, tzinfo=UTC) for minute in range(16)]
+    return [datetime(2026, 1, 2, 14, minute, tzinfo=UTC) for minute in range(30, 46)]
 
 
 def _entry_signal() -> SimpleNamespace:
@@ -431,6 +438,7 @@ def test_strategy_runner_source_is_provider_backed_and_mixed_write_capable() -> 
     run_all_enabled = _method_node("run_all_enabled")
     process_ticker = _method_node("_process_ticker")
     check_exit = _method_node("_check_exit")
+    submit_strategy_order = _method_node("_submit_strategy_order")
     source = STRATEGY_RUNNER_PATH.read_text()
 
     assert _adapter_counts(get_broker) == {"construct": 0, "import": 0}
@@ -446,8 +454,10 @@ def test_strategy_runner_source_is_provider_backed_and_mixed_write_capable() -> 
     assert "worker_strategy_runner" in ast.unparse(get_broker)
 
     assert {"get_account_summary", "get_positions"} <= _call_names(run_all_enabled)
-    assert {"create_order_intent", "submit_order"} <= _call_names(process_ticker)
-    assert {"create_order_intent", "submit_order"} <= _call_names(check_exit)
+    assert "_submit_strategy_order" in _call_names(process_ticker)
+    assert "_submit_strategy_order" in _call_names(check_exit)
+    assert {"create_order_intent", "submit_order", "execute"} <= _call_names(submit_strategy_order)
+    assert "PaperExecutionEngine" in ast.unparse(submit_strategy_order)
     assert "strategy_order_placed" in ast.unparse(process_ticker)
     assert "strategy_exit_placed" in ast.unparse(check_exit)
     assert "ExecutionEngine" in ast.unparse(service)
@@ -536,7 +546,13 @@ async def test_get_broker_policy_rejection_happens_before_adapter_construction(
     db = FakeSession(results=[conn])
     service = StrategyRunner(db)
     monkeypatch.setattr(settings, "APP_MODE", "demo")
-    monkeypatch.setattr(security_module, "decrypt_field", _decrypt)
+    decrypt_calls: list[str] = []
+
+    def forbidden_decrypt(value: str) -> str:
+        decrypt_calls.append(value)
+        raise AssertionError("environment policy must run before credential decryption")
+
+    monkeypatch.setattr(security_module, "decrypt_field", forbidden_decrypt)
     monkeypatch.setattr("app.broker.trading212.Trading212Adapter", _adapter_sentinel)
     monkeypatch.setattr(
         strategy_runner,
@@ -557,11 +573,12 @@ async def test_get_broker_policy_rejection_happens_before_adapter_construction(
 
     assert broker is None
     assert gate_calls == [("live", "strategy runner broker access")]
+    assert decrypt_calls == []
     assert RecordingTrading212Adapter.constructed == []
 
 
 @pytest.mark.asyncio
-async def test_get_broker_calls_provider_after_lookup_decrypt_and_environment_gate(
+async def test_get_broker_calls_provider_after_lookup_environment_gate_and_decrypt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
@@ -606,9 +623,9 @@ async def test_get_broker_calls_provider_after_lookup_decrypt_and_environment_ga
     assert isinstance(broker, RecordingTrading212Adapter)
     assert events == [
         "db_execute",
+        "gate:live:strategy runner broker access",
         "decrypt:encrypted-live-key",
         "decrypt:encrypted-live-secret",
-        "gate:live:strategy runner broker access",
         "provider:live:worker_strategy_runner",
     ]
     assert provider_calls[0]["request"].broker_id == "trading212"
@@ -708,6 +725,34 @@ async def test_run_all_enabled_reads_account_and_positions_before_strategy_execu
         "risk_blocks": 0,
         "errors": [],
     }
+
+
+@pytest.mark.asyncio
+async def test_demo_strategy_error_does_not_wrap_external_effects_in_a_savepoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy = _strategy()
+    broker = RecordingBroker()
+    db = FakeSession(results=[FakeAppSettings(), [strategy]])
+    service = StrategyRunner(db)
+
+    async def get_broker() -> RecordingBroker:
+        return broker
+
+    async def fail_after_external_effect(**_kwargs: Any) -> tuple[int, int, int]:
+        broker.write_calls.append("external_effect_already_happened")
+        raise RuntimeError("later ticker failed")
+
+    monkeypatch.setattr(service, "_get_broker", get_broker)
+    monkeypatch.setattr(service, "_run_strategy", fail_after_external_effect)
+    monkeypatch.setattr(strategy_runner, "MarketIntelligenceMonitor", FakeMarketIntelligenceMonitor)
+    monkeypatch.setattr(strategy_runner, "alert_daily_summary", lambda *_args, **_kwargs: None)
+
+    summary = await service.run_all_enabled()
+
+    assert broker.write_calls == ["external_effect_already_happened"]
+    assert summary["errors"] == [f"{strategy.name}: later ticker failed"]
+    assert db.nested_begins == 0
 
 
 @pytest.mark.asyncio
@@ -906,6 +951,46 @@ async def test_process_ticker_live_entry_routes_order_through_execution_engine_o
 
 
 @pytest.mark.asyncio
+async def test_mock_scheduled_order_canonicalizes_strategy_quantity_for_paper_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[Any] = []
+
+    class RecordingPaperExecutionEngine:
+        def __init__(self, _db: Any) -> None:
+            pass
+
+        async def execute(self, body: Any, **kwargs: Any) -> Any:
+            captured.append((body, kwargs))
+            return SimpleNamespace(id=uuid.uuid4())
+
+    db = FakeSession(results=[])
+    service = StrategyRunner(db)
+
+    async def paper_user() -> Any:
+        return SimpleNamespace(id=uuid.uuid4(), email="paper@example.test")
+
+    monkeypatch.setattr(settings, "APP_MODE", "mock")
+    monkeypatch.setattr(service, "_get_paper_user", paper_user)
+    monkeypatch.setattr(
+        "app.execution.paper_engine.PaperExecutionEngine", RecordingPaperExecutionEngine
+    )
+
+    await service._submit_strategy_order(
+        broker=None,
+        strategy=_strategy(is_live=True),
+        signal_id=uuid.uuid4(),
+        ticker="NVDA",
+        side="buy",
+        quantity=Decimal("8.802689045449603945013122609"),
+        estimated_price=Decimal("908.8133"),
+        order_type="limit",
+    )
+
+    assert captured[0][0].quantity == Decimal("8.80268904")
+
+
+@pytest.mark.asyncio
 async def test_process_ticker_existing_position_routes_exit_path_without_entry_signal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -967,6 +1052,7 @@ async def test_check_exit_dry_run_preserves_no_submit_behavior(
         ticker="AAPL",
         strategy=_strategy(is_live=False),
         bars=_bars(),
+        bar_time=_bar_times()[-1],
         pos_qty=Decimal("2"),
         avg_price=Decimal("100"),
         max_sell=Decimal("1"),
@@ -1001,6 +1087,7 @@ async def test_check_exit_live_routes_sell_order_through_execution_engine_only(
         ticker="AAPL",
         strategy=_strategy(is_live=True),
         bars=_bars(),
+        bar_time=_bar_times()[-1],
         pos_qty=Decimal("2"),
         avg_price=Decimal("100"),
         max_sell=Decimal("1"),
@@ -1019,7 +1106,7 @@ async def test_check_exit_live_routes_sell_order_through_execution_engine_only(
             "side": "sell",
             "order_type": "market",
             "quantity": Decimal("1"),
-            "signal_id": last_signal.id,
+            "signal_id": db.added[0].id,
             "is_dry_run": False,  # APP_MODE="demo" in this fixture, not "mock"
             "estimated_price": Decimal("105"),
             "venue": "t212",

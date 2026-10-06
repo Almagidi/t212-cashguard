@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
@@ -29,7 +30,7 @@ from app.core.config import settings
 from app.db.models import AppSettings, AuditLog, Order, User
 from app.db.repositories import OrderRepository
 from app.db.session import get_db
-from app.execution.engine import ExecutionEngine
+from app.execution.engine import ExecutionEngine, OrderCancellationFailed
 from app.execution.paper_engine import (
     PAPER_EXECUTION_ENVIRONMENT,
     PaperExecutionEngine,
@@ -552,13 +553,34 @@ async def cancel_order(
     order = await repo.get_by_id(order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    if order.status in ("filled", "cancelled", "rejected"):
+    if order.status in ("filled", "cancelled", "rejected", "error"):
         raise HTTPException(
             status_code=400, detail=f"Cannot cancel order in status: {order.status}"
         )
-    async with broker as b:
-        engine = ExecutionEngine(db, b)
-        order = await engine.cancel_order(order)
+    try:
+        async with broker as b:
+            engine = ExecutionEngine(db, b)
+            order = await engine.cancel_order(order)
+    except OrderCancellationFailed as exc:
+        db.add(
+            AuditLog(
+                action="order_cancel_failed",
+                entity_type="order",
+                entity_id=str(order_id),
+                actor=current_user.email,
+                payload={"status": exc.order.status, "requires_reconciliation": True},
+                occurred_at=datetime.now(UTC),
+            )
+        )
+        return JSONResponse(
+            status_code=502,
+            content={
+                "cancelled": False,
+                "order_id": str(order_id),
+                "status": exc.order.status,
+                "requires_reconciliation": True,
+            },
+        )
 
     db.add(
         AuditLog(
@@ -580,17 +602,23 @@ async def cancel_all_pending(
 ) -> Any:
     repo = OrderRepository(db)
     orders = await repo.list_pending()
+    cancelled = 0
+    failed = 0
     async with broker as b:
         engine = ExecutionEngine(db, b)
         for order in orders:
-            await engine.cancel_order(order)
+            try:
+                await engine.cancel_order(order)
+                cancelled += 1
+            except OrderCancellationFailed:
+                failed += 1
 
     db.add(
         AuditLog(
             action="cancel_all_pending",
             actor=current_user.email,
-            payload={"count": len(orders)},
+            payload={"cancelled_count": cancelled, "failed_count": failed},
             occurred_at=datetime.now(UTC),
         )
     )
-    return {"cancelled": len(orders)}
+    return {"cancelled": cancelled, "failed": failed}

@@ -1,16 +1,18 @@
 """
 Backtest and performance attribution routes.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
 from app.api.deps import get_current_user
+from app.backtest.portfolio_engine import InsufficientPortfolioEvidence
 from app.backtest.portfolio_strategies import (
     get_portfolio_backtest_strategy,
     list_portfolio_backtest_strategies,
@@ -18,6 +20,7 @@ from app.backtest.portfolio_strategies import (
 from app.backtest.strategy_registry import get_backtest_strategy, list_backtest_strategies
 from app.core.config import settings
 from app.db.session import get_db
+from app.market_data.exchange_calendar import calendar_for_venue
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,14 +102,24 @@ class PortfolioBacktestStrategyInfo(BaseModel):
 async def get_backtest_strategies(
     _: User = Depends(get_current_user),
 ) -> list[BacktestStrategyInfo]:
-    return [BacktestStrategyInfo(**item) for item in list_backtest_strategies()]
+    return [
+        BacktestStrategyInfo(
+            type=cast("BacktestStrategyType", item["type"]),
+            label=item["label"],
+            description=item["description"],
+        )
+        for item in list_backtest_strategies()
+    ]
 
 
 @router.get("/portfolio/strategies", response_model=list[PortfolioBacktestStrategyInfo])
 async def get_portfolio_backtest_strategies(
     _: User = Depends(get_current_user),
 ) -> list[PortfolioBacktestStrategyInfo]:
-    return [PortfolioBacktestStrategyInfo(**item.__dict__) for item in list_portfolio_backtest_strategies()]
+    return [
+        PortfolioBacktestStrategyInfo(**item.__dict__)
+        for item in list_portfolio_backtest_strategies()
+    ]
 
 
 @router.post("/run", response_model=BacktestJobResponse)
@@ -127,12 +140,13 @@ async def run_backtest(
                 "Get a free key at https://polygon.io — "
                 "Note: Alpaca is used for live signals, Polygon for historical backtesting. "
                 "Both can be set at the same time."
-            )
+            ),
         )
     if body.from_date >= body.to_date:
         raise HTTPException(status_code=422, detail="from_date must be before to_date")
 
     import uuid
+
     job_id = str(uuid.uuid4())[:12]
     _jobs[job_id] = {"status": "running", "created_at": datetime.now(UTC).isoformat()}
 
@@ -142,7 +156,7 @@ async def run_backtest(
         job_id=job_id,
         status="running",
         message=f"Backtest started for {body.ticker} ({body.from_date} to {body.to_date}). "
-                f"Poll GET /v1/backtest/result/{job_id}",
+        f"Poll GET /v1/backtest/result/{job_id}",
     )
 
 
@@ -228,16 +242,31 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
         )
 
         fetcher = BacktestDataFetcher(settings.POLYGON_API_KEY)
+        calendar = calendar_for_venue("XNYS")
+        requested_sessions = calendar.expected_sessions(body.from_date, body.to_date)
+        if not requested_sessions:
+            raise ValueError("Requested range contains no XNYS regular sessions")
+        warmup_from = calendar.previous_session(requested_sessions[0]).local_date
         bars, bar_times = await fetcher.fetch_bars(
             ticker=body.ticker,
-            from_date=body.from_date,
+            from_date=warmup_from,
             to_date=body.to_date,
         )
+        dataset_manifest = fetcher.manifest_for(body.ticker)
 
-        if len(bars) < 50:
+        requested_bar_count = sum(
+            1
+            for bar_time in bar_times
+            if (session := calendar.session_for_timestamp(bar_time)) is not None
+            and body.from_date <= session.local_date <= body.to_date
+        )
+        if requested_bar_count < 50:
             _jobs[job_id] = {
                 "status": "error",
-                "error": f"Only {len(bars)} bars fetched — need at least 50",
+                "error": (
+                    f"Only {requested_bar_count} requested-period regular bars fetched"
+                    " — need at least 50"
+                ),
             }
             return
 
@@ -258,7 +287,7 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
         # Walk-forward if requested
         wf_results = None
         wf_summary = None
-        if body.run_walk_forward and len(bars) > 3000:
+        if body.run_walk_forward and requested_bar_count >= 3000:
             validator = WalkForwardValidator(
                 strategy_class=strategy_class,
                 ticker=body.ticker,
@@ -269,15 +298,19 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
         elif body.run_walk_forward:
             wf_summary = {
                 "windows": 0,
-                "verdict": "insufficient_data",
-                "message": f"Walk-forward requires more history; only {len(bars)} bars were available.",
+                "verdict": "insufficient_evidence",
+                "message": (
+                    "Walk-forward requires more history; only "
+                    f"{requested_bar_count} requested-period regular bars were available."
+                ),
             }
 
         _jobs[job_id] = {
             "status": "complete",
             "ticker": body.ticker,
             "strategy_type": body.strategy_type,
-            "bars_used": len(bars),
+            "bars_used": requested_bar_count,
+            "datasets": [dataset_manifest],
             "result": _serialize_backtest_result(
                 result=result,
                 strategy_type=body.strategy_type,
@@ -290,6 +323,7 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
 
     except Exception as exc:
         import traceback
+
         _jobs[job_id] = {
             "status": "error",
             "error": str(exc),
@@ -298,6 +332,7 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
 
 
 async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestRequest) -> None:
+    dataset_manifests: list[dict[str, Any]] = []
     try:
         from app.backtest.data_fetcher import BacktestDataFetcher
         from app.backtest.portfolio_engine import PortfolioBacktester
@@ -311,7 +346,10 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
                 to_date=body.to_date,
                 multiplier=1,
                 timespan="day",
+                membership_source="research_only_survivor_biased",
+                universe=tuple(body.tickers),
             )
+            dataset_manifests.append(fetcher.manifest_for(ticker))
 
         strategy_config = get_portfolio_backtest_strategy(body.strategy_type)
         strategy_class = strategy_config["strategy_class"]
@@ -330,7 +368,8 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
             "status": "complete",
             "tickers": body.tickers,
             "strategy_type": body.strategy_type,
-            "bars_used": min(len(history[0]) for history in histories.values()),
+            "bars_used": len(result.coverage_report.retained_session_ids),
+            "datasets": dataset_manifests,
             "result": _serialize_portfolio_backtest_result(
                 result=result,
                 strategy_type=body.strategy_type,
@@ -338,6 +377,18 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
                 rationale=str(strategy_config["rationale"]),
             ),
             "interpretation": _interpret_portfolio_results(result),
+        }
+    except InsufficientPortfolioEvidence as exc:
+        _portfolio_jobs[job_id] = {
+            "status": "complete",
+            "tickers": body.tickers,
+            "strategy_type": body.strategy_type,
+            "bars_used": len(exc.report.retained_session_ids),
+            "datasets": dataset_manifests,
+            "verdict": exc.verdict,
+            "evidence_reasons": list(exc.reasons),
+            "coverage": _serialize_portfolio_coverage(exc.report),
+            "result": None,
         }
     except Exception as exc:
         import traceback
@@ -362,6 +413,7 @@ def _serialize_backtest_trade(trade: Any) -> dict[str, Any]:
         "exit_reason": trade.exit_reason,
         "holding_bars": trade.holding_bars,
         "slippage": float(trade.slippage_cost),
+        "commission_cost": float(trade.commission_cost),
         "mfe": float(trade.mfe),
         "mae": float(trade.mae),
     }
@@ -448,7 +500,13 @@ def _serialize_portfolio_backtest_result(
         "rebalance_count": result.rebalance_count,
         "turnover_pct": float(result.turnover_pct),
         "avg_exposure_pct": float(result.avg_exposure_pct),
-        "latest_weights": {ticker: float(weight) for ticker, weight in result.latest_weights.items()},
+        "total_slippage_cost": float(result.total_slippage_cost),
+        "total_fee_cost": float(result.total_fee_cost),
+        "total_execution_cost": float(result.total_execution_cost),
+        "coverage": _serialize_portfolio_coverage(result.coverage_report),
+        "latest_weights": {
+            ticker: float(weight) for ticker, weight in result.latest_weights.items()
+        },
         "equity_curve": [
             {
                 "date": point.date.isoformat(),
@@ -466,8 +524,11 @@ def _serialize_portfolio_backtest_result(
                 "ticker": trade.ticker,
                 "side": trade.side,
                 "shares": float(trade.shares),
+                "quote_price": float(trade.quote_price),
                 "price": float(trade.price),
                 "notional": float(trade.notional),
+                "slippage_cost": float(trade.slippage_cost),
+                "fee_cost": float(trade.fee_cost),
                 "cost": float(trade.cost),
                 "reason": trade.reason,
                 "target_weight": float(trade.target_weight),
@@ -475,6 +536,40 @@ def _serialize_portfolio_backtest_result(
             for trade in result.trades[-250:]
         ],
         "rationale": rationale,
+    }
+
+
+def _serialize_portfolio_coverage(report: Any) -> dict[str, Any]:
+    return {
+        "calendar": report.calendar,
+        "exchange_timezone": report.exchange_timezone,
+        "requested_from": report.requested_start.isoformat(),
+        "requested_to": report.requested_end.isoformat(),
+        "minimum_coverage_pct": float(report.minimum_coverage_pct),
+        "retained_coverage_pct": float(report.retained_coverage_pct),
+        "complete": report.complete,
+        "policy": report.policy,
+        "policy_id": report.policy_id,
+        "eligible": report.eligible,
+        "common_from": report.common_start.isoformat() if report.common_start else None,
+        "common_to": report.common_end.isoformat() if report.common_end else None,
+        "expected_session_ids": list(report.expected_session_ids),
+        "retained_session_ids": list(report.retained_session_ids),
+        "dropped_session_ids": list(report.dropped_session_ids),
+        "symbols": [
+            {
+                "ticker": item.ticker,
+                "expected_session_ids": list(item.expected_session_ids),
+                "observed_session_ids": list(item.observed_session_ids),
+                "missing_session_ids": list(item.missing_session_ids),
+                "extra_session_ids": list(item.extra_session_ids),
+                "coverage_pct": float(item.coverage_pct),
+                "longest_missing_run": item.longest_missing_run,
+                "first_valid_session_id": item.first_valid_session_id,
+                "last_valid_session_id": item.last_valid_session_id,
+            }
+            for item in report.symbols
+        ],
     }
 
 
@@ -499,13 +594,19 @@ def _interpret_results(result: Any) -> dict[str, Any]:
     if result.total_trades < 30:
         warnings.append("Too few trades for statistical significance (need 30+)")
     if float(result.max_drawdown_pct) > 20:
-        warnings.append(f"Max drawdown {float(result.max_drawdown_pct):.1f}% is high — review stops")
+        warnings.append(
+            f"Max drawdown {float(result.max_drawdown_pct):.1f}% is high — review stops"
+        )
     if result.consecutive_losses_max >= 5:
-        warnings.append(f"Max {result.consecutive_losses_max} consecutive losses — ensure daily loss limit covers this")
+        warnings.append(
+            f"Max {result.consecutive_losses_max} consecutive losses — ensure daily loss limit covers this"
+        )
     friction_cost = float(result.total_slippage_cost + result.total_commission_cost)
     gross_pnl = max(float(result.gross_pnl), 0.0)
     if gross_pnl > 0 and friction_cost > gross_pnl * 0.3:
-        warnings.append("Execution friction is >30% of gross profit — tighten entry quality or routing")
+        warnings.append(
+            "Execution friction is >30% of gross profit — tighten entry quality or routing"
+        )
 
     return {
         "verdict": verdict,
@@ -522,6 +623,19 @@ def _interpret_results(result: Any) -> dict[str, Any]:
 
 
 def _interpret_portfolio_results(result: Any) -> dict[str, Any]:
+    if not result.coverage_report.complete:
+        return {
+            "verdict": "insufficient_evidence",
+            "summary": (
+                "Incomplete session coverage prevents a positive evidence classification. "
+                "Review the disclosed missing sessions before further research use."
+            ),
+            "warnings": [
+                f"Only {result.coverage_report.retained_coverage_pct}% of expected sessions "
+                "were retained across the full universe."
+            ],
+        }
+
     verdict = "mixed"
     sharpe = float(result.sharpe_ratio or 0)
     if float(result.total_return_pct) <= 0:
@@ -537,11 +651,17 @@ def _interpret_portfolio_results(result: Any) -> dict[str, Any]:
     if result.rebalance_count < 3:
         warnings.append("Very few rebalance decisions were observed — extend the test period.")
     if float(result.max_drawdown_pct) > 25:
-        warnings.append(f"Portfolio drawdown reached {float(result.max_drawdown_pct):.1f}% — consider a stronger cash filter.")
+        warnings.append(
+            f"Portfolio drawdown reached {float(result.max_drawdown_pct):.1f}% — consider a stronger cash filter."
+        )
     if float(result.turnover_pct) > 250:
-        warnings.append("Turnover is high for a retail account — review rebalancing frequency and FX drag.")
+        warnings.append(
+            "Turnover is high for a retail account — review rebalancing frequency and FX drag."
+        )
     if float(result.avg_exposure_pct) < 40:
-        warnings.append("Average exposure stayed low — performance may be driven more by cash timing than asset selection.")
+        warnings.append(
+            "Average exposure stayed low — performance may be driven more by cash timing than asset selection."
+        )
 
     return {
         "verdict": verdict,
@@ -558,6 +678,7 @@ def _interpret_portfolio_results(result: Any) -> dict[str, Any]:
 
 # ── Attribution routes ────────────────────────────────────────────────────────
 
+
 @attribution_router.get("/full")
 async def get_full_attribution(
     days: int = Query(30, ge=7, le=365),
@@ -565,6 +686,7 @@ async def get_full_attribution(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     from app.services.performance_attribution import PerformanceAttributor
+
     attr = PerformanceAttributor(db)
     return await attr.full_report(days=days)
 
@@ -576,6 +698,7 @@ async def get_slippage_report(
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
     from app.services.performance_attribution import PerformanceAttributor
+
     attr = PerformanceAttributor(db)
     records = await attr.slippage_report(days=days)
     return [
@@ -599,6 +722,7 @@ async def get_symbol_attribution(
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
     from app.services.performance_attribution import PerformanceAttributor
+
     attr = PerformanceAttributor(db)
     symbols = await attr.symbol_attribution(days=days)
     return [

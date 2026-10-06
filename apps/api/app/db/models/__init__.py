@@ -2,6 +2,7 @@
 Full database schema for T212 CashGuard Trader.
 All tables with proper constraints, indexes, and JSONB fields.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -42,6 +43,7 @@ JSONType = JSON().with_variant(JSONB, "postgresql")
 # Users & Sessions
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class User(Base):
     __tablename__ = "users"
 
@@ -51,7 +53,9 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
     sessions: Mapped[list[Session]] = relationship("Session", back_populates="user")
     audit_logs: Mapped[list[AuditLog]] = relationship("AuditLog", back_populates="user")
@@ -61,7 +65,9 @@ class Session(Base):
     __tablename__ = "sessions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -75,11 +81,14 @@ class Session(Base):
 # Broker Connections
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class BrokerConnection(Base):
     __tablename__ = "broker_connections"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
     broker: Mapped[str] = mapped_column(String(50), nullable=False, default="trading212")
     environment: Mapped[str] = mapped_column(String(10), nullable=False)  # demo | live
     api_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
@@ -91,7 +100,9 @@ class BrokerConnection(Base):
     account_id: Mapped[str | None] = mapped_column(String(100))
     account_currency: Mapped[str | None] = mapped_column(String(10))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
     __table_args__ = (
         UniqueConstraint("user_id", "broker", "environment", name="uq_broker_user_env"),
@@ -102,8 +113,12 @@ class BrokerAccountSnapshot(Base):
     __tablename__ = "broker_accounts_snapshots"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    connection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("broker_connections.id", ondelete="CASCADE"), nullable=False)
-    snapshotted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("broker_connections.id", ondelete="CASCADE"), nullable=False
+    )
+    snapshotted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     total_value: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     cash: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     free_funds: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
@@ -120,6 +135,7 @@ class BrokerAccountSnapshot(Base):
 # ──────────────────────────────────────────────────────────────────────────────
 # Instruments
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class Instrument(Base):
     __tablename__ = "instruments"
@@ -140,7 +156,9 @@ class Instrument(Base):
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     raw: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class ExchangeSchedule(Base):
@@ -159,6 +177,7 @@ class ExchangeSchedule(Base):
 # Risk & Strategies
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class RiskProfile(Base):
     """
     Risk rules applied per strategy.
@@ -174,16 +193,23 @@ class RiskProfile(Base):
       Overnight cost — Chan (2013): funding cost erodes mean-reversion edge overnight
       Heat cap       — Markowitz (1952); Lopez de Prado (2018)
     """
+
     __tablename__ = "risk_profiles"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
 
     # ── Equity / universal limits ────────────────────────────────────────────
-    max_risk_per_trade_pct: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False, default=Decimal("1.0"))
-    max_daily_loss_pct: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False, default=Decimal("3.0"))
+    max_risk_per_trade_pct: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, default=Decimal("1.0")
+    )
+    max_daily_loss_pct: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, default=Decimal("3.0")
+    )
     max_open_positions: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
-    max_position_size_pct: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False, default=Decimal("10.0"))
+    max_position_size_pct: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, default=Decimal("10.0")
+    )
     max_trades_per_day: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
     stop_after_consecutive_losses: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     symbol_cooldown_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
@@ -193,31 +219,41 @@ class RiskProfile(Base):
     # ── CFD-specific limits (NULL = inherit equity equivalent) ───────────────
     # Tighter per-trade risk because CFD leverage amplifies losses quickly
     cfd_max_risk_per_trade_pct: Mapped[Decimal | None] = mapped_column(
-        Numeric(5, 2), nullable=True,
+        Numeric(5, 2),
+        nullable=True,
         comment="CFD per-trade risk cap (default: 0.5% — half of equity limit)",
     )
     cfd_max_daily_loss_pct: Mapped[Decimal | None] = mapped_column(
-        Numeric(5, 2), nullable=True,
+        Numeric(5, 2),
+        nullable=True,
         comment="CFD intraday loss limit (default: 2% — tighter than equity)",
     )
     # Maximum notional CFD exposure held overnight as % of account equity
     max_overnight_cfd_exposure_pct: Mapped[Decimal] = mapped_column(
-        Numeric(5, 2), nullable=False, default=Decimal("0.0"),
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.0"),
         comment="0 = force-flat all CFDs before close; >0 allows carry with margin check",
     )
     # Minimum free margin % before new CFD positions are blocked
     min_free_margin_pct: Mapped[Decimal] = mapped_column(
-        Numeric(5, 2), nullable=False, default=Decimal("30.0"),
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("30.0"),
         comment="Block new CFD entries if free_margin / equity < this threshold",
     )
     # Maximum leverage multiplier (notional / equity) allowed per CFD position
     cfd_max_leverage: Mapped[Decimal] = mapped_column(
-        Numeric(5, 2), nullable=False, default=Decimal("5.0"),
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("5.0"),
         comment="Hard cap on leverage (5x = conservative retail; FCA max 20-30x)",
     )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class Strategy(Base):
@@ -225,11 +261,15 @@ class Strategy(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    type: Mapped[str] = mapped_column(String(50), nullable=False)  # orb, vwap_reclaim, mean_reversion, momentum
+    type: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # orb, vwap_reclaim, mean_reversion, momentum
     description: Mapped[str | None] = mapped_column(Text)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     is_live: Mapped[bool] = mapped_column(Boolean, default=False)  # live vs dry-run
-    risk_profile_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("risk_profiles.id"))
+    risk_profile_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("risk_profiles.id")
+    )
     params: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False, default=dict)
     allowed_tickers: Mapped[list[str]] = mapped_column(JSONType, nullable=False, default=list)
     session_start: Mapped[str] = mapped_column(String(10), default="09:30")  # HH:MM local exchange
@@ -238,23 +278,32 @@ class Strategy(Base):
     eod_flatten: Mapped[bool] = mapped_column(Boolean, default=True)
     venue: Mapped[str] = mapped_column(String(50), nullable=False, default="t212", index=True)
     last_signal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
     risk_profile: Mapped[RiskProfile | None] = relationship("RiskProfile")
     signals: Mapped[list[Signal]] = relationship("Signal", back_populates="strategy")
     runs: Mapped[list[StrategyRun]] = relationship("StrategyRun", back_populates="strategy")
+
+    __mapper_args__ = {"version_id_col": version}  # noqa: RUF012
 
 
 class StrategyRun(Base):
     __tablename__ = "strategy_runs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    strategy_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False)
+    strategy_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False
+    )
     run_type: Mapped[str] = mapped_column(String(20), nullable=False)  # dry | live
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")  # running | completed | error
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="running"
+    )  # running | completed | error
     signals_generated: Mapped[int] = mapped_column(Integer, default=0)
     orders_placed: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text)
@@ -266,15 +315,23 @@ class StrategyRun(Base):
 # Signals
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class Signal(Base):
     __tablename__ = "signals"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    strategy_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False)
+    strategy_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False
+    )
     ticker: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     side: Mapped[str] = mapped_column(String(10), nullable=False)  # buy | sell
-    signal_type: Mapped[str] = mapped_column(String(50), nullable=False)  # entry | exit | stop | take_profit
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")  # pending | approved | rejected | executed | expired
+    signal_type: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # entry | exit | stop | take_profit
+    decision_key: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending"
+    )  # pending | approved | rejected | executed | expired
     entry_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     stop_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     take_profit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
@@ -284,7 +341,9 @@ class Signal(Base):
     risk_rejected: Mapped[bool] = mapped_column(Boolean, default=False)
     risk_rejection_reason: Mapped[str | None] = mapped_column(Text)
     params_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
-    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -309,15 +368,22 @@ class Signal(Base):
 # Orders
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class Order(Base):
     __tablename__ = "orders"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    signal_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("signals.id"))
-    client_order_key: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    signal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("signals.id")
+    )
+    client_order_key: Mapped[str] = mapped_column(
+        String(100), unique=True, nullable=False, index=True
+    )
     ticker: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     side: Mapped[str] = mapped_column(String(10), nullable=False)  # buy | sell
-    order_type: Mapped[str] = mapped_column(String(20), nullable=False)  # market | limit | stop | stop_limit
+    order_type: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # market | limit | stop | stop_limit
     quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     # For T212: sell uses negative quantity — stored positive, negated on submission
     limit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
@@ -329,9 +395,11 @@ class Order(Base):
     filled_quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     execution_environment: Mapped[str | None] = mapped_column(String(20))
+    broker_account_scope: Mapped[str | None] = mapped_column(String(160), index=True)
     expected_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     slippage_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
     slippage_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    fee_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     first_ack_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -351,9 +419,12 @@ class Order(Base):
     broker_response: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
     error_message: Mapped[str | None] = mapped_column(Text)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
     signal: Mapped[Signal | None] = relationship("Signal", back_populates="orders")
     events: Mapped[list[OrderEvent]] = relationship("OrderEvent", back_populates="order")
@@ -361,6 +432,12 @@ class Order(Base):
     @property
     def strategy_id(self) -> uuid.UUID | None:
         return self.signal.strategy_id if self.signal else None
+
+    @property
+    def remaining_quantity(self) -> Decimal:
+        """Exact unfilled remainder derived from authoritative persisted quantities."""
+        filled = self.filled_quantity or Decimal("0")
+        return max(Decimal("0"), self.quantity - filled)
 
     @property
     def strategy_name(self) -> str | None:
@@ -397,33 +474,111 @@ class Order(Base):
     __table_args__ = (
         Index("ix_orders_ticker_status", "ticker", "status"),
         Index("ix_orders_created_at", "created_at"),
-        Index("ix_orders_execution_quality", "execution_environment", "ticker", "order_type", "created_at"),
+        Index(
+            "ix_orders_execution_quality",
+            "execution_environment",
+            "ticker",
+            "order_type",
+            "created_at",
+        ),
     )
+    __mapper_args__ = {"version_id_col": version}  # noqa: RUF012
 
 
 class OrderEvent(Base):
     __tablename__ = "order_events"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    order_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False)
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False
+    )
     event_type: Mapped[str] = mapped_column(String(50), nullable=False)
     from_status: Mapped[str | None] = mapped_column(String(30))
     to_status: Mapped[str | None] = mapped_column(String(30))
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
     order: Mapped[Order] = relationship("Order", back_populates="events")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Durable EOD flatten operations
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class EodFlattenOperation(Base):
+    """One non-retryable flatten decision for a strategy/exchange session/ticker."""
+
+    __tablename__ = "eod_flatten_operations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    operation_kind: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="eod_flatten", server_default="eod_flatten"
+    )
+    strategy_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("strategies.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    venue: Mapped[str] = mapped_column(String(50), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(20), nullable=False)
+    execution_environment: Mapped[str] = mapped_column(String(20), nullable=False)
+    broker_account_scope: Mapped[str | None] = mapped_column(String(160))
+    exchange_session_date: Mapped[date] = mapped_column(Date, nullable=False)
+    ticker: Mapped[str] = mapped_column(String(50), nullable=False)
+    attributable_quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    order_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("orders.id", ondelete="SET NULL"),
+    )
+    status: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="claimed", server_default="claimed"
+    )
+    requires_manual_reconciliation: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    strategy: Mapped[Strategy] = relationship("Strategy")
+    order: Mapped[Order | None] = relationship("Order")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "operation_kind",
+            "strategy_id",
+            "venue",
+            "exchange_session_date",
+            "ticker",
+            name="uq_eod_flatten_operation_identity",
+        ),
+        UniqueConstraint("order_id", name="uq_eod_flatten_operation_order"),
+        Index(
+            "ix_eod_flatten_operations_session",
+            "exchange",
+            "exchange_session_date",
+            "status",
+        ),
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Positions
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class PositionSnapshot(Base):
     __tablename__ = "positions_snapshots"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    connection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("broker_connections.id", ondelete="CASCADE"), nullable=False)
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("broker_connections.id", ondelete="CASCADE"), nullable=False
+    )
     ticker: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     avg_price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
@@ -431,7 +586,9 @@ class PositionSnapshot(Base):
     unrealized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     quantity_available: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     raw: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
-    snapshotted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    snapshotted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
     __table_args__ = (
         Index("ix_positions_connection_ticker", "connection_id", "ticker"),
@@ -443,19 +600,26 @@ class PositionSnapshot(Base):
 # Trades (closed positions)
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class Trade(Base):
     __tablename__ = "trades"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     ticker: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     side: Mapped[str] = mapped_column(String(10), nullable=False)  # buy | sell
-    open_order_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("orders.id"))
-    close_order_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("orders.id"))
+    open_order_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orders.id")
+    )
+    close_order_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orders.id")
+    )
     quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     open_price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     close_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
-    strategy_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("strategies.id"))
+    strategy_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("strategies.id")
+    )
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -465,16 +629,17 @@ class Trade(Base):
     journal_tags: Mapped[list[str] | None] = mapped_column(JSONType, nullable=True, default=list)
     journal_emotion: Mapped[str | None] = mapped_column(String(50), nullable=True)
     journal_rating: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
-    journal_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    __table_args__ = (
-        Index("ix_trades_ticker_opened", "ticker", "opened_at"),
+    journal_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
+
+    __table_args__ = (Index("ix_trades_ticker_opened", "ticker", "opened_at"),)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CFD Funding Costs
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class CFDFundingCost(Base):
     """
@@ -488,6 +653,7 @@ class CFDFundingCost(Base):
       strategies when positions are carried.  Explicit tracking allows the
       walk-forward backtester to deduct realistic carrying costs.
     """
+
     __tablename__ = "cfd_funding_costs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -505,14 +671,13 @@ class CFDFundingCost(Base):
         DateTime(timezone=True), server_default=func.now(), index=True
     )
 
-    __table_args__ = (
-        Index("ix_cfd_funding_ticker_date", "ticker", "recorded_at"),
-    )
+    __table_args__ = (Index("ix_cfd_funding_ticker_date", "ticker", "recorded_at"),)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Risk Events
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class RiskEvent(Base):
     __tablename__ = "risk_events"
@@ -526,12 +691,15 @@ class RiskEvent(Base):
     order_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     message: Mapped[str | None] = mapped_column(Text)
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Alerts
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class Alert(Base):
     __tablename__ = "alerts"
@@ -541,15 +709,20 @@ class Alert(Base):
     channel: Mapped[str] = mapped_column(String(20), nullable=False)  # in_app | email | telegram
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
-    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="info")  # info | warning | error | critical
+    severity: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="info"
+    )  # info | warning | error | critical
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Telegram Control
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class TelegramControlRequest(Base):
     __tablename__ = "telegram_control_requests"
@@ -559,22 +732,27 @@ class TelegramControlRequest(Base):
     user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     command: Mapped[str] = mapped_column(String(50), nullable=False)
     action: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
-    confirmation_code: Mapped[str] = mapped_column(String(12), nullable=False, unique=True, index=True)
+    confirmation_code: Mapped[str] = mapped_column(
+        String(12), nullable=False, unique=True, index=True
+    )
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
-    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    __table_args__ = (
-        Index("ix_telegram_control_status_expiry", "status", "expires_at"),
-    )
+    __table_args__ = (Index("ix_telegram_control_status_expiry", "status", "expires_at"),)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # App Settings
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class AppSettings(Base):
     __tablename__ = "app_settings"
@@ -588,42 +766,50 @@ class AppSettings(Base):
     live_trading_unlocked: Mapped[bool] = mapped_column(Boolean, default=False)
     daily_stats_reset_time: Mapped[str] = mapped_column(String(10), default="00:00")
     extra: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Audit Log
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
     action: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     entity_type: Mapped[str | None] = mapped_column(String(50))
     entity_id: Mapped[str | None] = mapped_column(String(100))
     actor: Mapped[str] = mapped_column(String(100), nullable=False, default="system")
     ip_address: Mapped[str | None] = mapped_column(String(45))
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
 
     user: Mapped[User | None] = relationship("User", back_populates="audit_logs")
 
-    __table_args__ = (
-        Index("ix_audit_logs_entity", "entity_type", "entity_id"),
-    )
+    __table_args__ = (Index("ix_audit_logs_entity", "entity_type", "entity_id"),)
 
     @validates("payload")
-    def _normalize_payload(self, _key: str, payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    def _normalize_payload(
+        self, _key: str, payload: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
         if payload is None:
             return None
-        return to_jsonable(payload)
+        return cast("dict[str, Any]", to_jsonable(payload))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Venue Configuration
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class VenueConfig(Base):
     __tablename__ = "venue_configs"
@@ -641,6 +827,7 @@ class VenueConfig(Base):
 # Persistent paper-only policy for KrakenDCAPlanner. One row per (ticker, venue).
 # DCA remains outside the main strategy runner.
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class DcaConfig(Base):
     __tablename__ = "dca_configs"
@@ -668,9 +855,7 @@ class DcaConfig(Base):
     )
     paper_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -688,6 +873,7 @@ class DcaConfig(Base):
 # PAPER_ONLY scaffold — not connected to any execution path.
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class DcaPlanState(Base):
     __tablename__ = "dca_plan_states"
 
@@ -702,9 +888,7 @@ class DcaPlanState(Base):
     executions_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_decision_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     last_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -720,6 +904,7 @@ class DcaPlanState(Base):
 # Persisted observability-only liveness source for backend workers.
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class WorkerHeartbeat(Base):
     __tablename__ = "worker_heartbeats"
 
@@ -729,9 +914,7 @@ class WorkerHeartbeat(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="healthy")
     payload: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -744,4 +927,4 @@ class WorkerHeartbeat(Base):
 
     @validates("payload")
     def _normalize_payload(self, _key: str, payload: dict[str, Any] | None) -> dict[str, Any]:
-        return cast(dict[str, Any], to_jsonable(payload or {}))
+        return cast("dict[str, Any]", to_jsonable(payload or {}))

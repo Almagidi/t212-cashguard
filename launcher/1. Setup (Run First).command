@@ -21,7 +21,7 @@ echo -e "${BOLD}${BLUE}╚══════════════════
 echo ""
 echo "  This wizard will:"
 echo "  1. Install all required tools (Homebrew, Python, Node, Docker)"
-echo "  2. Ask for your Trading 212 and Polygon.io API keys"
+echo "  2. Create a protected mock-only local configuration"
 echo "  3. Set everything up automatically"
 echo "  4. Launch the app in your browser"
 echo ""
@@ -144,120 +144,33 @@ else
     ok "Docker is running"
 fi
 
-# ── Step 5: Ask for credentials ───────────────────────────────────────────────
+# ── Step 5: Create mock-only configuration ───────────────────────────────────
 step "Setting up your configuration..."
 echo ""
 
-# Check if .env already exists and has real keys
-ENV_EXISTS=false
 if [ -f "$PROJECT_ROOT/.env" ]; then
-    if ! grep -q "change-me" "$PROJECT_ROOT/.env" && ! grep -q "T212_API_KEY=$" "$PROJECT_ROOT/.env"; then
-        ENV_EXISTS=true
-        ok ".env already configured — skipping credential entry"
-        info "To reconfigure, delete the .env file and run setup again"
-    fi
-fi
-
-if [ "$ENV_EXISTS" = false ]; then
-    echo -e "  ${BOLD}You'll need two things:${RESET}"
+    ok ".env already exists — preserving it"
+    info "Setup never changes runtime mode or broker credentials"
+else
+    echo "  CashGuard starts in mock mode and does not ask for broker credentials."
+    echo "  Demo broker credentials can be added later in the Broker page, where"
+    echo "  they are encrypted before database storage. Live trading is prohibited."
     echo ""
-    echo -e "  ${BOLD}1. Trading 212 API Key${RESET}"
-    echo "     - Open Trading 212 app or website"
-    echo "     - Go to Settings → API"
-    echo "     - Click 'Generate API key'"
-    echo "     - You'll get an API Key and an API Secret"
+    read -s -p "  Admin password for the dashboard (at least 8 characters): " ADMIN_PASS
     echo ""
-    echo -e "  ${BOLD}2. Polygon.io API Key (free)${RESET}"
-    echo "     - Go to: https://polygon.io"
-    echo "     - Click 'Get Started Free'"
-    echo "     - After signing up, copy your API key"
-    echo ""
-    echo "  Don't have these yet? You can:"
-    echo "  a) Open those websites now, get your keys, then come back"
-    echo "  b) Skip for now (app will run in mock mode with fake data)"
-    echo ""
-    
-    # Open websites to help
-    read -p "  Open Trading 212 and Polygon.io in your browser? (Y/n): " OPEN_BROWSER
-    if [[ "$OPEN_BROWSER" != "n" && "$OPEN_BROWSER" != "N" ]]; then
-        open "https://app.trading212.com/settings" 2>/dev/null || open "https://www.trading212.com/" 2>/dev/null
-        open "https://app.alpaca.markets/paper-trading/overview"
-        open "https://polygon.io/dashboard"
-        echo "  Opened Trading 212, Alpaca, and Polygon in your browser."
-        echo ""
-        read -p "  Press ENTER when you have your keys ready..."
-        echo ""
-    fi
-    
-    echo "  Enter your details (press ENTER to skip and use mock mode):"
-    echo ""
-    
-    read -p "  Trading 212 API Key: " T212_KEY
-    if [ -n "$T212_KEY" ]; then
-        read -p "  Trading 212 API Secret: " T212_SECRET
-    fi
-    
-    echo -e "  ${BOLD}2. Alpaca Markets API Keys (free real-time data)${RESET}"
-    echo "     ─────────────────────────────────────────────────────────"
-    echo "     Alpaca gives you REAL-TIME data at no cost."
-    echo "     (Polygon free tier only has 15-minute delayed data"
-    echo "      which makes the strategy much less reliable.)"
-    echo ""
-    echo "     How to get your Alpaca keys (5 minutes):"
-    echo "     a) Go to: https://alpaca.markets"
-    echo "     b) Click 'Get Started' → create a free account"
-    echo "     c) Choose 'Paper Trading' (no real money needed)"
-    echo "     d) In the dashboard, click 'API Keys' → 'Generate'"
-    echo "     e) Copy the Key ID and Secret"
-    echo ""
-    read -p "  Alpaca API Key ID: " ALPACA_KEY
-    if [ -n "\$ALPACA_KEY" ]; then
-        read -p "  Alpaca Secret Key: " ALPACA_SECRET
-    fi
-    echo ""
-    echo -e "  ${BOLD}3. Polygon.io API Key (for backtesting only — free)${RESET}"
-    echo "     ─────────────────────────────────────────────────────────"
-    echo "     Polygon is used ONLY for historical backtests,"
-    echo "     not for live trading. Alpaca handles live signals."
-    echo ""
-    read -p "  Polygon.io API Key (optional but recommended): " POLYGON_KEY
-    
-    echo ""
-    read -p "  Admin password for the dashboard (make something up): " ADMIN_PASS
     while [ ${#ADMIN_PASS} -lt 8 ]; do
         echo "  Password must be at least 8 characters"
-        read -p "  Admin password: " ADMIN_PASS
+        read -s -p "  Admin password: " ADMIN_PASS
+        echo ""
     done
 
-    # Determine app mode
-    APP_MODE="mock"
-    if [ -n "$T212_KEY" ] && [ -n "$T212_SECRET" ]; then
-        APP_MODE="demo"
-        ok "Trading 212 credentials provided — will use demo mode"
-    else
-        warn "No Trading 212 keys — running in mock mode (fake data)"
-    fi
-
-    # Determine market data provider
-    MARKET_PROVIDER="mock"
-    if [ -n "$ALPACA_KEY" ] && [ -n "$ALPACA_SECRET" ]; then
-        MARKET_PROVIDER="alpaca"
-        ok "Alpaca keys provided — real-time market data enabled"
-    elif [ -n "$POLYGON_KEY" ]; then
-        MARKET_PROVIDER="polygon"
-        warn "Using Polygon (15-min delayed). Add Alpaca keys later for real-time data."
-    else
-        warn "No market data keys — signals will use simulated data"
-    fi
-
-    # Generate secure keys
     SECRET_KEY=$(openssl rand -hex 32)
     MASTER_KEY=$(openssl rand -hex 32)
 
-    # Write .env file
+    umask 077
     cat > "$PROJECT_ROOT/.env" << ENVEOF
 # Generated by CashGuard setup wizard
-APP_MODE=${APP_MODE}
+APP_MODE=mock
 SECRET_KEY=${SECRET_KEY}
 MASTER_KEY=${MASTER_KEY}
 
@@ -272,27 +185,23 @@ REDIS_URL=redis://:cashguard_redis@localhost:6379/0
 ADMIN_EMAIL=admin@localhost
 ADMIN_PASSWORD=${ADMIN_PASS:-changeme123}
 
-T212_API_KEY=${T212_KEY:-}
-T212_API_SECRET=${T212_SECRET:-}
 T212_ENVIRONMENT=demo
-
-ALPACA_API_KEY=${ALPACA_KEY:-}
-ALPACA_API_SECRET=${ALPACA_SECRET:-}
-POLYGON_API_KEY=${POLYGON_KEY:-}
-MARKET_DATA_PROVIDER=${MARKET_PROVIDER}
+MARKET_DATA_PROVIDER=mock
+LIVE_TRADING_ENABLED=false
 
 COOKIE_SECURE=false
 COOKIE_SAMESITE=lax
 CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 
 NEXT_PUBLIC_API_URL=http://localhost:8000
-NEXT_PUBLIC_APP_MODE=${APP_MODE}
+NEXT_PUBLIC_APP_MODE=mock
 
 LOG_LEVEL=INFO
 DEBUG=false
 ENVEOF
 
-    ok ".env file created"
+    chmod 600 "$PROJECT_ROOT/.env"
+    ok ".env file created in protected mock-only mode"
 fi
 
 # ── Step 6: Install Python dependencies ──────────────────────────────────────
@@ -374,12 +283,7 @@ echo ""
 echo "  Login details:"
 echo "  URL:      http://localhost:3000"
 echo "  Email:    admin@localhost"
-
-# Show the password
-if [ -f "$PROJECT_ROOT/.env" ]; then
-    PW=$(grep "^ADMIN_PASSWORD=" "$PROJECT_ROOT/.env" | cut -d= -f2)
-    echo "  Password: $PW"
-fi
+echo "  Password: the value you entered during setup"
 
 echo ""
 read -p "  Press ENTER to close..."
