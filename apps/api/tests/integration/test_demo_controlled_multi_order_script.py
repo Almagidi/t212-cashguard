@@ -124,19 +124,16 @@ def test_credentials_prefer_demo_specific_names() -> None:
     assert credentials.source == "demo-specific"
 
 
-def test_credentials_fall_back_to_generic_names_when_demo_absent() -> None:
-    credentials = smoke.select_credentials(
-        _safe_env(
-            T212_DEMO_API_KEY="",
-            T212_DEMO_API_SECRET="",
-            T212_API_KEY="generic-key",
-            T212_API_SECRET="generic-secret",
+def test_generic_credentials_cannot_satisfy_demo_configuration() -> None:
+    with pytest.raises(smoke.SafetyGateError, match="T212_DEMO_API_KEY"):
+        smoke.select_credentials(
+            _safe_env(
+                T212_DEMO_API_KEY="",
+                T212_DEMO_API_SECRET="",
+                T212_API_KEY="generic-key",
+                T212_API_SECRET="generic-secret",
+            )
         )
-    )
-
-    assert credentials.api_key == "generic-key"
-    assert credentials.api_secret == "generic-secret"
-    assert credentials.source == "generic-fallback"
 
 
 def test_live_environment_adapter_cannot_be_constructed() -> None:

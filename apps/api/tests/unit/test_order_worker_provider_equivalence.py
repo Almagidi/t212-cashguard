@@ -18,6 +18,7 @@ from app.broker.provider import (
 )
 from app.core.config import settings
 from app.core.security import CredentialDecryptionError
+from app.execution.engine import OrderCancellationFailed
 from app.services.safety_policy import SafetyPolicyViolation
 from app.workers import tasks
 
@@ -117,6 +118,7 @@ class RecordingExecutionEngine:
     brokers: ClassVar[list[Any]] = []
     reconcile_calls: ClassVar[list[FakeOrder]] = []
     cancel_calls: ClassVar[list[FakeOrder]] = []
+    cancellation_failure_tickers: ClassVar[set[str]] = set()
 
     def __init__(self, _db: FakeSession, broker: Any) -> None:
         self.broker = broker
@@ -127,6 +129,8 @@ class RecordingExecutionEngine:
 
     async def cancel_order(self, order: FakeOrder) -> None:
         self.cancel_calls.append(order)
+        if order.ticker in self.cancellation_failure_tickers:
+            raise OrderCancellationFailed(order)  # type: ignore[arg-type]
 
 
 @asynccontextmanager
@@ -148,6 +152,7 @@ def _reset_worker_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     RecordingExecutionEngine.brokers.clear()
     RecordingExecutionEngine.reconcile_calls.clear()
     RecordingExecutionEngine.cancel_calls.clear()
+    RecordingExecutionEngine.cancellation_failure_tickers.clear()
     monkeypatch.setattr(settings, "APP_MODE", "live")
     monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", True)
     monkeypatch.setattr(tasks, "_LOOP", None)
@@ -861,6 +866,29 @@ def test_cancel_timed_out_orders_provider_validation_error_fails_closed(
             },
         )
     ]
+
+
+def test_cancel_timed_out_orders_reports_failed_cancellations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_orders = [
+        _order(ticker="AAPL", broker_order_id="broker-aapl"),
+        _order(ticker="MSFT", broker_order_id="broker-msft"),
+    ]
+    summaries: list[tuple[str, dict[str, Any]]] = []
+    fake_db = FakeSession(results=[selected_orders, _active_conn(environment="live")])
+    _install_session(monkeypatch, fake_db, summaries)
+    _install_decrypt(monkeypatch)
+    RecordingExecutionEngine.cancellation_failure_tickers.add("MSFT")
+
+    def provider(*_args: Any, **_kwargs: Any) -> RecordingTrading212Adapter:
+        return RecordingTrading212Adapter("decrypted-live-key", "decrypted-live-secret", "live")
+
+    monkeypatch.setattr("app.broker.provider.create_trading212_provider_adapter", provider)
+
+    assert tasks.cancel_timed_out_orders.run() == {"cancelled": 1, "failed": 1}
+    assert RecordingExecutionEngine.cancel_calls == selected_orders
+    assert summaries == [("cancel_timed_out_orders", {"cancelled": 1, "failed": 1})]
 
 
 def _top_level_function(name: str) -> ast.FunctionDef:

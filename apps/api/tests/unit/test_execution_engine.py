@@ -9,9 +9,9 @@ import pytest_asyncio
 from sqlalchemy import select
 
 import app.services.execution_quality as _eq
-from app.db.models import Alert, AppSettings
-from app.execution.engine import ExecutionEngine
-from app.execution.state_machine import InvalidOrderTransition
+from app.db.models import Alert, AppSettings, OrderEvent
+from app.execution.engine import ExecutionEngine, OrderCancellationFailed
+from app.execution.state_machine import InvalidOrderTransition, transition_order_status
 
 
 class DummyBroker:
@@ -58,6 +58,11 @@ class WorkingBroker:
         pass
 
 
+class CancelErrorBroker(WorkingBroker):
+    async def cancel_order(self, broker_order_id):
+        raise RuntimeError("Authorization: Bearer super-secret-token")
+
+
 class FilledOnReconcileBroker:
     environment = "demo"
 
@@ -74,6 +79,34 @@ class FilledOnReconcileBroker:
 
     async def cancel_order(self, broker_order_id):
         pass
+
+
+class StaleFilledOnReconcileBroker(FilledOnReconcileBroker):
+    async def get_order_by_id(self, broker_order_id):
+        response = await super().get_order_by_id(broker_order_id)
+        return {**response, "filledQuantity": 5, "filledPrice": 101}
+
+
+class PartiallyFilledThenCancelledBroker(WorkingBroker):
+    async def get_order_by_id(self, broker_order_id):
+        return {
+            "id": broker_order_id,
+            "status": "CANCELLED",
+            "filledQuantity": 7,
+            "filledPrice": 101,
+        }
+
+
+class PartiallyFilledThenRejectedBroker(PartiallyFilledThenCancelledBroker):
+    async def get_order_by_id(self, broker_order_id):
+        response = await super().get_order_by_id(broker_order_id)
+        return {**response, "status": "REJECTED"}
+
+
+class StalePartialThenCancelledBroker(PartiallyFilledThenCancelledBroker):
+    async def get_order_by_id(self, broker_order_id):
+        response = await super().get_order_by_id(broker_order_id)
+        return {**response, "filledQuantity": 5, "filledPrice": 101}
 
 
 class ErrorBroker:
@@ -157,6 +190,61 @@ async def test_execution_engine_allows_distinct_recent_intent(db):
     )
 
     assert second.id != first.id
+
+
+@pytest.mark.asyncio
+async def test_execution_engine_stable_operation_identity_survives_terminal_order(db):
+    engine = ExecutionEngine(db, DummyBroker())
+    operation_identity = "eod_flatten:strategy-1:t212:2026-07-06:AAPL"
+
+    first = await engine.create_order_intent(
+        ticker="AAPL",
+        side="sell",
+        order_type="market",
+        quantity=Decimal("2"),
+        is_dry_run=True,
+        stable_operation_identity=operation_identity,
+    )
+    first.status = "filled"
+    first.filled_quantity = first.quantity
+    await db.flush()
+
+    replay = await engine.create_order_intent(
+        ticker="AAPL",
+        side="sell",
+        order_type="market",
+        quantity=Decimal("2"),
+        is_dry_run=True,
+        stable_operation_identity=operation_identity,
+    )
+
+    assert replay.id == first.id
+    assert replay.client_order_key == first.client_order_key
+
+
+@pytest.mark.asyncio
+async def test_execution_engine_distinct_operation_identities_do_not_deduplicate(db):
+    engine = ExecutionEngine(db, DummyBroker())
+
+    first = await engine.create_order_intent(
+        ticker="AAPL",
+        side="sell",
+        order_type="market",
+        quantity=Decimal("2"),
+        is_dry_run=True,
+        stable_operation_identity="eod_flatten:strategy-1:t212:2026-07-06:AAPL",
+    )
+    second = await engine.create_order_intent(
+        ticker="AAPL",
+        side="sell",
+        order_type="market",
+        quantity=Decimal("2"),
+        is_dry_run=True,
+        stable_operation_identity="eod_flatten:strategy-1:t212:2026-07-07:AAPL",
+    )
+
+    assert second.id != first.id
+    assert second.client_order_key != first.client_order_key
 
 
 @pytest.mark.asyncio
@@ -274,7 +362,12 @@ async def test_submit_order_broker_error_sets_error_status(db, monkeypatch):
     )
     order = await engine.submit_order(order)
     assert order.status == "error"
-    assert "Broker unavailable" in order.error_message
+    assert order.error_message == "Broker request failed with RuntimeError."
+    event = (
+        await db.execute(select(OrderEvent).where(OrderEvent.event_type == "broker_error"))
+    ).scalar_one()
+    assert event.payload["error_type"] == "RuntimeError"
+    assert "Broker unavailable" not in str(event.payload)
 
 
 @pytest.mark.asyncio
@@ -330,6 +423,143 @@ async def test_reconcile_order_fills_accepted(db):
 
 
 @pytest.mark.asyncio
+async def test_reconcile_order_fills_active_partial_remainder(db):
+    engine = ExecutionEngine(db, FilledOnReconcileBroker())
+    order = await engine.create_order_intent(
+        ticker="META",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("10"),
+        estimated_price=Decimal("100"),
+        is_dry_run=False,
+    )
+    order = await engine.submit_order(order)
+    transition_order_status(order, "partially_filled")
+    order.filled_quantity = Decimal("5")
+    order.avg_fill_price = Decimal("100")
+    _eq.apply_order_execution_quality(order)
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "filled"
+    assert order.filled_quantity == Decimal("10")
+    assert order.remaining_quantity == Decimal("0")
+    assert order.avg_fill_price == Decimal("101.5")
+    assert order.slippage_pct == Decimal("1.5000")
+    assert order.slippage_value == Decimal("15.0000")
+    assert "pending" not in order.execution_quality_notes
+
+
+@pytest.mark.asyncio
+async def test_reconcile_stale_filled_response_cannot_regress_partial_quantity(db):
+    engine = ExecutionEngine(db, StaleFilledOnReconcileBroker())
+    order = await engine.create_order_intent(
+        ticker="META",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("10"),
+        estimated_price=Decimal("100"),
+        is_dry_run=False,
+    )
+    order = await engine.submit_order(order)
+    transition_order_status(order, "partially_filled")
+    order.filled_quantity = Decimal("7")
+    order.avg_fill_price = Decimal("100")
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "partially_filled"
+    assert order.filled_quantity == Decimal("7")
+    assert order.avg_fill_price == Decimal("100")
+    assert order.remaining_quantity == Decimal("3")
+
+
+@pytest.mark.asyncio
+async def test_reconcile_terminal_partial_applies_broker_final_fill(db):
+    engine = ExecutionEngine(db, PartiallyFilledThenCancelledBroker())
+    order = await engine.create_order_intent(
+        ticker="META",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("10"),
+        estimated_price=Decimal("100"),
+        is_dry_run=False,
+    )
+    order = await engine.submit_order(order)
+    transition_order_status(order, "partially_filled")
+    order.filled_quantity = Decimal("5")
+    order.avg_fill_price = Decimal("100")
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "cancelled"
+    assert order.filled_quantity == Decimal("7")
+    assert order.avg_fill_price == Decimal("101")
+    assert order.remaining_quantity == Decimal("3")
+    assert order.slippage_pct == Decimal("1.0000")
+    assert order.slippage_value == Decimal("7.0000")
+    assert "pending" not in order.execution_quality_notes
+    event = (
+        await db.execute(
+            select(OrderEvent).where(
+                OrderEvent.order_id == order.id, OrderEvent.event_type == "reconciled_status"
+            )
+        )
+    ).scalar_one()
+    assert event.payload["filled_quantity"] == "7"
+    assert event.payload["remaining_quantity"] == "3"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_rejected_partial_is_terminal_and_atomic(db):
+    engine = ExecutionEngine(db, PartiallyFilledThenRejectedBroker())
+    order = await engine.create_order_intent(
+        ticker="META",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("10"),
+        estimated_price=Decimal("100"),
+        is_dry_run=False,
+    )
+    order = await engine.submit_order(order)
+    transition_order_status(order, "partially_filled")
+    order.filled_quantity = Decimal("5")
+    order.avg_fill_price = Decimal("100")
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "rejected"
+    assert order.filled_quantity == Decimal("7")
+    assert order.avg_fill_price == Decimal("101")
+    assert order.remaining_quantity == Decimal("3")
+    assert order.broker_response["status"] == "REJECTED"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_stale_terminal_partial_keeps_quantity_and_price_together(db):
+    engine = ExecutionEngine(db, StalePartialThenCancelledBroker())
+    order = await engine.create_order_intent(
+        ticker="META",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("10"),
+        estimated_price=Decimal("100"),
+        is_dry_run=False,
+    )
+    order = await engine.submit_order(order)
+    transition_order_status(order, "partially_filled")
+    order.filled_quantity = Decimal("7")
+    order.avg_fill_price = Decimal("100")
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "cancelled"
+    assert order.filled_quantity == Decimal("7")
+    assert order.avg_fill_price == Decimal("100")
+    assert order.slippage_value == Decimal("0.0000")
+
+
+@pytest.mark.asyncio
 async def test_reconcile_order_skips_already_filled(db):
     engine = ExecutionEngine(db, FilledBroker())
     order = await engine.create_order_intent(
@@ -363,6 +593,31 @@ async def test_cancel_order_sets_cancelled_status(db):
     order = await engine.cancel_order(order)
     assert order.status == "cancelled"
     assert order.cancelled_at is not None
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_failure_records_safe_error_without_claiming_cancelled(db):
+    engine = ExecutionEngine(db, CancelErrorBroker())
+    order = await engine.create_order_intent(
+        ticker="SPY",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("3"),
+        is_dry_run=False,
+    )
+    order = await engine.submit_order(order)
+
+    with pytest.raises(OrderCancellationFailed) as exc_info:
+        await engine.cancel_order(order)
+    order = exc_info.value.order
+
+    assert order.status == "error"
+    assert order.cancelled_at is None
+    assert order.error_message == "Broker request failed with RuntimeError."
+    event = (
+        await db.execute(select(OrderEvent).where(OrderEvent.event_type == "cancel_failed"))
+    ).scalar_one()
+    assert "super-secret-token" not in str(event.payload)
 
 
 @pytest.mark.asyncio

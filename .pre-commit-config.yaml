@@ -47,7 +47,7 @@ repos:
     hooks:
       - id: no-env-files
         name: Prevent .env files from being committed
-        entry: bash -c 'if git diff --cached --name-only | grep -E "^\.env$|\.env\.local$|\.env\.(dev|prod|staging)$"; then echo "ERROR: .env files must not be committed"; exit 1; fi'
+        entry: bash scripts/check_secret_files.sh --staged
         language: system
         pass_filenames: false
 

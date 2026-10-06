@@ -69,8 +69,6 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = "change-me"
 
     # Trading 212
-    T212_API_KEY: str = ""
-    T212_API_SECRET: str = ""
     T212_DEMO_API_KEY: str = ""
     T212_DEMO_API_SECRET: str = ""
     T212_LIVE_API_KEY: str = ""
@@ -101,6 +99,8 @@ class Settings(BaseSettings):
     # Market data
     POLYGON_API_KEY: str = ""  # Get free key at polygon.io
     MARKET_DATA_PROVIDER: str = "mock"  # mock | auto | alpaca | polygon | validated
+    MOCK_MARKET_PROFILE: Literal["default", "orb_breakout"] = "default"
+    MOCK_MARKET_SEED: int = 212
     BENZINGA_API_KEY: str = ""
     BENZINGA_BASE_URL: str = "https://api.benzinga.com"
 

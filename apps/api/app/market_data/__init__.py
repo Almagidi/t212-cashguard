@@ -10,11 +10,23 @@ Provider selection (in priority order):
 For live trading: set ALPACA_API_KEY + ALPACA_API_SECRET in .env
 For validation/backtesting: set POLYGON_API_KEY in .env
 """
+
 from __future__ import annotations
 
 from typing import Any
 
 from app.core.config import settings
+
+
+def _configured_mock_provider() -> Any:
+    if settings.MOCK_MARKET_PROFILE != "default" and settings.APP_MODE != "mock":
+        raise RuntimeError("Non-default mock market profile is forbidden outside APP_MODE=mock.")
+
+    from app.market_data.mock_provider import MockMarketDataProvider
+
+    return MockMarketDataProvider(
+        profile=settings.MOCK_MARKET_PROFILE, seed=settings.MOCK_MARKET_SEED
+    )
 
 
 def get_live_provider() -> Any:
@@ -25,31 +37,36 @@ def get_live_provider() -> Any:
     provider = settings.MARKET_DATA_PROVIDER.strip().lower()
 
     if provider == "mock":
-        from app.market_data.mock_provider import MockMarketDataProvider
-        return MockMarketDataProvider()
+        return _configured_mock_provider()
 
     if provider == "polygon":
         from app.market_data.polygon_provider import PolygonMarketDataProvider
+
         return PolygonMarketDataProvider()
 
     if provider == "alpaca":
         from app.market_data.alpaca_provider import AlpacaMarketDataProvider
+
         return AlpacaMarketDataProvider()
 
     if provider in {"validated", "alpaca_primary_polygon_validator"}:
         from app.market_data.validated_provider import ValidatedMarketDataProvider
+
         return ValidatedMarketDataProvider()
 
     if settings.ALPACA_API_KEY and settings.ALPACA_API_SECRET and settings.POLYGON_API_KEY:
         from app.market_data.validated_provider import ValidatedMarketDataProvider
+
         return ValidatedMarketDataProvider()
 
     if settings.ALPACA_API_KEY and settings.ALPACA_API_SECRET:
         from app.market_data.alpaca_provider import AlpacaMarketDataProvider
+
         return AlpacaMarketDataProvider()
 
     if settings.POLYGON_API_KEY:
         import structlog
+
         log = structlog.get_logger()
         log.warning(
             "market_data.using_polygon_only",
@@ -57,13 +74,13 @@ def get_live_provider() -> Any:
                 "Using Polygon without Alpaca validation. "
                 "If your Polygon plan is delayed, live signal quality will degrade. "
                 "Add ALPACA_API_KEY + ALPACA_API_SECRET for primary live data."
-            )
+            ),
         )
         from app.market_data.polygon_provider import PolygonMarketDataProvider
+
         return PolygonMarketDataProvider()
 
-    from app.market_data.mock_provider import MockMarketDataProvider
-    return MockMarketDataProvider()
+    return _configured_mock_provider()
 
 
 def get_backtest_provider(api_key: str | None = None) -> Any:
@@ -74,11 +91,11 @@ def get_backtest_provider(api_key: str | None = None) -> Any:
     key = api_key or settings.POLYGON_API_KEY
     if key:
         from app.market_data.polygon_provider import PolygonMarketDataProvider
+
         return PolygonMarketDataProvider(key)
 
     raise ValueError(
-        "POLYGON_API_KEY required for backtesting. "
-        "Get a free key at https://polygon.io"
+        "POLYGON_API_KEY required for backtesting. Get a free key at https://polygon.io"
     )
 
 
@@ -89,6 +106,7 @@ def get_kraken_provider() -> Any:
     Used exclusively by Kraken crypto strategy families.
     """
     from app.market_data.kraken_provider import KrakenMarketDataProvider
+
     return KrakenMarketDataProvider()
 
 

@@ -29,15 +29,17 @@ Quarantined (not constructible):
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import uuid
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal
-from typing import TYPE_CHECKING, Any, cast
+from decimal import ROUND_DOWN, Decimal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import structlog
 from sqlalchemy import desc, func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.backtest.portfolio_strategies import is_portfolio_strategy_type
 from app.broker.provider import (
@@ -51,6 +53,8 @@ from app.core.config import settings
 from app.db.models import AppSettings, AuditLog, BrokerConnection, Signal, Strategy, Trade
 from app.db.repositories.venue_config_repo import VenueConfigRepository
 from app.execution.engine import ExecutionEngine
+from app.execution.paper_engine import PaperExecutionError
+from app.market_data.exchange_calendar import calendar_for_venue
 from app.risk.engine import RiskEngine, RiskViolation
 from app.services.alert_service import (
     alert_daily_summary,
@@ -77,11 +81,121 @@ class StrategyRunner:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
+    @staticmethod
+    def _signal_decision_key(
+        *,
+        strategy_id: uuid.UUID,
+        ticker: str,
+        side: str,
+        signal_type: str,
+        bar_time: datetime,
+    ) -> str:
+        raw = ":".join(
+            (
+                str(strategy_id),
+                ticker.upper(),
+                side,
+                signal_type,
+                bar_time.isoformat(),
+            )
+        )
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    async def _create_signal_once(self, signal: Signal) -> tuple[Signal, bool]:
+        if signal.decision_key is None:
+            raise ValueError("scheduled signal decision_key is required")
+        try:
+            async with self.db.begin_nested():
+                self.db.add(signal)
+                await self.db.flush()
+        except IntegrityError:
+            existing = (
+                await self.db.execute(
+                    select(Signal).where(Signal.decision_key == signal.decision_key)
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                raise
+            return existing, False
+        return signal, True
+
     # ── Infrastructure ────────────────────────────────────────────────────────
 
     async def _get_settings(self) -> AppSettings | None:
         r = await self.db.execute(select(AppSettings).where(AppSettings.id == 1))
         return r.scalar_one_or_none()
+
+    async def _get_paper_user(self) -> Any | None:
+        from app.db.models import User
+
+        result = await self.db.execute(
+            select(User).where(
+                User.email == settings.ADMIN_EMAIL,
+                User.is_active.is_(True),
+                User.is_admin.is_(True),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def _submit_strategy_order(
+        self,
+        *,
+        broker: Any,
+        strategy: Strategy,
+        signal_id: uuid.UUID,
+        ticker: str,
+        side: Literal["buy", "sell"],
+        quantity: Decimal,
+        estimated_price: Decimal,
+        order_type: Literal["market", "limit"],
+        available_cash: Decimal | None = None,
+        limit_price: Decimal | None = None,
+    ) -> Any:
+        if settings.APP_MODE == "mock":
+            from app.api.schemas import PaperOrderCreate
+            from app.execution.paper_engine import PaperExecutionEngine
+
+            user = await self._get_paper_user()
+            if user is None:
+                raise RuntimeError(
+                    "Active configured admin is required for scheduled paper execution."
+                )
+            paper_quantity = quantity.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
+            return await PaperExecutionEngine(self.db).execute(
+                PaperOrderCreate(
+                    ticker=ticker,
+                    side=side,
+                    quantity=paper_quantity,
+                    estimated_price=estimated_price,
+                    strategy=strategy.name,
+                    source="scheduled_strategy",
+                    venue="paper",
+                    paper_only=True,
+                ),
+                user=user,
+                signal_id=signal_id,
+            )
+
+        async with broker as active_broker:
+            exec_engine = ExecutionEngine(self.db, active_broker)
+            intent_kwargs: dict[str, Any] = {
+                "ticker": ticker,
+                "side": side,
+                "order_type": order_type,
+                "quantity": quantity,
+                "signal_id": signal_id,
+                "is_dry_run": False,
+                "estimated_price": estimated_price,
+                "venue": strategy.venue,
+            }
+            if available_cash is not None:
+                intent_kwargs["available_cash"] = available_cash
+            if limit_price is not None:
+                intent_kwargs["limit_price"] = limit_price
+            order = await exec_engine.create_order_intent(
+                **intent_kwargs,
+            )
+            return await exec_engine.submit_order(order)
 
     async def _get_realized_pnl_today(self) -> Decimal:
         today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -116,6 +230,12 @@ class StrategyRunner:
         from app.core.security import CredentialDecryptionError, decrypt_field
 
         try:
+            require_broker_environment(conn.environment, action="strategy runner broker access")
+        except SafetyPolicyViolation as exc:
+            log.error("runner.broker_policy_block", reason=exc.reason)
+            return None
+
+        try:
             api_key = decrypt_field(conn.api_key_encrypted)
             api_secret = decrypt_field(conn.api_secret_encrypted)
         except CredentialDecryptionError as exc:
@@ -128,17 +248,13 @@ class StrategyRunner:
             )
             return None
         try:
-            require_broker_environment(conn.environment, action="strategy runner broker access")
-        except SafetyPolicyViolation as exc:
-            log.error("runner.broker_policy_block", reason=exc.reason)
-            return None
-        try:
             return create_trading212_provider_adapter(
                 BrokerProviderRequest(
                     broker_id="trading212",
                     environment=cast("BrokerRuntimeEnvironment", conn.environment),
                     purpose="worker_strategy_runner",
                     user_id=conn.user_id,
+                    account_id=getattr(conn, "account_id", None),
                 ),
                 BrokerProviderCredentials(
                     api_key=api_key,
@@ -178,32 +294,66 @@ class StrategyRunner:
         bar_times: list[datetime],
         *,
         session_open_utc: str,
+        bar_interval_minutes: int = 5,
     ) -> tuple[list[Bar], list[datetime], Decimal | None]:
         if not bars or not bar_times or len(bars) != len(bar_times):
             return bars, bar_times, None
 
-        session_clock = self._parse_session_open(session_open_utc)
-        candidate_dates = sorted({bar_time.date() for bar_time in bar_times}, reverse=True)
-        for candidate_date in candidate_dates:
-            session_start = datetime.combine(candidate_date, session_clock)
-            session_pairs = [
-                (bar, bar_time)
-                for bar, bar_time in zip(bars, bar_times, strict=True)
-                if bar_time >= session_start and bar_time.date() == candidate_date
-            ]
-            if not session_pairs:
-                continue
-            session_bars = [bar for bar, _ in session_pairs]
-            session_times = [bar_time for _, bar_time in session_pairs]
-            previous_bars = [
-                bar
-                for bar, bar_time in zip(bars, bar_times, strict=True)
-                if bar_time < session_start
-            ]
-            prev_close = previous_bars[-1].close if previous_bars else None
-            return session_bars, session_times, prev_close
+        del session_open_utc
+        calendar = calendar_for_venue("XNYS")
+        regular_pairs = [
+            (bar, bar_time, session)
+            for bar, bar_time in zip(bars, bar_times, strict=True)
+            if (session := calendar.session_for_timestamp(bar_time)) is not None
+        ]
+        if not regular_pairs:
+            return [], [], None
 
-        return bars, bar_times, None
+        current_session = max(
+            (session for _, _, session in regular_pairs),
+            key=lambda session: session.local_date,
+        )
+        session_pairs = [
+            (bar, bar_time)
+            for bar, bar_time, session in regular_pairs
+            if session.session_id == current_session.session_id
+        ]
+        previous_session = calendar.previous_session(current_session)
+        previous_pairs = [
+            (bar, bar_time)
+            for bar, bar_time, session in regular_pairs
+            if session.session_id == previous_session.session_id
+        ]
+        prev_close = None
+        if previous_pairs and calendar.is_terminal_bar(
+            previous_session,
+            previous_pairs[-1][1],
+            interval_minutes=bar_interval_minutes,
+        ):
+            prev_close = previous_pairs[-1][0].close
+        return (
+            [bar for bar, _ in session_pairs],
+            [bar_time for _, bar_time in session_pairs],
+            prev_close,
+        )
+
+    @staticmethod
+    def _context_matches_current_session(
+        session_times: list[datetime],
+        *,
+        now: datetime,
+    ) -> bool:
+        """Fail closed unless fetched bars belong to the active XNYS session."""
+        if not session_times:
+            return False
+        calendar = calendar_for_venue("XNYS")
+        current_session = calendar.session_for_timestamp(now)
+        selected_session = calendar.session_for_timestamp(session_times[-1])
+        return (
+            current_session is not None
+            and selected_session is not None
+            and selected_session.session_id == current_session.session_id
+        )
 
     async def _fetch_kraken_context(
         self,
@@ -266,7 +416,8 @@ class StrategyRunner:
         gap-based strategies operate on the real current session instead of an
         arbitrary rolling window.
         """
-        now_utc = datetime.now(UTC).strftime("%H:%M")
+        now = datetime.now(UTC)
+        now_utc = now.strftime("%H:%M")
 
         if data_provider_type == "kraken":
             return await self._fetch_kraken_context(
@@ -290,11 +441,11 @@ class StrategyRunner:
                     from_date = date.today() - timedelta(days=max(history_days + 2, 5))
                     raw_bars = await md.get_bars(
                         ticker,
-                        multiplier=5,
+                        multiplier=bar_interval_minutes,
                         timespan="minute",
                         from_date=from_date,
                         to_date=date.today(),
-                        limit=max_bars,
+                        limit=max_bars * 3,
                     )
                     with suppress(Exception):
                         latest_quote = await md.get_quote(ticker)
@@ -307,7 +458,11 @@ class StrategyRunner:
                         return [], [], [], [], None, now_utc
             else:
                 # Sync mock provider
-                raw_bars = provider.get_ohlcv(ticker, interval_minutes=5, bars=max_bars)
+                raw_bars = provider.get_ohlcv(
+                    ticker,
+                    interval_minutes=bar_interval_minutes,
+                    bars=max_bars * 3,
+                )
 
             bars: list[Bar] = []
             bar_times: list[datetime] = []
@@ -344,10 +499,38 @@ class StrategyRunner:
                 bars,
                 bar_times,
                 session_open_utc=session_open_utc,
+                bar_interval_minutes=bar_interval_minutes,
             )
-            if session_times:
-                now_utc = session_times[-1].strftime("%H:%M")
-            return session_bars, session_times, bars, bar_times, prev_close, now_utc
+            if not self._context_matches_current_session(session_times, now=now):
+                log.info(
+                    "runner.no_current_regular_session",
+                    ticker=ticker,
+                    venue="XNYS",
+                )
+                return [], [], [], [], None, now_utc
+            calendar = calendar_for_venue("XNYS")
+            regular_history_all = [
+                (bar, bar_time)
+                for bar, bar_time in zip(bars, bar_times, strict=True)
+                if calendar.session_for_timestamp(bar_time) is not None
+            ]
+            regular_history = regular_history_all[-max_bars:]
+            excluded_count = len(bars) - len(regular_history_all)
+            if excluded_count:
+                log.info(
+                    "runner.extended_hours_filtered",
+                    ticker=ticker,
+                    venue=calendar.venue,
+                    excluded_bars=excluded_count,
+                )
+            return (
+                session_bars,
+                session_times,
+                [bar for bar, _ in regular_history],
+                [bar_time for _, bar_time in regular_history],
+                prev_close,
+                now_utc,
+            )
         except Exception as exc:
             log.warning("runner.data_error", ticker=ticker, error=str(exc))
             return [], [], [], [], None, now_utc
@@ -529,9 +712,17 @@ class StrategyRunner:
         if broker is None:
             return {**summary, "skipped": "no_broker"}
 
-        async with broker as b:
-            account = await b.get_account_summary()
-            positions = await b.get_positions()
+        if settings.APP_MODE == "mock":
+            from app.execution.paper_engine import PaperExecutionEngine
+
+            paper_user = await self._get_paper_user()
+            if paper_user is None:
+                return {**summary, "skipped": "no_paper_admin"}
+            account, positions = await PaperExecutionEngine(self.db).portfolio_state(paper_user)
+        else:
+            async with broker as b:
+                account = await b.get_account_summary()
+                positions = await b.get_positions()
 
         cash = Decimal(str(account.get("free", 0)))
         total = Decimal(str(account.get("total", 0)))
@@ -541,26 +732,31 @@ class StrategyRunner:
         allocation_state = allocator.new_state()
 
         for strategy in strategies:
+            strategy_name = strategy.name
             try:
-                g, s, b_ = await self._run_strategy(
-                    strategy=strategy,
-                    broker=broker,
-                    cash=cash,
-                    total=total,
-                    n_open=n_open,
-                    pos_map=pos_map,
-                    all_positions=positions,
-                    intelligence=intelligence,
-                    allocator=allocator,
-                    allocation_state=allocation_state,
+                strategy_scope = (
+                    self.db.begin_nested() if settings.APP_MODE == "mock" else nullcontext()
                 )
+                async with strategy_scope:
+                    g, s, b_ = await self._run_strategy(
+                        strategy=strategy,
+                        broker=broker,
+                        cash=cash,
+                        total=total,
+                        n_open=n_open,
+                        pos_map=pos_map,
+                        all_positions=positions,
+                        intelligence=intelligence,
+                        allocator=allocator,
+                        allocation_state=allocation_state,
+                    )
                 summary["strategies_run"] += 1
                 summary["signals_generated"] += g
                 summary["orders_submitted"] += s
                 summary["risk_blocks"] += b_
             except Exception as exc:
-                summary["errors"].append(f"{strategy.name}: {exc}")
-                log.error("runner.strategy_error", name=strategy.name, error=str(exc))
+                summary["errors"].append(f"{strategy_name}: {exc}")
+                log.error("runner.strategy_error", name=strategy_name, error=str(exc))
 
         # Daily summary alert (fires after all strategies have run)
         try:
@@ -686,6 +882,8 @@ class StrategyRunner:
                 log.warning(
                     "runner.ticker_error", strategy=strategy.name, ticker=ticker, error=str(exc)
                 )
+                if settings.APP_MODE == "mock":
+                    raise
         return gen, sub, blocks
 
     # ── Per-ticker ────────────────────────────────────────────────────────────
@@ -730,6 +928,28 @@ class StrategyRunner:
         if len(session_bars) < max(4, int(getattr(engine, "required_bars", 4))):
             return 0, 0, 0
 
+        if data_provider_type == "kraken":
+            strategy_session_times = session_times
+            strategy_history_times = history_bar_times
+            strategy_now_utc = now_utc
+        else:
+            calendar = calendar_for_venue("XNYS")
+            strategy_session_times = [
+                calendar.to_reference_session_clock(
+                    bar_time,
+                    reference_open_utc=session_open_utc,
+                )
+                for bar_time in session_times
+            ]
+            strategy_history_times = [
+                calendar.to_reference_session_clock(
+                    bar_time,
+                    reference_open_utc=session_open_utc,
+                )
+                for bar_time in history_bar_times
+            ]
+            strategy_now_utc = strategy_session_times[-1].strftime("%H:%M")
+
         # Exit check if position open
         if ticker in pos_map:
             pos = pos_map[ticker]
@@ -740,6 +960,7 @@ class StrategyRunner:
                     ticker=ticker,
                     strategy=strategy,
                     bars=session_bars,
+                    bar_time=session_times[-1],
                     pos_qty=qty,
                     avg_price=avg,
                     max_sell=Decimal(str(pos.get("maxSell", float(qty)))),
@@ -748,6 +969,33 @@ class StrategyRunner:
                 )
                 return (1 if submitted is not None else 0), (submitted or 0), 0
             return 0, 0, 0
+
+        if data_provider_type != "kraken":
+            calendar = calendar_for_venue("XNYS")
+            current_session = calendar.session_for_timestamp(session_times[-1])
+            if prev_close is None:
+                log.info(
+                    "runner.missing_previous_session_close",
+                    ticker=ticker,
+                    venue="XNYS",
+                )
+                return 0, 0, 0
+            if current_session is None:
+                return 0, 0, 0
+            if session_times[0].astimezone(UTC) != calendar.session_open(current_session):
+                log.info(
+                    "runner.missing_session_open",
+                    ticker=ticker,
+                    venue="XNYS",
+                )
+                return 0, 0, 0
+            if current_session.is_early_close:
+                log.info(
+                    "runner.early_close_entry_blocked",
+                    ticker=ticker,
+                    venue="XNYS",
+                )
+                return 0, 0, 0
 
         watchlist_context = self._watchlist_context(strategy, ticker)
         try:
@@ -772,12 +1020,12 @@ class StrategyRunner:
                 engine,
                 ticker=ticker,
                 bars=session_bars,
-                bar_times=session_times,
+                bar_times=strategy_session_times,
                 history_bars=history_bars,
-                history_bar_times=history_bar_times,
+                history_bar_times=strategy_history_times,
                 account_value=total,
                 available_cash=cash,
-                current_time_utc=now_utc,
+                current_time_utc=strategy_now_utc,
                 prev_close=prev_close,
             )
         )
@@ -799,6 +1047,13 @@ class StrategyRunner:
         sig = Signal(
             id=uuid.uuid4(),
             strategy_id=strategy.id,
+            decision_key=self._signal_decision_key(
+                strategy_id=strategy.id,
+                ticker=ticker,
+                side=signal_obj.side,
+                signal_type=signal_obj.signal_type,
+                bar_time=session_times[-1],
+            ),
             ticker=ticker,
             side=signal_obj.side,
             signal_type=signal_obj.signal_type,
@@ -812,8 +1067,15 @@ class StrategyRunner:
             params_snapshot={**signal_obj.params_snapshot, "strategy_type": strategy.type},
             generated_at=datetime.now(UTC),
         )
-        self.db.add(sig)
-        await self.db.flush()
+        sig, created = await self._create_signal_once(sig)
+        if not created:
+            log.info(
+                "runner.duplicate_signal_suppressed",
+                strategy=strategy.name,
+                ticker=ticker,
+                decision_key=sig.decision_key,
+            )
+            return 0, 0, 0
         strategy.last_signal_at = datetime.now(UTC)
 
         allocation = allocator.allocate_one(
@@ -938,21 +1200,18 @@ class StrategyRunner:
                 limit_price = price * (1 - limit_offset)
             limit_price = limit_price.quantize(Decimal("0.01"))
 
-            async with broker as b:
-                exec_engine = ExecutionEngine(self.db, b)
-                order = await exec_engine.create_order_intent(
-                    ticker=ticker,
-                    side=signal_obj.side,
-                    order_type="limit",
-                    quantity=qty,
-                    signal_id=sig.id,
-                    is_dry_run=(settings.APP_MODE == "mock"),
-                    available_cash=cash,
-                    estimated_price=price,
-                    limit_price=limit_price,
-                    venue=strategy.venue,
-                )
-                order = await exec_engine.submit_order(order)
+            order = await self._submit_strategy_order(
+                broker=broker,
+                strategy=strategy,
+                signal_id=sig.id,
+                ticker=ticker,
+                side=cast("Literal['buy', 'sell']", signal_obj.side),
+                quantity=qty,
+                estimated_price=price,
+                order_type="limit",
+                available_cash=cash,
+                limit_price=limit_price,
+            )
 
             sig.status = "executed"
             sig.executed_at = datetime.now(UTC)
@@ -992,12 +1251,24 @@ class StrategyRunner:
                     reason=signal_obj.reason or "",
                 )
             return 1, 1, 0
-        except Exception as exc:
+        except (PaperExecutionError, SafetyPolicyViolation) as exc:
             sig.status = "error"
             sig.risk_rejection_reason = str(exc)
             log.error("runner.submit_error", ticker=ticker, error=str(exc))
             with suppress(Exception):
                 await alert_order_failed(self.db, ticker, str(exc))
+            return 1, 0, 0
+        except Exception as exc:
+            sig.status = "error"
+            sig.risk_rejection_reason = str(exc)
+            if settings.APP_MODE == "mock":
+                log.exception("runner.submit_unexpected_error", ticker=ticker, error=str(exc))
+            else:
+                log.error("runner.submit_error", ticker=ticker, error=str(exc))
+            with suppress(Exception):
+                await alert_order_failed(self.db, ticker, str(exc))
+            if settings.APP_MODE == "mock":
+                raise
             return 1, 0, 0
 
     # ── Exit logic ────────────────────────────────────────────────────────────
@@ -1008,6 +1279,7 @@ class StrategyRunner:
         ticker: str,
         strategy: Strategy,
         bars: list[Bar],
+        bar_time: datetime,
         pos_qty: Decimal,
         avg_price: Decimal,
         max_sell: Decimal,
@@ -1083,38 +1355,51 @@ class StrategyRunner:
         except RiskViolation:
             return None
 
-        async with broker as b:
-            exec_engine = ExecutionEngine(self.db, b)
-            order = await exec_engine.create_order_intent(
-                ticker=ticker,
-                side="sell",
-                order_type="market",
-                quantity=sell_qty,
-                signal_id=last_sig.id,
-                is_dry_run=(settings.APP_MODE == "mock"),
-                estimated_price=current_price,
-                venue=strategy.venue,
-            )
-            order = await exec_engine.submit_order(order)
-
-        self.db.add(
-            Signal(
-                id=uuid.uuid4(),
+        exit_signal = Signal(
+            id=uuid.uuid4(),
+            strategy_id=strategy.id,
+            decision_key=self._signal_decision_key(
                 strategy_id=strategy.id,
                 ticker=ticker,
                 side="sell",
                 signal_type=exit_sig.signal_type,
-                status="executed",
-                entry_price=current_price,
-                stop_price=exit_sig.stop_price,
-                take_profit_price=exit_sig.take_profit_price,
-                suggested_quantity=-sell_qty,
-                confidence=exit_sig.confidence,
-                reason=exit_sig.reason,
-                generated_at=datetime.now(UTC),
-                executed_at=datetime.now(UTC),
-            )
+                bar_time=bar_time,
+            ),
+            ticker=ticker,
+            side="sell",
+            signal_type=exit_sig.signal_type,
+            status="pending",
+            entry_price=current_price,
+            stop_price=exit_sig.stop_price,
+            take_profit_price=exit_sig.take_profit_price,
+            suggested_quantity=-sell_qty,
+            confidence=exit_sig.confidence,
+            reason=exit_sig.reason,
+            generated_at=datetime.now(UTC),
         )
+        exit_signal, created = await self._create_signal_once(exit_signal)
+        if not created:
+            log.info(
+                "runner.duplicate_exit_suppressed",
+                strategy=strategy.name,
+                ticker=ticker,
+                decision_key=exit_signal.decision_key,
+            )
+            return None
+
+        order = await self._submit_strategy_order(
+            broker=broker,
+            strategy=strategy,
+            signal_id=exit_signal.id,
+            ticker=ticker,
+            side="sell",
+            quantity=sell_qty,
+            estimated_price=current_price,
+            order_type="market",
+        )
+
+        exit_signal.status = "executed"
+        exit_signal.executed_at = datetime.now(UTC)
         self.db.add(
             AuditLog(
                 action="strategy_exit_placed",

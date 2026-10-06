@@ -1,73 +1,40 @@
-"""
-Regression coverage for the scheduled signal-to-paper-fill gap (now fixed).
+"""Scheduled StrategyRunner-to-PaperExecutionEngine regression coverage.
 
-StrategyRunner._process_ticker and _check_exit each create a real Order via
-ExecutionEngine.create_order_intent() and call submit_order(). Both call
-sites now pass is_dry_run=(APP_MODE == "mock"), matching every other
-order-creation call site in this codebase (e.g.
-app/services/position_monitor.py:506,607, app/api/v1/routes/orders.py:359,
-app/services/system_control.py:246). In APP_MODE=mock this means an
-enabled, is_live=True strategy that reaches order submission through the
-real scheduled path (app/workers/tasks.py:run_strategy_signals ->
-StrategyRunner.run_all_enabled()) now produces a real paper/mock fill
-instead of erroring out inside require_order_submission_allowed()'s
-mock-mode broker block and orphaning the Order at status="pending_intent"
-forever.
-
-These tests pin down that exact behavior end-to-end against a real DB, the
-real ExecutionEngine, real safety_policy gates, and the real
-MockBrokerAdapter (nothing in the order-creation / execution /
-safety-policy layer is mocked or stubbed), so that:
-  1. The success path is proven and locked in by a regression test, not
-     just a manual observation.
-  2. Anyone who removes the is_dry_run guard from strategy_runner.py (or
-     changes the safety-policy dry-run short-circuit) breaks a test loudly
-     instead of silently reopening the gap.
-  3. The kill switch is proven to still block order submission even for
-     dry-run orders -- is_dry_run does not bypass safety_policy's kill
-     switch check, only the broker-environment/live-readiness checks that
-     come after it.
-
-Only MarketIntelligenceMonitor and RiskEngine are stubbed out (matching the
-precedent set in test_strategy_runner_provider_equivalence.py), since
-neither is part of the order-submission / broker-safety path this test
-targets, and the real RiskEngine needs unrelated RiskProfile/portfolio
-state to run.
-
-"No live broker adapter/provider is invoked" is proven two ways:
-  1. Sentinels on Trading212Adapter, KrakenAdapter, and
-     create_trading212_provider_adapter (the provider factory) that raise
-     if constructed -- StrategyRunner._get_broker() only reaches these on
-     its non-mock branch, so a passing test proves that branch was never
-     taken.
-  2. The filled order's broker_response/broker_order_id fields: only
-     ExecutionEngine.submit_order()'s dry-run branch sets
-     broker_response == {"dry_run": True, "simulated": True}; the real
-     broker-submission branch always overwrites broker_response with the
-     broker's actual JSON reply and sets broker_order_id from it.
-
-"Non-mock mode still does not become implicitly dry-run" is proven in
-tests/unit/test_strategy_runner_provider_equivalence.py, whose
-APP_MODE="demo" fixture now asserts is_dry_run=False in the captured
-create_order_intent() kwargs at both call sites -- see
-test_process_ticker_live_entry_routes_order_through_execution_engine_only
-and test_check_exit_live_routes_sell_order_through_execution_engine_only.
-
-See docs/SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md for the full writeup.
+These focused tests keep market intelligence, allocation, and the outer
+StrategyRunner risk object deterministic so they can isolate submission
+semantics. In APP_MODE=mock, scheduled entries/exits use the local paper
+ledger and realistic paper policy; demo/live retain ExecutionEngine. The
+separate real_worker_paper_smoke harness proves the unstubbed Celery,
+Redis, PostgreSQL, market-intelligence, allocator, RiskEngine, and paper
+chain. Broker constructors remain fail-fast tripwires in both surfaces.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
 from sqlalchemy import select
 
+from app.api.schemas import PaperOrderCreate
 from app.core.config import settings
-from app.db.models import AppSettings, AuditLog, Order, Signal, Strategy, VenueConfig
+from app.db.models import (
+    AppSettings,
+    AuditLog,
+    BrokerAccountSnapshot,
+    Order,
+    OrderEvent,
+    PositionSnapshot,
+    Signal,
+    Strategy,
+    User,
+    VenueConfig,
+)
+from app.execution.paper_engine import PaperExecutionEngine
 from app.services import strategy_runner
 from app.services.strategy_runner import StrategyRunner
 from app.strategies.indicators import Bar
@@ -118,8 +85,9 @@ async def _fake_market_context(
     *_args: Any, **_kwargs: Any
 ) -> tuple[list[Bar], list[datetime], list[Bar], list[datetime], Decimal | None, str]:
     bars = _deterministic_breakout_bars()
-    times = [datetime(2026, 1, 2, 14, minute, tzinfo=UTC) for minute in range(len(bars))]
-    return bars, times, bars, times, None, "15:00"
+    session_open = datetime(2026, 1, 2, 14, 30, tzinfo=UTC)
+    times = [session_open + timedelta(minutes=5 * index) for index in range(len(bars))]
+    return bars, times, bars, times, Decimal("99"), "16:30"
 
 
 class _AllowingRiskEngine:
@@ -211,6 +179,15 @@ async def _seed_open_gates(db: AsyncSession, *, is_live: bool) -> Strategy:
             degraded_mode_active=False,
         )
     )
+    db.add(
+        User(
+            id=uuid.uuid4(),
+            email=settings.ADMIN_EMAIL,
+            hashed_password="test-only-not-a-real-credential",
+            is_active=True,
+            is_admin=True,
+        )
+    )
     strategy = Strategy(
         id=uuid.uuid4(),
         name="Agent A Observation ORB",
@@ -255,6 +232,7 @@ async def test_scheduled_live_strategy_signal_reaches_mock_paper_fill(
     )
 
     strategy = await _seed_open_gates(db, is_live=True)
+    strategy_id = strategy.id
     service = StrategyRunner(db)
     monkeypatch.setattr(service, "_fetch_market_context", _fake_market_context)
 
@@ -270,35 +248,44 @@ async def test_scheduled_live_strategy_signal_reaches_mock_paper_fill(
     assert summary["errors"] == []
 
     signal = (
-        await db.execute(select(Signal).where(Signal.strategy_id == strategy.id))
+        await db.execute(select(Signal).where(Signal.strategy_id == strategy_id))
     ).scalar_one()
     assert signal.status == "executed"
     assert signal.risk_rejection_reason is None
 
     order = (await db.execute(select(Order).where(Order.signal_id == signal.id))).scalar_one()
     assert order.is_dry_run is True
-    assert order.status == "filled"  # no longer stuck at pending_intent
+    assert order.status == "filled"
     assert order.filled_quantity == order.quantity
-    assert order.avg_fill_price is not None
-    # broker_response/broker_order_id are only ever set this way by
-    # ExecutionEngine.submit_order()'s dry-run branch -- the real-submission
-    # branch always overwrites broker_response with the broker's actual JSON
-    # reply and sets broker_order_id from it. Their presence here, combined
-    # with the Trading212Adapter/KrakenAdapter/provider-factory sentinels
-    # above never firing, is direct proof no live broker call occurred.
-    assert order.broker_response == {"dry_run": True, "simulated": True}
+    assert order.execution_environment == "paper_mock"
+    assert order.avg_fill_price != order.expected_fill_price
+    assert order.slippage_value is not None and order.slippage_value > 0
+    assert order.fee_amount is not None and order.fee_amount > 0
+    assert order.broker_response["status"] == "PAPER_FILLED"
+    assert order.broker_response["no_broker_order_sent"] is True
     assert not order.broker_order_id
 
-    simulated_audit = (
-        await db.execute(select(AuditLog).where(AuditLog.action == "order_submitted"))
+    paper_audit = (
+        await db.execute(select(AuditLog).where(AuditLog.action == "paper_fill_simulated"))
     ).scalar_one()
-    assert simulated_audit.payload["decision"] == "simulated"
-    assert simulated_audit.payload["is_dry_run"] is True
-    assert simulated_audit.payload["no_broker_order_sent"] is True
-    assert (
-        simulated_audit.payload["reason"]
-        == "Dry-run order simulated locally. No broker order sent."
-    )
+    assert paper_audit.payload["paper_only"] is True
+    assert paper_audit.payload["no_broker_order_sent"] is True
+
+    fill_event = (
+        await db.execute(
+            select(OrderEvent).where(
+                OrderEvent.order_id == order.id,
+                OrderEvent.event_type == "paper_fill_simulated",
+            )
+        )
+    ).scalar_one()
+    assert fill_event.payload["fee_amount"] == str(order.fee_amount)
+
+    account = (await db.execute(select(BrokerAccountSnapshot))).scalar_one()
+    position = (await db.execute(select(PositionSnapshot))).scalar_one()
+    assert account.cash < Decimal("100000")
+    assert position.ticker == "NVDA"
+    assert position.quantity == order.filled_quantity
 
     placed_audit = (
         await db.execute(select(AuditLog).where(AuditLog.action == "strategy_order_placed"))
@@ -316,25 +303,184 @@ async def test_scheduled_live_strategy_signal_reaches_mock_paper_fill(
 
 
 @pytest.mark.asyncio
+async def test_repeated_scheduler_tick_creates_one_signal_and_one_order(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    strategy = await _seed_open_gates(db, is_live=True)
+    service = StrategyRunner(db)
+    monkeypatch.setattr(service, "_fetch_market_context", _fake_market_context)
+
+    first = await service.run_all_enabled()
+    await db.commit()
+    second = await service.run_all_enabled()
+    await db.commit()
+
+    signals = (
+        (await db.execute(select(Signal).where(Signal.strategy_id == strategy.id))).scalars().all()
+    )
+    orders = (
+        (
+            await db.execute(
+                select(Order).where(Order.signal_id.in_([signal.id for signal in signals]))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert first["signals_generated"] == 1
+    assert first["orders_submitted"] == 1
+    assert second["signals_generated"] == 0
+    assert second["orders_submitted"] == 0
+    assert len(signals) == 1
+    assert len(orders) == 1
+    assert signals[0].decision_key is not None
+
+
+@pytest.mark.asyncio
+async def test_unexpected_submission_failure_rolls_back_all_strategy_effects(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    strategy = await _seed_open_gates(db, is_live=True)
+    strategy_id = strategy.id
+    service = StrategyRunner(db)
+    monkeypatch.setattr(service, "_fetch_market_context", _fake_market_context)
+
+    async def fail_after_staging_effect(*_args: Any, **_kwargs: Any) -> Any:
+        db.add(
+            AuditLog(
+                action="deterministic_precommit_fault",
+                actor="d2-regression",
+                occurred_at=datetime.now(UTC),
+            )
+        )
+        await db.flush()
+        raise RuntimeError("deterministic pre-commit failure")
+
+    monkeypatch.setattr(service, "_submit_strategy_order", fail_after_staging_effect)
+
+    summary = await service.run_all_enabled()
+    assert summary["errors"] == ["Agent A Observation ORB: deterministic pre-commit failure"]
+
+    # Even a mistaken caller commit cannot preserve the failed strategy's
+    # savepoint. The Celery task additionally rejects this summary before its
+    # outer commit, which rolls back any earlier successful strategy units.
+    await db.commit()
+
+    assert (
+        await db.execute(select(Signal).where(Signal.strategy_id == strategy_id))
+    ).scalar_one_or_none() is None
+    assert (await db.execute(select(Order))).scalar_one_or_none() is None
+    assert (await db.execute(select(OrderEvent))).scalar_one_or_none() is None
+    assert (
+        await db.execute(select(AuditLog).where(AuditLog.action == "deterministic_precommit_fault"))
+    ).scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_exit_decisions_dedupe_same_bar_but_allow_later_bar(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    strategy = await _seed_open_gates(db, is_live=True)
+    entry_signal = Signal(
+        id=uuid.uuid4(),
+        strategy_id=strategy.id,
+        ticker="NVDA",
+        side="buy",
+        signal_type="entry",
+        status="executed",
+        stop_price=Decimal("95"),
+        take_profit_price=Decimal("110"),
+        generated_at=datetime(2026, 1, 2, 14, 30, tzinfo=UTC),
+    )
+    db.add(entry_signal)
+    await db.commit()
+    paper_user = (
+        await db.execute(select(User).where(User.email == settings.ADMIN_EMAIL))
+    ).scalar_one()
+    await PaperExecutionEngine(db).execute(
+        PaperOrderCreate(
+            ticker="NVDA",
+            side="buy",
+            quantity=Decimal("2"),
+            estimated_price=Decimal("100"),
+            source="scheduled_exit_test",
+            strategy=strategy.name,
+        ),
+        user=paper_user,
+        signal_id=entry_signal.id,
+    )
+    await db.commit()
+
+    class _DeterministicExitEngine:
+        def __init__(self, _params: dict[str, Any]) -> None:
+            pass
+
+        def check_exit_conditions(self, *_args: Any, **_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(
+                signal_type="partial_exit",
+                suggested_quantity=Decimal("-1"),
+                stop_price=Decimal("101"),
+                take_profit_price=Decimal("112"),
+                confidence=Decimal("0.8"),
+                reason="deterministic partial exit",
+            )
+
+    monkeypatch.setattr(strategy_runner, "OpeningRangeBreakoutStrategy", _DeterministicExitEngine)
+    service = StrategyRunner(db)
+    broker = await service._get_broker()
+    assert broker is not None
+    first_bar = datetime(2026, 1, 2, 15, 0, tzinfo=UTC)
+    later_bar = datetime(2026, 1, 2, 15, 5, tzinfo=UTC)
+    call = {
+        "ticker": "NVDA",
+        "strategy": strategy,
+        "bars": _deterministic_breakout_bars(),
+        "pos_qty": Decimal("2"),
+        "avg_price": Decimal("100"),
+        "max_sell": Decimal("1"),
+        "broker": broker,
+        "risk": _AllowingRiskEngine(),
+    }
+
+    first = await service._check_exit(**call, bar_time=first_bar)
+    await db.commit()
+    repeated = await service._check_exit(**call, bar_time=first_bar)
+    await db.commit()
+    later = await service._check_exit(**call, bar_time=later_bar)
+    await db.commit()
+
+    exit_signals = (
+        (
+            await db.execute(
+                select(Signal).where(
+                    Signal.strategy_id == strategy.id,
+                    Signal.side == "sell",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    exit_orders = (
+        (
+            await db.execute(
+                select(Order).where(Order.signal_id.in_([signal.id for signal in exit_signals]))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert (first, repeated, later) == (1, None, 1)
+    assert len(exit_signals) == 2
+    assert len(exit_orders) == 2
+    assert len({signal.decision_key for signal in exit_signals}) == 2
+
+
+@pytest.mark.asyncio
 async def test_kill_switch_blocks_the_real_submission_path_independent_of_the_top_level_gate(
     db: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """
-    require_order_submission_allowed() re-checks AppSettings.kill_switch_active
-    itself, independent of run_all_enabled()'s own top-level gate -- a
-    defense-in-depth check for the case where the kill switch is flipped on
-    mid-run. This forces that scenario (top-level gate patched permissive,
-    real DB row has kill_switch_active=True) to prove the *real*
-    ExecutionEngine.submit_order() -> require_order_submission_allowed()
-    path still blocks -- with no live broker call -- when the kill switch is
-    active.
-
-    Order creation still passes is_dry_run=True (APP_MODE=mock) here, same
-    as the success-path test above -- proving the kill switch check in
-    require_order_submission_allowed() runs and blocks *before* the
-    `if order.is_dry_run: return` early-exit, so is_dry_run never bypasses
-    the kill switch.
-    """
+    """A mid-run kill-switch change blocks before any paper Order or effect."""
     strategy = await _seed_open_gates(db, is_live=True)
     app_settings_row = (
         await db.execute(select(AppSettings).where(AppSettings.id == 1))
@@ -367,17 +513,13 @@ async def test_kill_switch_blocks_the_real_submission_path_independent_of_the_to
     assert signal.risk_rejection_reason is not None
     assert "Kill switch is active" in signal.risk_rejection_reason
 
-    order = (await db.execute(select(Order).where(Order.signal_id == signal.id))).scalar_one()
-    assert order.status == "pending_intent"
-    assert order.is_dry_run is True  # dry-run intent created, but never reached fill
+    order = await db.execute(select(Order).where(Order.signal_id == signal.id))
+    assert order.scalar_one_or_none() is None
 
     kill_switch_audit = (
-        await db.execute(select(AuditLog).where(AuditLog.action == "order_blocked_by_kill_switch"))
+        await db.execute(select(AuditLog).where(AuditLog.action == "paper_signal_rejected"))
     ).scalar_one()
-    assert kill_switch_audit.payload["decision"] == "blocked"
-
-    # The kill switch short-circuits before the mock-broker check is reached.
-    mock_broker_audit = await db.execute(
-        select(AuditLog).where(AuditLog.action == "order_blocked_by_runtime_policy")
-    )
-    assert mock_broker_audit.scalar_one_or_none() is None
+    assert kill_switch_audit.payload["decision_code"] == "kill_switch_block"
+    assert kill_switch_audit.payload["no_broker_order_sent"] is True
+    assert (await db.execute(select(BrokerAccountSnapshot))).scalar_one_or_none() is None
+    assert (await db.execute(select(PositionSnapshot))).scalar_one_or_none() is None

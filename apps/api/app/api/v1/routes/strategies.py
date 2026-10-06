@@ -1,9 +1,10 @@
 """Strategies routes."""
+
 from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import desc, select
@@ -55,7 +56,7 @@ if TYPE_CHECKING:
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
 
-def _parse_portfolio_state(strategy: Strategy) -> dict[str, object]:
+def _parse_portfolio_state(strategy: Strategy) -> dict[str, Any]:
     return dict((strategy.params or {}).get("portfolio_execution", {}))
 
 
@@ -113,7 +114,7 @@ def _allocation_decision_from_payload(payload: object) -> AllocatorDecisionOut |
         return None
 
 
-def _feed_symbol_map() -> dict[str, dict[str, object]]:
+def _feed_symbol_map() -> dict[str, dict[str, Any]]:
     snapshot = get_feed_health_snapshot()
     return {
         str(symbol.get("ticker") or "").upper(): symbol
@@ -125,8 +126,8 @@ def _feed_symbol_map() -> dict[str, dict[str, object]]:
 def _watchlist_candidate_context(
     strategy: Strategy,
     *,
-    regime: dict[str, object],
-    feed_symbols: dict[str, dict[str, object]],
+    regime: dict[str, Any],
+    feed_symbols: dict[str, dict[str, Any]],
 ) -> list[WatchlistCandidateContextOut]:
     params = strategy.params or {}
     raw_watchlist = params.get("todays_watchlist")
@@ -137,21 +138,20 @@ def _watchlist_candidate_context(
     )
     raw_context = params.get("watchlist_candidates")
     context_map = raw_context if isinstance(raw_context, dict) else {}
-    suppressed = {
-        str(item)
-        for item in regime.get("suppressed_strategies", [])
-        if item
-    }
+    suppressed = {str(item) for item in regime.get("suppressed_strategies", []) if item}
     candidates: list[WatchlistCandidateContextOut] = []
     for ticker in watchlist:
-        ctx = context_map.get(ticker) if isinstance(context_map.get(ticker), dict) else {}
+        raw_candidate = context_map.get(ticker)
+        ctx = cast("dict[str, Any]", raw_candidate) if isinstance(raw_candidate, dict) else {}
         feed_symbol = feed_symbols.get(ticker, {})
         feed_status = str(feed_symbol.get("status") or "unknown")
         catalyst_score = float(ctx.get("catalyst_score", 0.0) or 0.0) if ctx else None
         catalyst_event_type = str(ctx.get("catalyst_event_type") or "") or None if ctx else None
         blocked_reason: str | None = None
         if strategy.type in suppressed:
-            blocked_reason = f"Suppressed in {regime.get('label', regime.get('regime', 'current'))} regime."
+            blocked_reason = (
+                f"Suppressed in {regime.get('label', regime.get('regime', 'current'))} regime."
+            )
         elif feed_status not in {"ok", "fallback", "unknown"}:
             blocked_reason = str(feed_symbol.get("detail") or f"Feed health is {feed_status}.")
         elif (
@@ -166,7 +166,9 @@ def _watchlist_candidate_context(
                 score=float(ctx.get("score", 0.0) or 0.0),
                 reason=str(ctx.get("reason") or "") or None,
                 strategy_type=str(ctx.get("strategy_type") or "") or None,
-                pre_market_rvol=float(ctx["pre_market_rvol"]) if ctx.get("pre_market_rvol") is not None else None,
+                pre_market_rvol=float(ctx["pre_market_rvol"])
+                if ctx.get("pre_market_rvol") is not None
+                else None,
                 gap_pct=float(ctx["gap_pct"]) if ctx.get("gap_pct") is not None else None,
                 catalyst_score=catalyst_score,
                 catalyst_event_type=catalyst_event_type,
@@ -197,19 +199,21 @@ async def _recent_strategy_risk_blocks(
         select(RiskEvent)
         .where(
             RiskEvent.ticker.in_(watchlist) if watchlist else RiskEvent.ticker.isnot(None),
-            RiskEvent.event_type.in_([
-                "regime_block",
-                "feed_health_block",
-                "feed_symbol_block",
-                "event_risk_block",
-                "sector_limit_block",
-                "correlation_block",
-                "portfolio_heat_block",
-                "duplicate_order_block",
-                "cooldown_block",
-                "max_positions_block",
-                "max_trades_block",
-            ]),
+            RiskEvent.event_type.in_(
+                [
+                    "regime_block",
+                    "feed_health_block",
+                    "feed_symbol_block",
+                    "event_risk_block",
+                    "sector_limit_block",
+                    "correlation_block",
+                    "portfolio_heat_block",
+                    "duplicate_order_block",
+                    "cooldown_block",
+                    "max_positions_block",
+                    "max_trades_block",
+                ]
+            ),
         )
         .order_by(desc(RiskEvent.occurred_at))
         .limit(limit)
@@ -231,7 +235,9 @@ async def _recent_strategy_allocation_decisions(
     )
     decisions: list[AllocatorDecisionOut] = []
     for signal in result.scalars().all():
-        decision = _allocation_decision_from_payload((signal.params_snapshot or {}).get("allocation"))
+        decision = _allocation_decision_from_payload(
+            (signal.params_snapshot or {}).get("allocation")
+        )
         if decision is not None:
             decisions.append(decision)
         if len(decisions) >= limit:
@@ -261,7 +267,10 @@ async def _fetch_recent_rebalance_orders(
     for order, signal in rows:
         params_snapshot = signal.params_snapshot or {}
         target_weight = params_snapshot.get("target_weight")
-        allocation = params_snapshot.get("allocation") if isinstance(params_snapshot.get("allocation"), dict) else {}
+        raw_allocation = params_snapshot.get("allocation")
+        allocation = (
+            cast("dict[str, Any]", raw_allocation) if isinstance(raw_allocation, dict) else {}
+        )
         recent_orders.append(
             PortfolioRebalanceOrderOut(
                 order_id=order.id,
@@ -270,10 +279,14 @@ async def _fetch_recent_rebalance_orders(
                 side=order.side,
                 status=order.status,
                 quantity=float(order.quantity),
-                avg_fill_price=float(order.avg_fill_price) if order.avg_fill_price is not None else None,
+                avg_fill_price=float(order.avg_fill_price)
+                if order.avg_fill_price is not None
+                else None,
                 target_weight=float(target_weight) if target_weight is not None else None,
                 allocation_status=allocation.get("status") if allocation else None,
-                allocation_score=float(allocation["score"]) if allocation.get("score") is not None else None,
+                allocation_score=float(allocation["score"])
+                if allocation.get("score") is not None
+                else None,
                 allocation_reason=str(allocation.get("reason") or "") or None,
                 is_dry_run=order.is_dry_run,
                 created_at=order.created_at,
@@ -323,15 +336,15 @@ async def _build_portfolio_monitoring(
 async def list_strategies(
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> list[Strategy]:
     repo = StrategyRepository(db)
-    return await repo.list_all()
+    return list(await repo.list_all())
 
 
 @router.get("/presets", response_model=list[StrategyPresetInfo])
 async def get_strategy_presets(
     _: User = Depends(get_current_user),
-):
+) -> list[StrategyPresetInfo]:
     presets = list_strategy_presets()
     return [
         StrategyPresetInfo(
@@ -356,7 +369,7 @@ async def create_strategy_from_preset(
     body: StrategyPresetCreate,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> Strategy:
     preset = get_strategy_preset(preset_key)
     risk_profile = await ensure_preset_risk_profile(db, preset.key)
     requested_name = body.name.strip() if body.name else f"{preset.label} Demo"
@@ -392,18 +405,20 @@ async def create_strategy_from_preset(
     )
     repo = StrategyRepository(db)
     await repo.create(strategy)
-    db.add(AuditLog(
-        action="strategy_created_from_preset",
-        entity_type="strategy",
-        entity_id=str(strategy.id),
-        actor=current_user.email,
-        payload={
-            "preset_key": preset.key,
-            "risk_profile_id": str(risk_profile.id),
-            "risk_profile_name": risk_profile.name,
-        },
-        occurred_at=datetime.now(UTC),
-    ))
+    db.add(
+        AuditLog(
+            action="strategy_created_from_preset",
+            entity_type="strategy",
+            entity_id=str(strategy.id),
+            actor=current_user.email,
+            payload={
+                "preset_key": preset.key,
+                "risk_profile_id": str(risk_profile.id),
+                "risk_profile_name": risk_profile.name,
+            },
+            occurred_at=datetime.now(UTC),
+        )
+    )
     await db.refresh(strategy)
     hydrated = await repo.get_by_id(strategy.id)
     return hydrated or strategy
@@ -413,13 +428,11 @@ async def create_strategy_from_preset(
 async def list_portfolio_monitoring(
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> list[PortfolioStrategyMonitoringOut]:
     repo = StrategyRepository(db)
     strategies = await repo.list_all()
     portfolio_strategies = [
-        strategy
-        for strategy in strategies
-        if is_portfolio_strategy_type(strategy.type)
+        strategy for strategy in strategies if is_portfolio_strategy_type(strategy.type)
     ]
     return [
         await _build_portfolio_monitoring(db, strategy, order_limit=3)
@@ -431,19 +444,14 @@ async def list_portfolio_monitoring(
 async def list_portfolio_attribution(
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> list[PortfolioStrategyAttributionSummaryOut]:
     repo = StrategyRepository(db)
     strategies = await repo.list_all()
     attribution = PortfolioAttributionService(db)
     portfolio_strategies = [
-        strategy
-        for strategy in strategies
-        if is_portfolio_strategy_type(strategy.type)
+        strategy for strategy in strategies if is_portfolio_strategy_type(strategy.type)
     ]
-    return [
-        await attribution.build_summary(strategy)
-        for strategy in portfolio_strategies
-    ]
+    return [await attribution.build_summary(strategy) for strategy in portfolio_strategies]
 
 
 @router.post("", response_model=StrategyOut, status_code=201)
@@ -451,15 +459,19 @@ async def create_strategy(
     body: StrategyCreate,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> Strategy:
     repo = StrategyRepository(db)
     strategy = Strategy(id=uuid.uuid4(), **body.model_dump(), is_enabled=False, is_live=False)
     await repo.create(strategy)
-    db.add(AuditLog(
-        action="strategy_created", entity_type="strategy",
-        entity_id=str(strategy.id), actor=current_user.email,
-        occurred_at=datetime.now(UTC),
-    ))
+    db.add(
+        AuditLog(
+            action="strategy_created",
+            entity_type="strategy",
+            entity_id=str(strategy.id),
+            actor=current_user.email,
+            occurred_at=datetime.now(UTC),
+        )
+    )
     await db.refresh(strategy)
     hydrated = await repo.get_by_id(strategy.id)
     return hydrated or strategy
@@ -470,7 +482,7 @@ async def get_strategy(
     strategy_id: uuid.UUID,
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> Strategy:
     repo = StrategyRepository(db)
     s = await repo.get_by_id(strategy_id)
     if not s:
@@ -483,7 +495,7 @@ async def get_strategy_promotion_status(
     strategy_id: uuid.UUID,
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> StrategyPromotionStatus:
     try:
         status = await StrategyPromotionService(db).evaluate(strategy_id)
     except StrategyPromotionError as exc:
@@ -497,7 +509,7 @@ async def update_strategy_promotion(
     body: StrategyPromotionActionRequest,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> StrategyPromotionStatus:
     try:
         status = await StrategyPromotionService(db).apply_action(
             strategy_id=strategy_id,
@@ -515,7 +527,7 @@ async def get_strategy_intelligence(
     strategy_id: uuid.UUID,
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> StrategyIntelligenceOut:
     repo = StrategyRepository(db)
     strategy = await repo.get_by_id(strategy_id)
     if not strategy:
@@ -543,7 +555,9 @@ async def get_strategy_intelligence(
             feed_symbols=feed_symbols,
         ),
         recent_risk_blocks=await _recent_strategy_risk_blocks(db, strategy, limit=8),
-        recent_allocation_decisions=await _recent_strategy_allocation_decisions(db, strategy, limit=8),
+        recent_allocation_decisions=await _recent_strategy_allocation_decisions(
+            db, strategy, limit=8
+        ),
     )
 
 
@@ -552,13 +566,15 @@ async def get_portfolio_attribution(
     strategy_id: uuid.UUID,
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> PortfolioStrategyAttributionOut:
     repo = StrategyRepository(db)
     strategy = await repo.get_by_id(strategy_id)
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
     if not is_portfolio_strategy_type(strategy.type):
-        raise HTTPException(status_code=400, detail="Strategy is not a portfolio rebalance strategy")
+        raise HTTPException(
+            status_code=400, detail="Strategy is not a portfolio rebalance strategy"
+        )
     attribution = PortfolioAttributionService(db)
     return await attribution.build_strategy_attribution(strategy)
 
@@ -568,13 +584,15 @@ async def get_portfolio_monitoring(
     strategy_id: uuid.UUID,
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> PortfolioStrategyMonitoringOut:
     repo = StrategyRepository(db)
     s = await repo.get_by_id(strategy_id)
     if not s:
         raise HTTPException(status_code=404, detail="Strategy not found")
     if not is_portfolio_strategy_type(s.type):
-        raise HTTPException(status_code=400, detail="Strategy is not a portfolio rebalance strategy")
+        raise HTTPException(
+            status_code=400, detail="Strategy is not a portfolio rebalance strategy"
+        )
     return await _build_portfolio_monitoring(db, s, order_limit=10)
 
 
@@ -584,9 +602,9 @@ async def update_strategy(
     body: StrategyUpdate,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> Strategy:
     repo = StrategyRepository(db)
-    s = await repo.get_by_id(strategy_id)
+    s = await repo.get_by_id_for_update(strategy_id)
     if not s:
         raise HTTPException(status_code=404, detail="Strategy not found")
     requested_updates = body.model_dump(exclude_none=True)
@@ -595,13 +613,34 @@ async def update_strategy(
             status_code=400,
             detail="Directly enabling broker execution is blocked. Use the strategy promotion flow instead.",
         )
+    if "params" in requested_updates:
+        submitted_params = dict(requested_updates["params"])
+        has_submitted_promotion = "promotion" in submitted_params
+        submitted_promotion = submitted_params.pop("promotion", None)
+        stored_params = s.params or {}
+        has_stored_promotion = "promotion" in stored_params
+        stored_promotion = stored_params.get("promotion")
+        if has_submitted_promotion and (
+            not has_stored_promotion or submitted_promotion != stored_promotion
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Strategy promotion state can only change through the dedicated promotion flow.",
+            )
+        if has_stored_promotion:
+            submitted_params["promotion"] = stored_promotion
+        requested_updates["params"] = submitted_params
     for field, value in requested_updates.items():
         setattr(s, field, value)
-    db.add(AuditLog(
-        action="strategy_updated", entity_type="strategy",
-        entity_id=str(strategy_id), actor=current_user.email,
-        occurred_at=datetime.now(UTC),
-    ))
+    db.add(
+        AuditLog(
+            action="strategy_updated",
+            entity_type="strategy",
+            entity_id=str(strategy_id),
+            actor=current_user.email,
+            occurred_at=datetime.now(UTC),
+        )
+    )
     await db.flush()
     await db.refresh(s)
     hydrated = await repo.get_by_id(strategy_id)
@@ -613,15 +652,21 @@ async def enable_strategy(
     strategy_id: uuid.UUID,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, bool]:
     repo = StrategyRepository(db)
     s = await repo.get_by_id(strategy_id)
     if not s:
         raise HTTPException(status_code=404, detail="Strategy not found")
     s.is_enabled = True
-    db.add(AuditLog(action="strategy_enabled", entity_type="strategy",
-                    entity_id=str(strategy_id), actor=current_user.email,
-                    occurred_at=datetime.now(UTC)))
+    db.add(
+        AuditLog(
+            action="strategy_enabled",
+            entity_type="strategy",
+            entity_id=str(strategy_id),
+            actor=current_user.email,
+            occurred_at=datetime.now(UTC),
+        )
+    )
     return {"enabled": True}
 
 
@@ -630,15 +675,21 @@ async def disable_strategy(
     strategy_id: uuid.UUID,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, bool]:
     repo = StrategyRepository(db)
     s = await repo.get_by_id(strategy_id)
     if not s:
         raise HTTPException(status_code=404, detail="Strategy not found")
     s.is_enabled = False
-    db.add(AuditLog(action="strategy_disabled", entity_type="strategy",
-                    entity_id=str(strategy_id), actor=current_user.email,
-                    occurred_at=datetime.now(UTC)))
+    db.add(
+        AuditLog(
+            action="strategy_disabled",
+            entity_type="strategy",
+            entity_id=str(strategy_id),
+            actor=current_user.email,
+            occurred_at=datetime.now(UTC),
+        )
+    )
     return {"enabled": False}
 
 
@@ -648,9 +699,9 @@ async def get_strategy_signals(
     limit: int = 50,
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-):
+) -> list[Signal]:
     repo = StrategyRepository(db)
-    return await repo.get_signals(strategy_id, limit=limit)
+    return list(await repo.get_signals(strategy_id, limit=limit))
 
 
 @router.post("/{strategy_id}/run-dry")
@@ -658,7 +709,7 @@ async def run_strategy_dry(
     strategy_id: uuid.UUID,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
-):
+) -> dict[str, Any]:
     repo = StrategyRepository(db)
     s = await repo.get_by_id(strategy_id)
     if not s:
@@ -677,12 +728,24 @@ async def run_strategy_dry(
             actor=f"user:{current_user.email}:dry_run",
             override_is_live=False,
         )
-        db.add(AuditLog(action="strategy_dry_run", entity_type="strategy",
-                        entity_id=str(strategy_id), actor=current_user.email,
-                        payload=summary,
-                        occurred_at=datetime.now(UTC)))
+        db.add(
+            AuditLog(
+                action="strategy_dry_run",
+                entity_type="strategy",
+                entity_id=str(strategy_id),
+                actor=current_user.email,
+                payload=summary,
+                occurred_at=datetime.now(UTC),
+            )
+        )
         return {"message": f"Dry run executed for {s.name}", "is_live": False, "summary": summary}
-    db.add(AuditLog(action="strategy_dry_run", entity_type="strategy",
-                    entity_id=str(strategy_id), actor=current_user.email,
-                    occurred_at=datetime.now(UTC)))
+    db.add(
+        AuditLog(
+            action="strategy_dry_run",
+            entity_type="strategy",
+            entity_id=str(strategy_id),
+            actor=current_user.email,
+            occurred_at=datetime.now(UTC),
+        )
+    )
     return {"message": f"Dry run queued for {s.name}", "is_live": False}

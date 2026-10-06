@@ -112,7 +112,7 @@ def run_monitored_task(
                 log.exception("tasks.failure_heartbeat_failed", task=task_name)
             raise
 
-    return cast(dict[str, Any], run_async(_wrapped()))
+    return cast("dict[str, Any]", run_async(_wrapped()))
 
 
 # ── Strategy signal generation (every 5 min) ─────────────────────────────────
@@ -129,6 +129,7 @@ def run_strategy_signals(self: Any) -> dict[str, Any]:
     """Entry signal generation loop. Runs every 5 minutes."""
 
     async def _run() -> dict[str, Any]:
+        from app.core.config import settings
         from app.core.redis import task_lock
         from app.db.session import AsyncSessionLocal
         from app.services.strategy_runner import StrategyRunner
@@ -140,6 +141,8 @@ def run_strategy_signals(self: Any) -> dict[str, Any]:
             async with AsyncSessionLocal() as db:
                 runner = StrategyRunner(db)
                 summary: dict[str, Any] = await runner.run_all_enabled()
+                if settings.APP_MODE == "mock" and summary.get("errors"):
+                    raise RuntimeError(f"strategy execution failed: {summary['errors']!r}")
                 summary = await _complete_task(db, "run_strategy_signals", summary)
             log.info("tasks.signals_complete", **summary)
             return summary
@@ -249,6 +252,7 @@ def reconcile_pending_orders(self: Any) -> dict[str, Any]:
         from app.db.models import BrokerConnection, Order
         from app.db.session import AsyncSessionLocal
         from app.execution.engine import ExecutionEngine
+        from app.execution.state_machine import ACTIVE_ORDER_STATUSES
         from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
         async with task_lock("reconcile_pending_orders", ttl_seconds=90) as acquired:
@@ -283,7 +287,7 @@ def reconcile_pending_orders(self: Any) -> dict[str, Any]:
                 result = await db.execute(
                     select(Order)
                     .where(
-                        Order.status.in_(["accepted", "submitted"]),
+                        Order.status.in_(ACTIVE_ORDER_STATUSES),
                         Order.is_dry_run.is_(False),
                         Order.broker_order_id.isnot(None),
                     )
@@ -331,9 +335,10 @@ def reconcile_pending_orders(self: Any) -> dict[str, Any]:
                     provider_broker = create_trading212_provider_adapter(
                         BrokerProviderRequest(
                             broker_id="trading212",
-                            environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                            environment=cast("BrokerRuntimeEnvironment", conn.environment),
                             purpose="worker_reconcile",
                             user_id=conn.user_id,
+                            account_id=getattr(conn, "account_id", None),
                         ),
                         BrokerProviderCredentials(
                             api_key=api_key,
@@ -432,9 +437,10 @@ def sync_account_snapshot(self: Any) -> dict[str, Any]:
                     provider_broker = create_trading212_provider_adapter(
                         BrokerProviderRequest(
                             broker_id="trading212",
-                            environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                            environment=cast("BrokerRuntimeEnvironment", conn.environment),
                             purpose="worker_account_sync",
                             user_id=conn.user_id,
+                            account_id=getattr(conn, "account_id", None),
                         ),
                         BrokerProviderCredentials(
                             api_key=api_key,
@@ -501,9 +507,6 @@ def check_eod_flatten(self: Any) -> dict[str, Any]:
                     summary = {"flattened": 0, "reason": "kill_switch"}
                     return await _complete_task(db, "check_eod_flatten", summary)
 
-                now_utc = datetime.now(UTC)
-                current_hhmm = now_utc.strftime("%H:%M")
-
                 result2 = await db.execute(
                     select(Strategy).where(
                         Strategy.is_enabled,
@@ -512,14 +515,11 @@ def check_eod_flatten(self: Any) -> dict[str, Any]:
                     )
                 )
                 strategies = result2.scalars().all()
-                should_flatten = any(current_hhmm >= st.session_end for st in strategies)
-
-                if not should_flatten:
-                    summary = {"flattened": 0, "reason": "not_due"}
-                    return await _complete_task(db, "check_eod_flatten", summary)
-
                 monitor = PositionMonitor(db)
-                result3 = await monitor.eod_flatten()
+                result3 = await monitor.eod_flatten(
+                    list(strategies),
+                    now_utc=datetime.now(UTC),
+                )
                 return await _complete_task(db, "check_eod_flatten", result3)
 
     return run_monitored_task("check_eod_flatten", _run)
@@ -573,7 +573,8 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
         from app.core.security import CredentialDecryptionError, decrypt_field
         from app.db.models import BrokerConnection, Order
         from app.db.session import AsyncSessionLocal
-        from app.execution.engine import ExecutionEngine
+        from app.execution.engine import ExecutionEngine, OrderCancellationFailed
+        from app.execution.state_machine import ACTIVE_ORDER_STATUSES
         from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
         ORDER_TIMEOUT_MINUTES = 60  # Cancel working orders after 1 hour
@@ -587,7 +588,7 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
                 cutoff = datetime.now(UTC) - timedelta(minutes=ORDER_TIMEOUT_MINUTES)
                 result = await db.execute(
                     select(Order).where(
-                        Order.status.in_(["accepted", "submitted"]),
+                        Order.status.in_(ACTIVE_ORDER_STATUSES),
                         Order.order_type.in_(["limit", "stop", "stop_limit"]),
                         Order.created_at < cutoff,
                         Order.is_dry_run.is_(False),
@@ -645,9 +646,10 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
                     provider_broker = create_trading212_provider_adapter(
                         BrokerProviderRequest(
                             broker_id="trading212",
-                            environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                            environment=cast("BrokerRuntimeEnvironment", conn.environment),
                             purpose="worker_cancel_timed_out_orders",
                             user_id=conn.user_id,
+                            account_id=getattr(conn, "account_id", None),
                         ),
                         BrokerProviderCredentials(
                             api_key=api_key,
@@ -669,8 +671,19 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
 
                 async with provider_broker as broker:
                     engine = ExecutionEngine(db, broker)
+                    failed = 0
                     for order in timed_out:
-                        await engine.cancel_order(order)
+                        try:
+                            await engine.cancel_order(order)
+                        except OrderCancellationFailed:
+                            failed += 1
+                            log.error(
+                                "tasks.order_timeout_cancel_failed",
+                                order_id=str(order.id),
+                                ticker=order.ticker,
+                                requires_reconciliation=True,
+                            )
+                            continue
                         log.warning(
                             "tasks.order_timeout_cancel",
                             order_id=str(order.id),
@@ -679,7 +692,10 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
                         )
                         count += 1
 
-                return await _complete_task(db, "cancel_timed_out_orders", {"cancelled": count})
+                summary = {"cancelled": count}
+                if failed:
+                    summary["failed"] = failed
+                return await _complete_task(db, "cancel_timed_out_orders", summary)
 
     return run_monitored_task("cancel_timed_out_orders", _run)
 
@@ -859,7 +875,7 @@ def purge_old_records(self: Any) -> dict[str, Any]:
                 if not id_rows:
                     break
                 result = await db.execute(delete(AuditLog).where(AuditLog.id.in_(id_rows)))
-                audit_deleted += result.rowcount
+                audit_deleted += int(getattr(result, "rowcount", 0))
                 await db.flush()
 
             # ── RiskEvent purge ───────────────────────────────────────────────
@@ -879,7 +895,7 @@ def purge_old_records(self: Any) -> dict[str, Any]:
                 if not id_rows:
                     break
                 result = await db.execute(delete(RiskEvent).where(RiskEvent.id.in_(id_rows)))
-                risk_deleted += result.rowcount
+                risk_deleted += int(getattr(result, "rowcount", 0))
                 await db.flush()
 
             summary = {
@@ -943,6 +959,14 @@ def track_cfd_funding(self: Any) -> dict[str, Any]:
                     log.warning("track_cfd_funding.no_broker")
                     return await _complete_task(db, "track_cfd_funding", {"recorded": 0})
                 try:
+                    require_broker_environment(conn.environment, action="worker cfd funding")
+                except SafetyPolicyViolation as exc:
+                    return await _complete_task(
+                        db,
+                        "track_cfd_funding",
+                        {"recorded": 0, "skipped": exc.decision_code, "reason": exc.reason},
+                    )
+                try:
                     api_key = decrypt_field(conn.api_key_encrypted)
                     api_secret = decrypt_field(conn.api_secret_encrypted)
                 except CredentialDecryptionError as exc:
@@ -961,20 +985,13 @@ def track_cfd_funding(self: Any) -> dict[str, Any]:
                         {"recorded": 0, "skipped": "credential_error"},
                     )
                 try:
-                    require_broker_environment(conn.environment, action="worker cfd funding")
-                except SafetyPolicyViolation as exc:
-                    return await _complete_task(
-                        db,
-                        "track_cfd_funding",
-                        {"recorded": 0, "skipped": exc.decision_code, "reason": exc.reason},
-                    )
-                try:
                     trading212_broker = create_trading212_provider_adapter(
                         BrokerProviderRequest(
                             broker_id="trading212",
-                            environment=cast(BrokerRuntimeEnvironment, conn.environment),
+                            environment=cast("BrokerRuntimeEnvironment", conn.environment),
                             purpose="worker_cfd_funding",
                             user_id=conn.user_id,
+                            account_id=getattr(conn, "account_id", None),
                         ),
                         BrokerProviderCredentials(
                             api_key=api_key,
