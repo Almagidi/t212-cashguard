@@ -227,6 +227,53 @@ jobs:
       - name: Unit tests
         run: npm test -- --watchAll=false
 
+  web-image:
+    name: Web Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # See docs/WEB_IMAGE_BUILD.md. Nothing is pushed to a registry.
+      - name: Export dependency cache (network, lifecycle scripts off)
+        run: docker build --target npm_cache --output "type=local,dest=${RUNNER_TEMP}/npm-cache" apps/web
+
+      - name: Build image with networking disabled for every instruction
+        run: |
+          test -d "${RUNNER_TEMP}/npm-cache/_cacache"
+          docker build --network=none \
+            --build-context "npm_cache=${RUNNER_TEMP}/npm-cache" \
+            -t cashguard-web:ci apps/web
+          docker image inspect cashguard-web:ci --format 'image={{.Id}} platform={{.Os}}/{{.Architecture}}'
+
+      - name: Smoke test image
+        run: |
+          test "$(docker run --rm cashguard-web:ci id -u)" = "1001"
+          docker run --rm cashguard-web:ci node --version
+
+          trap 'docker logs web-smoke || true; docker rm -f web-smoke >/dev/null 2>&1 || true' EXIT
+          docker run -d --name web-smoke -p 127.0.0.1:3000:3000 cashguard-web:ci
+
+          for attempt in {1..30}; do
+            status=$(curl -sS -D /tmp/web-image-headers.txt -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/auth/login || true)
+            if [ "$status" = "200" ]; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "Timeout waiting for the web image to serve /auth/login (last status: ${status:-none})"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          grep -i '^x-content-type-options: nosniff' /tmp/web-image-headers.txt
+          grep -i '^x-frame-options: DENY' /tmp/web-image-headers.txt
+          grep -i '^referrer-policy: no-referrer' /tmp/web-image-headers.txt
+          grep -i '^content-security-policy:' /tmp/web-image-headers.txt
+
   e2e:
     name: E2E Mock Smoke
     runs-on: ubuntu-latest
