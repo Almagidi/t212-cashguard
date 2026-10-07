@@ -38,7 +38,7 @@ A **cash-only, local-first** intraday trading automation platform for [Trading 2
 
 - Docker + Docker Compose
 - Python 3.12+ available as `python3.12`
-- Node.js 20+
+- Node.js 24 (LTS)
 
 ### 1. Clone and configure
 
