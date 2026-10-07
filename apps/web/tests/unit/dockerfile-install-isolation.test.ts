@@ -30,9 +30,13 @@ function stageInstructions(name: string): string[] {
 const installInstructions = instructions.filter(
   (line) => /^RUN\s/.test(line) && /\bnpm\s+(ci|install|i|rebuild|install-test|it)\b/.test(line),
 )
+// Any instruction that invokes npm or npx at all, including the application build.
+const npmInstructions = instructions.filter((line) => /^RUN\s/.test(line) && /\bnp[mx]\b/.test(line))
 const disablesScripts = (line: string) => /--ignore-scripts(?![=\w-])/.test(line)
+const hasNoNetwork = (line: string) => /^RUN\s+(--\S+\s+)*--network=none\s/.test(line)
 const isOfflineWithoutNetwork = (line: string) =>
-  /^RUN\s+(--\S+\s+)*--network=none\s/.test(line) && /\bnpm\s+\S+\s+--offline(?![=\w-])/.test(line)
+  hasNoNetwork(line) && /\bnpm\s+\S+\s+--offline(?![=\w-])/.test(line)
+const isScriptFreeRetrieval = (line: string) => /\bnpm\s+ci\b/.test(line) && disablesScripts(line)
 
 describe('web image dependency install isolation', () => {
   test('retrieval stage downloads without running lifecycle scripts', () => {
@@ -68,5 +72,20 @@ describe('web image dependency install isolation', () => {
 
   test('application build uses the offline-installed dependencies', () => {
     expect(stageInstructions('builder')).toContain('COPY --from=deps /workspace/node_modules ./node_modules')
+  })
+
+  test('application compile runs with networking disabled', () => {
+    const builds = stageInstructions('builder').filter((line) => /\bnpm\s+run\s+build\b/.test(line))
+
+    expect(builds).toHaveLength(1)
+    expect(hasNoNetwork(builds[0])).toBe(true)
+  })
+
+  test('the only npm instruction with network access is the script-free retrieval', () => {
+    const withNetwork = npmInstructions.filter((line) => !hasNoNetwork(line))
+
+    expect(npmInstructions).toHaveLength(3)
+    expect(withNetwork).toHaveLength(1)
+    expect(isScriptFreeRetrieval(withNetwork[0])).toBe(true)
   })
 })

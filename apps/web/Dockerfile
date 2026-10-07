@@ -35,7 +35,9 @@ ENV NEXT_PUBLIC_APP_MODE=$NEXT_PUBLIC_APP_MODE
 ENV NEXT_PUBLIC_APP_VERSION=$NEXT_PUBLIC_APP_VERSION
 ENV NEXT_PUBLIC_ENABLE_PWA=$NEXT_PUBLIC_ENABLE_PWA
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm run build
+# The application compile runs dependency code (Next.js, PostCSS) too, so it
+# also gets no network.
+RUN --network=none npm run build
 
 FROM base AS runner
 ENV NODE_ENV=production
