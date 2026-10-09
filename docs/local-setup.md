@@ -95,6 +95,11 @@ Diagnostics endpoint meanings:
 cp .env.example .env
 ```
 
+The API reads the nearest `.env` between `apps/api/app/core/` and the project root (the
+directory holding `.git` or `docker-compose.yml`). It never reads a `.env` above the project
+root. To load a different file, set `CASHGUARD_ENV_FILE=/path/to/file` in the environment;
+set it to an empty value to load no file at all (the test suite does this).
+
 Open `.env` and set at minimum:
 
 ```bash
