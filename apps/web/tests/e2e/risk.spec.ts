@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './test'
 import { ensureAppPage } from './helpers'
 
 test.describe('Risk Controls', () => {

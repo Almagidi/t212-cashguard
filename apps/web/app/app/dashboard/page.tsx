@@ -470,7 +470,7 @@ export default function DashboardPage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <CardTitle>Open Positions</CardTitle>
-                <a href="/app/positions" className="text-xs text-primary hover:underline">View all</a>
+                <Link href="/app/positions" className="text-xs text-primary hover:underline">View all</Link>
               </div>
             </CardHeader>
             <CardContent>
@@ -852,12 +852,12 @@ export default function DashboardPage() {
               <p className="text-sm font-semibold">Kill Switch is active</p>
               <p className="text-xs text-red-300/70">All automated trading is halted</p>
             </div>
-            <a
+            <Link
               href="/app/emergency"
               className="text-xs font-medium px-3 py-1.5 rounded-md bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 transition-colors"
             >
               Manage →
-            </a>
+            </Link>
           </motion.div>
         )}
       </AnimatePresence>
@@ -869,12 +869,12 @@ export default function DashboardPage() {
             Frontend {process.env.NEXT_PUBLIC_APP_MODE || 'mock'} is calling {API_URL}.
           </p>
         </div>
-        <a
+        <Link
           href="/app/operator"
           className="rounded-md border border-blue-400/30 bg-blue-500/10 px-3 py-1.5 font-medium text-blue-100 transition-colors hover:bg-blue-500/20"
         >
           Open diagnostics →
-        </a>
+        </Link>
       </div>
 
       {/* Header row */}

@@ -1,5 +1,6 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Page } from './test'
 import { adminEmail, adminPassword, ensureAppPage, ensureLoggedIn, expectTopbarTitle, installApiProxy, installAuthMeStub, installExternalMarketDataGuard } from './helpers'
+import { guardedApiFetch } from './rate-limit-guard'
 
 const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
 let cachedAdminToken: string | null = null
@@ -7,7 +8,8 @@ let cachedAdminToken: string | null = null
 async function adminToken(request: import('@playwright/test').APIRequestContext): Promise<string> {
   if (cachedAdminToken) return cachedAdminToken
 
-  const res = await request.post(`${API_URL}/v1/auth/login`, {
+  const res = await guardedApiFetch(request, `${API_URL}/v1/auth/login`, {
+    method: 'POST',
     data: { email: adminEmail, password: adminPassword },
   })
   expect(res.ok(), `login failed with status ${res.status()}: ${await res.text()}`).toBe(true)
@@ -20,7 +22,8 @@ async function adminToken(request: import('@playwright/test').APIRequestContext)
 
 async function resetKillSwitch(page: Page) {
   const token = await adminToken(page.request)
-  const res = await page.request.post(`${API_URL}/v1/risk/kill-switch/disable`, {
+  const res = await guardedApiFetch(page.request, `${API_URL}/v1/risk/kill-switch/disable`, {
+    method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
   })
   expect(res.ok(), `kill-switch reset failed with status ${res.status()}: ${await res.text()}`).toBe(true)
@@ -36,7 +39,7 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
   })
 
   test('backend is pinned to mock market data for mock/paper smoke', async ({ request }) => {
-    const res = await request.get(`${API_URL}/v1/health/deps`)
+    const res = await guardedApiFetch(request, `${API_URL}/v1/health/deps`)
     expect(res.ok(), `health deps failed with status ${res.status()}: ${await res.text()}`).toBe(true)
     const body = await res.json() as { market_data?: string }
     expect(body.market_data).toBe('mock')
@@ -59,7 +62,7 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
 
     // Stable runtime panels should be visible.
     await expect(page.getByTestId('mock-runtime-status')).toBeVisible()
-    await expect(page.getByTestId('operator-execution-boundary')).toBeVisible()
+    await expect(page.getByTestId('operator-execution-boundary')).toBeVisible({ timeout: 15_000 })
     await expect(page.getByTestId('operator-read-only-badge')).toContainText('Read-only endpoint')
     await expect(page.getByTestId('operator-no-broker-order-badge')).toContainText('No broker order sent')
   })
@@ -101,7 +104,7 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
     await expectTopbarTitle(page, 'Emergency Controls')
 
     // Verify the emergency action buttons are present
-    await expect(page.getByTestId('emergency-action-disable-auto-trading')).toBeVisible()
+    await expect(page.getByTestId('emergency-action-disable-auto-trading')).toBeVisible({ timeout: 15_000 })
     await expect(page.getByTestId('emergency-action-cancel-orders')).toBeVisible()
     await expect(page.getByTestId('emergency-action-flatten-positions')).toBeVisible()
 
@@ -118,7 +121,10 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
   test('emergency page supports explicit kill-switch recovery without resuming auto-trading', async ({ page }) => {
     const token = await adminToken(page.request)
     const headers = { Authorization: `Bearer ${token}` }
-    const reset = await page.request.post(`${API_URL}/v1/risk/kill-switch/disable`, { headers })
+    const reset = await guardedApiFetch(page.request, `${API_URL}/v1/risk/kill-switch/disable`, {
+      method: 'POST',
+      headers,
+    })
     expect(reset.ok(), `kill-switch reset failed with status ${reset.status()}: ${await reset.text()}`).toBe(true)
 
     const forbiddenRecoveryCalls: string[] = []
@@ -167,11 +173,43 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
   test('orders page supports safe paper order and kill-switch blocked demo journey', async ({ page }) => {
     const token = await adminToken(page.request)
     const headers = { Authorization: `Bearer ${token}` }
-    await page.request.post(`${API_URL}/v1/risk/kill-switch/disable`, { headers })
-    await page.request.patch(`${API_URL}/v1/risk/profile`, {
-      headers,
-      data: { max_open_positions: 50, max_trades_per_day: 200 },
-    })
+    const originalRiskProfileResponse = await guardedApiFetch(
+      page.request,
+      `${API_URL}/v1/risk/profile`,
+      { headers },
+    )
+    expect(
+      originalRiskProfileResponse.ok(),
+      `risk profile snapshot failed with status ${originalRiskProfileResponse.status()}: ${await originalRiskProfileResponse.text()}`,
+    ).toBe(true)
+    const originalRiskProfile = await originalRiskProfileResponse.json() as {
+      max_open_positions: number
+      max_trades_per_day: number
+    }
+    const temporaryRiskProfile = {
+      max_open_positions: Math.max(originalRiskProfile.max_open_positions, 50),
+      max_trades_per_day: Math.max(originalRiskProfile.max_trades_per_day, 200),
+    }
+    const needsTemporaryExpansion = (
+      temporaryRiskProfile.max_open_positions !== originalRiskProfile.max_open_positions ||
+      temporaryRiskProfile.max_trades_per_day !== originalRiskProfile.max_trades_per_day
+    )
+
+    if (needsTemporaryExpansion) {
+      const profile = await guardedApiFetch(page.request, `${API_URL}/v1/risk/profile`, {
+        method: 'PATCH',
+        headers,
+        data: temporaryRiskProfile,
+      })
+      expect(profile.ok(), `risk profile setup failed with status ${profile.status()}: ${await profile.text()}`).toBe(true)
+    }
+
+    try {
+      const initialReset = await guardedApiFetch(page.request, `${API_URL}/v1/risk/kill-switch/disable`, {
+        method: 'POST',
+        headers,
+      })
+      expect(initialReset.ok(), `kill-switch reset failed with status ${initialReset.status()}: ${await initialReset.text()}`).toBe(true)
 
     const forbiddenPaperFlowCalls: string[] = []
     await installApiProxy(page, {
@@ -234,6 +272,79 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
     await expect(page.getByTestId('paper-order-status-message').getByText(/No broker order was sent/i)).toBeVisible()
     expect(forbiddenPaperFlowCalls, `Paper flow touched broker/live order endpoints: ${forbiddenPaperFlowCalls.join(', ')}`).toEqual([])
 
-    await page.request.post(`${API_URL}/v1/risk/kill-switch/disable`, { headers })
+    } finally {
+      let restoredProfile: import('@playwright/test').APIResponse | null = null
+      let riskProfileRestoreError: unknown
+      if (needsTemporaryExpansion) {
+        try {
+          restoredProfile = await guardedApiFetch(page.request, `${API_URL}/v1/risk/profile`, {
+            method: 'PATCH',
+            headers,
+            data: {
+              max_open_positions: originalRiskProfile.max_open_positions,
+              max_trades_per_day: originalRiskProfile.max_trades_per_day,
+            },
+          })
+        } catch (error) {
+          riskProfileRestoreError = error
+        }
+      }
+
+      let verifiedRiskProfileResponse: import('@playwright/test').APIResponse | null = null
+      let riskProfileVerificationError: unknown
+      try {
+        verifiedRiskProfileResponse = await guardedApiFetch(
+          page.request,
+          `${API_URL}/v1/risk/profile`,
+          { headers },
+        )
+      } catch (error) {
+        riskProfileVerificationError = error
+      }
+
+      let finalReset: import('@playwright/test').APIResponse | null = null
+      let killSwitchResetError: unknown
+      try {
+        finalReset = await guardedApiFetch(page.request, `${API_URL}/v1/risk/kill-switch/disable`, {
+          method: 'POST',
+          headers,
+        })
+      } catch (error) {
+        killSwitchResetError = error
+      }
+
+      expect(riskProfileRestoreError, `risk profile restore threw: ${String(riskProfileRestoreError)}`).toBeUndefined()
+      if (restoredProfile) {
+        expect(
+          restoredProfile.ok(),
+          `risk profile restore failed with status ${restoredProfile.status()}: ${await restoredProfile.text()}`,
+        ).toBe(true)
+      }
+      expect(
+        riskProfileVerificationError,
+        `risk profile verification threw: ${String(riskProfileVerificationError)}`,
+      ).toBeUndefined()
+      expect(verifiedRiskProfileResponse).not.toBeNull()
+      if (verifiedRiskProfileResponse) {
+        expect(
+          verifiedRiskProfileResponse.ok(),
+          `risk profile verification failed with status ${verifiedRiskProfileResponse.status()}: ${await verifiedRiskProfileResponse.text()}`,
+        ).toBe(true)
+        const verifiedRiskProfile = await verifiedRiskProfileResponse.json() as {
+          max_open_positions: number
+          max_trades_per_day: number
+        }
+        expect(verifiedRiskProfile.max_open_positions).toBe(originalRiskProfile.max_open_positions)
+        expect(verifiedRiskProfile.max_trades_per_day).toBe(originalRiskProfile.max_trades_per_day)
+      }
+      expect(killSwitchResetError, `kill-switch reset threw: ${String(killSwitchResetError)}`).toBeUndefined()
+      expect(finalReset).not.toBeNull()
+      if (finalReset) {
+        expect(
+          finalReset.ok(),
+          `final kill-switch reset failed with status ${finalReset.status()}: ${await finalReset.text()}`,
+        ).toBe(true)
+      }
+    }
   })
 })

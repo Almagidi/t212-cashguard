@@ -38,7 +38,7 @@ A **cash-only, local-first** intraday trading automation platform for [Trading 2
 
 - Docker + Docker Compose
 - Python 3.12+ available as `python3.12`
-- Node.js 20+
+- Node.js 24.21.0 (LTS; npm 11)
 
 ### 1. Clone and configure
 
@@ -298,6 +298,22 @@ The GitHub Actions CI pipeline protects the mock/paper trading lab release candi
 - **Security**: Secret scanning, prohibited financial pattern checks, and hardcoded safety invariant validation.
 
 ---
+
+## Web image build
+
+The web image is built on Node 24.21.0 (npm 11.19.0). Packages are downloaded
+with lifecycle scripts disabled; the install in which lifecycle scripts can run
+and the application compile both run with networking disabled.
+`docker build apps/web` and `docker compose build web` work as before, and a
+previously exported cache can be supplied so that every `RUN` instruction runs
+with networking disabled (the builder itself still resolves the base image).
+See [docs/WEB_IMAGE_BUILD.md](docs/WEB_IMAGE_BUILD.md).
+
+Not yet aligned: the macOS setup launcher still installs Node 20, and
+`infra/scripts/quickstart.sh` does not check the Node version. Use Node
+24.21.0 (`.nvmrc` / `.node-version`) for local work until they are updated.
+`make e2e-operator` (and so `make readiness`) now needs the mock API running
+on port 8000.
 
 ## Production Operations Runbook
 
