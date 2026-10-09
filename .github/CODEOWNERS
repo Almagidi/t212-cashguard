@@ -1,0 +1,15 @@
+# Safety-critical ownership boundaries. GitHub requests review from these owners
+# for changes to these paths; whether that review is required before merging is
+# set by the repository ruleset, not by this file.
+/apps/api/app/execution/** @Almagidi
+/apps/api/app/broker/** @Almagidi
+/apps/api/app/risk/** @Almagidi
+/apps/api/app/services/*reconcil* @Almagidi
+/apps/api/app/workers/** @Almagidi
+/apps/api/app/db/models/** @Almagidi
+/apps/api/app/db/migrations/** @Almagidi
+/.github/workflows/** @Almagidi
+/infra/** @Almagidi
+/docker-compose*.yml @Almagidi
+/Dockerfile* @Almagidi
+/**/Dockerfile* @Almagidi
