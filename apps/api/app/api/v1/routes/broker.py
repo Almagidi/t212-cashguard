@@ -194,7 +194,6 @@ async def connect_broker(
         BrokerProviderCredentials,
         BrokerProviderRequest,
         BrokerProviderValidationError,
-        BrokerRuntimeEnvironment,
         create_trading212_provider_adapter,
     )
 
@@ -203,7 +202,7 @@ async def connect_broker(
             # Credential tests intentionally allow demo/live validation through the provider.
             BrokerProviderRequest(
                 broker_id="trading212",
-                environment=cast("BrokerRuntimeEnvironment", body.environment),
+                environment=body.environment,
                 purpose="credential_test",
                 user_id=current_user.id,
             ),
