@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from app.core.config import Settings
 
@@ -173,16 +176,124 @@ def test_shell_secret_prompts_disable_terminal_echo() -> None:
     assert insecure_prompts == []
 
 
+SECRET_VARIABLE_NAME = re.compile(
+    r"^(?:[A-Z0-9_]*(?:PASSWORD|SECRET|API_KEY|TOKEN)|SECRET_KEY|MASTER_KEY)$"
+)
+SHELL_ASSIGNMENT = re.compile(r"^\s*(?:local\s+|export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+SHELL_EXPANSION = re.compile(r"\$\{?[#!]?([A-Za-z_][A-Za-z0-9_]*)")
+SECRET_ENV_FILE_LOOKUP = re.compile(r"\^([A-Z0-9_]+)=")
+RENDER_COMMAND = re.compile(r"^\s*(?:echo|printf|ok|fail|warn|info)\b")
+PYTHON_SECRET_PRINT = re.compile(r"print\(.*settings\.(?:SECRET_KEY|MASTER_KEY|ADMIN_PASSWORD)\b")
+
+
+def _launcher_scripts() -> list[Path]:
+    return sorted([*LAUNCHER_ROOT.glob("*.command"), *LAUNCHER_ROOT.glob("*.sh")])
+
+
+def _is_secret_name(name: str, secret_names: set[str]) -> bool:
+    return name in secret_names or bool(SECRET_VARIABLE_NAME.match(name))
+
+
+def _reads_secret(expression: str, secret_names: set[str]) -> bool:
+    return any(_is_secret_name(name, secret_names) for name in SHELL_EXPANSION.findall(expression))
+
+
+def _assigned_from_secret(value: str, secret_names: set[str]) -> bool:
+    looked_up = SECRET_ENV_FILE_LOOKUP.findall(value)
+    if looked_up:
+        return any(_is_secret_name(name, secret_names) for name in looked_up)
+    if "$(" in value or "`" in value:
+        # Output of another command (for example an HTTP response), not the secret itself.
+        return False
+    return _reads_secret(value, secret_names)
+
+
+def _secret_derived_names(lines: list[str]) -> set[str]:
+    """Variables assigned directly from a secret variable or from its line in an env file."""
+    names: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for line in lines:
+            assignment = SHELL_ASSIGNMENT.match(line)
+            if not assignment or assignment.group(1) in names:
+                continue
+            if _assigned_from_secret(assignment.group(2), names):
+                names.add(assignment.group(1))
+                changed = True
+    return names
+
+
 def test_launchers_never_render_secret_values() -> None:
-    secret_value = re.compile(r"\$(?:\{)?(?:ADMIN_PASSWORD|[A-Z0-9_]*(?:SECRET|API_KEY|TOKEN))\b")
     violations: list[str] = []
 
-    for path in sorted(LAUNCHER_ROOT.glob("*.command")):
-        for line_number, line in enumerate(path.read_text().splitlines(), start=1):
-            if re.match(r"^\s*(?:echo|printf)\b", line) and secret_value.search(line):
+    for path in _launcher_scripts():
+        lines = path.read_text().splitlines()
+        secret_names = _secret_derived_names(lines)
+        for line_number, line in enumerate(lines, start=1):
+            renders_shell_secret = RENDER_COMMAND.match(line) and _reads_secret(line, secret_names)
+            if renders_shell_secret or PYTHON_SECRET_PRINT.search(line):
                 violations.append(f"{path.name}:{line_number}")
 
     assert violations == []
+
+
+def test_secret_alias_tracking_follows_assignments() -> None:
+    lines = [
+        'PW="${ADMIN_PASSWORD:-}"',
+        'COPY="$PW"',
+        'FROM_FILE=$(grep "^SECRET_KEY=" "$ENV_FILE" | cut -d= -f2)',
+        'EMAIL="${ADMIN_EMAIL:-admin@localhost}"',
+        "PASS=0",
+        'RESPONSE=$(curl -s -H "Authorization: Bearer $TOKEN" "$API/v1/risk/profile")',
+    ]
+
+    assert _secret_derived_names(lines) == {"PW", "COPY", "FROM_FILE"}
+    assert _reads_secret('echo "first four: ${COPY:0:4}"', {"PW", "COPY", "FROM_FILE"})
+    assert not _reads_secret('echo "$EMAIL passed $PASS checks"', {"PW", "COPY", "FROM_FILE"})
+
+
+def test_launchers_never_put_a_login_password_on_a_command_line() -> None:
+    inline_login_body = re.compile(r"""(?:-d|--data(?:-raw|-binary)?)\s+["'].*password""")
+    violations = [
+        f"{path.name}:{line_number}"
+        for path in _launcher_scripts()
+        for line_number, line in enumerate(path.read_text().splitlines(), start=1)
+        if inline_login_body.search(line)
+    ]
+
+    assert violations == []
+
+
+LOGIN_BODY_SCRIPTS = (
+    "8. Verify Login.command",
+    "9. Run Migrations and Test.command",
+    "diagnose.sh",
+)
+
+
+@pytest.mark.parametrize("script_name", LOGIN_BODY_SCRIPTS)
+def test_launcher_login_body_encodes_any_password_as_json(script_name: str) -> None:
+    script = (LAUNCHER_ROOT / script_name).read_text()
+    helper = re.search(r"^\s*login_body\(\) \{\n.*?\n\s*\}\n", script, re.MULTILINE | re.DOTALL)
+    assert helper is not None
+    awkward_password = "pa\"ss\\wo$rd `id` ; #' é"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            helper.group(0) + '\nlogin_body "$1" "$2"',
+            "bash",
+            "admin@localhost",
+            awkward_password,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {"email": "admin@localhost", "password": awkward_password}
 
 
 def test_default_configuration_and_quickstart_are_mock_only() -> None:
