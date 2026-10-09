@@ -193,7 +193,7 @@ export default function OrdersPage() {
                 </div>
               </div>
 
-              <form onSubmit={submitPaperOrder} className="grid gap-3 sm:grid-cols-[1fr_130px_130px_130px_auto] sm:items-end">
+              <form onSubmit={submitPaperOrder} className="grid gap-3 sm:grid-cols-2 sm:items-end 2xl:grid-cols-[minmax(0,1fr)_repeat(3,130px)_auto]">
                 <div className="space-y-1.5">
                   <Label htmlFor="paper-ticker">Ticker</Label>
                   <Input
@@ -241,7 +241,7 @@ export default function OrdersPage() {
                     <option value="mock">mock</option>
                   </select>
                 </div>
-                <Button type="submit" size="sm" loading={placePaperOrder.isPending} data-testid="paper-order-submit-button">
+                <Button type="submit" size="sm" loading={placePaperOrder.isPending} className="sm:col-span-2 2xl:col-span-1" data-testid="paper-order-submit-button">
                   <Send className="h-3.5 w-3.5" />
                   Submit Paper Order
                 </Button>
@@ -348,7 +348,7 @@ export default function OrdersPage() {
       </Card>
 
       {/* Tabs */}
-      <div className="inline-flex gap-0.5 p-1 bg-muted/40 border border-border rounded-lg">
+      <div className="flex w-full gap-0.5 overflow-x-auto p-1 bg-muted/40 border border-border rounded-lg sm:w-fit">
         {TABS.map(t => {
           const isActive = tab === t
           return (
@@ -356,7 +356,7 @@ export default function OrdersPage() {
               key={t}
               onClick={() => setTab(t)}
               className={cn(
-                'inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-xs font-medium transition-all capitalize',
+                'inline-flex shrink-0 items-center gap-1.5 px-3.5 py-1.5 rounded-md text-xs font-medium transition-all capitalize',
                 isActive
                   ? 'bg-card text-foreground shadow-sm border border-border/60'
                   : 'text-muted-foreground hover:text-foreground hover:bg-card/40'

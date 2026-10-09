@@ -1,4 +1,4 @@
-import { test } from '@playwright/test'
+import { test } from './test'
 import { ensureAppPage, expectAnyVisible, expectMainHeading } from './helpers'
 
 test.describe('Alerts', () => {

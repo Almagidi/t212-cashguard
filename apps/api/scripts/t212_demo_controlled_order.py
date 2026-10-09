@@ -9,7 +9,7 @@ Required safety gates:
 - LIVE_TRADING_ENABLED=false
 - T212_DEMO_ORDER_ENABLED=true
 - T212_DEMO_ORDER_CONFIRM=PLACE_DEMO_ORDER
-- T212_API_KEY and T212_API_SECRET loaded
+- T212_DEMO_API_KEY and T212_DEMO_API_SECRET loaded
 """
 
 from __future__ import annotations
@@ -84,8 +84,8 @@ def main() -> int:
     require_env("LIVE_TRADING_ENABLED", "false")
     require_env("T212_DEMO_ORDER_ENABLED", "true")
     require_env("T212_DEMO_ORDER_CONFIRM", "PLACE_DEMO_ORDER")
-    require_env("T212_API_KEY")
-    require_env("T212_API_SECRET")
+    require_env("T212_DEMO_API_KEY")
+    require_env("T212_DEMO_API_SECRET")
 
     print("Controlled Trading 212 DEMO order test")
     print(f"API: {API_URL}")
@@ -107,8 +107,8 @@ def main() -> int:
         "POST",
         "/v1/broker/trading212/connect",
         payload={
-            "api_key": os.environ["T212_API_KEY"].strip(),
-            "api_secret": os.environ["T212_API_SECRET"].strip(),
+            "api_key": os.environ["T212_DEMO_API_KEY"].strip(),
+            "api_secret": os.environ["T212_DEMO_API_SECRET"].strip(),
             "environment": "demo",
         },
         token=token,

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from app.execution.state_machine import (
+    ACTIVE_ORDER_STATUSES,
     InvalidOrderTransition,
     can_transition_order_status,
     is_terminal_status,
@@ -24,6 +27,15 @@ LEGAL_TRANSITIONS = {
     "accepted": {"partially_filled", "filled", "rejected", "cancelled", "error"},
     "partially_filled": {"filled", "cancelled", "error"},
 }
+
+
+def test_active_statuses_are_exactly_known_nonterminal_statuses() -> None:
+    assert {
+        "pending_intent",
+        "submitted",
+        "accepted",
+        "partially_filled",
+    } == ACTIVE_ORDER_STATUSES
 
 
 @pytest.mark.parametrize(
@@ -136,3 +148,122 @@ def test_regression_filled_order_cannot_be_cancelled_locally():
         transition_order_status(order, "cancelled")
 
     assert order.status == "filled"
+
+
+def _direct_order_status_assignments(source: str) -> list[int]:
+    """Return direct assignments that bypass the persisted-order state machine."""
+    violations: list[int] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        else:
+            continue
+        for target in targets:
+            if (
+                isinstance(target, ast.Attribute)
+                and target.attr == "status"
+                and isinstance(target.value, ast.Name)
+                and (target.value.id == "order" or target.value.id.endswith("_order"))
+            ):
+                violations.append(node.lineno)
+    return violations
+
+
+def test_direct_order_status_assignment_detector_catches_bypasses():
+    source = 'order.status = "filled"\npaper_order.status: str = "cancelled"\n'
+
+    assert _direct_order_status_assignments(source) == [1, 2]
+
+
+def test_persistent_order_status_is_only_mutated_by_state_machine():
+    app_root = Path(__file__).parents[2] / "app"
+    allowed = app_root / "execution" / "state_machine.py"
+    violations: list[str] = []
+
+    for path in app_root.rglob("*.py"):
+        if path == allowed or "backtest" in path.parts:
+            continue
+        for line in _direct_order_status_assignments(path.read_text()):
+            violations.append(f"{path.relative_to(app_root)}:{line}")
+
+    assert violations == [], (
+        "Persistent order status must advance only through the central state machine; "
+        f"direct assignment violations: {violations}"
+    )
+
+
+def test_runtime_transitions_always_use_the_evidence_boundary():
+    app_root = Path(__file__).parents[2] / "app"
+    allowed = app_root / "execution" / "state_machine.py"
+    violations: list[str] = []
+
+    for path in app_root.rglob("*.py"):
+        if path == allowed or "backtest" in path.parts:
+            continue
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            call_name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else None
+            )
+            if call_name == "transition_order_status":
+                violations.append(f"{path.relative_to(app_root)}:{node.lineno}")
+
+    assert violations == [], (
+        "Runtime transitions must atomically add event/audit evidence; "
+        f"mutation-only calls: {violations}"
+    )
+
+
+def test_runtime_has_no_bulk_status_update_bypass():
+    app_root = Path(__file__).parents[2] / "app"
+    violations: list[str] = []
+
+    for path in app_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute) or node.func.attr != "values":
+                continue
+            if any(keyword.arg == "status" for keyword in node.keywords):
+                violations.append(f"{path.relative_to(app_root)}:{node.lineno}")
+
+    assert violations == [], (
+        f"Bulk status updates bypass validation and transition evidence; violations: {violations}"
+    )
+
+
+def test_persistent_orders_are_only_constructed_in_the_initial_state():
+    app_root = Path(__file__).parents[2] / "app"
+    violations: list[str] = []
+
+    for path in app_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            call_name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else None
+            )
+            if call_name != "Order":
+                continue
+            status = next((item.value for item in node.keywords if item.arg == "status"), None)
+            if not isinstance(status, ast.Constant) or status.value != "pending_intent":
+                violations.append(f"{path.relative_to(app_root)}:{node.lineno}")
+
+    assert violations == [], (
+        "Persistent orders must be constructed in pending_intent and advance only "
+        f"through the central state machine; violations: {violations}"
+    )

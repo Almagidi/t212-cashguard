@@ -288,9 +288,9 @@ class TestSellQuantityConvention:
         from app.broker.trading212 import make_sell_quantity
 
         for qty in [Decimal("1"), Decimal("100"), Decimal("0.5"), Decimal("-5")]:
-            assert (
-                make_sell_quantity(qty) < 0
-            ), f"Sell quantity must be negative, got: {make_sell_quantity(qty)}"
+            assert make_sell_quantity(qty) < 0, (
+                f"Sell quantity must be negative, got: {make_sell_quantity(qty)}"
+            )
 
     def test_buy_quantity_positive(self):
         """Buy quantities should be positive."""
@@ -687,6 +687,29 @@ class TestRiskEngine:
         with pytest.raises(RiskViolation) as exc_info:
             await engine.check_duplicate_order("AAPL", "buy")
         assert "duplicate" in exc_info.value.reason.lower()
+
+    async def test_partial_order_remainder_blocks_duplicate_order(self, db):
+        from app.db.models import Order
+        from app.risk.engine import RiskEngine, RiskViolation
+
+        db.add(
+            Order(
+                id=uuid.uuid4(),
+                client_order_key="key-partial-dup-test",
+                ticker="AAPL",
+                side="buy",
+                order_type="market",
+                quantity=Decimal("5"),
+                filled_quantity=Decimal("2"),
+                status="partially_filled",
+                time_validity="DAY",
+                is_dry_run=True,
+            )
+        )
+        await db.flush()
+
+        with pytest.raises(RiskViolation, match="Duplicate order blocked"):
+            await RiskEngine(db).check_duplicate_order("AAPL", "buy")
 
     async def test_duplicate_order_passes_with_no_active_order(self, db):
         from app.risk.engine import RiskEngine

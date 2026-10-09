@@ -429,17 +429,19 @@ class ApiClient {
   async getPaperExecutionHistory(params?: {
     limit?: number;
   }): Promise<PaperExecutionHistory> {
-    return (await this.client.get<PaperExecutionHistory>("/orders/paper", { params }))
-      .data;
+    return (
+      await this.client.get<PaperExecutionHistory>("/orders/paper", { params })
+    ).data;
   }
   async getPaperOrderAudit(id: string): Promise<PaperExecutionAudit> {
-    return (await this.client.get<PaperExecutionAudit>(`/orders/paper/${id}/audit`))
-      .data;
+    return (
+      await this.client.get<PaperExecutionAudit>(`/orders/paper/${id}/audit`)
+    ).data;
   }
   async cancelOrder(id: string): Promise<void> {
     await this.client.post(`/orders/${id}/cancel`);
   }
-  async cancelAllPending(): Promise<{ cancelled: number }> {
+  async cancelAllPending(): Promise<{ cancelled: number; failed: number }> {
     return (await this.client.post("/orders/cancel-all-pending")).data;
   }
 

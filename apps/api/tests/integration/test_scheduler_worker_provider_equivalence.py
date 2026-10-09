@@ -93,8 +93,6 @@ def _safe_demo_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "APP_MODE", "demo")
     monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
     monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)
-    monkeypatch.setattr(settings, "T212_API_KEY", "")
-    monkeypatch.setattr(settings, "T212_API_SECRET", "")
     monkeypatch.setattr(settings, "T212_DEMO_API_KEY", "")
     monkeypatch.setattr(settings, "T212_DEMO_API_SECRET", "")
     monkeypatch.setattr(settings, "T212_LIVE_API_KEY", "")
@@ -159,8 +157,6 @@ async def test_scheduler_startup_constructs_demo_adapter_after_demo_gates(
 ) -> None:
     monkeypatch.setattr(settings, "T212_DEMO_API_KEY", "demo-key")
     monkeypatch.setattr(settings, "T212_DEMO_API_SECRET", "demo-secret")
-    monkeypatch.setattr(settings, "T212_API_KEY", "generic-key-must-not-win")
-    monkeypatch.setattr(settings, "T212_API_SECRET", "generic-secret-must-not-win")
     monkeypatch.setattr(settings, "T212_LIVE_API_KEY", "live-key-must-not-be-used")
     monkeypatch.setattr(settings, "T212_LIVE_API_SECRET", "live-secret-must-not-be-used")
 
@@ -193,33 +189,18 @@ async def test_scheduler_startup_constructs_demo_adapter_after_demo_gates(
 
 
 @pytest.mark.asyncio
-async def test_scheduler_startup_preserves_current_generic_demo_credential_fallback(
+async def test_scheduler_startup_generic_credentials_cannot_satisfy_demo_configuration(
     monkeypatch: pytest.MonkeyPatch,
     scheduler_construction_fakes: list[dict[str, Any]],
 ) -> None:
-    monkeypatch.setattr(settings, "T212_API_KEY", "generic-demo-key")
-    monkeypatch.setattr(settings, "T212_API_SECRET", "generic-demo-secret")
     monkeypatch.setattr(settings, "T212_LIVE_API_KEY", "live-key-must-not-be-used")
     monkeypatch.setattr(settings, "T212_LIVE_API_SECRET", "live-secret-must-not-be-used")
 
     await _start_scheduler_and_cancel()
 
-    assert RecordingAdapter.calls == [("generic-demo-key", "generic-demo-secret", "demo")]
-    assert scheduler_construction_fakes == [
-        {
-            "request": BrokerProviderRequest(
-                broker_id="trading212",
-                environment="demo",
-                purpose="demo_reconciliation",
-            ),
-            "credentials": BrokerProviderCredentials(
-                api_key="generic-demo-key",
-                api_secret="generic-demo-secret",
-            ),
-            "app_mode": "demo",
-            "live_trading_enabled": False,
-        }
-    ]
+    assert RecordingAdapter.calls == []
+    assert scheduler_construction_fakes == []
+    assert RecordingScheduler.tick_calls == 0
     assert RecordingAdapter.write_calls == []
 
 
@@ -335,7 +316,7 @@ def worker_script_module(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_worker_script_constructs_demo_adapter_from_current_generic_credentials(
+async def test_worker_script_constructs_demo_adapter_from_demo_credentials_only(
     monkeypatch: pytest.MonkeyPatch,
     worker_script_module: Any,
 ) -> None:
@@ -343,10 +324,10 @@ async def test_worker_script_constructs_demo_adapter_from_current_generic_creden
     monkeypatch.setenv("T212_ENVIRONMENT", "demo")
     monkeypatch.setenv("LIVE_TRADING_ENABLED", "false")
     monkeypatch.setenv("DEMO_RECONCILIATION_WORKER_ENABLED", "true")
-    monkeypatch.setenv("T212_API_KEY", "script-demo-key")
-    monkeypatch.setenv("T212_API_SECRET", "script-demo-secret")
-    monkeypatch.setenv("T212_DEMO_API_KEY", "demo-name-key-must-not-be-used")
-    monkeypatch.setenv("T212_DEMO_API_SECRET", "demo-name-secret-must-not-be-used")
+    monkeypatch.setenv("T212_API_KEY", "generic-key-must-not-be-used")
+    monkeypatch.setenv("T212_API_SECRET", "generic-secret-must-not-be-used")
+    monkeypatch.setenv("T212_DEMO_API_KEY", "script-demo-key")
+    monkeypatch.setenv("T212_DEMO_API_SECRET", "script-demo-secret")
     monkeypatch.setenv("T212_LIVE_API_KEY", "live-key-must-not-be-used")
     monkeypatch.setenv("T212_LIVE_API_SECRET", "live-secret-must-not-be-used")
 
@@ -410,7 +391,7 @@ async def test_worker_script_refuses_unsafe_states_before_adapter_construction(
 
 
 @pytest.mark.asyncio
-async def test_worker_script_missing_generic_credentials_do_not_fall_through_to_live(
+async def test_worker_script_missing_demo_credentials_do_not_fall_through_to_generic_or_live(
     monkeypatch: pytest.MonkeyPatch,
     worker_script_module: Any,
 ) -> None:
@@ -418,12 +399,14 @@ async def test_worker_script_missing_generic_credentials_do_not_fall_through_to_
     monkeypatch.setenv("T212_ENVIRONMENT", "demo")
     monkeypatch.setenv("LIVE_TRADING_ENABLED", "false")
     monkeypatch.setenv("DEMO_RECONCILIATION_WORKER_ENABLED", "true")
-    monkeypatch.delenv("T212_API_KEY", raising=False)
-    monkeypatch.delenv("T212_API_SECRET", raising=False)
+    monkeypatch.setenv("T212_API_KEY", "generic-key-must-not-be-used")
+    monkeypatch.setenv("T212_API_SECRET", "generic-secret-must-not-be-used")
+    monkeypatch.delenv("T212_DEMO_API_KEY", raising=False)
+    monkeypatch.delenv("T212_DEMO_API_SECRET", raising=False)
     monkeypatch.setenv("T212_LIVE_API_KEY", "live-key-must-not-be-used")
     monkeypatch.setenv("T212_LIVE_API_SECRET", "live-secret-must-not-be-used")
 
-    with pytest.raises(SystemExit, match="T212_API_KEY"):
+    with pytest.raises(SystemExit, match="T212_DEMO_API_KEY"):
         await worker_script_module.main()
 
     assert RecordingAdapter.calls == []

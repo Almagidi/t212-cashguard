@@ -7,15 +7,16 @@ process.env.MARKET_DATA_PROVIDER ??= 'mock'
 
 export default defineConfig({
   testDir: './tests/e2e',
+  testIgnore: ['**/operator-integration.spec.ts'],
   globalSetup: './tests/e2e/global-setup.ts',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? undefined : 1,
+  retries: 0,
+  workers: 1,
   reporter: [['html', { open: 'never' }], ['list']],
   use: {
     baseURL: webUrl,
-    trace: 'on-first-retry',
+    trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
     // Give each action/assertion a generous timeout for slower CI runners
