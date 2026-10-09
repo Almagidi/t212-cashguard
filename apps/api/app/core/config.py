@@ -5,27 +5,65 @@ All settings from environment variables / .env file.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
-def _find_env_file(start: Path) -> Path:
-    """Find the nearest ancestor .env without assuming a fixed checkout depth."""
-    for directory in (start.parent, *start.parents):
+# Set to a path to load exactly that file, or to an empty value to load no file at all.
+ENV_FILE_VARIABLE = "CASHGUARD_ENV_FILE"
+_PROJECT_ROOT_MARKERS = (".git", "docker-compose.yml")
+_API_ROOT_DEPTH = 2  # <api root>/app/core/config.py
+
+
+def _project_root(start: Path) -> Path:
+    """Nearest ancestor that looks like the checkout root; the API root when none does."""
+    for directory in start.parents:
+        if any((directory / marker).exists() for marker in _PROJECT_ROOT_MARKERS):
+            return directory
+    return start.parents[_API_ROOT_DEPTH]
+
+
+def _find_env_file(start: Path) -> Path | None:
+    """Nearest .env between this module and the project root, never above the root."""
+    root = _project_root(start)
+    for directory in start.parents:
         candidate = directory / ".env"
-        if candidate.exists():
+        if candidate.is_file():
             return candidate
-    return Path(".env")
+        if directory == root:
+            break
+    return None
 
 
-_ENV_FILE = _find_env_file(Path(__file__).resolve())
+def _resolve_env_file(start: Path, environ: Mapping[str, str]) -> Path | None:
+    override = environ.get(ENV_FILE_VARIABLE)
+    if override is None:
+        return _find_env_file(start)
+    if not override.strip():
+        return None
+    chosen = Path(override)
+    if not chosen.is_file():
+        # A mistyped path must not silently fall back to built-in defaults.
+        raise FileNotFoundError(
+            f"{ENV_FILE_VARIABLE} points to a file that does not exist: {chosen}"
+        )
+    return chosen
+
+
+_CONFIG_MODULE = Path(__file__).resolve()
+_ENV_FILE_PATH = _resolve_env_file(_CONFIG_MODULE, os.environ)
+# Where a .env is expected, for diagnostics; it may not exist.
+_ENV_FILE = _ENV_FILE_PATH or _project_root(_CONFIG_MODULE) / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=str(_ENV_FILE) if _ENV_FILE.exists() else ".env",
+        env_file=str(_ENV_FILE_PATH) if _ENV_FILE_PATH else None,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",

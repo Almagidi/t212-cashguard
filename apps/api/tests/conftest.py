@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 # Override settings BEFORE importing app modules
+os.environ["CASHGUARD_ENV_FILE"] = ""  # never read a developer's .env during tests
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 os.environ["REDIS_URL"] = "redis://localhost:6379/15"
 os.environ["SECRET_KEY"] = "test-secret-key-32-chars-minimum-x"
