@@ -175,3 +175,80 @@ def test_assert_startup_safe_still_blocks_default_security_secrets_in_live_mode(
     message = str(exc_info.value)
     assert setting_name in message
     assert unsafe_value not in message
+
+
+WEAK_SIGNING_SECRETS = ["", "   ", "k", "zq9-short-signing-key", "q" * 31, "q" * 31 + " ", " " * 40]
+WEAK_ADMIN_PASSWORDS = ["", "   ", "p", "zq9-pw", "q" * 7]
+
+
+@pytest.mark.parametrize("app_mode", ["demo", "paper", "live"])
+@pytest.mark.parametrize(
+    ("setting_name", "weak_value"),
+    [
+        *[("SECRET_KEY", value) for value in WEAK_SIGNING_SECRETS],
+        *[("MASTER_KEY", value) for value in WEAK_SIGNING_SECRETS],
+        *[("ADMIN_PASSWORD", value) for value in WEAK_ADMIN_PASSWORDS],
+    ],
+)
+def test_assert_startup_safe_blocks_empty_and_short_security_secrets_in_strict_modes(
+    monkeypatch: pytest.MonkeyPatch,
+    app_mode: str,
+    setting_name: str,
+    weak_value: str,
+) -> None:
+    from app.core.config import settings
+    from app.services.startup_validation import assert_startup_safe
+
+    _set_safe_startup_settings(monkeypatch, app_mode)
+    monkeypatch.setattr(settings, setting_name, weak_value)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        assert_startup_safe()
+
+    message = str(exc_info.value)
+    assert setting_name in message
+    if len(weak_value.strip()) > 1:
+        assert weak_value.strip() not in message
+
+
+@pytest.mark.parametrize("app_mode", ["demo", "paper", "live"])
+def test_assert_startup_safe_allows_security_secrets_at_the_minimum_length(
+    monkeypatch: pytest.MonkeyPatch, app_mode: str
+) -> None:
+    from app.core.config import settings
+    from app.services.startup_validation import (
+        MIN_ADMIN_PASSWORD_LENGTH,
+        MIN_SIGNING_SECRET_LENGTH,
+        assert_startup_safe,
+    )
+
+    _set_safe_startup_settings(monkeypatch, app_mode)
+    monkeypatch.setattr(settings, "SECRET_KEY", "s" * MIN_SIGNING_SECRET_LENGTH)
+    monkeypatch.setattr(settings, "MASTER_KEY", "m" * MIN_SIGNING_SECRET_LENGTH)
+    monkeypatch.setattr(settings, "ADMIN_PASSWORD", "a" * MIN_ADMIN_PASSWORD_LENGTH)
+
+    report = assert_startup_safe()
+
+    assert report["failures"] == 0
+    assert MIN_SIGNING_SECRET_LENGTH == 32
+    assert MIN_ADMIN_PASSWORD_LENGTH == 8
+
+
+def test_assert_startup_safe_only_warns_about_short_security_secrets_in_mock_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import settings
+    from app.services.startup_validation import assert_startup_safe
+
+    _set_safe_startup_settings(monkeypatch, "mock")
+    monkeypatch.setattr(settings, "SECRET_KEY", "")
+    monkeypatch.setattr(settings, "MASTER_KEY", "k")
+    monkeypatch.setattr(settings, "ADMIN_PASSWORD", "p")
+
+    report = assert_startup_safe()
+
+    statuses = {check["key"]: check["status"] for check in report["checks"]}
+    assert report["failures"] == 0
+    assert statuses["secret_key"] == "warn"
+    assert statuses["master_key"] == "warn"
+    assert statuses["admin_password"] == "warn"

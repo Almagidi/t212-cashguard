@@ -14,6 +14,8 @@ STRICT_SECRET_MODES = {"demo", "paper", "live"}
 STRICT_NON_LIVE_SECRET_MODES = {"demo", "paper"}
 SECURITY_SECRET_CHECK_KEYS = {"secret_key", "master_key", "admin_password"}
 DEFAULT_SECRET_FRAGMENTS = ("change-me", "change_me", "changeme")
+MIN_SIGNING_SECRET_LENGTH = 32
+MIN_ADMIN_PASSWORD_LENGTH = 8
 DEFAULT_SECRET_VALUES = {
     "admin",
     "admin-password",
@@ -48,8 +50,12 @@ def _uses_default_secret(value: str) -> bool:
     )
 
 
-def _secret_status(value: str) -> StartupStatus:
-    if not _uses_default_secret(value):
+def _is_shorter_than(value: str, minimum_length: int) -> bool:
+    return len(value.strip()) < minimum_length
+
+
+def _secret_status(value: str, minimum_length: int) -> StartupStatus:
+    if not _uses_default_secret(value) and not _is_shorter_than(value, minimum_length):
         return "pass"
     if settings.APP_MODE in STRICT_SECRET_MODES:
         return "fail"
@@ -69,16 +75,16 @@ def _failing_security_secret_checks(report: dict[str, Any]) -> list[dict[str, st
 def build_startup_report() -> dict[str, Any]:
     checks: list[dict[str, str]] = []
 
-    secret_key_status = _secret_status(settings.SECRET_KEY)
+    secret_key_status = _secret_status(settings.SECRET_KEY, MIN_SIGNING_SECRET_LENGTH)
     checks.append(
         _check(
             key="secret_key",
             label="JWT secret configured",
             status=secret_key_status,
             detail=(
-                "SECRET_KEY is not using the repository fallback value."
+                "SECRET_KEY is not a default value and meets the minimum length."
                 if secret_key_status == "pass"
-                else "SECRET_KEY is still using a built-in or documented default and should be replaced."
+                else f"SECRET_KEY is a built-in or documented default, or shorter than {MIN_SIGNING_SECRET_LENGTH} characters, and should be replaced."
             ),
         )
     )
@@ -96,29 +102,29 @@ def build_startup_report() -> dict[str, Any]:
             ),
         )
     )
-    master_key_status = _secret_status(settings.MASTER_KEY)
+    master_key_status = _secret_status(settings.MASTER_KEY, MIN_SIGNING_SECRET_LENGTH)
     checks.append(
         _check(
             key="master_key",
             label="Master key configured",
             status=master_key_status,
             detail=(
-                "MASTER_KEY is not using the repository fallback value."
+                "MASTER_KEY is not a default value and meets the minimum length."
                 if master_key_status == "pass"
-                else "MASTER_KEY is still using a built-in or documented default and should be replaced."
+                else f"MASTER_KEY is a built-in or documented default, or shorter than {MIN_SIGNING_SECRET_LENGTH} characters, and should be replaced."
             ),
         )
     )
-    admin_password_status = _secret_status(settings.ADMIN_PASSWORD)
+    admin_password_status = _secret_status(settings.ADMIN_PASSWORD, MIN_ADMIN_PASSWORD_LENGTH)
     checks.append(
         _check(
             key="admin_password",
             label="Admin password changed from default",
             status=admin_password_status,
             detail=(
-                "Admin password differs from the documented default."
+                "Admin password is not a documented default and meets the minimum length."
                 if admin_password_status == "pass"
-                else "ADMIN_PASSWORD is still using a documented default and should be replaced."
+                else f"ADMIN_PASSWORD is a documented default, or shorter than {MIN_ADMIN_PASSWORD_LENGTH} characters, and should be replaced."
             ),
         )
     )
