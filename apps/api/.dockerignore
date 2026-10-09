@@ -1,0 +1,17 @@
+# Keep local secrets, virtual environments, caches and local databases out of the
+# image build context: the Dockerfile copies the whole context into the image.
+**/.env
+**/.env.*
+.venv
+venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+.coverage
+coverage.xml
+htmlcov
+**/*.db
+**/*.sqlite
+**/*.sqlite3
