@@ -30,7 +30,7 @@ echo -e "${BOLD}  CashGuard — Login Verification${RESET}"
 echo "  ─────────────────────────────────────────"
 echo "  Normal API: $API_URL"
 echo "  Normal Web: $WEB_URL"
-echo "  Testing: $EMAIL / $PW"
+echo "  Testing: $EMAIL"
 echo ""
 
 if [ -z "$PW" ]; then
@@ -50,10 +50,15 @@ if ! curl -sf "$API_URL/v1/health/live" >/dev/null 2>&1; then
   exit 1
 fi
 
+# JSON login body on stdout, so the password never appears on a command line.
+login_body() {
+  CG_LOGIN_EMAIL="$1" CG_LOGIN_PASSWORD="$2" python3 -c 'import json, os; print(json.dumps({"email": os.environ["CG_LOGIN_EMAIL"], "password": os.environ["CG_LOGIN_PASSWORD"]}))'
+}
+
 HTTP_FILE="$(mktemp)"
-RESPONSE=$(curl -sS -o "$HTTP_FILE" -w "%{http_code}" -X POST "$API_URL/v1/auth/login" \
+RESPONSE=$(login_body "$EMAIL" "$PW" | curl -sS -o "$HTTP_FILE" -w "%{http_code}" -X POST "$API_URL/v1/auth/login" \
   -H "Content-Type: application/json" \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"$PW\"}" 2>/tmp/cashguard-login-verify.err || true)
+  --data-binary @- 2>/tmp/cashguard-login-verify.err || true)
 BODY="$(cat "$HTTP_FILE" 2>/dev/null || true)"
 rm -f "$HTTP_FILE"
 

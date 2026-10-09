@@ -177,9 +177,14 @@ if [ -z "$ADMIN_PASSWORD" ]; then
   exit 1
 fi
 
-TOKEN=$(curl -s -X POST "$API/v1/auth/login" \
+# JSON login body on stdout, so the password never appears on a command line.
+login_body() {
+  CG_LOGIN_EMAIL="$1" CG_LOGIN_PASSWORD="$2" python3 -c 'import json, os; print(json.dumps({"email": os.environ["CG_LOGIN_EMAIL"], "password": os.environ["CG_LOGIN_PASSWORD"]}))'
+}
+
+TOKEN=$(login_body "$ADMIN_EMAIL" "$ADMIN_PASSWORD" | curl -s -X POST "$API/v1/auth/login" \
   -H "Content-Type: application/json" \
-  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" 2>/dev/null \
+  --data-binary @- 2>/dev/null \
   | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
 
 if [ -z "$TOKEN" ]; then
