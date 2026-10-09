@@ -10,11 +10,18 @@
    without `--ignore-scripts` and with networking disabled for the instruction
    (`RUN --network=none`). A lifecycle script that tries to download something
    gets no network in this instruction; for a required package that fails the
-   build. Which install scripts npm actually runs is npm's own policy (npm
-   11.19.0 reports packages whose install scripts are "not yet covered by
-   allowScripts"). npm still treats a failed *optional* package as skipped, as
-   it always has, so use the inventory check below rather than the install
-   summary to confirm the tree is complete.
+   build. By default (`strict-allow-scripts` off) npm 11.19.0 runs install
+   scripts that are not covered by an `allowScripts` policy and prints a
+   notice naming them ("not yet covered by allowScripts"); scripts explicitly
+   denied in such a policy are skipped. For a Linux image the current lockfile
+   has two packages with install scripts, `@sentry/cli` and `unrs-resolver`
+   (`fsevents` applies to macOS only). In a controlled offline install on
+   linux/arm64 both ran and finished without a network. The notice is a
+   prompt to review them; it does not mean they were blocked, and running
+   without a network does not make them reviewed. npm still
+   treats a failed *optional* package as skipped, as it always has, so use the
+   inventory check below rather than the install summary to confirm the tree
+   is complete.
 3. **Compile** (`builder` stage): `npm run build` also runs with
    `RUN --network=none`.
 

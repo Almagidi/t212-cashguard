@@ -228,7 +228,7 @@ export default function DashboardPage() {
             <Spinner className="w-4 h-4" /> Loading account…
           </div>
         ) : (
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div data-testid="account-stats" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <TerminalCard
               label="Total Value"
               value={formatCurrency(totalValue)}
