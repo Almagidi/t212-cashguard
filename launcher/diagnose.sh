@@ -10,6 +10,10 @@ ok()   { echo -e "  ${GREEN}✓${RESET}  $*"; }
 fail() { echo -e "  ${RED}✗${RESET}  $*"; }
 warn() { echo -e "  ${YELLOW}⚠${RESET}  $*"; }
 info() { echo -e "  ${CYAN}▸${RESET}  $*"; }
+# JSON login body on stdout, so the password never appears on a command line.
+login_body() {
+    CG_LOGIN_EMAIL="$1" CG_LOGIN_PASSWORD="$2" python3 -c 'import json, os; print(json.dumps({"email": os.environ["CG_LOGIN_EMAIL"], "password": os.environ["CG_LOGIN_PASSWORD"]}))'
+}
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VENV="$PROJECT_ROOT/venv"
@@ -31,14 +35,18 @@ if [ -f "$ENV_FILE" ]; then
     ok ".env found"
     SECRET_KEY=$(grep "^SECRET_KEY=" "$ENV_FILE" | cut -d= -f2 || echo "")
     if [ -n "$SECRET_KEY" ] && [ "$SECRET_KEY" != "your-secret-key" ]; then
-        ok "SECRET_KEY set (${SECRET_KEY:0:8}...)"
+        ok "SECRET_KEY set"
     else
         fail "SECRET_KEY missing or placeholder — login will fail on every restart!"
     fi
     ADMIN_EMAIL=$(grep "^ADMIN_EMAIL=" "$ENV_FILE" | cut -d= -f2 || echo "")
     ADMIN_PASS=$(grep "^ADMIN_PASSWORD=" "$ENV_FILE" | cut -d= -f2 || echo "")
     ok "ADMIN_EMAIL: $ADMIN_EMAIL"
-    ok "ADMIN_PASSWORD: ${ADMIN_PASS:0:4}****"
+    if [ -n "$ADMIN_PASS" ]; then
+        ok "ADMIN_PASSWORD set"
+    else
+        fail "ADMIN_PASSWORD missing"
+    fi
 else
     fail ".env file NOT FOUND at $ENV_FILE"
 fi
@@ -71,8 +79,6 @@ import sys; sys.path.insert(0,'$PROJECT_ROOT/apps/api')
 from app.core.config import settings, _ENV_FILE
 print('env_file:', _ENV_FILE)
 print('exists:', _ENV_FILE.exists())
-print('secret_key_len:', len(settings.SECRET_KEY))
-print('secret_prefix:', settings.SECRET_KEY[:8])
 print('admin_email:', settings.ADMIN_EMAIL)
 print('app_mode:', settings.APP_MODE)
 " 2>&1)
@@ -120,12 +126,12 @@ if $API_RUNNING; then
     ADMIN_EMAIL_VAL=$(grep "^ADMIN_EMAIL=" "$ENV_FILE" | cut -d= -f2)
     ADMIN_PASS_VAL=$(grep "^ADMIN_PASSWORD=" "$ENV_FILE"  | cut -d= -f2)
     info "Testing login with: $ADMIN_EMAIL_VAL"
-    LOGIN_RESP=$(curl -s --max-time 5 -X POST "$API_URL/v1/auth/login" \
+    LOGIN_RESP=$(login_body "$ADMIN_EMAIL_VAL" "$ADMIN_PASS_VAL" | curl -s --max-time 5 -X POST "$API_URL/v1/auth/login" \
         -H "Content-Type: application/json" \
-        -d "{\"email\":\"$ADMIN_EMAIL_VAL\",\"password\":\"$ADMIN_PASS_VAL\"}" 2>/dev/null)
+        --data-binary @- 2>/dev/null)
     if echo "$LOGIN_RESP" | grep -q '"access_token"'; then
         TOKEN=$(echo "$LOGIN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])" 2>/dev/null)
-        ok "Login succeeded — token: ${TOKEN:0:20}..."
+        ok "Login succeeded"
         # Test /auth/me
         ME_RESP=$(curl -s --max-time 5 "$API_URL/v1/auth/me" \
             -H "Authorization: Bearer $TOKEN" 2>/dev/null)
