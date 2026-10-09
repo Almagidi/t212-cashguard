@@ -69,8 +69,7 @@
     "postcss": "8.5.26",
     "prettier": "3.9.9",
     "prettier-plugin-tailwindcss": "0.8.1",
-    "tailwindcss": "4.3.3",
-    "ts-jest": "29.4.11"
+    "tailwindcss": "4.3.3"
   },
   "overrides": {
     "@tootallnate/once": "2.0.1",
