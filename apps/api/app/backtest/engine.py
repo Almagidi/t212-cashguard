@@ -8,18 +8,25 @@ Design principles:
 - Full trade log for attribution analysis
 - Walk-forward validation support
 """
+
 from __future__ import annotations
 
 import inspect
+import math
 import random
 import statistics
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime
-from decimal import Decimal
+from datetime import UTC, date, datetime
+from decimal import ROUND_DOWN, Decimal
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
+
+from app.backtest.data_contract import validate_bar_series
+from app.execution.paper_policy import PaperFillDecision, evaluate_paper_fill
+from app.market_data.exchange_calendar import TradingSession, calendar_for_venue
 
 if TYPE_CHECKING:
     from app.strategies.indicators import Bar
@@ -29,19 +36,20 @@ log = structlog.get_logger()
 
 # ── Data structures ───────────────────────────────────────────────────────────
 
+
 @dataclass
 class BacktestOrder:
     id: str
     ticker: str
-    side: str                    # buy | sell
-    order_type: str              # market | limit
+    side: str  # buy | sell
+    order_type: str  # market | limit
     quantity: Decimal
     limit_price: Decimal | None
     submitted_bar_idx: int
     fill_bar_idx: int | None = None
     fill_price: Decimal | None = None
     slippage: Decimal = Decimal("0")
-    status: str = "pending"     # pending | filled | cancelled | expired
+    status: str = "pending"  # pending | filled | cancelled | expired
 
 
 @dataclass
@@ -58,9 +66,10 @@ class BacktestTrade:
     exit_bar_idx: int
     entry_time: datetime
     exit_time: datetime
-    exit_reason: str            # stop | take_profit | partial | eod | signal
+    exit_reason: str  # stop | take_profit | partial | eod | signal
     slippage_cost: Decimal
     holding_bars: int
+    commission_cost: Decimal = Decimal("0")
     mfe: Decimal = Decimal("0")  # Maximum Favourable Excursion
     mae: Decimal = Decimal("0")  # Maximum Adverse Excursion
 
@@ -68,6 +77,7 @@ class BacktestTrade:
 @dataclass
 class BacktestResult:
     """Complete result from one backtest run."""
+
     strategy_name: str
     ticker: str
     start_date: date
@@ -100,6 +110,7 @@ class BacktestResult:
     expectancy_pct: Decimal = Decimal("0")
     avg_rr_achieved: Decimal = Decimal("0")
     total_trades: int = 0
+    completed_positions: int = 0
     winning_trades: int = 0
     losing_trades: int = 0
     avg_holding_bars: Decimal = Decimal("0")
@@ -110,6 +121,16 @@ class BacktestResult:
     avg_mfe: Decimal = Decimal("0")
     avg_mae: Decimal = Decimal("0")
     consecutive_losses_max: int = 0
+
+
+@dataclass(frozen=True)
+class ParameterSelectionResult:
+    """Auditable outcome of a train/validation parameter search."""
+
+    params: dict[str, Any] | None
+    combinations_tested: int
+    eligible_candidates: int
+    validation_sharpe: float | None
 
 
 class StrategyProtocol(Protocol):
@@ -165,43 +186,86 @@ def summarise_walk_forward_results(results: list[dict[str, Any]]) -> dict[str, A
     if not results:
         return None
 
-    profitable = sum(1 for item in results if item["oos_return_pct"] > 0)
-    positive_sharpe = sum(1 for item in results if item["oos_sharpe"] > 0.5)
-    controlled_drawdown = sum(1 for item in results if item["oos_max_dd"] <= 15.0)
-    robustness_score = round(
-        (
-            0.5 * (profitable / len(results))
-            + 0.3 * (positive_sharpe / len(results))
-            + 0.2 * (controlled_drawdown / len(results))
+    selected = [item for item in results if item.get("selection_status") == "selected"]
+    profitable = sum(1 for item in selected if item["oos_return_pct"] > 0)
+    positive_sharpe = sum(
+        1 for item in selected if item["oos_sharpe"] is not None and item["oos_sharpe"] > 0.5
+    )
+    controlled_drawdown = sum(1 for item in selected if item["oos_max_dd"] <= 15.0)
+    selected_count = len(selected)
+    robustness_score = (
+        round(
+            (
+                0.5 * (profitable / selected_count)
+                + 0.3 * (positive_sharpe / selected_count)
+                + 0.2 * (controlled_drawdown / selected_count)
+            )
+            * 100,
+            1,
         )
-        * 100,
-        1,
+        if selected
+        else 0.0
     )
 
-    verdict = "fragile"
-    if robustness_score >= 75:
-        verdict = "robust"
-    elif robustness_score >= 60:
-        verdict = "promising"
-    elif robustness_score >= 40:
-        verdict = "mixed"
+    performance_assessment = "unassessed" if not selected else "fragile"
+    if selected and robustness_score >= 75:
+        performance_assessment = "favourable"
+    elif selected and robustness_score >= 40:
+        performance_assessment = "mixed"
 
-    oos_returns = [item["oos_return_pct"] for item in results]
-    oos_drawdowns = [item["oos_max_dd"] for item in results]
-    oos_sharpes = [item["oos_sharpe"] for item in results]
+    oos_returns = [item["oos_return_pct"] for item in selected]
+    oos_drawdowns = [item["oos_max_dd"] for item in selected]
+    oos_sharpes = [item["oos_sharpe"] for item in selected if item["oos_sharpe"] is not None]
+    total_oos_positions = sum(int(item["oos_positions"]) for item in selected)
+    minimum_window_positions_met = bool(selected) and all(
+        int(item["oos_positions"]) >= 10 for item in selected
+    )
+    evidence_reasons = []
+    if selected_count < 3:
+        evidence_reasons.append("need at least 3 selected held-out windows")
+    if not minimum_window_positions_met:
+        evidence_reasons.append("need at least 10 independent positions in every held-out window")
+    if total_oos_positions < 30:
+        evidence_reasons.append("need at least 30 independent held-out positions in total")
+
+    verdict = "insufficient_evidence" if evidence_reasons else "research_only"
+    message = (
+        "Insufficient evidence: " + "; ".join(evidence_reasons) + "."
+        if evidence_reasons
+        else "Evidence gates passed for research comparison only; this is not a promotion decision."
+    )
 
     return {
         "windows": len(results),
+        "selected_windows": selected_count,
+        "selection_failures": len(results) - selected_count,
+        "total_oos_positions": total_oos_positions,
+        "minimum_oos_positions_per_window": 10,
+        "minimum_selected_windows": 3,
+        "parameter_combinations_tested": max(
+            (int(item.get("parameter_combinations_tested", 0)) for item in results),
+            default=0,
+        ),
+        "candidate_evaluations": sum(
+            int(item.get("parameter_combinations_tested", 0)) for item in results
+        ),
+        "eligible_candidate_evaluations": sum(
+            int(item.get("eligible_candidates", 0)) for item in results
+        ),
         "profitable_windows": profitable,
         "positive_sharpe_windows": positive_sharpe,
         "controlled_drawdown_windows": controlled_drawdown,
-        "avg_oos_return_pct": round(statistics.mean(oos_returns), 2),
-        "median_oos_return_pct": round(statistics.median(oos_returns), 2),
-        "avg_oos_sharpe": round(statistics.mean(oos_sharpes), 3),
-        "median_oos_sharpe": round(statistics.median(oos_sharpes), 3),
-        "worst_oos_max_dd": round(max(oos_drawdowns), 2),
+        "avg_oos_return_pct": round(statistics.mean(oos_returns), 2) if oos_returns else None,
+        "median_oos_return_pct": (
+            round(statistics.median(oos_returns), 2) if oos_returns else None
+        ),
+        "avg_oos_sharpe": round(statistics.mean(oos_sharpes), 3) if oos_sharpes else None,
+        "median_oos_sharpe": (round(statistics.median(oos_sharpes), 3) if oos_sharpes else None),
+        "worst_oos_max_dd": round(max(oos_drawdowns), 2) if oos_drawdowns else None,
         "robustness_score": robustness_score,
+        "performance_assessment": performance_assessment,
         "verdict": verdict,
+        "message": message,
     }
 
 
@@ -209,7 +273,7 @@ def _percentile(values: list[float], percentile: float) -> float:
     if not values:
         return 0.0
     ordered = sorted(values)
-    index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * percentile))))
+    index = min(len(ordered) - 1, max(0, round((len(ordered) - 1) * percentile)))
     return ordered[index]
 
 
@@ -258,46 +322,71 @@ def monte_carlo_trade_sequence(
         "median_max_drawdown_pct": round(statistics.median(max_drawdowns), 2),
         "p95_max_drawdown_pct": round(_percentile(max_drawdowns, 0.95), 2),
         "worst_max_drawdown_pct": round(max(max_drawdowns), 2),
-        "median_consecutive_losses": int(round(statistics.median(max_consecutive_losses))),
-        "p95_consecutive_losses": int(round(_percentile([float(item) for item in max_consecutive_losses], 0.95))),
-        "probability_drawdown_gt_10pct": round(sum(dd >= 10 for dd in max_drawdowns) / iterations * 100, 1),
-        "probability_drawdown_gt_20pct": round(sum(dd >= 20 for dd in max_drawdowns) / iterations * 100, 1),
+        "median_consecutive_losses": round(statistics.median(max_consecutive_losses)),
+        "p95_consecutive_losses": round(
+            _percentile([float(item) for item in max_consecutive_losses], 0.95)
+        ),
+        "probability_drawdown_gt_10pct": round(
+            sum(dd >= 10 for dd in max_drawdowns) / iterations * 100, 1
+        ),
+        "probability_drawdown_gt_20pct": round(
+            sum(dd >= 20 for dd in max_drawdowns) / iterations * 100, 1
+        ),
     }
 
 
 # ── Execution simulation ──────────────────────────────────────────────────────
 
+
+@dataclass(frozen=True)
+class SimulatedFill:
+    price: Decimal
+    quantity: Decimal
+    slippage_cost: Decimal
+    fee: Decimal
+
+
 class ExecutionSimulator:
     """
     Realistic fill simulation.
 
-    Assumptions (conservative):
-    - Market orders fill at next bar's open + slippage
-    - Limit orders fill if next bar's low <= limit (buys) or high >= limit (sells)
-    - Slippage = half_spread + market_impact
-    - Half spread = 0.03% of price (conservative for liquid US equities)
-    - Market impact = 0.02% (assumes order < 1% of avg volume)
+    Market fills use the same deterministic standard profile as the paper
+    execution engine so research and paper results share one cost model.
     """
-    HALF_SPREAD_PCT = Decimal("0.0003")   # 3 bps per side
-    MARKET_IMPACT_PCT = Decimal("0.0002") # 2 bps market impact
 
     def simulate_fill(
         self,
         order: BacktestOrder,
         next_bar: Bar,
         side: str,
-    ) -> tuple[Decimal, Decimal]:
-        """
-        Returns (fill_price, slippage_cost).
-        slippage_cost is always positive (it's a cost).
-        """
-        raw_price = next_bar.open
-        slippage_pct = self.HALF_SPREAD_PCT + self.MARKET_IMPACT_PCT
+    ) -> SimulatedFill:
+        """Fill a market order at the next bar open."""
+        return self.simulate_at_quote(order=order, quote_price=next_bar.open, side=side)
 
-        fill = raw_price * (1 + slippage_pct) if side == "buy" else raw_price * (1 - slippage_pct)
-
-        slippage_cost = abs(fill - raw_price) * order.quantity
-        return fill.quantize(Decimal("0.0001")), slippage_cost.quantize(Decimal("0.01"))
+    def simulate_at_quote(
+        self,
+        *,
+        order: BacktestOrder,
+        quote_price: Decimal,
+        side: str,
+    ) -> SimulatedFill:
+        if side not in {"buy", "sell"}:
+            raise ValueError(f"Unsupported execution side: {side}")
+        decision: PaperFillDecision = evaluate_paper_fill(
+            side=side,
+            quantity=order.quantity,
+            quote_price=quote_price,
+            profile="standard",
+        )
+        if decision.outcome != "filled" or decision.fill_price is None:
+            raise ValueError(f"Paper execution rejected backtest fill: {decision.rejection_code}")
+        slippage_cost = abs(decision.fill_price - decision.quote_price) * decision.filled_quantity
+        return SimulatedFill(
+            price=decision.fill_price,
+            quantity=decision.filled_quantity,
+            slippage_cost=slippage_cost.quantize(Decimal("0.01")),
+            fee=decision.fee_amount,
+        )
 
     def can_fill_limit(
         self,
@@ -315,6 +404,7 @@ class ExecutionSimulator:
 
 
 # ── Main backtester ───────────────────────────────────────────────────────────
+
 
 class Backtester:
     """
@@ -338,10 +428,21 @@ class Backtester:
         max_position_pct: Decimal = Decimal("10.0"),
         stop_loss_required: bool = True,
         max_holding_bars: int = 39,  # Full session (~3.25h on 5-min bars)
-        commission_per_trade: Decimal = Decimal("0"),  # T212 is zero commission
+        commission_per_trade: Decimal | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
+        bar_interval_minutes: int = 5,
     ) -> None:
+        if initial_capital <= 0:
+            raise ValueError("Backtest initial capital must be positive")
+        if risk_per_trade_pct <= 0 or risk_per_trade_pct > 100:
+            raise ValueError("risk_per_trade_pct must be greater than 0 and at most 100")
+        if max_position_pct <= 0 or max_position_pct > 100:
+            raise ValueError("max_position_pct must be greater than 0 and at most 100")
+        if commission_per_trade is not None and commission_per_trade < 0:
+            raise ValueError("commission_per_trade cannot be negative")
+        if bar_interval_minutes <= 0:
+            raise ValueError("bar_interval_minutes must be positive")
         self.strategy = strategy
         self.ticker = ticker
         self.initial_capital = initial_capital
@@ -352,7 +453,77 @@ class Backtester:
         self.commission_per_trade = commission_per_trade
         self.start_date = start_date
         self.end_date = end_date
+        self.bar_interval_minutes = bar_interval_minutes
         self.executor = ExecutionSimulator()
+
+    def _fill_fee(self, fill: SimulatedFill) -> Decimal:
+        """Use paper-policy fees by default while preserving explicit legacy overrides."""
+        if self.commission_per_trade is not None:
+            return self.commission_per_trade
+        return fill.fee
+
+    def _cap_entry_fill(
+        self,
+        *,
+        order: BacktestOrder,
+        bar: Bar,
+        available_cash: Decimal,
+        account_equity: Decimal,
+        stop_price: Decimal,
+    ) -> SimulatedFill | None:
+        """Cap a long entry by position size, stop risk, and settled cash."""
+        if order.quantity <= 0:
+            raise ValueError("Backtest entry quantity must be positive")
+
+        initial_fill = self.executor.simulate_fill(order, bar, "buy")
+        fill_price = initial_fill.price
+        quantity = initial_fill.quantity
+        position_budget = account_equity * self.max_position_pct / Decimal("100")
+        quantity = min(quantity, position_budget / fill_price)
+
+        if self.stop_loss_required and (stop_price <= 0 or stop_price >= fill_price):
+            raise ValueError("Long-only backtest entry requires a stop below its fill price")
+        risk_per_share = fill_price - stop_price
+        if risk_per_share > 0:
+            risk_budget = account_equity * self.risk_per_trade_pct / Decimal("100")
+            quantity = min(quantity, risk_budget / risk_per_share)
+
+        quantity = quantity.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
+        if quantity <= 0:
+            return None
+
+        capped_order = BacktestOrder(
+            id=order.id,
+            ticker=order.ticker,
+            side=order.side,
+            order_type=order.order_type,
+            quantity=quantity,
+            limit_price=order.limit_price,
+            submitted_bar_idx=order.submitted_bar_idx,
+        )
+        fill = self.executor.simulate_fill(capped_order, bar, "buy")
+        fee = self._fill_fee(fill)
+        if fill.price * fill.quantity + fee > available_cash:
+            spendable = available_cash - fee
+            if spendable <= 0:
+                return None
+            capped_order.quantity = min(
+                fill.quantity,
+                (spendable / fill.price).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN),
+            )
+            if capped_order.quantity <= 0:
+                return None
+            fill = self.executor.simulate_fill(capped_order, bar, "buy")
+            fee = self._fill_fee(fill)
+            if fill.price * fill.quantity + fee > available_cash:
+                return None
+
+        return SimulatedFill(
+            price=fill.price,
+            quantity=fill.quantity,
+            slippage_cost=fill.slippage_cost,
+            fee=fee,
+        )
 
     def run(self, bars: list[Bar], bar_times: list[datetime]) -> BacktestResult:
         """
@@ -361,7 +532,25 @@ class Backtester:
         bars: list of Bar namedtuples in chronological order
         bar_times: matching list of datetime for each bar
         """
-        assert len(bars) == len(bar_times), "bars and bar_times must be same length"
+        validate_bar_series(bars, bar_times)
+        calendar = calendar_for_venue("XNYS")
+        bar_sessions = []
+        for index, bar_time in enumerate(bar_times):
+            session = calendar.session_for_timestamp(bar_time)
+            if session is None:
+                raise ValueError(
+                    f"bar series: timestamp at index {index} is outside XNYS regular session"
+                )
+            bar_sessions.append(session)
+        strategy_params = getattr(self.strategy, "params", {})
+        reference_open_utc = str(strategy_params.get("session_open_utc", "14:30"))
+        strategy_bar_times = [
+            calendar.to_reference_session_clock(
+                bar_time,
+                reference_open_utc=reference_open_utc,
+            )
+            for bar_time in bar_times
+        ]
 
         capital = self.initial_capital
         available_cash = capital
@@ -372,6 +561,7 @@ class Backtester:
         position_tp = Decimal("0")
         position_tp1 = Decimal("0")
         remaining_entry_slippage = Decimal("0")
+        remaining_entry_fee = Decimal("0")
         partial_done = False
 
         trades: list[BacktestTrade] = []
@@ -380,9 +570,15 @@ class Backtester:
         filtered_bars: list[Bar] = []
         filtered_times: list[datetime] = []
         filtered_indices: list[int] = []
+        filtered_session_dates: list[date] = []
+        history_bars: list[Bar] = []
+        strategy_history_times: list[datetime] = []
         session_bars: list[Bar] = []
-        current_session_date: date | None = None
+        session_strategy_times: list[datetime] = []
+        current_session_id: str | None = None
         previous_session_close: Decimal | None = None
+        session_is_eligible = False
+        terminal_session_closes: dict[str, Decimal] = {}
         exposure_bars = 0
         total_commission_cost = Decimal("0")
 
@@ -390,25 +586,55 @@ class Backtester:
         mfe_high = Decimal("0")
         mae_low = Decimal("9999999")
 
-        for i, (bar, ts) in enumerate(zip(bars, bar_times, strict=True)):
-            # Filter date range
-            if self.start_date and ts.date() < self.start_date:
-                continue
-            if self.end_date and ts.date() > self.end_date:
-                continue
-
-            if current_session_date != ts.date():
-                if session_bars:
-                    previous_session_close = session_bars[-1].close
-                current_session_date = ts.date()
+        for i, (bar, ts, session, strategy_ts) in enumerate(
+            zip(bars, bar_times, bar_sessions, strategy_bar_times, strict=True)
+        ):
+            if current_session_id != session.session_id:
+                if current_session_id is not None and pending_orders:
+                    for order in pending_orders:
+                        if order.status == "pending":
+                            order.status = "cancelled"
+                    pending_orders = []
+                previous_session = calendar.previous_session(session)
+                previous_session_close = terminal_session_closes.get(previous_session.session_id)
+                session_is_eligible = previous_session_close is not None and ts.astimezone(
+                    UTC
+                ) == calendar.session_open(session)
+                current_session_id = session.session_id
                 session_bars = []
+                session_strategy_times = []
+
+            history_bars.append(bar)
+            strategy_history_times.append(strategy_ts)
+
+            # Retain earlier regular sessions only as warm-up context.
+            if self.start_date and session.local_date < self.start_date:
+                if calendar.is_terminal_bar(
+                    session,
+                    ts,
+                    interval_minutes=self.bar_interval_minutes,
+                ):
+                    terminal_session_closes[session.session_id] = bar.close
+                continue
+            if self.end_date and session.local_date > self.end_date:
+                break
+            if not session_is_eligible:
+                if calendar.is_terminal_bar(
+                    session,
+                    ts,
+                    interval_minutes=self.bar_interval_minutes,
+                ):
+                    terminal_session_closes[session.session_id] = bar.close
+                continue
 
             filtered_bars.append(bar)
             filtered_times.append(ts)
             filtered_indices.append(i)
+            filtered_session_dates.append(session.local_date)
             session_bars.append(bar)
+            session_strategy_times.append(strategy_ts)
 
-            current_time_utc = ts.strftime("%H:%M")
+            current_time_utc = strategy_ts.strftime("%H:%M")
 
             # Process pending orders first (fills happen at open of next bar)
             if i > 0 and pending_orders:
@@ -417,27 +643,37 @@ class Backtester:
                     if order.status != "pending":
                         continue
                     if order.order_type == "market":
-                        fp, slip = self.executor.simulate_fill(order, bar, order.side)
-                        order.fill_price = fp
+                        if order.side != "buy":
+                            raise ValueError(
+                                "The single-symbol backtester is long-only; "
+                                f"unsupported entry side: {order.side}"
+                            )
+                        account_equity = available_cash + position_qty * bar.open
+                        fill = self._cap_entry_fill(
+                            order=order,
+                            bar=bar,
+                            available_cash=available_cash,
+                            account_equity=account_equity,
+                            stop_price=position_stop,
+                        )
+                        if fill is None:
+                            order.status = "cancelled"
+                            continue
+                        order.quantity = fill.quantity
+                        order.fill_price = fill.price
                         order.fill_bar_idx = i
-                        order.slippage = slip
+                        order.slippage = fill.slippage_cost
                         order.status = "filled"
-
-                        if order.side == "buy":
-                            cost = fp * order.quantity + self.commission_per_trade
-                            available_cash -= cost
-                            total_commission_cost += self.commission_per_trade
-                            position_qty += order.quantity
-                            position_entry_price = fp
-                            position_entry_idx = i
-                            remaining_entry_slippage = slip
-                            mfe_high = fp
-                            mae_low = fp
-                        else:
-                            proceeds = fp * order.quantity - self.commission_per_trade
-                            available_cash += proceeds
-                            total_commission_cost += self.commission_per_trade
-                            position_qty -= order.quantity
+                        cost = fill.price * fill.quantity + fill.fee
+                        available_cash -= cost
+                        total_commission_cost += fill.fee
+                        position_qty += fill.quantity
+                        position_entry_price = fill.price
+                        position_entry_idx = i
+                        remaining_entry_slippage = fill.slippage_cost
+                        remaining_entry_fee = fill.fee
+                        mfe_high = fill.price
+                        mae_low = fill.price
                     elif order.order_type == "limit":
                         if self.executor.can_fill_limit(order, bar, order.side):
                             # Defense-in-depth: a limit order must carry a
@@ -451,13 +687,15 @@ class Backtester:
                             order.fill_price = order.limit_price
                             order.fill_bar_idx = i
                             order.status = "filled"
-                            cost = order.limit_price * order.quantity + self.commission_per_trade
+                            fee = self.commission_per_trade or Decimal("0")
+                            cost = order.limit_price * order.quantity + fee
                             available_cash -= cost
-                            total_commission_cost += self.commission_per_trade
+                            total_commission_cost += fee
                             position_qty += order.quantity
                             position_entry_price = order.limit_price
                             position_entry_idx = i
                             remaining_entry_slippage = Decimal("0")
+                            remaining_entry_fee = fee
                         else:
                             # Cancel limit if too old (3 bars)
                             if i - order.submitted_bar_idx > 3:
@@ -472,51 +710,69 @@ class Backtester:
             # Update MFE/MAE for open position
             if position_qty > 0:
                 mfe_high = max(mfe_high, bar.high)
-                mae_low  = min(mae_low, bar.low)
+                mae_low = min(mae_low, bar.low)
 
             # Check exit conditions for open position
             if position_qty > 0 and position_stop > 0:
                 exit_reason = None
-                exit_price = None
+                exit_quote = None
                 exit_qty = position_qty
 
                 # Stop loss
                 if bar.low <= position_stop:
                     exit_reason = "stop"
-                    exit_price = min(bar.open, position_stop)  # Worst case: gap through stop
+                    exit_quote = min(bar.open, position_stop)  # Worst case: gap through stop
 
                 # Take profit full
                 elif bar.high >= position_tp and not partial_done:
                     exit_reason = "take_profit"
-                    exit_price = position_tp
+                    exit_quote = position_tp
 
                 # Partial exit at 1R
                 elif bar.high >= position_tp1 and not partial_done:
                     exit_reason = "partial"
-                    exit_qty = (position_qty * Decimal("0.5")).quantize(Decimal("0.01"))
-                    exit_price = position_tp1
+                    exit_qty = (position_qty * Decimal("0.5")).quantize(
+                        Decimal("0.00000001"), rounding=ROUND_DOWN
+                    )
+                    exit_quote = position_tp1
                     partial_done = True
 
                 # Max holding time
                 elif i - position_entry_idx >= self.max_holding_bars:
                     exit_reason = "eod"
-                    exit_price, _ = self.executor.simulate_fill(
-                        BacktestOrder(id="eod", ticker=self.ticker, side="sell",
-                                      order_type="market", quantity=exit_qty,
-                                      limit_price=None, submitted_bar_idx=i),
-                        bar, "sell"
-                    )
+                    exit_quote = bar.open
 
-                if exit_reason and exit_price:
+                if exit_reason and exit_quote and exit_qty > 0:
+                    exit_fill = self.executor.simulate_at_quote(
+                        order=BacktestOrder(
+                            id=f"exit-{i}",
+                            ticker=self.ticker,
+                            side="sell",
+                            order_type="market",
+                            quantity=exit_qty,
+                            limit_price=None,
+                            submitted_bar_idx=i,
+                        ),
+                        quote_price=exit_quote,
+                        side="sell",
+                    )
+                    exit_price = exit_fill.price
+                    exit_fee = self._fill_fee(exit_fill)
                     open_qty_before_exit = position_qty
                     raw_pnl = (exit_price - position_entry_price) * exit_qty
-                    exit_slippage_cost = abs(exit_price - bar.open) * exit_qty
                     entry_slippage_alloc = (
                         remaining_entry_slippage * exit_qty / open_qty_before_exit
                         if open_qty_before_exit > 0
                         else Decimal("0")
                     )
-                    slippage_cost = entry_slippage_alloc + exit_slippage_cost
+                    entry_fee_alloc = (
+                        remaining_entry_fee * exit_qty / open_qty_before_exit
+                        if open_qty_before_exit > 0
+                        else Decimal("0")
+                    )
+                    commission_cost = entry_fee_alloc + exit_fee
+                    net_pnl = raw_pnl - commission_cost
+                    slippage_cost = entry_slippage_alloc + exit_fill.slippage_cost
 
                     trade = BacktestTrade(
                         id=str(uuid.uuid4())[:8],
@@ -525,8 +781,10 @@ class Backtester:
                         exit_price=exit_price,
                         quantity=exit_qty,
                         side="buy",
-                        pnl=raw_pnl,
-                        pnl_pct=(raw_pnl / (position_entry_price * exit_qty) * 100).quantize(Decimal("0.01")),
+                        pnl=net_pnl,
+                        pnl_pct=(net_pnl / (position_entry_price * exit_qty) * 100).quantize(
+                            Decimal("0.01")
+                        ),
                         entry_bar_idx=position_entry_idx,
                         exit_bar_idx=i,
                         entry_time=bar_times[position_entry_idx],
@@ -534,36 +792,48 @@ class Backtester:
                         exit_reason=exit_reason,
                         slippage_cost=slippage_cost,
                         holding_bars=i - position_entry_idx,
+                        commission_cost=commission_cost,
                         mfe=(mfe_high - position_entry_price) * exit_qty,
                         mae=(position_entry_price - mae_low) * exit_qty,
                     )
                     trades.append(trade)
 
-                    proceeds = exit_price * exit_qty - self.commission_per_trade
+                    proceeds = exit_price * exit_qty - exit_fee
                     available_cash += proceeds
-                    total_commission_cost += self.commission_per_trade
+                    total_commission_cost += exit_fee
                     position_qty -= exit_qty
                     remaining_entry_slippage -= entry_slippage_alloc
+                    remaining_entry_fee -= entry_fee_alloc
 
-                    if position_qty <= Decimal("0.01"):
+                    if position_qty <= 0:
                         position_qty = Decimal("0")
                         position_stop = Decimal("0")
                         position_tp = Decimal("0")
                         position_tp1 = Decimal("0")
                         remaining_entry_slippage = Decimal("0")
+                        remaining_entry_fee = Decimal("0")
                         partial_done = False
 
                     capital = available_cash + position_qty * bar.close
 
             # Only generate entry signals when flat
-            if position_qty <= Decimal("0.01") and not pending_orders:
+            if (
+                position_qty <= 0
+                and not pending_orders
+                and previous_session_close is not None
+                and not calendar.is_early_close(session)
+            ):
+                history_limit = max(
+                    1,
+                    int(getattr(self.strategy, "max_history_bars", 180)),
+                )
                 signal = generate_strategy_signal(
                     self.strategy,
                     ticker=self.ticker,
                     bars=session_bars,
-                    bar_times=filtered_times[-len(session_bars):],
-                    history_bars=filtered_bars,
-                    history_bar_times=filtered_times,
+                    bar_times=session_strategy_times,
+                    history_bars=history_bars[-history_limit:],
+                    history_bar_times=strategy_history_times[-history_limit:],
                     account_value=capital,
                     available_cash=available_cash,
                     current_time_utc=current_time_utc,
@@ -571,6 +841,13 @@ class Backtester:
                 )
 
                 if signal:
+                    if signal.side != "buy":
+                        raise ValueError(
+                            "The single-symbol backtester is long-only; "
+                            f"unsupported entry side: {signal.side}"
+                        )
+                    if signal.suggested_quantity <= 0:
+                        raise ValueError("Backtest entry quantity must be positive")
                     # Place market order for next bar open
                     order = BacktestOrder(
                         id=str(uuid.uuid4())[:8],
@@ -589,59 +866,90 @@ class Backtester:
                     risk = signal.entry_price - signal.stop_price
                     position_tp1 = signal.entry_price + risk  # 1R target
 
-            if position_qty > Decimal("0.01"):
+            if position_qty > 0:
                 exposure_bars += 1
 
             # Update equity
             current_equity = available_cash + position_qty * bar.close
-            equity_curve.append({
-                "time": ts.isoformat(),
-                "equity": float(current_equity),
-                "cash": float(available_cash),
-                "position_value": float(position_qty * bar.close),
-                "bar_idx": i,
-            })
+            equity_curve.append(
+                {
+                    "time": ts.isoformat(),
+                    "equity": float(current_equity),
+                    "cash": float(available_cash),
+                    "position_value": float(position_qty * bar.close),
+                    "bar_idx": i,
+                }
+            )
+            if calendar.is_terminal_bar(
+                session,
+                ts,
+                interval_minutes=self.bar_interval_minutes,
+            ):
+                terminal_session_closes[session.session_id] = bar.close
 
         # Close any remaining open position
         if position_qty > 0 and filtered_bars and filtered_times and filtered_indices:
             last_bar = filtered_bars[-1]
             last_time = filtered_times[-1]
             last_idx = filtered_indices[-1]
-            fp, slip = self.executor.simulate_fill(
-                BacktestOrder(id="final", ticker=self.ticker, side="sell",
-                              order_type="market", quantity=position_qty,
-                              limit_price=None, submitted_bar_idx=last_idx),
-                last_bar, "sell"
+            final_qty = position_qty
+            final_fill = self.executor.simulate_at_quote(
+                order=BacktestOrder(
+                    id="final",
+                    ticker=self.ticker,
+                    side="sell",
+                    order_type="market",
+                    quantity=final_qty,
+                    limit_price=None,
+                    submitted_bar_idx=last_idx,
+                ),
+                quote_price=last_bar.close,
+                side="sell",
             )
-            raw_pnl = (fp - position_entry_price) * position_qty
-            trades.append(BacktestTrade(
-                id=str(uuid.uuid4())[:8],
-                ticker=self.ticker,
-                entry_price=position_entry_price,
-                exit_price=fp,
-                quantity=position_qty,
-                side="buy",
-                pnl=raw_pnl,
-                pnl_pct=(raw_pnl / (position_entry_price * position_qty) * 100).quantize(Decimal("0.01")),
-                entry_bar_idx=position_entry_idx,
-                exit_bar_idx=last_idx,
-                entry_time=bar_times[position_entry_idx],
-                exit_time=last_time,
-                exit_reason="backtest_end",
-                slippage_cost=remaining_entry_slippage + slip,
-                holding_bars=last_idx - position_entry_idx,
-                mfe=(mfe_high - position_entry_price) * position_qty,
-                mae=(position_entry_price - mae_low) * position_qty,
-            ))
-            available_cash += fp * position_qty - self.commission_per_trade
-            total_commission_cost += self.commission_per_trade
+            final_fee = self._fill_fee(final_fill)
+            raw_pnl = (final_fill.price - position_entry_price) * final_qty
+            commission_cost = remaining_entry_fee + final_fee
+            net_pnl = raw_pnl - commission_cost
+            trades.append(
+                BacktestTrade(
+                    id=str(uuid.uuid4())[:8],
+                    ticker=self.ticker,
+                    entry_price=position_entry_price,
+                    exit_price=final_fill.price,
+                    quantity=final_qty,
+                    side="buy",
+                    pnl=net_pnl,
+                    pnl_pct=(net_pnl / (position_entry_price * final_qty) * 100).quantize(
+                        Decimal("0.01")
+                    ),
+                    entry_bar_idx=position_entry_idx,
+                    exit_bar_idx=last_idx,
+                    entry_time=bar_times[position_entry_idx],
+                    exit_time=last_time,
+                    exit_reason="backtest_end",
+                    slippage_cost=remaining_entry_slippage + final_fill.slippage_cost,
+                    holding_bars=last_idx - position_entry_idx,
+                    commission_cost=commission_cost,
+                    mfe=(mfe_high - position_entry_price) * final_qty,
+                    mae=(position_entry_price - mae_low) * final_qty,
+                )
+            )
+            available_cash += final_fill.price * final_qty - final_fee
+            total_commission_cost += final_fee
+            position_qty = Decimal("0")
+            if equity_curve:
+                equity_curve[-1]["equity"] = float(available_cash)
+                equity_curve[-1]["cash"] = float(available_cash)
+                equity_curve[-1]["position_value"] = 0.0
 
         final_capital = available_cash
         result = BacktestResult(
             strategy_name=type(self.strategy).__name__,
             ticker=self.ticker,
-            start_date=self.start_date or (filtered_times[0].date() if filtered_times else date.today()),
-            end_date=self.end_date or (filtered_times[-1].date() if filtered_times else date.today()),
+            start_date=self.start_date
+            or (filtered_session_dates[0] if filtered_session_dates else date.today()),
+            end_date=self.end_date
+            or (filtered_session_dates[-1] if filtered_session_dates else date.today()),
             initial_capital=self.initial_capital,
             final_capital=final_capital,
             trades=trades,
@@ -655,9 +963,7 @@ class Backtester:
                 result.benchmark_return_pct = (
                     (last_close - first_close) / first_close * 100
                 ).quantize(Decimal("0.01"))
-            result.exposure_pct = Decimal(
-                str(round(exposure_bars / len(filtered_times) * 100, 2))
-            )
+            result.exposure_pct = Decimal(str(round(exposure_bars / len(filtered_times) * 100, 2)))
         return _compute_metrics(result)
 
 
@@ -679,7 +985,9 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
     days = (result.end_date - result.start_date).days or 1
     if days > 0:
         years = days / 365
-        ann = ((float(result.final_capital) / float(result.initial_capital)) ** (1 / years) - 1) * 100
+        ann = (
+            (float(result.final_capital) / float(result.initial_capital)) ** (1 / years) - 1
+        ) * 100
         result.annualised_return_pct = Decimal(str(round(ann, 2)))
 
     # Drawdown
@@ -710,6 +1018,51 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
         result.total_return_pct - result.benchmark_return_pct
     ).quantize(Decimal("0.01"))
 
+    # Risk-adjusted ratios use the marked-to-market equity return path. Trade
+    # P&L observations are not time-series returns and change when identical
+    # fills are split into multiple trade records.
+    equity_returns: list[float] = []
+    for previous, current in pairwise(result.equity_curve):
+        previous_equity = float(previous["equity"])
+        if previous_equity > 0:
+            equity_returns.append((float(current["equity"]) / previous_equity) - 1)
+
+    periods_per_year = 252.0
+    equity_times: list[datetime] = []
+    for point in result.equity_curve:
+        raw_time = point.get("time")
+        if isinstance(raw_time, str):
+            try:
+                equity_times.append(datetime.fromisoformat(raw_time))
+            except ValueError:
+                equity_times = []
+                break
+    if len(equity_times) > 1:
+        intervals = [
+            (current - previous).total_seconds()
+            for previous, current in pairwise(equity_times)
+            if current > previous
+        ]
+        if intervals:
+            median_interval = statistics.median(intervals)
+            if median_interval < 12 * 60 * 60:
+                periods_per_trading_day = min((6.5 * 60 * 60) / median_interval, 390.0)
+                periods_per_year = 252.0 * periods_per_trading_day
+
+    if len(equity_returns) > 1:
+        mean_return = statistics.mean(equity_returns)
+        std_return = statistics.stdev(equity_returns)
+        if std_return > 0:
+            sharpe = (mean_return / std_return) * math.sqrt(periods_per_year)
+            result.sharpe_ratio = Decimal(str(round(sharpe, 3)))
+
+        downside_deviation = math.sqrt(
+            statistics.mean(min(period_return, 0.0) ** 2 for period_return in equity_returns)
+        )
+        if downside_deviation > 0:
+            sortino = (mean_return / downside_deviation) * math.sqrt(periods_per_year)
+            result.sortino_ratio = Decimal(str(round(sortino, 3)))
+
     if not trades:
         return result
 
@@ -719,6 +1072,7 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
     losses = [p for p in pnls if p <= 0]
 
     result.total_trades = len(trades)
+    result.completed_positions = len({(trade.ticker, trade.entry_bar_idx) for trade in trades})
     result.winning_trades = len(wins)
     result.losing_trades = len(losses)
     result.win_rate = Decimal(str(round(len(wins) / len(trades), 4)))
@@ -726,8 +1080,15 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
     result.avg_loss = Decimal(str(round(sum(losses) / len(losses), 2))) if losses else Decimal("0")
     result.expectancy = Decimal(str(round(statistics.mean(pnls), 2)))
     result.expectancy_pct = Decimal(str(round(statistics.mean(pnl_pcts), 2)))
-    result.profit_factor = Decimal(str(round(sum(wins) / abs(sum(losses)), 3))) if losses and sum(losses) != 0 else Decimal("0")
-    result.total_slippage_cost = sum(t.slippage_cost for t in trades)
+    result.profit_factor = (
+        Decimal(str(round(sum(wins) / abs(sum(losses)), 3)))
+        if losses and sum(losses) != 0
+        else Decimal("0")
+    )
+    result.total_slippage_cost = sum(
+        (trade.slippage_cost for trade in trades),
+        Decimal("0"),
+    )
     result.gross_pnl = (
         result.net_pnl + result.total_slippage_cost + result.total_commission_cost
     ).quantize(Decimal("0.01"))
@@ -736,7 +1097,9 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
     )
     result.avg_mfe = Decimal(str(round(float(sum(t.mfe for t in trades)) / len(trades), 2)))
     result.avg_mae = Decimal(str(round(float(sum(t.mae for t in trades)) / len(trades), 2)))
-    result.avg_holding_bars = Decimal(str(round(sum(t.holding_bars for t in trades) / len(trades), 1)))
+    result.avg_holding_bars = Decimal(
+        str(round(sum(t.holding_bars for t in trades) / len(trades), 1))
+    )
     turnover_notional = sum(
         (trade.entry_price * trade.quantity) + (trade.exit_price * trade.quantity)
         for trade in trades
@@ -744,23 +1107,6 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
     result.turnover_pct = Decimal(
         str(round(float(turnover_notional / result.initial_capital * 100), 2))
     )
-
-    # Sharpe ratio (annualised, risk-free = 0 for simplicity)
-    if len(pnls) > 1:
-        mean_pnl = statistics.mean(pnls)
-        std_pnl = statistics.stdev(pnls)
-        if std_pnl > 0:
-            sharpe = (mean_pnl / std_pnl) * (252 ** 0.5)
-            result.sharpe_ratio = Decimal(str(round(sharpe, 3)))
-
-    # Sortino ratio (downside deviation only)
-    downside = [p for p in pnls if p < 0]
-    if downside and len(downside) > 1:
-        downside_std = statistics.stdev(downside)
-        if downside_std > 0:
-            mean_pnl = statistics.mean(pnls)
-            sortino = (mean_pnl / downside_std) * (252 ** 0.5)
-            result.sortino_ratio = Decimal(str(round(sortino, 3)))
 
     # Consecutive losses
     max_consec = 0
@@ -791,14 +1137,14 @@ def _compute_metrics(result: BacktestResult) -> BacktestResult:
 
 # ── Walk-forward validator ────────────────────────────────────────────────────
 
+
 class WalkForwardValidator:
     """
-    Walk-forward validation (out-of-sample testing).
+    Nested walk-forward validation with disjoint chronological blocks.
 
-    Splits data into in-sample (optimisation) and out-of-sample (validation) windows.
-    Rolls forward, re-optimising each time.
-
-    Standard: 70% in-sample, 30% out-of-sample, 50% overlap between windows.
+    Every block has train, validation, and held-out test partitions. Candidate
+    eligibility is checked on train, selection is performed on validation, and
+    the chosen candidate is evaluated once on test. Blocks never overlap.
     """
 
     def __init__(
@@ -806,16 +1152,26 @@ class WalkForwardValidator:
         strategy_class: Any,
         ticker: str,
         initial_capital: Decimal,
-        in_sample_bars: int = 2000,     # ~13 months of 5-min bars
-        out_sample_bars: int = 500,     # ~3 months
-        step_bars: int = 250,           # Roll forward by ~1.5 months
+        in_sample_bars: int = 2000,  # ~13 months of 5-min bars
+        out_sample_bars: int = 500,  # ~3 months
+        step_bars: int = 250,
+        bar_interval_minutes: int = 5,
     ) -> None:
+        for parameter_name, parameter_value in (
+            ("in_sample_bars", in_sample_bars),
+            ("out_sample_bars", out_sample_bars),
+            ("step_bars", step_bars),
+            ("bar_interval_minutes", bar_interval_minutes),
+        ):
+            if parameter_value <= 0:
+                raise ValueError(f"{parameter_name} must be positive")
         self.strategy_class = strategy_class
         self.ticker = ticker
         self.initial_capital = initial_capital
         self.in_sample_bars = in_sample_bars
         self.out_sample_bars = out_sample_bars
         self.step_bars = step_bars
+        self.bar_interval_minutes = bar_interval_minutes
 
     def run(
         self,
@@ -826,78 +1182,245 @@ class WalkForwardValidator:
         """
         Run walk-forward validation.
 
-        param_grid: list of parameter dicts to try during in-sample optimisation.
-        Returns list of out-of-sample results per window.
+        ``step_bars`` is retained for API compatibility, but the effective
+        stride is never smaller than a complete train/validation/test block.
+        The returned OOS metrics are exclusively from held-out test partitions.
         """
+        validate_bar_series(bars, bar_times, label="walk-forward bar series")
+        calendar = calendar_for_venue("XNYS")
+        session_groups: list[tuple[TradingSession, int, int]] = []
+        for index, bar_time in enumerate(bar_times):
+            session = calendar.session_for_timestamp(bar_time)
+            if session is None:
+                raise ValueError(
+                    "walk-forward bar series: timestamp at index "
+                    f"{index} is outside XNYS regular session"
+                )
+            if not session_groups or session_groups[-1][0].session_id != session.session_id:
+                session_groups.append((session, index, index + 1))
+            else:
+                prior_session, group_start, _ = session_groups[-1]
+                session_groups[-1] = (prior_session, group_start, index + 1)
+
+        for session, first_bar, after_last_bar in session_groups:
+            if bar_times[first_bar].astimezone(UTC) != calendar.session_open(session):
+                raise ValueError(
+                    f"walk-forward session {session.session_id} does not begin at session open"
+                )
+            if not calendar.is_terminal_bar(
+                session,
+                bar_times[after_last_bar - 1],
+                interval_minutes=self.bar_interval_minutes,
+            ):
+                raise ValueError(
+                    f"walk-forward session {session.session_id} does not include its terminal bar"
+                )
+
+        def take_complete_sessions(start_group: int, minimum_bars: int) -> int | None:
+            count = 0
+            end_group = start_group
+            while end_group < len(session_groups) and count < minimum_bars:
+                _, first_bar, after_last_bar = session_groups[end_group]
+                count += after_last_bar - first_bar
+                end_group += 1
+            return end_group if count >= minimum_bars else None
+
+        def partition(
+            eligible_start_group: int,
+            eligible_end_group: int,
+        ) -> tuple[list[Bar], list[datetime], date, date]:
+            warmup_group = eligible_start_group - 1
+            first_bar = session_groups[warmup_group][1]
+            after_last_bar = session_groups[eligible_end_group - 1][2]
+            return (
+                bars[first_bar:after_last_bar],
+                bar_times[first_bar:after_last_bar],
+                session_groups[eligible_start_group][0].local_date,
+                session_groups[eligible_end_group - 1][0].local_date,
+            )
+
         results = []
-        total = len(bars)
-        start = 0
+        warmup_group = 0
 
         window_num = 0
-        while start + self.in_sample_bars + self.out_sample_bars <= total:
+        while warmup_group + 1 < len(session_groups):
+            train_start_group = warmup_group + 1
+            train_end_group = take_complete_sessions(train_start_group, self.in_sample_bars)
+            if train_end_group is None:
+                break
+            validation_end_group = take_complete_sessions(
+                train_end_group,
+                self.out_sample_bars,
+            )
+            if validation_end_group is None:
+                break
+            test_end_group = take_complete_sessions(
+                validation_end_group,
+                self.out_sample_bars,
+            )
+            if test_end_group is None:
+                break
+
             window_num += 1
-            is_end = start + self.in_sample_bars
-            oos_end = is_end + self.out_sample_bars
+            train_bars, train_times, train_start, train_end = partition(
+                train_start_group,
+                train_end_group,
+            )
+            validation_bars, validation_times, validation_start, validation_end = partition(
+                train_end_group,
+                validation_end_group,
+            )
+            test_bars, test_times, test_start, test_end = partition(
+                validation_end_group,
+                test_end_group,
+            )
 
-            is_bars   = bars[start:is_end]
-            is_times  = bar_times[start:is_end]
-            oos_bars  = bars[is_end:oos_end]
-            oos_times = bar_times[is_end:oos_end]
+            selection = self._optimise(
+                train_bars,
+                train_times,
+                validation_bars,
+                validation_times,
+                param_grid,
+                train_start_date=train_start,
+                train_end_date=train_end,
+                validation_start_date=validation_start,
+                validation_end_date=validation_end,
+            )
 
-            # Optimise on in-sample
-            best_params = self._optimise(is_bars, is_times, param_grid)
-
-            # Validate on out-of-sample
-            strategy = self.strategy_class(best_params)
-            bt = Backtester(strategy, self.ticker, self.initial_capital)
-            oos_result = bt.run(oos_bars, oos_times)
-
-            results.append({
+            window_result: dict[str, Any] = {
                 "window": window_num,
-                "is_start": is_times[0].date().isoformat() if is_times else "",
-                "is_end":   is_times[-1].date().isoformat() if is_times else "",
-                "oos_start": oos_times[0].date().isoformat() if oos_times else "",
-                "oos_end":   oos_times[-1].date().isoformat() if oos_times else "",
-                "best_params": best_params,
-                "oos_return_pct": float(oos_result.total_return_pct),
-                "oos_sharpe": float(oos_result.sharpe_ratio or 0),
-                "oos_max_dd": float(oos_result.max_drawdown_pct),
-                "oos_win_rate": float(oos_result.win_rate),
-                "oos_profit_factor": float(oos_result.profit_factor),
-                "oos_trades": oos_result.total_trades,
-            })
+                "is_start": train_start.isoformat(),
+                "is_end": train_end.isoformat(),
+                "validation_start": validation_start.isoformat(),
+                "validation_end": validation_end.isoformat(),
+                "oos_start": test_start.isoformat(),
+                "oos_end": test_end.isoformat(),
+                "selection_status": (
+                    "selected" if selection.params is not None else "no_eligible_candidate"
+                ),
+                "best_params": selection.params,
+                "selection_criterion": "validation_equity_sharpe",
+                "validation_sharpe": selection.validation_sharpe,
+                "parameter_combinations_tested": selection.combinations_tested,
+                "eligible_candidates": selection.eligible_candidates,
+                "oos_return_pct": None,
+                "oos_sharpe": None,
+                "oos_max_dd": None,
+                "oos_win_rate": None,
+                "oos_profit_factor": None,
+                "oos_trades": 0,
+                "oos_positions": 0,
+            }
+
+            if selection.params is not None:
+                strategy = self.strategy_class(selection.params)
+                oos_result = Backtester(
+                    strategy,
+                    self.ticker,
+                    self.initial_capital,
+                    start_date=test_start,
+                    end_date=test_end,
+                    bar_interval_minutes=self.bar_interval_minutes,
+                ).run(test_bars, test_times)
+                window_result.update(
+                    {
+                        "oos_return_pct": float(oos_result.total_return_pct),
+                        "oos_sharpe": (
+                            float(oos_result.sharpe_ratio)
+                            if oos_result.sharpe_ratio is not None
+                            and math.isfinite(float(oos_result.sharpe_ratio))
+                            else None
+                        ),
+                        "oos_max_dd": float(oos_result.max_drawdown_pct),
+                        "oos_win_rate": float(oos_result.win_rate),
+                        "oos_profit_factor": float(oos_result.profit_factor),
+                        "oos_trades": oos_result.total_trades,
+                        "oos_positions": oos_result.completed_positions,
+                    }
+                )
+
+            results.append(window_result)
 
             log.info(
                 "walk_forward.window_complete",
                 window=window_num,
-                oos_return=float(oos_result.total_return_pct),
-                oos_sharpe=float(oos_result.sharpe_ratio or 0),
+                selection_status=window_result["selection_status"],
+                oos_return=window_result["oos_return_pct"],
+                oos_sharpe=window_result["oos_sharpe"],
             )
-            start += self.step_bars
+            eligible_block_bars = sum(
+                group_end - group_start
+                for _, group_start, group_end in session_groups[train_start_group:test_end_group]
+            )
+            next_eligible_group = test_end_group
+            stride_bars = eligible_block_bars
+            while next_eligible_group < len(session_groups) and stride_bars < self.step_bars:
+                _, group_start, group_end = session_groups[next_eligible_group]
+                stride_bars += group_end - group_start
+                next_eligible_group += 1
+            warmup_group = next_eligible_group - 1
 
         return results
 
     def _optimise(
         self,
-        bars: list[Bar],
-        bar_times: list[datetime],
+        train_bars: list[Bar],
+        train_times: list[datetime],
+        validation_bars: list[Bar],
+        validation_times: list[datetime],
         param_grid: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        """Grid search on in-sample data. Returns best params by Sharpe ratio."""
-        best_sharpe = -9999.0
-        best_params: dict[str, Any] = param_grid[0] if param_grid else {}
+        *,
+        train_start_date: date,
+        train_end_date: date,
+        validation_start_date: date,
+        validation_end_date: date,
+    ) -> ParameterSelectionResult:
+        """Select by validation Sharpe without reading held-out test data."""
+        best_sharpe = -math.inf
+        best_params: dict[str, Any] | None = None
+        eligible_candidates = 0
 
         for params in param_grid:
             try:
-                strategy = self.strategy_class(params)
-                bt = Backtester(strategy, "", self.initial_capital)
-                result = bt.run(bars, bar_times)
-                sharpe = float(result.sharpe_ratio or -9999)
-                # Require minimum trades to avoid over-fitting
-                if result.total_trades >= 10 and sharpe > best_sharpe:
+                train_strategy = self.strategy_class(params)
+                train_result = Backtester(
+                    train_strategy,
+                    self.ticker,
+                    self.initial_capital,
+                    start_date=train_start_date,
+                    end_date=train_end_date,
+                    bar_interval_minutes=self.bar_interval_minutes,
+                ).run(train_bars, train_times)
+                if train_result.completed_positions < 10:
+                    continue
+
+                validation_strategy = self.strategy_class(params)
+                validation_result = Backtester(
+                    validation_strategy,
+                    self.ticker,
+                    self.initial_capital,
+                    start_date=validation_start_date,
+                    end_date=validation_end_date,
+                    bar_interval_minutes=self.bar_interval_minutes,
+                ).run(validation_bars, validation_times)
+                if validation_result.completed_positions < 10:
+                    continue
+
+                if validation_result.sharpe_ratio is None:
+                    continue
+                sharpe = float(validation_result.sharpe_ratio)
+                if not math.isfinite(sharpe):
+                    continue
+                eligible_candidates += 1
+                if sharpe > best_sharpe:
                     best_sharpe = sharpe
                     best_params = params
             except Exception:
                 continue
 
-        return best_params
+        return ParameterSelectionResult(
+            params=best_params,
+            combinations_tested=len(param_grid),
+            eligible_candidates=eligible_candidates,
+            validation_sharpe=best_sharpe if best_params is not None else None,
+        )

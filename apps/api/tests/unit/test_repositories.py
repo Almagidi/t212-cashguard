@@ -58,7 +58,9 @@ class TestOrderRepository:
         orders = [MagicMock(), MagicMock()]
         repo = OrderRepository(_db_with_result(_result_for_scalars(orders)))
 
-        result = await repo.list(status="filled", ticker="aapl", is_dry_run=False, limit=25, offset=5)
+        result = await repo.list(
+            status="filled", ticker="aapl", is_dry_run=False, limit=25, offset=5
+        )
 
         assert result == orders
 
@@ -103,12 +105,8 @@ class TestOrderRepository:
         db.add.assert_called_once_with(order)
         db.flush.assert_awaited_once()
 
-    @pytest.mark.asyncio
-    async def test_update_status_returns_rowcount(self):
-        result = MagicMock(rowcount=1)
-        repo = OrderRepository(_db_with_result(result))
-
-        assert await repo.update_status(uuid.uuid4(), "filled") == 1
+    def test_repository_exposes_no_status_update_bypass(self):
+        assert not hasattr(OrderRepository, "update_status")
 
     @pytest.mark.asyncio
     async def test_add_event_adds_and_flushes(self):

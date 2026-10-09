@@ -7,7 +7,7 @@ HOW TO USE THESE FILES
 Double-click each .command file to run it. That's it.
 
 1. Setup (Run First).command
-   └── Run this ONE TIME to install everything and configure your API keys.
+   └── Run this ONE TIME to install everything and create a mock-only setup.
        Takes 5–15 minutes. After this, you never need to code anything.
 
 2. Start CashGuard.command
@@ -20,15 +20,15 @@ Double-click each .command file to run it. That's it.
        Your data and settings are preserved.
 
 4. Update API Keys.command
-   └── Run this if you need to add or change your
-       Trading 212 or Polygon.io API keys.
+   └── Explains how to add a Trading 212 demo connection in the app.
+       It never collects or writes credentials.
 
 5. Check Status.command
    └── Run this to see what's running and check for errors.
 
 6. Enable Live Trading (Read First).command
-   └── Only run this after 30+ days in demo mode.
-       This switches to REAL money.
+   └── Non-mutating notice: live trading is prohibited and cannot be enabled
+       by a launcher.
 
 
 FIRST TIME?
@@ -48,10 +48,12 @@ DAILY USE
 
 IMPORTANT NOTES
 ───────────────
-• Keep the Start terminal window open while trading
+• Keep the Start terminal window open while using CashGuard
 • Closing the lid pauses everything — plug in before trading sessions
 • Always run a backtest before enabling a strategy
-• Start in demo mode — only switch to live after 30+ days
+• Setup starts in broker-isolated mock mode
+• Add demo credentials only through the authenticated Broker page
+• Live trading is prohibited during the safety-remediation programme
 
 
 LOGIN DETAILS

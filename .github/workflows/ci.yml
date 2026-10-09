@@ -31,6 +31,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify secret-file boundary
+        run: bash scripts/check_secret_files.sh
+
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
         env:
@@ -74,6 +77,7 @@ jobs:
     env:
       PYTHONPATH: "."
       DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
+      POSTGRES_TEST_DATABASE_URL: postgresql+asyncpg://cashguard:cashguard_secret@localhost:5432/cashguard_test
       REDIS_URL: redis://localhost:6379/15
       SECRET_KEY: test-secret-key-32-chars-minimum-x
       MASTER_KEY: test-master-key-32-chars-minimum-x
@@ -198,7 +202,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24.21.0"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
@@ -222,6 +226,84 @@ jobs:
 
       - name: Unit tests
         run: npm test -- --watchAll=false
+
+  web-image:
+    name: Web Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # See docs/WEB_IMAGE_BUILD.md. Nothing is pushed to a registry.
+      - name: Ordinary build, cold layer cache
+        run: |
+          docker build --no-cache -t cashguard-web:default apps/web
+          docker image inspect cashguard-web:default --format 'image={{.Id}} platform={{.Os}}/{{.Architecture}}'
+
+      - name: Export dependency cache (network, lifecycle scripts off)
+        run: docker build --target npm_cache --output "type=local,dest=${RUNNER_TEMP}/npm-cache" apps/web
+
+      - name: Supplied-cache build, networking disabled for every RUN instruction
+        run: |
+          test -d "${RUNNER_TEMP}/npm-cache/_cacache"
+          docker build --no-cache --network=none \
+            --build-context "npm_cache=${RUNNER_TEMP}/npm-cache" \
+            -t cashguard-web:ci apps/web
+          # Same inputs: tag the stage that holds the installed tree and sources.
+          docker build --network=none \
+            --build-context "npm_cache=${RUNNER_TEMP}/npm-cache" \
+            --target builder -t cashguard-web:ci-builder apps/web
+          docker image inspect cashguard-web:ci --format 'image={{.Id}} platform={{.Os}}/{{.Architecture}}'
+
+      - name: Installed dependencies match the lockfile for this platform
+        run: docker run --rm -i --network none cashguard-web:ci-builder node - < scripts/verify_web_install_inventory.js
+
+      # Runs with the lockfile-installed Jest inside the build stage. This is a
+      # separate, narrower check than the Frontend job and does not replace it.
+      - name: Dockerfile contract test (locked toolchain, no network)
+        run: |
+          set -o pipefail
+          docker run --rm --network none cashguard-web:ci-builder \
+            node node_modules/jest/bin/jest.js --watchAll=false \
+            tests/unit/dockerfile-install-isolation.test.ts 2>&1 | tee /tmp/dockerfile-contract-test.log
+          grep -E '^Tests: +[1-9][0-9]* passed, [1-9][0-9]* total$' /tmp/dockerfile-contract-test.log
+
+      - name: Runtime smoke, egress denied
+        run: |
+          test "$(docker run --rm --network none cashguard-web:ci id -u)" = "1001"
+          docker run --rm --network none cashguard-web:ci node --version
+
+          trap 'docker logs web-offline || true; docker rm -f web-offline >/dev/null 2>&1 || true' EXIT
+          docker run -d --name web-offline --network none -e HOSTNAME=0.0.0.0 cashguard-web:ci
+          docker exec -i web-offline node - < scripts/web_image_offline_probe.js
+
+      - name: Compose build
+        run: docker compose build web
+
+      - name: Runtime smoke, published port (ordinary build)
+        run: |
+          trap 'docker logs web-smoke || true; docker rm -f web-smoke >/dev/null 2>&1 || true' EXIT
+          docker run -d --name web-smoke -p 127.0.0.1:3000:3000 cashguard-web:default
+
+          for attempt in {1..30}; do
+            status=$(curl -sS -D /tmp/web-image-headers.txt -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/auth/login || true)
+            if [ "$status" = "200" ]; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "Timeout waiting for the web image to serve /auth/login (last status: ${status:-none})"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          grep -i '^x-content-type-options: nosniff' /tmp/web-image-headers.txt
+          grep -i '^x-frame-options: DENY' /tmp/web-image-headers.txt
+          grep -i '^referrer-policy: no-referrer' /tmp/web-image-headers.txt
+          grep -i '^content-security-policy:' /tmp/web-image-headers.txt
 
   e2e:
     name: E2E Mock Smoke
@@ -285,7 +367,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "24.21.0"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 

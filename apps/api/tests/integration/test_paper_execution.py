@@ -12,7 +12,8 @@ from sqlalchemy import select
 
 from app.broker.kraken import KrakenAdapter
 from app.broker.trading212 import Trading212Adapter
-from app.db.models import AppSettings, AuditLog, Order, PositionSnapshot
+from app.db.models import AppSettings, AuditLog, Order, OrderEvent, PositionSnapshot
+from app.execution import paper_engine as paper_engine_module
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
@@ -52,7 +53,21 @@ async def test_paper_order_creates_local_order_audits_and_position(
     client: AsyncClient,
     auth_headers: dict,
     db,
+    monkeypatch: pytest.MonkeyPatch,
 ):
+    transitions: list[tuple[str, str]] = []
+    real_transition = paper_engine_module.transition_order_status_with_evidence
+
+    def track_transition(db, order: Order, to_status: str, **kwargs):
+        transitions.append((order.status, to_status))
+        return real_transition(db, order, to_status, **kwargs)
+
+    monkeypatch.setattr(
+        paper_engine_module,
+        "transition_order_status_with_evidence",
+        track_transition,
+    )
+
     response = await client.post(
         "/v1/orders/paper",
         headers=auth_headers,
@@ -71,6 +86,24 @@ async def test_paper_order_creates_local_order_audits_and_position(
     assert order.broker_request["no_broker_order_sent"] is True
     assert order.broker_response["status"] == "PAPER_FILLED"
 
+    events = (
+        (
+            await db.execute(
+                select(OrderEvent)
+                .where(OrderEvent.order_id == order.id)
+                .order_by(OrderEvent.occurred_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [(event.event_type, event.from_status, event.to_status) for event in events] == [
+        ("paper_order_created", None, "pending_intent"),
+        ("paper_order_submitted", "pending_intent", "submitted"),
+        ("paper_fill_simulated", "submitted", "filled"),
+    ]
+    assert transitions == [("pending_intent", "submitted"), ("submitted", "filled")]
+
     audits = (
         (await db.execute(select(AuditLog).where(AuditLog.entity_id == str(order.id))))
         .scalars()
@@ -87,6 +120,7 @@ async def test_paper_order_creates_local_order_audits_and_position(
         "paper_order_created",
         "paper_fill_simulated",
         "paper_position_updated",
+        "paper_account_updated",
     }
     paper_audits = [audit for audit in all_audits if audit.action.startswith("paper_")]
     assert all(audit.payload["paper_only"] is True for audit in paper_audits)
@@ -96,7 +130,7 @@ async def test_paper_order_creates_local_order_audits_and_position(
         await db.execute(select(PositionSnapshot).where(PositionSnapshot.ticker == "PAPERXYZ"))
     ).scalar_one()
     assert position.quantity == Decimal("2")
-    assert position.avg_price == Decimal("25.5")
+    assert position.avg_price == Decimal("25.53060510")
     assert position.raw["paper_only"] is True
     assert position.raw["no_broker_order_sent"] is True
 
@@ -146,7 +180,7 @@ async def test_paper_order_history_returns_newest_first_with_safety_fields(
     assert newest["source"] == "watchlist_signal"
     assert newest["strategy"] == "opening-fade"
     assert newest["status"] == "filled"
-    assert newest["fill_price"] == "20.00000000"
+    assert newest["fill_price"] == "20.02000000"
     assert newest["filled_quantity"] == "3.00000000"
     assert newest["paper_only"] is True
     assert newest["live_order_sent"] is False
@@ -247,6 +281,7 @@ async def test_paper_order_audit_endpoint_returns_relevant_safe_events(
     actions = [item["action"] for item in body["items"]]
     assert actions == [
         "paper_position_updated",
+        "paper_account_updated",
         "paper_fill_simulated",
         "paper_order_created",
     ]

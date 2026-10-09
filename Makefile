@@ -49,7 +49,7 @@ dev: ## Start backend and frontend in development mode (requires infra to be run
 
 up: ## Start the full Docker Compose stack
 	@echo "$(YELLOW)→ Starting full Docker stack...$(RESET)"
-	docker-compose up -d
+	docker compose up -d
 	@echo "$(GREEN)✓ Stack running$(RESET)"
 	@echo "  Frontend: http://localhost:3000"
 	@echo "  Backend:  http://localhost:8000"
@@ -96,7 +96,7 @@ test-backend: ## Run backend tests only
 test-frontend: ## Run frontend tests only
 	cd apps/web && npm run test -- --watchAll=false --coverage
 
-lint: ## Run linters (ruff for backend, eslint for frontend)
+lint: ## Run linters (ruff for backend, oxlint for frontend)
 	@echo "$(YELLOW)→ Linting backend...$(RESET)"
 	cd apps/api && python -m ruff check app/ tests/
 	@echo "$(YELLOW)→ Linting frontend...$(RESET)"
@@ -119,9 +119,9 @@ e2e: ## Run Playwright end-to-end tests
 	cd apps/web && npx playwright test
 	@echo "$(GREEN)✓ E2E tests complete$(RESET)"
 
-e2e-operator: ## Run mock-mode operator dashboard readiness e2e test
+e2e-operator: ## Run operator dashboard readiness e2e test (needs the mock API on :8000)
 	@echo "$(YELLOW)→ Running operator dashboard readiness e2e test...$(RESET)"
-	cd apps/web && E2E_MOCK_API=1 E2E_WEB_PORT=3100 BASE_URL=http://localhost:3100 NEXT_PUBLIC_APP_MODE=mock NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 npx playwright test tests/e2e/operator.spec.ts
+	cd apps/web && E2E_WEB_PORT=3100 BASE_URL=http://localhost:3100 NEXT_PUBLIC_APP_MODE=mock NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 npx playwright test tests/e2e/operator.spec.ts
 	@echo "$(GREEN)✓ Operator dashboard readiness e2e complete$(RESET)"
 
 logs: ## Tail all Docker logs
@@ -144,7 +144,7 @@ clean: ## Remove build artifacts and caches
 check-all: lint typecheck test ## Run lint, typecheck, and tests in sequence
 	@echo "$(GREEN)✓ All checks passed$(RESET)"
 
-.PHONY: smoke readiness paper-check e2e-operator-integration readiness-full
+.PHONY: smoke readiness paper-check real-worker-paper-smoke real-worker-lock-recovery real-worker-interruption-recovery real-worker-paper-chaos real-worker-paper-soak e2e-operator-integration readiness-full
 
 smoke:
 	cd apps/api && DATABASE_URL=sqlite+aiosqlite:///:memory: REDIS_URL=redis://localhost:6379/15 SECRET_KEY=test-secret-key-32-chars-minimum-x MASTER_KEY=test-master-key-32-chars-minimum-x APP_MODE=mock python3.12 -m pytest tests/smoke/ -v --tb=short --no-cov
@@ -153,6 +153,21 @@ readiness: smoke e2e-operator
 
 paper-check: ## Run targeted paper execution backend safety tests
 	cd apps/api && DATABASE_URL=sqlite+aiosqlite:///:memory: REDIS_URL=redis://localhost:6379/15 SECRET_KEY=test-secret-key-32-chars-minimum-x MASTER_KEY=test-master-key-32-chars-minimum-x APP_MODE=mock python3.12 -m pytest tests/integration/test_paper_execution.py tests/unit/test_operator_status_api.py -q --no-cov
+
+real-worker-paper-smoke: ## Prove real Celery/Redis/PostgreSQL scheduled paper fill (Docker)
+	cd apps/api && .venv/bin/python scripts/real_worker_paper_smoke.py
+
+real-worker-lock-recovery: ## Prove two-worker exclusion and bounded death recovery (Docker)
+	cd apps/api && .venv/bin/python scripts/real_worker_lock_recovery.py
+
+real-worker-interruption-recovery: ## Prove Redis/PostgreSQL/failure/worker-loss recovery (Docker)
+	cd apps/api && .venv/bin/python scripts/real_worker_interruption_recovery.py
+
+real-worker-paper-chaos: ## Prove new decisions, partial/cancel, kill switch, cleanup failure (Docker)
+	cd apps/api && .venv/bin/python scripts/real_worker_paper_chaos.py
+
+real-worker-paper-soak: ## Run 30-dispatch exact-SHA real Celery mock-paper soak (Docker)
+	cd apps/api && .venv/bin/python scripts/real_worker_paper_soak.py
 
 e2e-operator-integration: ## Run real-backend integration e2e for operator dashboard (SQLite, APP_MODE=mock, ports 8001/3001)
 	@if lsof -tiTCP:8001 -sTCP:LISTEN >/dev/null 2>&1; then \
@@ -581,7 +596,7 @@ operator-manual-check: ## Curl manual QA endpoints with auth against API :8002
 # ─── Local validation baseline ───────────────────────────────────────────────
 .PHONY: validate validate-api validate-web validate-e2e
 
-t212-demo-readonly-smoke: ## Run Trading 212 demo read-only smoke test; requires T212_API_KEY/T212_API_SECRET
+t212-demo-readonly-smoke: ## Run Trading 212 demo read-only smoke test; requires demo-specific credentials
 	@echo "$(YELLOW)→ Running Trading 212 demo read-only smoke test...$(RESET)"
 	cd apps/api && \
 		APP_MODE=demo \
@@ -633,7 +648,7 @@ validate-e2e: ## Run local Playwright E2E against mock market-data backend
 	@echo "$(YELLOW)→ Running migrations...$(RESET)"
 	$(MAKE) migrate
 	@echo "$(YELLOW)→ Seeding demo data...$(RESET)"
-	cd apps/api && APP_MODE=mock MARKET_DATA_PROVIDER=mock DISABLE_RATE_LIMITING=true ADMIN_EMAIL=admin@localhost ADMIN_PASSWORD=change-me PYTHONPATH=. $(PYTHON) -m app.db.seed
+	cd apps/api && APP_MODE=mock MARKET_DATA_PROVIDER=mock ADMIN_EMAIL=admin@localhost ADMIN_PASSWORD=change-me PYTHONPATH=. $(PYTHON) -m app.db.seed
 	@echo "$(YELLOW)→ Clearing local Redis rate-limit/cache state...$(RESET)"
 	@REDIS_PASSWORD=$$(grep -E '^REDIS_PASSWORD=' .env 2>/dev/null | tail -1 | cut -d= -f2-); \
 	if [ -n "$$REDIS_PASSWORD" ]; then \
@@ -648,7 +663,6 @@ validate-e2e: ## Run local Playwright E2E against mock market-data backend
 	cd apps/api; \
 	APP_MODE=mock \
 	MARKET_DATA_PROVIDER=mock \
-	DISABLE_RATE_LIMITING=true \
 	ADMIN_EMAIL=admin@localhost \
 	ADMIN_PASSWORD=change-me \
 	uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log & \
@@ -761,10 +775,10 @@ t212-demo-app-readonly: ## Start Trading 212 demo app in read-only mode on API :
 	@echo "  When finished run: make t212-demo-app-readonly-stop"
 
 
-t212-demo-app-readonly-connect: ## Store Trading 212 demo credentials from T212_API_KEY/T212_API_SECRET into local demo DB
+t212-demo-app-readonly-connect: ## Store demo-specific Trading 212 credentials in the encrypted local demo DB
 	@echo "$(YELLOW)→ Connecting Trading 212 demo credentials to local read-only demo DB...$(RESET)"
-	@test -n "$$T212_API_KEY" || (echo "$(RED)T212_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
-	@test -n "$$T212_API_SECRET" || (echo "$(RED)T212_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_KEY" || (echo "$(RED)T212_DEMO_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)T212_DEMO_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
 	@set -e; \
 		login_tmp=$$(mktemp); \
 		login_code=$$(curl -sS -o "$$login_tmp" -w '%{http_code}' -X POST http://127.0.0.1:$(T212_DEMO_API_PORT)/v1/auth/login -H 'Content-Type: application/json' -d '{"email":"admin@localhost","password":"change-me"}' || true); \
@@ -774,11 +788,8 @@ t212-demo-app-readonly-connect: ## Store Trading 212 demo credentials from T212_
 		fi; \
 		TOKEN=$$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1]))["access_token"])' "$$login_tmp"); \
 		rm -f "$$login_tmp"; \
-		payload_tmp=$$(mktemp); \
-		python3 -c 'import json, os, sys; json.dump({"api_key": os.environ["T212_API_KEY"].strip(), "api_secret": os.environ["T212_API_SECRET"].strip(), "environment": "demo"}, open(sys.argv[1], "w"))' "$$payload_tmp"; \
 		out_tmp=$$(mktemp); \
-		code=$$(curl -sS -o "$$out_tmp" -w '%{http_code}' -X POST http://127.0.0.1:$(T212_DEMO_API_PORT)/v1/broker/trading212/connect -H "Authorization: Bearer $$TOKEN" -H 'Content-Type: application/json' --data-binary "@$$payload_tmp" || true); \
-		rm -f "$$payload_tmp"; \
+		code=$$(python3 -c 'import json, os, sys; json.dump({"api_key": os.environ["T212_DEMO_API_KEY"].strip(), "api_secret": os.environ["T212_DEMO_API_SECRET"].strip(), "environment": "demo"}, sys.stdout)' | curl -sS -o "$$out_tmp" -w '%{http_code}' -X POST http://127.0.0.1:$(T212_DEMO_API_PORT)/v1/broker/trading212/connect -H "Authorization: Bearer $$TOKEN" -H 'Content-Type: application/json' --data-binary @- || true); \
 		if [ "$$code" != "200" ]; then \
 			echo "$(RED)/v1/broker/trading212/connect -> $$code$(RESET)"; \
 			cat "$$out_tmp"; echo; rm -f "$$out_tmp"; exit 1; \
@@ -901,8 +912,8 @@ t212-demo-controlled-order-arm: ## Disable kill switch only in disposable contro
 t212-demo-controlled-order-test: ## Place one tiny Trading 212 DEMO order; requires explicit env confirmation
 	@echo "$(YELLOW)→ Running controlled Trading 212 DEMO order test...$(RESET)"
 	@test "$$T212_DEMO_ORDER_CONFIRM" = "PLACE_DEMO_ORDER" || (echo "$(RED)Set T212_DEMO_ORDER_CONFIRM=PLACE_DEMO_ORDER to confirm this demo-order test.$(RESET)" && exit 1)
-	@test -n "$$T212_API_KEY" || (echo "$(RED)T212_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
-	@test -n "$$T212_API_SECRET" || (echo "$(RED)T212_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_KEY" || (echo "$(RED)T212_DEMO_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)T212_DEMO_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
 	@cd apps/api && \
 		APP_MODE=demo \
 		T212_ENVIRONMENT=demo \
@@ -929,11 +940,7 @@ t212-demo-controlled-multi-order: ## Place tiny bounded Trading 212 DEMO orders;
 	@echo "$(YELLOW)→ Running controlled Trading 212 DEMO multi-order placement smoke...$(RESET)"
 	@test "$$T212_DEMO_MULTI_ORDER_CONFIRM" = "PLACE_MULTI_DEMO_ORDERS" || (echo "$(RED)Set T212_DEMO_MULTI_ORDER_CONFIRM=PLACE_MULTI_DEMO_ORDERS to confirm this demo multi-order placement smoke.$(RESET)" && exit 1)
 	@test -n "$$T212_DEMO_MULTI_ORDER_PLAN" || (echo "$(RED)Set T212_DEMO_MULTI_ORDER_PLAN, for example AAPL_US_EQ:0.01,MSFT_US_EQ:0.01.$(RESET)" && exit 1)
-	@if [ -n "$$T212_DEMO_API_KEY" ] || [ -n "$$T212_DEMO_API_SECRET" ]; then \
-		test -n "$$T212_DEMO_API_KEY" -a -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)Both T212_DEMO_API_KEY and T212_DEMO_API_SECRET must be loaded when using demo-specific credentials.$(RESET)" && exit 1); \
-	else \
-		test -n "$$T212_API_KEY" -a -n "$$T212_API_SECRET" || (echo "$(RED)T212_DEMO_API_KEY/T212_DEMO_API_SECRET or T212_API_KEY/T212_API_SECRET must be loaded in this terminal.$(RESET)" && exit 1); \
-	fi
+	@test -n "$$T212_DEMO_API_KEY" -a -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)Both T212_DEMO_API_KEY and T212_DEMO_API_SECRET must be loaded.$(RESET)" && exit 1)
 	@test "$${LIVE_TRADING_ENABLED:-false}" != "true" || (echo "$(RED)LIVE_TRADING_ENABLED must be false.$(RESET)" && exit 1)
 	@test "$${DEMO_RECONCILIATION_SCHEDULER_ENABLED:-false}" != "true" || (echo "$(RED)DEMO_RECONCILIATION_SCHEDULER_ENABLED must be false for this placement smoke.$(RESET)" && exit 1)
 	@cd apps/api && \
@@ -953,8 +960,8 @@ t212-demo-controlled-multi-order: ## Place tiny bounded Trading 212 DEMO orders;
 t212-demo-reconcile-order: ## Reconcile one local Trading 212 DEMO order from read-only broker history
 	@echo "$(YELLOW)→ Running Trading 212 DEMO order reconciliation...$(RESET)"
 	@test "$$T212_DEMO_RECONCILE_CONFIRM" = "READ_DEMO_ORDER_HISTORY" || (echo "$(RED)Set T212_DEMO_RECONCILE_CONFIRM=READ_DEMO_ORDER_HISTORY to confirm this read-only demo history check.$(RESET)" && exit 1)
-	@test -n "$$T212_API_KEY" || (echo "$(RED)T212_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
-	@test -n "$$T212_API_SECRET" || (echo "$(RED)T212_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_KEY" || (echo "$(RED)T212_DEMO_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)T212_DEMO_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
 	@if [ -z "$$T212_DEMO_RECONCILE_ORDER_ID" ] && [ -z "$$T212_DEMO_RECONCILE_BROKER_ORDER_ID" ]; then \
 		echo "$(RED)Set T212_DEMO_RECONCILE_ORDER_ID or T212_DEMO_RECONCILE_BROKER_ORDER_ID.$(RESET)"; \
 		exit 1; \
@@ -973,8 +980,8 @@ t212-demo-reconcile-order: ## Reconcile one local Trading 212 DEMO order from re
 t212-demo-reconciliation-worker: ## Run one read-only Trading 212 DEMO reconciliation worker pass
 	@echo "$(YELLOW)→ Running Trading 212 DEMO reconciliation worker...$(RESET)"
 	@test "$$T212_DEMO_RECONCILE_CONFIRM" = "READ_DEMO_ORDER_HISTORY" || (echo "$(RED)Set T212_DEMO_RECONCILE_CONFIRM=READ_DEMO_ORDER_HISTORY to confirm this read-only demo history check.$(RESET)" && exit 1)
-	@test -n "$$T212_API_KEY" || (echo "$(RED)T212_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
-	@test -n "$$T212_API_SECRET" || (echo "$(RED)T212_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_KEY" || (echo "$(RED)T212_DEMO_API_KEY is not loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)T212_DEMO_API_SECRET is not loaded in this terminal.$(RESET)" && exit 1)
 	@test "$${LIVE_TRADING_ENABLED:-false}" != "true" || (echo "$(RED)LIVE_TRADING_ENABLED must be false.$(RESET)" && exit 1)
 	@cd apps/api && \
 		DATABASE_URL="$${DATABASE_URL:-sqlite+aiosqlite:///$(T212_DEMO_ORDER_DB_PATH)}" \
@@ -990,8 +997,8 @@ t212-demo-reconciliation-worker: ## Run one read-only Trading 212 DEMO reconcili
 t212-demo-multi-order-reconciliation-smoke: ## Run read-only Trading 212 DEMO multi-order reconciliation smoke
 	@echo "$(YELLOW)→ Running Trading 212 DEMO multi-order reconciliation smoke...$(RESET)"
 	@test "$$T212_DEMO_RECONCILE_CONFIRM" = "READ_DEMO_ORDER_HISTORY" || (echo "$(RED)Set T212_DEMO_RECONCILE_CONFIRM=READ_DEMO_ORDER_HISTORY to confirm this read-only demo history check.$(RESET)" && exit 1)
-	@test -n "$$T212_DEMO_API_KEY" -o -n "$$T212_API_KEY" || (echo "$(RED)T212_DEMO_API_KEY or T212_API_KEY must be loaded in this terminal.$(RESET)" && exit 1)
-	@test -n "$$T212_DEMO_API_SECRET" -o -n "$$T212_API_SECRET" || (echo "$(RED)T212_DEMO_API_SECRET or T212_API_SECRET must be loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_KEY" || (echo "$(RED)T212_DEMO_API_KEY must be loaded in this terminal.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)T212_DEMO_API_SECRET must be loaded in this terminal.$(RESET)" && exit 1)
 	@test "$${LIVE_TRADING_ENABLED:-false}" != "true" || (echo "$(RED)LIVE_TRADING_ENABLED must be false.$(RESET)" && exit 1)
 	@test "$${DEMO_RECONCILIATION_SCHEDULER_ENABLED:-false}" != "true" || (echo "$(RED)DEMO_RECONCILIATION_SCHEDULER_ENABLED must be false for this manual smoke.$(RESET)" && exit 1)
 	@cd apps/api && \

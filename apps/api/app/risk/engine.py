@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import desc, select
 
 from app.db.models import AppSettings, Order, RiskEvent, RiskProfile, Trade
+from app.execution.state_machine import ACTIVE_ORDER_STATUSES
 from app.services.feed_health import get_feed_health_snapshot
 
 if TYPE_CHECKING:
@@ -124,7 +125,7 @@ class RiskEngine:
             .where(
                 Order.ticker == ticker,
                 Order.side == side,
-                Order.status.in_(["pending_intent", "submitted", "accepted"]),
+                Order.status.in_(ACTIVE_ORDER_STATUSES),
             )
             .limit(1)
         )

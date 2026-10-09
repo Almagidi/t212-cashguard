@@ -7,13 +7,67 @@ generating thousands of random inputs and checking invariants.
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
-from hypothesis import assume, given
+from hypothesis import assume, example, given
 from hypothesis import settings as h_settings
 from hypothesis import strategies as st
 
 from app.broker.trading212 import make_sell_quantity
+from app.market_data.exchange_calendar import calendar_for_venue
+from app.market_data.mock_provider import MockMarketDataProvider
+
+
+@given(as_of_date=st.dates(min_value=date(2026, 1, 1), max_value=date(2026, 12, 31)))
+@example(as_of_date=date(2026, 3, 8))
+@example(as_of_date=date(2026, 3, 9))
+@example(as_of_date=date(2026, 7, 3))
+@example(as_of_date=date(2026, 11, 1))
+@example(as_of_date=date(2026, 11, 2))
+@example(as_of_date=date(2026, 11, 27))
+@h_settings(max_examples=60)
+def test_orb_breakout_profile_is_valid_xnys_history_without_future_bars(
+    as_of_date: date,
+) -> None:
+    as_of = datetime.combine(as_of_date, time(18), UTC)
+    rows = MockMarketDataProvider(profile="orb_breakout", seed=212)._orb_breakout_bars(
+        "NVDA",
+        interval_minutes=5,
+        bars=100,
+        as_of=as_of,
+    )
+    calendar = calendar_for_venue("XNYS")
+    timestamps = [datetime.fromisoformat(str(row["timestamp"])) for row in rows]
+    local_date = as_of.astimezone(ZoneInfo(calendar.exchange_timezone)).date()
+    sessions = calendar.expected_sessions(local_date - timedelta(days=14), local_date)
+    expected_session = calendar.session_for_timestamp(as_of) or sessions[-1]
+    previous_session = calendar.previous_session(expected_session)
+    current_timestamps = timestamps[1:]
+
+    assert rows
+    assert timestamps == sorted(set(timestamps))
+    assert all(timestamp + timedelta(minutes=5) <= as_of for timestamp in timestamps)
+    assert all(calendar.session_for_timestamp(timestamp) is not None for timestamp in timestamps)
+    assert timestamps[0] == calendar.session_close(previous_session) - timedelta(minutes=5)
+    assert calendar.is_terminal_bar(previous_session, timestamps[0], interval_minutes=5)
+    assert current_timestamps
+    assert current_timestamps[0] == calendar.session_open(expected_session)
+    assert all(
+        calendar.session_for_timestamp(timestamp) == expected_session
+        for timestamp in current_timestamps
+    )
+    assert all(
+        Decimal(str(row["low"])) > 0
+        and Decimal(str(row["low"]))
+        <= min(Decimal(str(row["open"])), Decimal(str(row["close"])))
+        <= max(Decimal(str(row["open"])), Decimal(str(row["close"])))
+        <= Decimal(str(row["high"]))
+        and Decimal(str(row["volume"])) > 0
+        for row in rows
+    )
+
 
 # ── Cash guard invariants ─────────────────────────────────────────────────────
 
@@ -46,9 +100,9 @@ def test_cash_guard_never_overspends(quantity, price, available):
     cost = quantity * price
     if allowed:
         # If allowed, cost must not exceed available (with tiny fp tolerance)
-        assert cost <= available + Decimal(
-            "0.000001"
-        ), f"VIOLATION: allowed order with cost={cost} > available={available}"
+        assert cost <= available + Decimal("0.000001"), (
+            f"VIOLATION: allowed order with cost={cost} > available={available}"
+        )
 
 
 @given(
@@ -141,9 +195,9 @@ def test_orb_quantity_never_exceeds_cash(entry, stop, account_value, available_c
     qty = calc_orb_quantity(entry, stop, account_value, available_cash, risk_pct)
     cost = qty * entry
 
-    assert cost <= available_cash + Decimal(
-        "0.000001"
-    ), f"VIOLATION: calculated qty={qty} costs {cost} > available_cash={available_cash}"
+    assert cost <= available_cash + Decimal("0.000001"), (
+        f"VIOLATION: calculated qty={qty} costs {cost} > available_cash={available_cash}"
+    )
 
 
 @given(

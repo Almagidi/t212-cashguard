@@ -1,21 +1,8 @@
-import fs from 'node:fs'
-import path from 'node:path'
 import { expect, type Page } from '@playwright/test'
+import { guardedApiFetch } from './rate-limit-guard'
 
-function readEnvValue(name: string): string | undefined {
-  const envPath = path.resolve(process.cwd(), '..', '..', '.env')
-
-  if (!fs.existsSync(envPath)) return undefined
-
-  const content = fs.readFileSync(envPath, 'utf8')
-  const match = content.match(new RegExp(`^${name}=(.*)$`, 'm'))
-  if (!match) return undefined
-
-  return match[1]?.trim().replace(/^['"]|['"]$/g, '')
-}
-
-export const adminEmail = process.env.E2E_ADMIN_EMAIL ?? readEnvValue('ADMIN_EMAIL') ?? 'admin@localhost'
-export const adminPassword = process.env.E2E_ADMIN_PASSWORD ?? readEnvValue('ADMIN_PASSWORD') ?? 'change-me'
+export const adminEmail = process.env.E2E_ADMIN_EMAIL ?? 'admin@localhost'
+export const adminPassword = process.env.E2E_ADMIN_PASSWORD ?? 'change-me'
 
 const apiUrl = (process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
 const testUser = {
@@ -98,17 +85,7 @@ export async function installApiProxy(
       return
     }
 
-    let response
-    try {
-      response = await page.request.fetch(request)
-    } catch (error) {
-      await page.waitForTimeout(250)
-      response = await page.request.fetch(request).catch((retryError) => {
-        throw new Error(
-          `API proxy failed for ${method} ${pathname}: ${String(retryError)}; first error: ${String(error)}`,
-        )
-      })
-    }
+    const response = await guardedApiFetch(page.request, request)
     const headers = response.headers()
     await route.fulfill({
       response,
@@ -146,7 +123,8 @@ export async function ensureLoggedIn(page: Page) {
   await page.goto('/auth/login')
 
   if (!cachedToken) {
-    const response = await page.request.post(`${apiUrl}/v1/auth/login`, {
+    const response = await guardedApiFetch(page.request, `${apiUrl}/v1/auth/login`, {
+      method: 'POST',
       data: { email: adminEmail, password: adminPassword },
     })
     expect(response.ok(), `login bootstrap failed with status ${response.status()}: ${await response.text()}`).toBe(true)

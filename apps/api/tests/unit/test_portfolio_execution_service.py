@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
 from app.db.models import AppSettings, Order, RiskProfile, Signal, Strategy
+from app.market_data.exchange_calendar import calendar_for_venue
 from app.services import portfolio_execution_service as portfolio_service_module
 from app.services.portfolio_execution_service import PortfolioExecutionService
 
@@ -42,9 +44,11 @@ class StaticPortfolioProvider:
         *,
         multiplier: int = 1,
         timespan: str = "day",
+        from_date: date | None = None,
+        to_date: date | None = None,
         limit: int = 50,
     ) -> list[ProviderBar]:
-        del multiplier, timespan
+        del multiplier, timespan, from_date, to_date
         base_prices = {
             "SPY": Decimal("510"),
             "QQQ": Decimal("440"),
@@ -59,15 +63,23 @@ class StaticPortfolioProvider:
             "AAPL": Decimal("0.80"),
             "MSFT": Decimal("0.75"),
         }
-        start = self._now - timedelta(days=self._days)
+        calendar = calendar_for_venue("XNYS")
+        local_date = self._now.astimezone(ZoneInfo(calendar.exchange_timezone)).date()
+        sessions = calendar.expected_sessions(
+            local_date - timedelta(days=self._days * 2),
+            local_date,
+        )[-self._days :]
         price = base_prices.get(ticker, Decimal("100"))
         all_bars: list[ProviderBar] = []
-        for offset in range(self._days):
-            day = start + timedelta(days=offset)
+        for offset, session in enumerate(sessions):
             close = price + (slope.get(ticker, Decimal("0.2")) * Decimal(str(offset)))
             all_bars.append(
                 ProviderBar(
-                    timestamp=day,
+                    timestamp=datetime.combine(
+                        session.local_date,
+                        time(0),
+                        tzinfo=session.open_at.tzinfo,
+                    ).astimezone(UTC),
                     open=close - Decimal("1.5"),
                     high=close + Decimal("2.0"),
                     low=close - Decimal("2.0"),
@@ -133,7 +145,11 @@ async def seed_portfolio_strategy(
 
 @pytest.mark.asyncio
 async def test_portfolio_service_creates_dry_run_orders(db, monkeypatch):
-    monkeypatch.setattr(portfolio_service_module, "get_live_provider", lambda: StaticPortfolioProvider(tickers=["SPY", "QQQ", "IWM"]))
+    monkeypatch.setattr(
+        portfolio_service_module,
+        "get_live_provider",
+        lambda: StaticPortfolioProvider(tickers=["SPY", "QQQ", "IWM"]),
+    )
     monkeypatch.setattr(settings, "APP_MODE", "mock")
     strategy = await seed_portfolio_strategy(
         db,
@@ -143,6 +159,7 @@ async def test_portfolio_service_creates_dry_run_orders(db, monkeypatch):
     )
 
     service = PortfolioExecutionService(db)
+    monkeypatch.setattr(service, "_decision_now", lambda: datetime(2026, 4, 10, 15, 0, tzinfo=UTC))
     summary = await service.run_all_enabled(force=True)
 
     assert summary["strategies_rebalanced"] == 1
@@ -162,7 +179,11 @@ async def test_portfolio_service_creates_dry_run_orders(db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_portfolio_service_skips_when_not_due(db, monkeypatch):
-    monkeypatch.setattr(portfolio_service_module, "get_live_provider", lambda: StaticPortfolioProvider(tickers=["SPY", "QQQ", "IWM"]))
+    monkeypatch.setattr(
+        portfolio_service_module,
+        "get_live_provider",
+        lambda: StaticPortfolioProvider(tickers=["SPY", "QQQ", "IWM"]),
+    )
     monkeypatch.setattr(settings, "APP_MODE", "mock")
     await seed_portfolio_strategy(
         db,
@@ -175,6 +196,7 @@ async def test_portfolio_service_skips_when_not_due(db, monkeypatch):
     )
 
     service = PortfolioExecutionService(db)
+    monkeypatch.setattr(service, "_decision_now", lambda: datetime(2026, 4, 10, 15, 0, tzinfo=UTC))
     summary = await service.run_all_enabled(force=False)
 
     assert summary["strategies_rebalanced"] == 0

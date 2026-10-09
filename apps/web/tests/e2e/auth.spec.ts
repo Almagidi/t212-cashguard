@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './test'
 import { adminEmail, clearClientAuth, expectTopbarTitle, loginThroughUi } from './helpers'
 
 test.describe('Authentication', () => {

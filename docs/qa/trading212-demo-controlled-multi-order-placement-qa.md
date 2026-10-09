@@ -32,12 +32,7 @@ T212_DEMO_API_KEY=...
 T212_DEMO_API_SECRET=...
 ```
 
-Fallback credentials, only if the demo-specific names are absent:
-
-```bash
-T212_API_KEY=...
-T212_API_SECRET=...
-```
+Generic and live credential variables cannot satisfy this demo workflow.
 
 Placement gates:
 

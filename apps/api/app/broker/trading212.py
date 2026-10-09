@@ -65,6 +65,7 @@ class Trading212Adapter:
         self.api_key = api_key
         self.api_secret = api_secret
         self.environment = environment
+        self.account_scope: str | None = None
         self.base_url = broker_base_url_for(environment)
         self._client: httpx.AsyncClient | None = None
         self._rate_limit_reset_at: float = 0.0
