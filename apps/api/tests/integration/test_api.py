@@ -4,15 +4,66 @@ Integration tests: full API flows via HTTP client.
 
 from __future__ import annotations
 
+import json
+import os
+import threading
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
+
+
+@pytest.fixture
+def local_telegram_delivery(monkeypatch):
+    """Keep real alert serialization/HTTP delivery inside this test's loopback service."""
+    import httpx
+
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            requests.append((self.path, json.loads(body)))
+            response = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", int(os.environ.get("T212_TEST_TELEGRAM_PORT", "0"))), Handler
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    original_send = httpx.AsyncClient.send
+    expected_url = "https://api.telegram.org/bottest-bot-token/sendMessage"
+
+    async def send_to_local_service(client, request, *args, **kwargs):
+        if str(request.url) == expected_url:
+            assert request.method == "POST"
+            request.url = httpx.URL(
+                f"http://127.0.0.1:{server.server_port}/bottest-bot-token/sendMessage"
+            )
+        return await original_send(client, request, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send_to_local_service)
+    try:
+        yield requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 class FakeTrading212Adapter:
@@ -2724,6 +2775,7 @@ class TestBrokerExecutionFlow:
         client: AsyncClient,
         auth_headers: dict,
         monkeypatch,
+        local_telegram_delivery,
     ):
         from app.core.config import settings
 
@@ -2795,3 +2847,10 @@ class TestBrokerExecutionFlow:
         assert order["is_dry_run"] is False
         assert order["status"] == "filled"
         assert order["broker_order_id"].startswith("LIVE-")
+        assert len(local_telegram_delivery) == 1
+        path, message = local_telegram_delivery[0]
+        assert path == "/bottest-bot-token/sendMessage"
+        assert message["chat_id"] == "12345"
+        assert "Abnormal Slippage: MSFT" in message["text"]
+        assert message["parse_mode"] == "Markdown"
+        assert message["disable_web_page_preview"] is True

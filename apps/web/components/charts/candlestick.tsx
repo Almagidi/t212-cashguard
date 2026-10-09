@@ -248,12 +248,11 @@ export function CandlestickDemo({ ticker = 'AAPL', className }: { ticker?: strin
   // Generate plausible mock OHLC data
   const data: OHLCBar[] = []
   let price = 178.50
-  const now = new Date()
-  now.setHours(9, 30, 0, 0)
+  const sessionOpenMinutes = 9 * 60 + 30
 
   for (let i = 0; i < 30; i++) {
-    const t = new Date(now.getTime() + i * 15 * 60000)
-    const label = t.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+    const minutes = sessionOpenMinutes + i * 15
+    const label = `${String(Math.floor(minutes / 60) % 24).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
     const change = (deterministicUnit(ticker, i * 4) - 0.48) * 1.2
     const open   = price
     const close  = Math.max(open + change, 1)

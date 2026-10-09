@@ -49,7 +49,7 @@ dev: ## Start backend and frontend in development mode (requires infra to be run
 
 up: ## Start the full Docker Compose stack
 	@echo "$(YELLOW)→ Starting full Docker stack...$(RESET)"
-	docker-compose up -d
+	docker compose up -d
 	@echo "$(GREEN)✓ Stack running$(RESET)"
 	@echo "  Frontend: http://localhost:3000"
 	@echo "  Backend:  http://localhost:8000"
@@ -96,7 +96,7 @@ test-backend: ## Run backend tests only
 test-frontend: ## Run frontend tests only
 	cd apps/web && npm run test -- --watchAll=false --coverage
 
-lint: ## Run linters (ruff for backend, eslint for frontend)
+lint: ## Run linters (ruff for backend, oxlint for frontend)
 	@echo "$(YELLOW)→ Linting backend...$(RESET)"
 	cd apps/api && python -m ruff check app/ tests/
 	@echo "$(YELLOW)→ Linting frontend...$(RESET)"
@@ -119,9 +119,9 @@ e2e: ## Run Playwright end-to-end tests
 	cd apps/web && npx playwright test
 	@echo "$(GREEN)✓ E2E tests complete$(RESET)"
 
-e2e-operator: ## Run mock-mode operator dashboard readiness e2e test
+e2e-operator: ## Run operator dashboard readiness e2e test (needs the mock API on :8000)
 	@echo "$(YELLOW)→ Running operator dashboard readiness e2e test...$(RESET)"
-	cd apps/web && E2E_MOCK_API=1 E2E_WEB_PORT=3100 BASE_URL=http://localhost:3100 NEXT_PUBLIC_APP_MODE=mock NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 npx playwright test tests/e2e/operator.spec.ts
+	cd apps/web && E2E_WEB_PORT=3100 BASE_URL=http://localhost:3100 NEXT_PUBLIC_APP_MODE=mock NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 npx playwright test tests/e2e/operator.spec.ts
 	@echo "$(GREEN)✓ Operator dashboard readiness e2e complete$(RESET)"
 
 logs: ## Tail all Docker logs
@@ -648,7 +648,7 @@ validate-e2e: ## Run local Playwright E2E against mock market-data backend
 	@echo "$(YELLOW)→ Running migrations...$(RESET)"
 	$(MAKE) migrate
 	@echo "$(YELLOW)→ Seeding demo data...$(RESET)"
-	cd apps/api && APP_MODE=mock MARKET_DATA_PROVIDER=mock DISABLE_RATE_LIMITING=true ADMIN_EMAIL=admin@localhost ADMIN_PASSWORD=change-me PYTHONPATH=. $(PYTHON) -m app.db.seed
+	cd apps/api && APP_MODE=mock MARKET_DATA_PROVIDER=mock ADMIN_EMAIL=admin@localhost ADMIN_PASSWORD=change-me PYTHONPATH=. $(PYTHON) -m app.db.seed
 	@echo "$(YELLOW)→ Clearing local Redis rate-limit/cache state...$(RESET)"
 	@REDIS_PASSWORD=$$(grep -E '^REDIS_PASSWORD=' .env 2>/dev/null | tail -1 | cut -d= -f2-); \
 	if [ -n "$$REDIS_PASSWORD" ]; then \
@@ -663,7 +663,6 @@ validate-e2e: ## Run local Playwright E2E against mock market-data backend
 	cd apps/api; \
 	APP_MODE=mock \
 	MARKET_DATA_PROVIDER=mock \
-	DISABLE_RATE_LIMITING=true \
 	ADMIN_EMAIL=admin@localhost \
 	ADMIN_PASSWORD=change-me \
 	uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log & \
