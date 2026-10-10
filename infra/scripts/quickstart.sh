@@ -22,10 +22,12 @@ heading "Checking requirements..."
 
 command -v docker >/dev/null 2>&1 || error "Docker is required. Install from https://docs.docker.com/get-docker/"
 command -v python3 >/dev/null 2>&1 || error "Python 3.11+ is required"
-command -v node >/dev/null 2>&1 || error "Node.js 20+ is required"
+REQUIRED_NODE_MAJOR=24
+command -v node >/dev/null 2>&1 || error "Node.js $REQUIRED_NODE_MAJOR is required (see .nvmrc)"
 
 PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 NODE_VERSION=$(node --version | cut -c2-)
+[ "${NODE_VERSION%%.*}" = "$REQUIRED_NODE_MAJOR" ] || error "Node.js $REQUIRED_NODE_MAJOR.x is required, found $NODE_VERSION (see .nvmrc)"
 
 info "Docker: $(docker --version | cut -d' ' -f3 | tr -d ',')"
 info "Python: $PYTHON_VERSION"
