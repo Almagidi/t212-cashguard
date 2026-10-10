@@ -189,6 +189,8 @@ jobs:
 
       # Real Celery worker, Redis and PostgreSQL in throwaway containers the scripts
       # create and remove; mock market data; broker and network tripwires armed.
+      # The scripts use the same image tags as this job's services, so nothing is
+      # pulled again. tests/unit/test_ci_real_worker_proof_static.py guards these steps.
       - name: Real-worker proof - scheduled paper fill and duplicate dispatch
         run: python scripts/real_worker_paper_smoke.py
 
