@@ -122,7 +122,7 @@ class KrakenHTFBreakoutStrategy:
 
         # ── Choppiness filter ─────────────────────────────────────────────────
         chop = choppiness_index(bars, self.params["atr_period"])
-        if float(chop) >= self.params["max_choppiness"]:
+        if chop is None or float(chop) >= self.params["max_choppiness"]:
             return None
 
         # ── Volume confirmation ───────────────────────────────────────────────

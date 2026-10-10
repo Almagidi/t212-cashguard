@@ -9,7 +9,7 @@ Inputs are lists of dicts with OHLCV keys.
 from __future__ import annotations
 
 import math
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from typing import NamedTuple
 
 
@@ -199,6 +199,9 @@ def is_trending_down(bars: list[Bar], fast: int = 9, slow: int = 21) -> bool:
     return fast_ema < slow_ema
 
 
+CHOPPY_REGIME_THRESHOLD = Decimal("61.8")
+
+
 def market_regime(bars: list[Bar], atr_period: int = 14) -> str:
     """
     Classify current market regime for a symbol.
@@ -207,33 +210,21 @@ def market_regime(bars: list[Bar], atr_period: int = 14) -> str:
       'trending_up'   — clear uptrend, trade longs
       'trending_down' — clear downtrend, avoid longs
       'choppy'        — range-bound, avoid breakout strategies
+      'neutral'       — neither choppy nor a confirmed trend
+      'unknown'       — the Choppiness Index cannot be computed (see `choppiness_index`);
+                        callers must not treat this as permission to trade
+
+    `atr_period` is the Choppiness Index period, so a regime needs `atr_period + 1` bars.
     """
-    if len(bars) < 30:
+    chop = choppiness_index(bars, atr_period)
+    if chop is None:
         return "unknown"
-
-    # Trend direction via EMA
-    trending_up = is_trending_up(bars)
-    trending_dn = is_trending_down(bars)
-
-    # Choppiness: measure how much price moves vs its range
-    # Choppiness Index = 100 * ATR(n) * sqrt(n) / (highest_high - lowest_low)
-    n = min(14, len(bars))
-    recent = bars[-n:]
-    highest = max(b.high for b in recent)
-    lowest = min(b.low for b in recent)
-    price_range = highest - lowest
-    atr_val = atr(bars, atr_period)
-
-    if price_range <= 0 or atr_val <= 0:
-        return "unknown"
-
-    chop = float(100 * float(atr_val) * math.sqrt(n) / float(price_range))
     # Choppiness Index: >61.8 = choppy, <38.2 = trending
-    if chop > 61.8:
+    if chop > CHOPPY_REGIME_THRESHOLD:
         return "choppy"
-    if trending_up:
+    if is_trending_up(bars):
         return "trending_up"
-    if trending_dn:
+    if is_trending_down(bars):
         return "trending_down"
     return "neutral"
 
@@ -329,25 +320,61 @@ def trailing_stop_price(
 # ── Choppiness Index (standalone) ────────────────────────────────────────────
 
 
-def choppiness_index(bars: list[Bar], period: int = 14) -> Decimal:
+CHOPPINESS_INDEX_PERIOD = 14
+_CHOPPINESS_QUANTUM = Decimal("0.01")
+_CHOPPINESS_PRECISION = 28
+
+
+def choppiness_index(bars: list[Bar], period: int = CHOPPINESS_INDEX_PERIOD) -> Decimal | None:
     """
-    Choppiness Index over `period` bars.
-    Range: 0-100.
-      > 61.8  →  choppy / ranging (avoid breakout strategies)
-      < 38.2  →  strongly trending (favour momentum / ORB)
-    Formula: 100 * ATR(n) * √n / (highest_high - lowest_low)
+    Choppiness Index (E. W. Dreiss) of the last `period` bars.
+
+        TR_i = max(H_i - L_i, |H_i - C_(i-1)|, |L_i - C_(i-1)|)
+        CHOP = 100 * log10(sum(TR over the last n bars) / (max H - min L over them)) / log10(n)
+
+    Conventional reading: above 61.8 choppy, below 38.2 trending. The value is never
+    negative. It is at most 100 unless the first true range includes a gap from the close
+    before the window; it is not clamped.
+
+    Returns None, never a neutral number, when the index cannot be computed: fewer than
+    `period + 1` bars (each true range needs the previous close), `period` below 2, a
+    window with no price range, or a malformed bar among those used (a non-finite price,
+    a high below the low, or a close outside the bar's own low-high range). A malformed
+    bar must not be scored: a close outside its range can drive the value far below zero,
+    which every consumer would read as a strong trend. Bars carry no timestamps, so their
+    order and spacing are the caller's responsibility.
+
+    Computed in Decimal at 28 significant digits and rounded half-even to two places.
     """
-    if len(bars) < period + 1:
-        return Decimal("50")  # neutral default when not enough data
-    recent = bars[-period:]
-    highest = max(b.high for b in recent)
-    lowest = min(b.low for b in recent)
-    price_range = highest - lowest
-    atr_val = atr(bars, period)
-    if price_range <= 0 or atr_val <= 0:
-        return Decimal("50")
-    chop = float(100 * float(atr_val) * math.sqrt(period) / float(price_range))
-    return Decimal(str(round(min(max(chop, 0.0), 100.0), 2)))
+    if period < 2 or len(bars) < period + 1:
+        return None
+    window = bars[-period:]
+    prior_close = bars[-period - 1].close
+    if not prior_close.is_finite():
+        return None
+    for bar in window:
+        if not (bar.high.is_finite() and bar.low.is_finite() and bar.close.is_finite()):
+            return None
+        if not bar.low <= bar.close <= bar.high:
+            return None
+
+    with localcontext() as context:
+        context.prec = _CHOPPINESS_PRECISION
+        context.rounding = ROUND_HALF_EVEN
+        total_true_range = Decimal("0")
+        previous_close = prior_close
+        for bar in window:
+            total_true_range += true_range(bar, previous_close)
+            previous_close = bar.close
+        price_range = max(bar.high for bar in window) - min(bar.low for bar in window)
+        # With well-formed bars the true ranges cover the whole range, so their sum cannot
+        # be smaller; refuse to score anything that breaks that.
+        if price_range <= 0 or total_true_range < price_range:
+            return None
+
+        ratio = total_true_range / price_range
+        value = Decimal("100") * ratio.log10() / Decimal(period).log10()
+        return value.quantize(_CHOPPINESS_QUANTUM)
 
 
 # ── Adaptive ATR multiplier ───────────────────────────────────────────────────
