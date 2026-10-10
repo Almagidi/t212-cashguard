@@ -325,7 +325,7 @@ def run_recovery() -> dict[str, Any]:
                     == 0
                 ),
             )
-            smoke._run([str(API_ROOT / ".venv/bin/alembic"), "upgrade", "head"], env=env)
+            smoke._run(smoke.alembic_command("upgrade", "head"), env=env)
             asyncio.run(smoke._seed_database())
             ownership = asyncio.run(_prove_expired_owner_cannot_delete_successor())
 

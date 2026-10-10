@@ -146,6 +146,11 @@ def _run(args: list[str], *, env: dict[str, str] | None = None) -> str:
     ).stdout
 
 
+def alembic_command(*args: str) -> list[str]:
+    """Alembic through the interpreter running the harness, wherever it is installed."""
+    return [sys.executable, "-m", "alembic", *args]
+
+
 def _wait(label: str, timeout: int, probe: Any) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -420,7 +425,7 @@ def run_smoke() -> dict[str, Any]:
                     == 0
                 ),
             )
-            _run([str(API_ROOT / ".venv/bin/alembic"), "upgrade", "head"], env=env)
+            _run(alembic_command("upgrade", "head"), env=env)
             asyncio.run(_seed_database())
             with worker_path.open("w") as worker_log, monitor_path.open("w") as monitor_log:
                 worker = subprocess.Popen(

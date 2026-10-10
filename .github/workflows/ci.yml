@@ -187,6 +187,20 @@ jobs:
           python -m alembic upgrade head
           echo "Migration round-trip passed"
 
+      # Real Celery worker, Redis and PostgreSQL in throwaway containers the scripts
+      # create and remove; mock market data; broker and network tripwires armed.
+      - name: Real-worker proof - scheduled paper fill and duplicate dispatch
+        run: python scripts/real_worker_paper_smoke.py
+
+      - name: Real-worker proof - kill switch, repeated decisions and cleanup failure
+        run: python scripts/real_worker_paper_chaos.py
+
+      - name: Real-worker proof - two-worker exclusion and lock recovery
+        run: python scripts/real_worker_lock_recovery.py
+
+      - name: Real-worker proof - Redis, PostgreSQL and worker interruption recovery
+        run: python scripts/real_worker_interruption_recovery.py
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest

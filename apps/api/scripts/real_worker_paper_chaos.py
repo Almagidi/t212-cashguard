@@ -411,7 +411,7 @@ def run_chaos() -> dict[str, Any]:
             created_containers.append(resources.redis_container)
             interruption._wait_postgres(resources.postgres_container)
             interruption._wait_redis(resources.redis_container)
-            smoke._run([str(API_ROOT / ".venv/bin/alembic"), "upgrade", "head"], env=env)
+            smoke._run(smoke.alembic_command("upgrade", "head"), env=env)
 
             from app.workers.celery_app import celery_app
 

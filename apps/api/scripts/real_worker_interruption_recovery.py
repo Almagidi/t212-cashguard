@@ -380,7 +380,7 @@ def run_recovery() -> dict[str, Any]:
             created_containers.append(resources.redis_container)
             _wait_postgres(resources.postgres_container)
             _wait_redis(resources.redis_container)
-            smoke._run([str(API_ROOT / ".venv/bin/alembic"), "upgrade", "head"], env=env)
+            smoke._run(smoke.alembic_command("upgrade", "head"), env=env)
 
             from app.workers.celery_app import celery_app
 
@@ -489,8 +489,8 @@ def run_recovery() -> dict[str, Any]:
                 raise smoke.EvidenceFailure("PostgreSQL outage was not visible as task failure")
             _container(resources.postgres_container, "start")
             _wait_postgres(resources.postgres_container)
-            heads = smoke._run([str(API_ROOT / ".venv/bin/alembic"), "heads"], env=env).split()[0]
-            current = smoke._run([str(API_ROOT / ".venv/bin/alembic"), "current"], env=env)
+            heads = smoke._run(smoke.alembic_command("heads"), env=env).split()[0]
+            current = smoke._run(smoke.alembic_command("current"), env=env)
             if heads not in current:
                 raise smoke.EvidenceFailure(
                     "PostgreSQL schema was not at Alembic head after restart"
