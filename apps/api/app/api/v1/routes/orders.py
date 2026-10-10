@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
@@ -294,6 +294,7 @@ async def list_orders(
 @router.post("", response_model=OrderOut, status_code=201)
 async def place_order(
     body: OrderCreate,
+    response: Response,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ) -> Any:
@@ -361,6 +362,16 @@ async def place_order(
             available_cash=available_cash,
             estimated_price=estimated_price,
         )
+        if order.status != "pending_intent":
+            # An identical order already exists (for example one whose submission outcome
+            # is still unknown). It is reported, never sent a second time.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"An identical order already exists with status {order.status}; "
+                    "it was not submitted again."
+                ),
+            )
         try:
             order = await engine.submit_order(order)
         except SafetyPolicyViolation as exc:
@@ -377,6 +388,9 @@ async def place_order(
         )
     )
     await db.flush()
+    if order.status == "submission_unknown":
+        # Dispatched, outcome unknown: accepted for processing, not confirmed as placed.
+        response.status_code = 202
     hydrated = await repo.get_by_id(order.id)
     return hydrated or order
 

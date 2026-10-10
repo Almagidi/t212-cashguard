@@ -24,6 +24,43 @@ BROKER_PROTOCOL_WRITE_METHODS: frozenset[str] = frozenset(
 )
 
 
+class BrokerSubmissionError(Exception):
+    """An order-placement request did not end in an acknowledged order.
+
+    Subclasses state what is known about transmission. They carry only the failure's type
+    name and HTTP status, never a broker response body or request payload.
+    """
+
+    summary = "Broker order submission failed"
+
+    def __init__(self, *, error_type: str, http_status: int | None = None) -> None:
+        self.error_type = error_type
+        self.http_status = http_status
+        status = f", HTTP {http_status}" if http_status is not None else ""
+        super().__init__(f"{self.summary} ({error_type}{status}).")
+
+
+class BrokerSubmissionNotTransmitted(BrokerSubmissionError):
+    """The request provably never left this process; no order can exist at the broker."""
+
+    summary = "Broker order request was not transmitted"
+
+
+class BrokerSubmissionRejected(BrokerSubmissionError):
+    """The broker received the request and definitively refused it; no order was created."""
+
+    summary = "Broker refused the order request"
+
+
+class BrokerSubmissionAmbiguous(BrokerSubmissionError):
+    """The request may have reached the broker and no authoritative outcome is known.
+
+    An order may exist. The caller must not resubmit; only reconciliation can resolve it.
+    """
+
+    summary = "Broker order submission outcome is unknown"
+
+
 class BrokerEnvironmentProtocol(Protocol):
     """Minimum environment metadata used by safety and reconciliation gates."""
 

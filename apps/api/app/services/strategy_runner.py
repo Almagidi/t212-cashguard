@@ -54,6 +54,7 @@ from app.db.models import AppSettings, AuditLog, BrokerConnection, Signal, Strat
 from app.db.repositories.venue_config_repo import VenueConfigRepository
 from app.execution.engine import ExecutionEngine
 from app.execution.paper_engine import PaperExecutionError
+from app.execution.state_machine import ACTIVE_ORDER_STATUSES
 from app.market_data.exchange_calendar import calendar_for_venue
 from app.risk.engine import RiskEngine, RiskViolation
 from app.services.alert_service import (
@@ -195,6 +196,11 @@ class StrategyRunner:
             order = await exec_engine.create_order_intent(
                 **intent_kwargs,
             )
+            if order.status in ACTIVE_ORDER_STATUSES and order.status != "pending_intent":
+                # An order for this signal is already open (working, or with an unknown
+                # outcome). It is reported with its own status and never sent again. A
+                # finished order still goes to submit_order, which refuses it as before.
+                return order
             return await exec_engine.submit_order(order)
 
     async def _get_realized_pnl_today(self) -> Decimal:
@@ -1213,6 +1219,10 @@ class StrategyRunner:
                 limit_price=limit_price,
             )
 
+            # "executed" records that an order was dispatched for this signal. It is kept
+            # when the outcome is unknown so that exit monitoring still covers a position
+            # that may exist; the outcome itself is reported below, never as a success.
+            outcome_unknown = order.status == "submission_unknown"
             sig.status = "executed"
             sig.executed_at = datetime.now(UTC)
             self.db.add(
@@ -1226,10 +1236,22 @@ class StrategyRunner:
                         "side": signal_obj.side,
                         "qty": float(qty),
                         "reason": signal_obj.reason,
+                        "order_status": order.status,
+                        "outcome_confirmed": not outcome_unknown,
                     },
                     occurred_at=datetime.now(UTC),
                 )
             )
+            if outcome_unknown:
+                # The engine has already raised the critical alert for this order.
+                log.warning(
+                    "runner.order_outcome_unknown",
+                    strategy=strategy.name,
+                    ticker=ticker,
+                    side=signal_obj.side,
+                    order=str(order.id),
+                )
+                return 1, 0, 0
             log.info(
                 "runner.order_submitted",
                 strategy=strategy.name,
@@ -1411,10 +1433,22 @@ class StrategyRunner:
                     "exit_type": exit_sig.signal_type,
                     "price": float(current_price),
                     "qty": float(sell_qty),
+                    "order_status": order.status,
+                    "outcome_confirmed": order.status != "submission_unknown",
                 },
                 occurred_at=datetime.now(UTC),
             )
         )
+        if order.status == "submission_unknown":
+            # Not reported as a stop-out or take-profit: the exit may not have happened.
+            log.warning(
+                "runner.exit_outcome_unknown",
+                strategy=strategy.name,
+                ticker=ticker,
+                exit_type=exit_sig.signal_type,
+                order=str(order.id),
+            )
+            return 0
         log.info(
             "runner.exit_submitted",
             strategy=strategy.name,

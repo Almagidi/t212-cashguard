@@ -281,7 +281,7 @@ async def test_flatten_all_submits_market_sells_for_long_positions_and_audits(db
             )
         ).scalars()
     ]
-    assert actions == ["intent_created", "submitted", "broker_accepted"]
+    assert actions == ["intent_created", "dispatch_committed", "broker_accepted"]
 
     audits = await _audit_logs(db, "emergency_flatten_all")
     assert len(audits) == 1

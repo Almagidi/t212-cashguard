@@ -18,6 +18,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
+from app.broker.protocols import (
+    BrokerSubmissionAmbiguous,
+    BrokerSubmissionNotTransmitted,
+    BrokerSubmissionRejected,
+)
 from app.services.safety_policy import broker_base_url_for, require_adapter_credentials
 
 if TYPE_CHECKING:
@@ -48,6 +53,25 @@ class T212APIError(Exception):
         self.status_code = status_code
         self.body = body
         super().__init__(f"T212 API error {status_code}: {body}")
+
+
+# Order placement is not idempotent at Trading 212, so each failure is classified by what is
+# known about transmission (httpx exception hierarchy, httpx 0.28):
+#   ConnectError / ConnectTimeout  the connection was never established
+#   PoolTimeout                    no connection was acquired from the pool
+#   UnsupportedProtocol            the request was refused before any I/O
+# Everything else raised while sending or reading (write and read errors and timeouts, protocol
+# errors, proxy and decoding errors, anything unrecognised) may have delivered the request.
+_NOT_TRANSMITTED_ERRORS: tuple[type[Exception], ...] = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+    httpx.UnsupportedProtocol,
+)
+# Statuses with which the broker itself refuses a request without creating an order. Other
+# 4xx/5xx statuses (408, 409, 5xx, gateway errors) can come from an intermediary after the
+# request was forwarded, so they stay ambiguous.
+_DEFINITIVE_REJECTION_STATUSES = frozenset({400, 401, 403, 404, 422, 429})
 
 
 class Trading212Adapter:
@@ -181,6 +205,50 @@ class Trading212Adapter:
         data: object = response.json()
         return data
 
+    async def _submit_order(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """POST one order and return the broker's acknowledgement.
+
+        Raises BrokerSubmissionNotTransmitted, BrokerSubmissionRejected or
+        BrokerSubmissionAmbiguous; never retries and never echoes a response body.
+        """
+        try:
+            await self._check_rate_limit()
+            client = self.client
+            request = client.build_request("POST", path, json=payload)
+        except Exception as exc:
+            # Nothing has been sent yet: the adapter is unusable or the request is malformed.
+            raise BrokerSubmissionNotTransmitted(error_type=type(exc).__name__) from exc
+
+        try:
+            response = await client.send(request)
+        except _NOT_TRANSMITTED_ERRORS as exc:
+            raise BrokerSubmissionNotTransmitted(error_type=type(exc).__name__) from exc
+        except Exception as exc:
+            raise BrokerSubmissionAmbiguous(error_type=type(exc).__name__) from exc
+
+        status = response.status_code
+        if status == 429:
+            try:
+                retry_after = float(response.headers.get("Retry-After", "60"))
+            except ValueError:
+                retry_after = 60.0
+            self._rate_limit_reset_at = time.monotonic() + retry_after
+        if status in _DEFINITIVE_REJECTION_STATUSES:
+            raise BrokerSubmissionRejected(error_type="HTTPStatus", http_status=status)
+        if not 200 <= status < 300:
+            raise BrokerSubmissionAmbiguous(error_type="HTTPStatus", http_status=status)
+
+        try:
+            data: object = response.json()
+        except Exception as exc:
+            raise BrokerSubmissionAmbiguous(
+                error_type=type(exc).__name__, http_status=status
+            ) from exc
+        if not isinstance(data, dict) or data.get("id") in (None, ""):
+            # Accepted by something, but without an order identity it cannot be tracked.
+            raise BrokerSubmissionAmbiguous(error_type="UnusableResponse", http_status=status)
+        return cast("dict[str, Any]", data)
+
     # ──────────────────────────────────────────────────────────────────────────
     # Account
     # ──────────────────────────────────────────────────────────────────────────
@@ -295,7 +363,7 @@ class Trading212Adapter:
             "ticker": ticker,
             "quantity": float(quantity),
         }
-        return await self._request_dict("POST", "/api/v0/equity/orders/market", json=payload)
+        return await self._submit_order("/api/v0/equity/orders/market", payload)
 
     async def place_limit_order(
         self,
@@ -314,7 +382,7 @@ class Trading212Adapter:
             "limitPrice": float(limit_price),
             "timeValidity": time_validity,
         }
-        return await self._request_dict("POST", "/api/v0/equity/orders/limit", json=payload)
+        return await self._submit_order("/api/v0/equity/orders/limit", payload)
 
     async def place_stop_order(
         self,
@@ -333,7 +401,7 @@ class Trading212Adapter:
             "stopPrice": float(stop_price),
             "timeValidity": time_validity,
         }
-        return await self._request_dict("POST", "/api/v0/equity/orders/stop", json=payload)
+        return await self._submit_order("/api/v0/equity/orders/stop", payload)
 
     async def place_stop_limit_order(
         self,
@@ -354,7 +422,7 @@ class Trading212Adapter:
             "limitPrice": float(limit_price),
             "timeValidity": time_validity,
         }
-        return await self._request_dict("POST", "/api/v0/equity/orders/stop_limit", json=payload)
+        return await self._submit_order("/api/v0/equity/orders/stop_limit", payload)
 
     async def cancel_order(self, order_id: str) -> None:
         """

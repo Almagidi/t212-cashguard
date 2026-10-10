@@ -274,6 +274,9 @@ class SystemControlService:
     async def flatten_all(self, actor: str) -> str:
         broker = await self._get_broker("operator_system_control_emergency")
         flattened = 0
+        unconfirmed = 0
+        failed = 0
+        already_open = 0
         async with broker as active_broker:
             positions = await active_broker.get_positions()
             engine = ExecutionEngine(self.db, active_broker)
@@ -291,18 +294,41 @@ class SystemControlService:
                         str(position.get("currentPrice", 0) or position.get("averagePrice", 0) or 0)
                     ),
                 )
-                await engine.submit_order(order)
-                flattened += 1
+                if order.status == "pending_intent":
+                    order = await engine.submit_order(order)
+                elif order.status != "submission_unknown":
+                    # An identical exit order is already working; it is not sent again.
+                    already_open += 1
+                    continue
+                if order.status == "submission_unknown":
+                    unconfirmed += 1
+                elif order.status in {"error", "rejected"}:
+                    failed += 1
+                else:
+                    flattened += 1
 
+        audit_payload: dict[str, Any] = {"source": "system_control", "flattened": flattened}
+        message = f"Flattened {flattened} positions."
+        if unconfirmed:
+            audit_payload["unconfirmed"] = unconfirmed
+            message += (
+                f" {unconfirmed} exit order(s) have an unknown outcome and need reconciliation."
+            )
+        if failed:
+            audit_payload["failed"] = failed
+            message += f" {failed} exit order(s) failed."
+        if already_open:
+            audit_payload["already_open"] = already_open
+            message += f" {already_open} exit order(s) were already open."
         self.db.add(
             AuditLog(
                 action="emergency_flatten_all",
                 actor=actor,
-                payload={"source": "system_control", "flattened": flattened},
+                payload=audit_payload,
                 occurred_at=datetime.now(UTC),
             )
         )
-        return f"Flattened {flattened} positions."
+        return message
 
     @staticmethod
     def confirmation_expiry() -> datetime:

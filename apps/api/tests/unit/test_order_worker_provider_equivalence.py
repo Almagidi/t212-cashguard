@@ -76,7 +76,8 @@ class FakeOrder:
     ticker: str = "AAPL"
     side: str = "buy"
     order_type: str = "limit"
-    broker_order_id: str = "t212-order-1"
+    broker_order_id: str | None = "t212-order-1"
+    status: str = "accepted"
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,7 @@ class RecordingTrading212Adapter:
 class RecordingExecutionEngine:
     brokers: ClassVar[list[Any]] = []
     reconcile_calls: ClassVar[list[FakeOrder]] = []
+    unknown_submission_calls: ClassVar[list[FakeOrder]] = []
     cancel_calls: ClassVar[list[FakeOrder]] = []
     cancellation_failure_tickers: ClassVar[set[str]] = set()
 
@@ -126,6 +128,9 @@ class RecordingExecutionEngine:
 
     async def reconcile_order(self, order: FakeOrder) -> None:
         self.reconcile_calls.append(order)
+
+    async def reconcile_unknown_submission(self, order: FakeOrder) -> None:
+        self.unknown_submission_calls.append(order)
 
     async def cancel_order(self, order: FakeOrder) -> None:
         self.cancel_calls.append(order)
@@ -151,6 +156,7 @@ def _reset_worker_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     RecordingTrading212Adapter.write_calls.clear()
     RecordingExecutionEngine.brokers.clear()
     RecordingExecutionEngine.reconcile_calls.clear()
+    RecordingExecutionEngine.unknown_submission_calls.clear()
     RecordingExecutionEngine.cancel_calls.clear()
     RecordingExecutionEngine.cancellation_failure_tickers.clear()
     monkeypatch.setattr(settings, "APP_MODE", "live")
@@ -214,6 +220,7 @@ def _order(**overrides: Any) -> FakeOrder:
         side=overrides.pop("side", "buy"),
         order_type=overrides.pop("order_type", "limit"),
         broker_order_id=overrides.pop("broker_order_id", "t212-order-1"),
+        status=overrides.pop("status", "accepted"),
     )
     if overrides:
         raise AssertionError(f"unknown FakeOrder overrides: {sorted(overrides)}")
@@ -292,7 +299,7 @@ def _assert_no_adapter_context_entered() -> None:
         (
             "reconcile_pending_orders",
             lambda: tasks.reconcile_pending_orders.run(),
-            [[], [_order()]],
+            [[], [_order()], []],
             {"reconciled": 0},
         ),
         (
@@ -335,7 +342,7 @@ def test_order_workers_skip_safely_in_mock_mode_without_constructing_adapter(
         (
             "reconcile_pending_orders",
             lambda: tasks.reconcile_pending_orders.run(),
-            [[], []],
+            [[], [], []],
             {"reconciled": 0},
         ),
         (
@@ -375,7 +382,7 @@ def test_order_workers_skip_safely_when_no_candidate_orders_exist(
         (
             "reconcile_pending_orders",
             lambda: tasks.reconcile_pending_orders.run(),
-            [[], [_order()], None],
+            [[], [_order()], [], None],
             {"reconciled": 0, "skipped": "no_connection"},
         ),
         (
@@ -416,7 +423,7 @@ def test_order_workers_skip_safely_when_no_active_connection_exists(
         (
             "reconcile_pending_orders",
             lambda: tasks.reconcile_pending_orders.run(),
-            [[], [_order()], _active_conn()],
+            [[], [_order()], [], _active_conn()],
             "worker:reconcile_pending_orders",
             {"reconciled": 0, "skipped": "credential_error"},
         ),
@@ -473,7 +480,7 @@ def test_order_workers_mark_reconnect_required_when_credential_decryption_fails(
         (
             "reconcile_pending_orders",
             lambda: tasks.reconcile_pending_orders.run(),
-            [[], [_order()], _active_conn()],
+            [[], [_order()], [], _active_conn()],
             "worker reconcile",
             {
                 "reconciled": 0,
@@ -535,7 +542,7 @@ def test_order_workers_do_not_construct_adapter_when_environment_gate_rejects(
         (
             "reconcile_pending_orders",
             lambda: tasks.reconcile_pending_orders.run(),
-            [[], [_order()], _active_conn(environment="live")],
+            [[], [_order()], [], _active_conn(environment="live")],
             {
                 "reconciled": 0,
                 "skipped": "live_flag_disabled",
@@ -613,7 +620,7 @@ def test_reconcile_pending_orders_calls_provider_after_all_gates_and_reconciles_
     ]
     conn = _active_conn(environment=environment)
     summaries: list[tuple[str, dict[str, Any]]] = []
-    fake_db = FakeSession(results=[[], selected_orders, conn])
+    fake_db = FakeSession(results=[[], selected_orders, [], conn])
     events: list[str] = []
     provider_calls: list[dict[str, Any]] = []
     _install_session(monkeypatch, fake_db, summaries)
@@ -693,7 +700,7 @@ def test_reconcile_pending_orders_provider_validation_error_uses_skipped_summary
 ) -> None:
     selected_orders = [_order(broker_order_id="broker-1")]
     summaries: list[tuple[str, dict[str, Any]]] = []
-    fake_db = FakeSession(results=[[], selected_orders, _active_conn(environment="live")])
+    fake_db = FakeSession(results=[[], selected_orders, [], _active_conn(environment="live")])
     _install_session(monkeypatch, fake_db, summaries)
     _install_decrypt(monkeypatch)
     _install_adapter_sentinel(monkeypatch)
@@ -937,3 +944,26 @@ def test_order_worker_provider_helper_is_wired_and_direct_references_are_localiz
     }
 
     assert _adapter_counts(tree) == {"construct": 0, "import": 0}
+
+
+def test_reconcile_pending_orders_reconciles_unknown_submissions_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unknown = _order(broker_order_id=None, status="submission_unknown")
+    summaries: list[tuple[str, dict[str, Any]]] = []
+    # orphan query, acknowledged active orders, unknown submissions, broker connection
+    fake_db = FakeSession(results=[[], [], [unknown], _active_conn(environment="live")])
+    _install_session(monkeypatch, fake_db, summaries)
+    _install_decrypt(monkeypatch)
+
+    assert tasks.reconcile_pending_orders.run() == {
+        "reconciled": 0,
+        "unknown_submissions": 1,
+        "unknown_submissions_resolved": 0,
+    }
+
+    assert fake_db.results == []
+    assert RecordingExecutionEngine.unknown_submission_calls == [unknown]
+    assert RecordingExecutionEngine.reconcile_calls == []
+    assert RecordingExecutionEngine.cancel_calls == []
+    assert RecordingTrading212Adapter.write_calls == []

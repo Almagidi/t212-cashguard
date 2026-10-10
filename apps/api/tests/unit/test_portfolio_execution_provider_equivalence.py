@@ -100,6 +100,7 @@ class FakeSubmittedOrder:
     ticker: str
     side: str
     is_dry_run: bool
+    status: str = "pending_intent"
 
 
 class RecordingTrading212Adapter:
@@ -184,10 +185,16 @@ class RecordingExecutionEngine:
             ticker=str(kwargs["ticker"]),
             side=str(kwargs["side"]),
             is_dry_run=bool(kwargs["is_dry_run"]),
+            status=self.existing_status,
         )
+
+    # Status the fake engine reports after submitting, and for an order that already exists.
+    submission_status: ClassVar[str] = "accepted"
+    existing_status: ClassVar[str] = "pending_intent"
 
     async def submit_order(self, order: FakeSubmittedOrder) -> FakeSubmittedOrder:
         self.submitted_orders.append(order)
+        order.status = self.submission_status
         return order
 
 
@@ -857,3 +864,110 @@ async def test_run_strategy_once_preserves_live_promotion_gate_before_order_inte
     assert [entry.action for entry in db.added if hasattr(entry, "action")] == [
         "portfolio_rebalance_state"
     ]
+
+
+@pytest.mark.asyncio
+async def test_run_strategy_once_stops_and_reports_an_order_with_unknown_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broker = RecordingBroker()
+    db = FakeSession(results=[[]])
+    service = PortfolioExecutionService(db)
+    strategy = _portfolio_strategy(is_live=False)
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(portfolio_execution_service, "ExecutionEngine", RecordingExecutionEngine)
+    monkeypatch.setattr(RecordingExecutionEngine, "submission_status", "submission_unknown")
+    monkeypatch.setattr(portfolio_execution_service, "RiskEngine", AllowingRiskEngine)
+    monkeypatch.setattr(portfolio_execution_service, "SignalAllocator", AllowingSignalAllocator)
+    monkeypatch.setattr(service, "_load_market_snapshot", _load_market_snapshot)
+    monkeypatch.setattr(service, "_load_regime_payload", _load_regime_payload)
+    monkeypatch.setattr(service, "_decision_now", lambda: datetime(2026, 1, 6, 15, 0, tzinfo=UTC))
+
+    summary = await service.run_strategy_once(
+        strategy,
+        broker=broker,
+        account_value=Decimal("1000"),
+        available_cash=Decimal("1000"),
+        broker_positions=[],
+        force=True,
+        actor="portfolio-test",
+    )
+
+    assert len(RecordingExecutionEngine.submitted_orders) == 1
+    assert summary["orders_unconfirmed"] == 1
+    assert summary["orders_submitted"] == 0
+    assert summary["dry_run_orders"] == 0
+    # Cash is not advanced as if the order had filled.
+    assert summary["available_cash"] == 1000.0
+    assert [entry.action for entry in db.added if hasattr(entry, "action")] == [
+        "portfolio_rebalance_order_unconfirmed",
+        "portfolio_rebalance_state",
+    ]
+    state = strategy.params[portfolio_execution_service.PORTFOLIO_STATE_KEY]
+    assert "unknown submission outcome" in state["last_reason"]
+
+
+@pytest.mark.asyncio
+async def test_run_strategy_once_does_not_resend_an_order_that_already_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broker = RecordingBroker()
+    db = FakeSession(results=[[]])
+    service = PortfolioExecutionService(db)
+    strategy = _portfolio_strategy(is_live=False)
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(portfolio_execution_service, "ExecutionEngine", RecordingExecutionEngine)
+    monkeypatch.setattr(RecordingExecutionEngine, "existing_status", "submission_unknown")
+    monkeypatch.setattr(portfolio_execution_service, "RiskEngine", AllowingRiskEngine)
+    monkeypatch.setattr(portfolio_execution_service, "SignalAllocator", AllowingSignalAllocator)
+    monkeypatch.setattr(service, "_load_market_snapshot", _load_market_snapshot)
+    monkeypatch.setattr(service, "_load_regime_payload", _load_regime_payload)
+    monkeypatch.setattr(service, "_decision_now", lambda: datetime(2026, 1, 6, 15, 0, tzinfo=UTC))
+
+    summary = await service.run_strategy_once(
+        strategy,
+        broker=broker,
+        account_value=Decimal("1000"),
+        available_cash=Decimal("1000"),
+        broker_positions=[],
+        force=True,
+        actor="portfolio-test",
+    )
+
+    assert RecordingExecutionEngine.submitted_orders == []
+    assert summary["orders_unconfirmed"] == 1
+    assert summary["orders_submitted"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_strategy_once_does_not_count_an_order_that_is_already_working(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broker = RecordingBroker()
+    db = FakeSession(results=[[]])
+    service = PortfolioExecutionService(db)
+    strategy = _portfolio_strategy(is_live=False)
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(portfolio_execution_service, "ExecutionEngine", RecordingExecutionEngine)
+    monkeypatch.setattr(RecordingExecutionEngine, "existing_status", "accepted")
+    monkeypatch.setattr(portfolio_execution_service, "RiskEngine", AllowingRiskEngine)
+    monkeypatch.setattr(portfolio_execution_service, "SignalAllocator", AllowingSignalAllocator)
+    monkeypatch.setattr(service, "_load_market_snapshot", _load_market_snapshot)
+    monkeypatch.setattr(service, "_load_regime_payload", _load_regime_payload)
+    monkeypatch.setattr(service, "_decision_now", lambda: datetime(2026, 1, 6, 15, 0, tzinfo=UTC))
+
+    summary = await service.run_strategy_once(
+        strategy,
+        broker=broker,
+        account_value=Decimal("1000"),
+        available_cash=Decimal("1000"),
+        broker_positions=[],
+        force=True,
+        actor="portfolio-test",
+    )
+
+    assert RecordingExecutionEngine.submitted_orders == []
+    assert summary["orders_submitted"] == 0
+    assert summary["dry_run_orders"] == 0
+    assert summary["orders_unconfirmed"] == 0
+    assert summary["available_cash"] == 1000.0

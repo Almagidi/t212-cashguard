@@ -543,6 +543,8 @@ export type OrderType = "market" | "limit" | "stop" | "stop_limit";
 export type OrderStatus =
   | "pending_intent"
   | "submitted"
+  // Sent to the broker with no confirmed outcome yet; an order may exist there.
+  | "submission_unknown"
   | "accepted"
   | "filled"
   | "cancelled"

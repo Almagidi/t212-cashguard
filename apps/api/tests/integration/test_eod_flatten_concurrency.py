@@ -21,6 +21,7 @@ from app.db.models import (
     EodFlattenOperation,
     Order,
     OrderEvent,
+    OrderSubmissionAttempt,
     Signal,
     Strategy,
 )
@@ -179,6 +180,11 @@ async def test_postgres_concurrent_workers_create_one_eod_operation_and_order(
             if eod_order_ids:
                 await cleanup.execute(
                     delete(OrderEvent).where(OrderEvent.order_id.in_(eod_order_ids))
+                )
+                await cleanup.execute(
+                    delete(OrderSubmissionAttempt).where(
+                        OrderSubmissionAttempt.order_id.in_(eod_order_ids)
+                    )
                 )
                 await cleanup.execute(delete(Order).where(Order.id.in_(eod_order_ids)))
             await cleanup.execute(delete(Order).where(Order.id == entry_order_id))

@@ -15,8 +15,23 @@ if TYPE_CHECKING:
 TERMINAL_ORDER_STATUSES = frozenset({"filled", "cancelled", "rejected", "error"})
 
 ORDER_STATUS_TRANSITIONS = {
-    "pending_intent": frozenset({"submitted", "rejected", "cancelled", "error"}),
+    "pending_intent": frozenset(
+        {"submitted", "submission_unknown", "rejected", "cancelled", "error"}
+    ),
     "submitted": frozenset(
+        {
+            "accepted",
+            "partially_filled",
+            "filled",
+            "rejected",
+            "cancelled",
+            "error",
+        }
+    ),
+    # A broker request was durably recorded as dispatched and has no authoritative outcome yet.
+    # It leaves this state only on evidence: broker acceptance or rejection, a reconciliation
+    # match, or proof that the request was never transmitted ("error"). It never moves back.
+    "submission_unknown": frozenset(
         {
             "accepted",
             "partially_filled",

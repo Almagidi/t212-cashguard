@@ -390,7 +390,9 @@ class Order(Base):
     stop_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     time_validity: Mapped[str] = mapped_column(String(10), default="DAY")  # DAY | GTC
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending_intent")
-    # Lifecycle: pending_intent → submitted → accepted → filled | cancelled | rejected | error
+    # Lifecycle: pending_intent → submission_unknown (request committed as dispatched, no
+    # authoritative outcome yet) → accepted → filled | cancelled | rejected | error.
+    # Dry-run orders use pending_intent → submitted → filled.
     broker_order_id: Mapped[str | None] = mapped_column(String(100), index=True)
     filled_quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
@@ -501,6 +503,39 @@ class OrderEvent(Base):
     )
 
     order: Mapped[Order] = relationship("Order", back_populates="events")
+
+
+class OrderSubmissionAttempt(Base):
+    """Durable evidence that the broker request for an order was dispatched.
+
+    The row is committed before the request is sent, so a crash at any later point leaves a
+    record that an order may exist at the broker. order_id is unique: an order is dispatched
+    at most once and is never resubmitted. The outcome is recorded once and not rewritten.
+    """
+
+    __tablename__ = "order_submission_attempts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("orders.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    )
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    execution_environment: Mapped[str | None] = mapped_column(String(20))
+    broker_environment: Mapped[str | None] = mapped_column(String(20))
+    broker_account_scope: Mapped[str | None] = mapped_column(String(160))
+    expected_cost: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    dispatch_committed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # accepted | rejected | not_transmitted | ambiguous; NULL until an outcome is known
+    outcome: Mapped[str | None] = mapped_column(String(30))
+    outcome_recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Redacted: failure type, HTTP status, broker order id. Never a raw broker payload.
+    outcome_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    order: Mapped[Order] = relationship("Order")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -685,7 +720,8 @@ class RiskEvent(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     event_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     # Types: kill_switch_on | kill_switch_off | daily_loss_breach | consecutive_loss |
-    #        cash_guard_block | duplicate_order_block | stale_data | cooldown_block | eod_flatten
+    #        cash_guard_block | duplicate_order_block | stale_data | cooldown_block | eod_flatten |
+    #        submission_unknown
     ticker: Mapped[str | None] = mapped_column(String(50))
     signal_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     order_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))

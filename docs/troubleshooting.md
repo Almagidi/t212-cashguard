@@ -145,6 +145,26 @@ The adapter handles this automatically by waiting `Retry-After` seconds. If you 
 - Reduce polling frequency in Celery beat schedule
 - Only have one browser tab open (multiple tabs = multiple polling)
 
+### Order shows `submission unknown`
+
+The request was recorded and sent, but no usable answer came back (a timeout, a dropped
+connection, a gateway error, or the process stopped). **An order may exist at Trading 212.**
+
+- The app never sends that order again, and it refuses another order for the same ticker and
+  side while this one is open.
+- The reconcile task looks for it in Trading 212 order history, starting 90 seconds after
+  the request was sent. It resolves the order only when exactly one record matches the
+  ticker, side, quantity, order type, time and (where the record has them) limit and stop
+  price, and that record could not belong to another unresolved order. An order that is
+  still working at the broker is not in history yet and stays unknown until it is.
+- If you place an identical order by hand in the Trading 212 app within about 15 minutes of
+  the lost request, reconciliation cannot tell the two apart and may record yours as the
+  missing one. Check the broker before placing a replacement.
+- The manual order API answers `202` instead of `201` for such an order.
+- It cannot be cancelled from the dashboard, because there is no broker order id to cancel.
+  Check the Trading 212 app: cancel it there if it is still open.
+- A critical alert and a `submission_unknown` risk event are recorded when this happens.
+
 ### Order returns `REJECTED`
 
 Common Trading 212 rejection reasons:
