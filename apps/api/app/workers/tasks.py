@@ -98,12 +98,57 @@ async def _record_task_failure(task_name: str, exc: Exception) -> None:
         await db.commit()
 
 
+SKIPPED_ALREADY_RUNNING: dict[str, Any] = {"skipped": True, "reason": "already_running"}
+# After a redelivered run finds the lock held, it waits out the lease plus this margin.
+REDELIVERY_RETRY_MARGIN_SECONDS = 5
+
+
+def _is_redelivery(task: Any) -> bool:
+    """True when the broker is delivering this message again after an unacknowledged run."""
+    delivery_info = getattr(getattr(task, "request", None), "delivery_info", None) or {}
+    return bool(delivery_info.get("redelivered"))
+
+
 def run_monitored_task(
-    task_name: str, coro_factory: Callable[[], Awaitable[dict[str, Any]]]
+    task_name: str,
+    coro_factory: Callable[[], Awaitable[dict[str, Any]]],
+    *,
+    exclusive_ttl_seconds: int | None = None,
+    task: Any = None,
 ) -> dict[str, Any]:
+    """Run a task body with failure reporting.
+
+    With ``exclusive_ttl_seconds`` the body runs under the task's single-owner lock, and a
+    delivery that arrives while it is held is skipped. The lease must outlive the task's
+    hard time limit, so that a killed run's lock expires instead of being taken over while
+    the run is still alive.
+
+    A redelivered message means an earlier run was never acknowledged (its worker died).
+    Its lock may still be unexpired, so with ``task`` given that delivery is retried after
+    the lease instead of being dropped; otherwise a once-a-day task would lose the day's run.
+    """
+    lock_held_elsewhere = False
+
+    async def _run_as_single_owner(ttl_seconds: int) -> dict[str, Any]:
+        nonlocal lock_held_elsewhere
+        from app.core.redis import task_lock
+
+        async with task_lock(task_name, ttl_seconds=ttl_seconds) as acquired:
+            if not acquired:
+                lock_held_elsewhere = True
+                log.info(
+                    "tasks.skipped_locked",
+                    task=task_name,
+                    redelivered=_is_redelivery(task),
+                )
+                return dict(SKIPPED_ALREADY_RUNNING)
+            return await coro_factory()
+
     async def _wrapped() -> dict[str, Any]:
         try:
-            return await coro_factory()
+            if exclusive_ttl_seconds is None:
+                return await coro_factory()
+            return await _run_as_single_owner(exclusive_ttl_seconds)
         except Exception as exc:
             log.exception("tasks.failed", task=task_name, error=str(exc))
             try:
@@ -112,7 +157,16 @@ def run_monitored_task(
                 log.exception("tasks.failure_heartbeat_failed", task=task_name)
             raise
 
-    return cast("dict[str, Any]", run_async(_wrapped()))
+    result = cast("dict[str, Any]", run_async(_wrapped()))
+    if (
+        lock_held_elsewhere
+        and exclusive_ttl_seconds is not None
+        and task is not None
+        and _is_redelivery(task)
+    ):
+        # Bounded by the task's own max_retries, which the dead-letter handler also reads.
+        raise task.retry(countdown=exclusive_ttl_seconds + REDELIVERY_RETRY_MARGIN_SECONDS)
+    return result
 
 
 # ── Strategy signal generation (every 5 min) ─────────────────────────────────
@@ -499,7 +553,7 @@ def sync_account_snapshot(self: Any) -> dict[str, Any]:
             task_summary = {"synced": True}
             return await _complete_task(db, "sync_account_snapshot", task_summary)
 
-    return run_monitored_task("sync_account_snapshot", _run)
+    return run_monitored_task("sync_account_snapshot", _run, exclusive_ttl_seconds=45, task=self)
 
 
 # ── EOD flatten (every 2 min) ─────────────────────────────────────────────────
@@ -547,7 +601,7 @@ def check_eod_flatten(self: Any) -> dict[str, Any]:
 # ── Daily reset (midnight UTC) ────────────────────────────────────────────────
 
 
-@celery_app.task(name="app.workers.tasks.daily_reset", bind=True)
+@celery_app.task(name="app.workers.tasks.daily_reset", bind=True, time_limit=60)
 def daily_reset(self: Any) -> dict[str, Any]:
     """Reset daily stats and re-enable strategies after overnight reset."""
 
@@ -557,7 +611,7 @@ def daily_reset(self: Any) -> dict[str, Any]:
         async with AsyncSessionLocal() as db:
             return await _complete_task(db, "daily_reset", await run_daily_reset_once(db))
 
-    return run_monitored_task("daily_reset", _run)
+    return run_monitored_task("daily_reset", _run, exclusive_ttl_seconds=120, task=self)
 
 
 # ── Order timeout (every 5 min) ───────────────────────────────────────────────
@@ -836,7 +890,7 @@ def morning_scan(self: Any) -> dict[str, Any]:
                 },
             )
 
-    return run_monitored_task("morning_scan", _run)
+    return run_monitored_task("morning_scan", _run, exclusive_ttl_seconds=150, task=self)
 
 
 # ── Data retention / archival (03:00 UTC daily) ──────────────────────────────
@@ -926,7 +980,7 @@ def purge_old_records(self: Any) -> dict[str, Any]:
             log.info("tasks.purge_old_records", **summary)
             return await _complete_task(db, "purge_old_records", summary)
 
-    return run_monitored_task("purge_old_records", _run)
+    return run_monitored_task("purge_old_records", _run, exclusive_ttl_seconds=330, task=self)
 
 
 # ── CFD overnight funding cost tracker (22:00 UTC = 17:00 ET) ────────────────
@@ -1049,4 +1103,4 @@ def track_cfd_funding(self: Any) -> dict[str, Any]:
             log.info("track_cfd_funding.complete", recorded=len(records))
             return await _complete_task(db, "track_cfd_funding", {"recorded": len(records)})
 
-    return run_monitored_task("track_cfd_funding", _run)
+    return run_monitored_task("track_cfd_funding", _run, exclusive_ttl_seconds=90, task=self)
