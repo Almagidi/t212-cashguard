@@ -7,6 +7,7 @@ Research motivation:
   it only trades long in liquid names when early-session strength persists into
   the final half-hour, volume remains supportive, and price is above VWAP.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -64,7 +65,12 @@ class ClosingMomentumSignal:
 class ClosingMomentumStrategy:
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         self.params = {**DEFAULT_CLOSING_MOMENTUM_PARAMS, **(params or {})}
-        self.required_bars = max(24, int(self.params["opening_window_minutes"]) // int(self.params["candle_interval_minutes"]) + 12)
+        self.required_bars = max(
+            24,
+            int(self.params["opening_window_minutes"])
+            // int(self.params["candle_interval_minutes"])
+            + 12,
+        )
         self.history_days = 5
         self.max_history_bars = 180
 
@@ -74,7 +80,11 @@ class ClosingMomentumStrategy:
 
     def _in_trade_window(self, current_time_utc: str) -> bool:
         current_minutes = self._parse_minutes(current_time_utc)
-        return self._parse_minutes(self.params["trade_window_start_utc"]) <= current_minutes <= self._parse_minutes(self.params["trade_window_end_utc"])
+        return (
+            self._parse_minutes(self.params["trade_window_start_utc"])
+            <= current_minutes
+            <= self._parse_minutes(self.params["trade_window_end_utc"])
+        )
 
     def generate_signal(
         self,
@@ -95,7 +105,8 @@ class ClosingMomentumStrategy:
 
         opening_bar_count = max(
             2,
-            int(self.params["opening_window_minutes"]) // int(self.params["candle_interval_minutes"]),
+            int(self.params["opening_window_minutes"])
+            // int(self.params["candle_interval_minutes"]),
         )
         if len(bars) < opening_bar_count + 2:
             return None
@@ -111,8 +122,14 @@ class ClosingMomentumStrategy:
             return None
 
         opening_close = bars[opening_bar_count - 1].close
-        opening_return_pct = ((opening_close - prev_close) / prev_close * 100).quantize(Decimal("0.01"))
-        day_return_pct = ((current_price - session_open) / session_open * 100).quantize(Decimal("0.01")) if session_open > 0 else Decimal("0")
+        opening_return_pct = ((opening_close - prev_close) / prev_close * 100).quantize(
+            Decimal("0.01")
+        )
+        day_return_pct = (
+            ((current_price - session_open) / session_open * 100).quantize(Decimal("0.01"))
+            if session_open > 0
+            else Decimal("0")
+        )
         if float(opening_return_pct) < self.params["min_opening_return_pct"]:
             return None
         if float(day_return_pct) < self.params["min_day_return_pct"]:
@@ -144,7 +161,9 @@ class ClosingMomentumStrategy:
         if risk_per_share <= 0:
             return None
 
-        take_profit_price = current_price + (risk_per_share * Decimal(str(self.params["reward_risk_ratio_min"])))
+        take_profit_price = current_price + (
+            risk_per_share * Decimal(str(self.params["reward_risk_ratio_min"]))
+        )
         reward_risk_ratio = (take_profit_price - current_price) / risk_per_share
         if float(reward_risk_ratio) < self.params["reward_risk_ratio_min"]:
             return None
@@ -157,7 +176,9 @@ class ClosingMomentumStrategy:
             atr_stop_multiplier=self.params["atr_stop_multiplier"],
             available_cash=available_cash,
         )
-        max_by_pct = account_value * Decimal(str(self.params["max_position_pct"])) / 100 / current_price
+        max_by_pct = (
+            account_value * Decimal(str(self.params["max_position_pct"])) / 100 / current_price
+        )
         quantity = min(quantity, max_by_pct)
         if quantity < Decimal("0.01"):
             return None

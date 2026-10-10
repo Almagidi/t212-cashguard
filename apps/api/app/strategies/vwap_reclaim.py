@@ -16,6 +16,7 @@ When to use:
   - Not in gap-up opens (already above VWAP)
   - Works best between 10:30-14:00 ET (after initial ORB window)
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -34,13 +35,13 @@ from app.strategies.indicators import (
 
 DEFAULT_VWAP_PARAMS: dict[str, Any] = {
     "min_rvol": 1.5,
-    "atr_stop_multiplier": 1.5,     # Tighter stop than ORB (VWAP is natural support)
+    "atr_stop_multiplier": 1.5,  # Tighter stop than ORB (VWAP is natural support)
     "reward_risk_ratio_min": 1.5,
-    "risk_per_trade_pct": 0.5,      # Smaller size — mean reversion less reliable
+    "risk_per_trade_pct": 0.5,  # Smaller size — mean reversion less reliable
     "max_position_pct": 6.0,
-    "min_bars_below_vwap": 2,       # Must have been below VWAP for N bars
+    "min_bars_below_vwap": 2,  # Must have been below VWAP for N bars
     "min_price": 5.0,
-    "avoid_first_minutes": 60,      # Only after 10:30 ET
+    "avoid_first_minutes": 60,  # Only after 10:30 ET
     "avoid_last_minutes": 30,
     "avoid_lunch": True,
     "session_open_utc": "14:30",
@@ -144,16 +145,21 @@ class VWAPReclaimStrategy:
             atr_stop_multiplier=self.params["atr_stop_multiplier"],
             available_cash=available_cash,
         )
-        max_by_pct = account_value * Decimal(str(self.params["max_position_pct"])) / 100 / current_price
+        max_by_pct = (
+            account_value * Decimal(str(self.params["max_position_pct"])) / 100 / current_price
+        )
         qty = min(qty, max_by_pct)
 
         if qty < Decimal("0.01"):
             return None
 
         confidence = Decimal("0.55")
-        if float(rvol) >= 2.0:       confidence += Decimal("0.15")
-        if regime == "trending_up":  confidence += Decimal("0.15")
-        if float(rr) >= 2.0:         confidence += Decimal("0.10")
+        if float(rvol) >= 2.0:
+            confidence += Decimal("0.15")
+        if regime == "trending_up":
+            confidence += Decimal("0.15")
+        if float(rr) >= 2.0:
+            confidence += Decimal("0.10")
         confidence = min(confidence, Decimal("0.90"))
 
         return VWAPSignal(

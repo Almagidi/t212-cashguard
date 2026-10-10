@@ -5,7 +5,7 @@ Scientific basis:
   Berkman, Koch & Westerholm (2014); Ni, Wang & Xiao (2015).
   Stocks (and CFDs) that open with a gap > min_gap_pct frequently fail to
   sustain that gap and mean-revert toward the prior close / session VWAP
-  within the first 30–60 minutes.  This behaviour is most pronounced on days
+  within the first 30-60 minutes.  This behaviour is most pronounced on days
   without a fundamental catalyst (earnings, M&A news) and is reinforced by
   the Choppiness Index: a choppy/ranging session provides the best fade context.
 
@@ -22,6 +22,7 @@ Directional support:
 The strategy is designed to be registered as type="opening_fade" in the
 Strategy model, with is_live=False (paper mode) until validated.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -34,24 +35,21 @@ from app.strategies.indicators import (
     atr_position_size,
     choppiness_index,
     gap_pct,
-    is_tradeable_time,
-    market_regime,
     relative_volume,
-    vwap,
 )
 
 # ── Default parameters ────────────────────────────────────────────────────────
 
 DEFAULT_FADE_PARAMS: dict[str, Any] = {
     # --- Gap requirements ---
-    "min_gap_pct": 1.5,          # Minimum gap size to consider a fade setup
-    "max_gap_pct": 6.0,          # Above this, gap is likely fundamental — skip
+    "min_gap_pct": 1.5,  # Minimum gap size to consider a fade setup
+    "max_gap_pct": 6.0,  # Above this, gap is likely fundamental — skip
     # --- Volume confirmation ---
-    "min_rvol": 1.5,             # Need above-average volume on reversal bar
+    "min_rvol": 1.5,  # Need above-average volume on reversal bar
     # --- Regime gate ---
     # The fade is most reliable in choppy/ranging sessions.
     # choppiness_index > chop_threshold  →  proceed; else skip.
-    "chop_threshold": 50.0,      # Conservative threshold (pure chop is 61.8)
+    "chop_threshold": 50.0,  # Conservative threshold (pure chop is 61.8)
     # --- Reversal confirmation bars ---
     # Price must have *failed* to hold the gap direction for N bars before entry.
     # E.g. gap-up: price closes BELOW the session open for n_confirm bars.
@@ -59,19 +57,19 @@ DEFAULT_FADE_PARAMS: dict[str, Any] = {
     # --- Sizing and risk ---
     "atr_stop_multiplier": 1.5,  # Tight stop (fade = high-precision entry)
     "reward_risk_ratio_min": 1.5,
-    "risk_per_trade_pct": 0.5,   # Smaller risk vs ORB (mean-reversion less reliable)
+    "risk_per_trade_pct": 0.5,  # Smaller risk vs ORB (mean-reversion less reliable)
     "max_position_pct": 6.0,
-    "take_profit_1r_pct": 0.5,   # Partial exit at 1R
+    "take_profit_1r_pct": 0.5,  # Partial exit at 1R
     # --- CFD / stock mode ---
     # allow_short=True enables gap-up fades (requires CFD or short-selling account).
     # Set False for equity-only accounts — only gap-DOWN fades (longs) will trigger.
     "allow_short": False,
     # --- Session window ---
-    "avoid_first_minutes": 3,    # Enter after initial whipsaw (3 min buffer)
-    "fade_window_minutes": 45,   # Only fade within first 45 min of session
+    "avoid_first_minutes": 3,  # Enter after initial whipsaw (3 min buffer)
+    "fade_window_minutes": 45,  # Only fade within first 45 min of session
     "session_open_utc": "14:30",
     "session_close_utc": "21:00",
-    "avoid_last_minutes": 60,    # Do not fade late in session
+    "avoid_last_minutes": 60,  # Do not fade late in session
     "avoid_lunch": True,
     "min_price": 5.0,
     "min_atr_pct": 0.3,
@@ -81,11 +79,12 @@ DEFAULT_FADE_PARAMS: dict[str, Any] = {
 
 # ── Signal dataclass ──────────────────────────────────────────────────────────
 
+
 @dataclass
 class FadeSignal:
     ticker: str
-    side: str          # "buy" (gap-down fade) or "sell" (gap-up fade, CFD)
-    signal_type: str   # "entry" or "partial_exit" or "stop" or "take_profit"
+    side: str  # "buy" (gap-down fade) or "sell" (gap-up fade, CFD)
+    signal_type: str  # "entry" or "partial_exit" or "stop" or "take_profit"
     entry_price: Decimal
     stop_price: Decimal
     take_profit_price: Decimal
@@ -100,6 +99,7 @@ class FadeSignal:
 
 
 # ── Strategy class ────────────────────────────────────────────────────────────
+
 
 class OpeningFadeStrategy:
     """
@@ -135,15 +135,13 @@ class OpeningFadeStrategy:
         within_fade = current_mins <= open_mins + self.params["fade_window_minutes"]
         before_close = current_mins < close_mins - self.params["avoid_last_minutes"]
 
-        # Avoid lunch chop zone (17:00–18:30 UTC = 12:00–13:30 ET)
+        # Avoid lunch chop zone (17:00-18:30 UTC = 12:00-13:30 ET)
         if self.params["avoid_lunch"] and (17 * 60 <= current_mins < 18 * 60 + 30):
             return False
 
-        return after_buffer and within_fade and before_close
+        return bool(after_buffer and within_fade and before_close)
 
-    def _count_confirm_bars(
-        self, bars: list[Bar], session_open: Decimal, direction: str
-    ) -> int:
+    def _count_confirm_bars(self, bars: list[Bar], session_open: Decimal, direction: str) -> int:
         """
         Count how many consecutive bars (from most recent) have closed
         on the fade side of the session open.
@@ -152,9 +150,9 @@ class OpeningFadeStrategy:
         """
         count = 0
         for bar in reversed(bars):
-            if direction == "down" and bar.close < session_open:
-                count += 1
-            elif direction == "up" and bar.close > session_open:
+            if (direction == "down" and bar.close < session_open) or (
+                direction == "up" and bar.close > session_open
+            ):
                 count += 1
             else:
                 break
@@ -196,14 +194,16 @@ class OpeningFadeStrategy:
 
         # Use explicit session_open if provided, otherwise assume bars[0] is
         # the first bar of the current session (normal production use-case).
-        session_open = session_open if (session_open is not None and session_open > 0) else bars[0].open
+        session_open = (
+            session_open if (session_open is not None and session_open > 0) else bars[0].open
+        )
         current_price = bars[-1].close
 
         if float(session_open) < self.params["min_price"]:
             return None
 
         # ── Gap measurement ───────────────────────────────────────────────────
-        gap = gap_pct(prev_close, session_open)   # positive = gap up, negative = gap down
+        gap = gap_pct(prev_close, session_open)  # positive = gap up, negative = gap down
         gap_abs = abs(float(gap))
 
         if gap_abs < self.params["min_gap_pct"]:
@@ -227,10 +227,10 @@ class OpeningFadeStrategy:
         # ── Regime gate: fade is reliable only in choppy/ranging sessions ────
         chop = choppiness_index(bars, period=14)
         if float(chop) < self.params["chop_threshold"]:
-            return None   # trending session — ORB is better here
+            return None  # trending session — ORB is better here
 
         # ── Determine fade direction ──────────────────────────────────────────
-        gap_up   = float(gap) > 0
+        gap_up = float(gap) > 0
         gap_down = float(gap) < 0
 
         if gap_up:
@@ -244,11 +244,11 @@ class OpeningFadeStrategy:
 
             # Entry: current close, stop above session high
             session_high = max(b.high for b in bars)
-            stop_price   = session_high + atr_val * Decimal(str(self.params["atr_stop_multiplier"]))
+            stop_price = session_high + atr_val * Decimal(str(self.params["atr_stop_multiplier"]))
             target_price = prev_close  # target = prior close (full gap fill)
 
             # Ensure adequate R:R
-            risk   = abs(stop_price - current_price)
+            risk = abs(stop_price - current_price)
             reward = abs(current_price - target_price)
             if risk <= 0 or (reward / risk) < Decimal(str(self.params["reward_risk_ratio_min"])):
                 return None
@@ -267,11 +267,11 @@ class OpeningFadeStrategy:
                 return None
 
             # Entry: current close, stop below session low
-            session_low  = min(b.low for b in bars)
-            stop_price   = session_low - atr_val * Decimal(str(self.params["atr_stop_multiplier"]))
-            target_price = prev_close   # target = prior close (full gap fill)
+            session_low = min(b.low for b in bars)
+            stop_price = session_low - atr_val * Decimal(str(self.params["atr_stop_multiplier"]))
+            target_price = prev_close  # target = prior close (full gap fill)
 
-            risk   = abs(current_price - stop_price)
+            risk = abs(current_price - stop_price)
             reward = abs(target_price - current_price)
             if risk <= 0 or (reward / risk) < Decimal(str(self.params["reward_risk_ratio_min"])):
                 return None
@@ -304,12 +304,17 @@ class OpeningFadeStrategy:
 
         # ── Confidence scoring ────────────────────────────────────────────────
         rr = reward / risk
-        confidence = Decimal("0.45")   # Fades have slightly lower base confidence
-        if float(rvol) >= 2.0:         confidence += Decimal("0.15")
-        elif float(rvol) >= 1.5:       confidence += Decimal("0.10")
-        if float(chop) > 61.8:         confidence += Decimal("0.10")  # strongly choppy
-        if float(rr) >= 2.0:           confidence += Decimal("0.10")
-        if n >= 3:                     confidence += Decimal("0.10")  # stronger confirmation
+        confidence = Decimal("0.45")  # Fades have slightly lower base confidence
+        if float(rvol) >= 2.0:
+            confidence += Decimal("0.15")
+        elif float(rvol) >= 1.5:
+            confidence += Decimal("0.10")
+        if float(chop) > 61.8:
+            confidence += Decimal("0.10")  # strongly choppy
+        if float(rr) >= 2.0:
+            confidence += Decimal("0.10")
+        if n >= 3:
+            confidence += Decimal("0.10")  # stronger confirmation
         confidence = min(confidence, Decimal("0.90"))
 
         return FadeSignal(
@@ -355,7 +360,7 @@ class OpeningFadeStrategy:
         Check whether an open fade position should be exited.
         Fades use a fixed stop (not trailing) since the position is short-lived.
         """
-        is_long   = (side == "buy")
+        is_long = side == "buy"
         exit_side = "sell" if is_long else "buy"
 
         atr_val = atr(bars, 14) if len(bars) >= 15 else Decimal("0")
@@ -364,8 +369,11 @@ class OpeningFadeStrategy:
         stop_hit = (current_price <= stop_price) if is_long else (current_price >= stop_price)
         if stop_hit:
             return FadeSignal(
-                ticker=ticker, side=exit_side, signal_type="stop",
-                entry_price=current_price, stop_price=stop_price,
+                ticker=ticker,
+                side=exit_side,
+                signal_type="stop",
+                entry_price=current_price,
+                stop_price=stop_price,
                 take_profit_price=take_profit_price,
                 suggested_quantity=-remaining_qty,
                 confidence=Decimal("1.0"),
@@ -374,11 +382,18 @@ class OpeningFadeStrategy:
             )
 
         # Take-profit check (gap fill = full target)
-        tp_hit = (current_price >= take_profit_price) if is_long else (current_price <= take_profit_price)
+        tp_hit = (
+            (current_price >= take_profit_price)
+            if is_long
+            else (current_price <= take_profit_price)
+        )
         if tp_hit:
             return FadeSignal(
-                ticker=ticker, side=exit_side, signal_type="take_profit",
-                entry_price=current_price, stop_price=stop_price,
+                ticker=ticker,
+                side=exit_side,
+                signal_type="take_profit",
+                entry_price=current_price,
+                stop_price=stop_price,
                 take_profit_price=take_profit_price,
                 suggested_quantity=-remaining_qty,
                 confidence=Decimal("1.0"),
@@ -390,17 +405,18 @@ class OpeningFadeStrategy:
         risk_per_share = abs(entry_price - stop_price)
         if risk_per_share > 0:
             one_r = (entry_price + risk_per_share) if is_long else (entry_price - risk_per_share)
-            partial_hit = (
-                (current_price >= one_r) if is_long else (current_price <= one_r)
-            )
+            partial_hit = (current_price >= one_r) if is_long else (current_price <= one_r)
             if not partial_exit_done and partial_hit:
                 partial = (
                     remaining_qty * Decimal(str(self.params["take_profit_1r_pct"]))
                 ).quantize(Decimal("0.01"))
                 if partial >= Decimal("0.01"):
                     return FadeSignal(
-                        ticker=ticker, side=exit_side, signal_type="partial_exit",
-                        entry_price=current_price, stop_price=stop_price,
+                        ticker=ticker,
+                        side=exit_side,
+                        signal_type="partial_exit",
+                        entry_price=current_price,
+                        stop_price=stop_price,
                         take_profit_price=take_profit_price,
                         suggested_quantity=-partial,
                         confidence=Decimal("0.90"),

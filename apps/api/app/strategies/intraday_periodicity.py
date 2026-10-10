@@ -6,12 +6,13 @@ Research motivation:
   across recent sessions. This implementation only trades when a positive
   same-slot history lines up with current-session confirmation.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from app.strategies.indicators import (
     Bar,
@@ -128,7 +129,9 @@ class IntradayPeriodicityStrategy:
             slot_close = slot_bars[-1].close
             if slot_open <= 0:
                 continue
-            slot_returns.append(((slot_close - slot_open) / slot_open * 100).quantize(Decimal("0.01")))
+            slot_returns.append(
+                ((slot_close - slot_open) / slot_open * 100).quantize(Decimal("0.01"))
+            )
 
         return slot_returns
 
@@ -169,7 +172,9 @@ class IntradayPeriodicityStrategy:
         slot_open = slot_slice[0].open
         if slot_open <= 0:
             return None
-        live_slot_return_pct = ((current_price - slot_open) / slot_open * 100).quantize(Decimal("0.01"))
+        live_slot_return_pct = ((current_price - slot_open) / slot_open * 100).quantize(
+            Decimal("0.01")
+        )
         if float(live_slot_return_pct) < self.params["min_live_slot_return_pct"]:
             return None
 
@@ -191,11 +196,17 @@ class IntradayPeriodicityStrategy:
         if len(historical_returns) < int(self.params["min_history_sessions"]):
             return None
 
-        avg_slot_return_pct = (sum(historical_returns) / len(historical_returns)).quantize(Decimal("0.01"))
-        positive_ratio = Decimal(str(round(
-            sum(1 for item in historical_returns if item > 0) / len(historical_returns),
-            4,
-        )))
+        avg_slot_return_pct = cast(
+            "Decimal", sum(historical_returns) / len(historical_returns)
+        ).quantize(Decimal("0.01"))
+        positive_ratio = Decimal(
+            str(
+                round(
+                    sum(1 for item in historical_returns if item > 0) / len(historical_returns),
+                    4,
+                )
+            )
+        )
         if float(avg_slot_return_pct) < self.params["min_avg_slot_return_pct"]:
             return None
         if float(positive_ratio) < self.params["min_positive_ratio"]:
@@ -213,7 +224,9 @@ class IntradayPeriodicityStrategy:
         if risk_per_share <= 0:
             return None
 
-        take_profit_price = current_price + risk_per_share * Decimal(str(self.params["reward_risk_ratio_min"]))
+        take_profit_price = current_price + risk_per_share * Decimal(
+            str(self.params["reward_risk_ratio_min"])
+        )
         reward_risk_ratio = (take_profit_price - current_price) / risk_per_share
         if float(reward_risk_ratio) < self.params["reward_risk_ratio_min"]:
             return None
@@ -226,7 +239,9 @@ class IntradayPeriodicityStrategy:
             atr_stop_multiplier=self.params["atr_stop_multiplier"],
             available_cash=available_cash,
         )
-        max_by_pct = account_value * Decimal(str(self.params["max_position_pct"])) / 100 / current_price
+        max_by_pct = (
+            account_value * Decimal(str(self.params["max_position_pct"])) / 100 / current_price
+        )
         quantity = min(quantity, max_by_pct)
         if quantity < Decimal("0.01"):
             return None
