@@ -105,6 +105,7 @@ class FakeSubmittedOrder:
     ticker: str
     side: str
     is_dry_run: bool
+    status: str = "pending_intent"
 
 
 class RecordingTrading212Adapter:
@@ -191,10 +192,16 @@ class RecordingExecutionEngine:
             ticker=str(kwargs["ticker"]),
             side=str(kwargs["side"]),
             is_dry_run=bool(kwargs.get("is_dry_run", False)),
+            status=self.existing_status,
         )
+
+    # Status the fake engine reports after submitting, and for an order that already exists.
+    submission_status: ClassVar[str] = "accepted"
+    existing_status: ClassVar[str] = "pending_intent"
 
     async def submit_order(self, order: FakeSubmittedOrder) -> FakeSubmittedOrder:
         self.submitted_orders.append(order)
+        order.status = self.submission_status
         return order
 
 
@@ -819,3 +826,54 @@ async def test_eod_flatten_enters_provider_then_delegates_to_scoped_service(
     assert broker.entered == 1
     assert broker.exited == 1
     assert calls == [(db, broker, [strategy], now_utc)]
+
+
+async def _run_exit_check(monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, int], FakeSession]:
+    strategy_id = uuid.uuid4()
+    db = FakeSession(results=[_last_entry_signal(strategy_id), None])
+    service = PositionMonitor(db)
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+
+    async def market_data(_ticker: str) -> tuple[list[Bar], Decimal]:
+        return _bars(), Decimal("105")
+
+    monkeypatch.setattr(service, "_get_market_data", market_data)
+    monkeypatch.setattr(position_monitor, "OpeningRangeBreakoutStrategy", FakeExitEngine)
+    result = await service._monitor_position(
+        ticker="AAPL",
+        pos_qty=Decimal("2"),
+        pos_data={"averagePrice": "100", "maxSell": "1"},
+        broker=RecordingBroker(),
+        strategies=[_strategy(strategy_id)],
+        account_value=Decimal("2500"),
+    )
+    return result, db
+
+
+@pytest.mark.asyncio
+async def test_monitor_position_reports_an_exit_with_unknown_outcome_as_unconfirmed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RecordingExecutionEngine, "submission_status", "submission_unknown")
+
+    result, db = await _run_exit_check(monkeypatch)
+
+    assert result == {"exits": 0, "partial": 0, "stops": 0, "tps": 0, "unconfirmed": 1}
+    assert len(RecordingExecutionEngine.submitted_orders) == 1
+    actions = [entry.action for entry in db.added if hasattr(entry, "action")]
+    assert actions == ["position_exit_unconfirmed"]
+    # No exit signal and no take-profit alert for an exit that may not have happened.
+    assert [type(entry).__name__ for entry in db.added] == ["AuditLog"]
+
+
+@pytest.mark.asyncio
+async def test_monitor_position_does_not_resend_an_exit_whose_outcome_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RecordingExecutionEngine, "existing_status", "submission_unknown")
+
+    result, db = await _run_exit_check(monkeypatch)
+
+    assert result == {"exits": 0, "partial": 0, "stops": 0, "tps": 0, "unconfirmed": 1}
+    assert RecordingExecutionEngine.submitted_orders == []
+    assert db.added == []

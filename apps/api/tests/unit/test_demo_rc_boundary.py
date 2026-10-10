@@ -204,12 +204,16 @@ async def test_demo_broker_failure_is_audited_without_duplicate_submit_or_secret
 
     order = await engine.submit_order(order)
 
-    assert order.status == "error"
+    # An unclassified broker failure may have reached the broker: the order stays
+    # active and unknown instead of becoming a terminal error that could be retried.
+    assert order.status == "submission_unknown"
     assert len(broker.calls) == 1
     audits = (await db.execute(select(AuditLog))).scalars().all()
     failures = [audit for audit in audits if audit.action == "demo_broker_order_failure"]
     assert len(failures) == 1
     assert failures[0].payload["broker_environment"] == "demo"
+    assert failures[0].payload["decision"] == "unknown"
+    assert failures[0].payload["no_broker_order_sent"] is False
     assert "secret" not in str(failures[0].payload).lower()
 
 
@@ -261,13 +265,13 @@ async def test_market_order_payload_excludes_time_validity(monkeypatch):
 
     captured: dict[str, object] = {}
 
-    async def fake_request_dict(self, method, path, **kwargs):
-        captured["method"] = method
+    async def fake_submit_order(self, path, payload):
+        captured["method"] = "POST"
         captured["path"] = path
-        captured["payload"] = kwargs.get("json")
+        captured["payload"] = payload
         return {"id": "DEMO-ORDER-1", "status": "WORKING"}
 
-    monkeypatch.setattr(Trading212Adapter, "_request_dict", fake_request_dict)
+    monkeypatch.setattr(Trading212Adapter, "_submit_order", fake_submit_order)
 
     adapter = Trading212Adapter("demo-key", "demo-secret", "demo")
     response = await adapter.place_market_order(

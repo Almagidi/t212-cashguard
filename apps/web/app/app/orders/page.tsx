@@ -16,7 +16,7 @@ import { Button, Card, CardContent, Badge, Spinner, EmptyState, PageHeader, Inpu
 import { QueryError } from '@/components/shared/query-error'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { OrderDetailDialog } from '@/components/orders/order-detail-dialog'
-import { executionQualityBadge, formatCurrency, formatDate, orderStatusBg, cn } from '@/lib/utils'
+import { CANCELLABLE_ORDER_STATUSES, OPEN_ORDER_STATUSES, executionQualityBadge, formatCurrency, formatDate, orderStatusBg, cn } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import type { OrderSide } from '@/types'
 
@@ -25,7 +25,7 @@ type Tab = typeof TABS[number]
 
 function statusMatchesTab(status: string, tab: Tab): boolean {
   if (tab === 'all') return true
-  if (tab === 'pending') return ['pending_intent', 'submitted', 'accepted'].includes(status)
+  if (tab === 'pending') return OPEN_ORDER_STATUSES.includes(status)
   if (tab === 'filled') return status === 'filled'
   if (tab === 'cancelled') return ['cancelled', 'rejected', 'error'].includes(status)
   return true
@@ -74,7 +74,7 @@ export default function OrdersPage() {
   const cancelAll = useCancelAllPending()
 
   const orders = allOrders.filter(o => statusMatchesTab(o.status, tab))
-  const pendingCount = allOrders.filter(o => ['pending_intent', 'submitted', 'accepted'].includes(o.status)).length
+  const pendingCount = allOrders.filter(o => OPEN_ORDER_STATUSES.includes(o.status)).length
   const appMode = process.env.NEXT_PUBLIC_APP_MODE || 'mock'
   const isMockMode = appMode === 'mock'
   const isDemoMode = appMode === 'demo'
@@ -517,7 +517,7 @@ export default function OrdersPage() {
                         >
                           <Eye className="w-3.5 h-3.5" />
                         </Button>
-                        {['pending_intent', 'submitted', 'accepted'].includes(o.status) && (
+                        {CANCELLABLE_ORDER_STATUSES.includes(o.status) && (
                           <Button
                             variant="ghost"
                             size="icon-sm"

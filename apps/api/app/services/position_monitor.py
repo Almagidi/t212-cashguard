@@ -394,6 +394,10 @@ class PositionMonitor:
                 summary["partial_exits"] += result.get("partial", 0)
                 summary["stops_hit"] += result.get("stops", 0)
                 summary["take_profits"] += result.get("tps", 0)
+                if result.get("unconfirmed"):
+                    summary["exits_unconfirmed"] = (
+                        summary.get("exits_unconfirmed", 0) + result["unconfirmed"]
+                    )
             except Exception as exc:
                 summary["errors"].append(f"{ticker}: {exc}")
                 log.error("position_monitor.ticker_error", ticker=ticker, error=str(exc))
@@ -510,7 +514,45 @@ class PositionMonitor:
                 is_dry_run=(settings.APP_MODE == "mock"),
                 estimated_price=current_price,
             )
-            order = await engine.submit_order(order)
+            if order.status == "pending_intent":
+                order = await engine.submit_order(order)
+            else:
+                # An exit order for this entry already exists; it is never sent again.
+                log.warning(
+                    "position_monitor.exit_already_dispatched",
+                    ticker=ticker,
+                    order_id=str(order.id),
+                    order_status=order.status,
+                )
+                if order.status == "submission_unknown":
+                    result["unconfirmed"] = 1
+                return result
+
+        if order.status == "submission_unknown":
+            # The exit may not have happened: no exit signal, no stop or take-profit alert.
+            self.db.add(
+                AuditLog(
+                    action="position_exit_unconfirmed",
+                    entity_type="order",
+                    entity_id=str(order.id),
+                    actor="position_monitor",
+                    payload={
+                        "ticker": ticker,
+                        "exit_type": exit_signal.signal_type,
+                        "qty": float(sell_qty),
+                        "order_status": order.status,
+                    },
+                    occurred_at=datetime.now(UTC),
+                )
+            )
+            log.warning(
+                "position_monitor.exit_outcome_unknown",
+                ticker=ticker,
+                exit_type=exit_signal.signal_type,
+                order_id=str(order.id),
+            )
+            result["unconfirmed"] = 1
+            return result
 
         # Record the exit signal
         exit_sig_record = Signal(

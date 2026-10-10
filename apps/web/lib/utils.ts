@@ -79,6 +79,7 @@ export function orderStatusColor(status: string): string {
   const map: Record<string, string> = {
     pending_intent: 'text-muted-foreground',
     submitted: 'text-blue-400',
+    submission_unknown: 'text-amber-400',
     accepted: 'text-blue-400',
     filled: 'text-emerald-400',
     cancelled: 'text-muted-foreground',
@@ -92,6 +93,7 @@ export function orderStatusBg(status: string): string {
   const map: Record<string, string> = {
     pending_intent: 'bg-muted/50 text-muted-foreground',
     submitted: 'bg-blue-500/15 text-blue-400',
+    submission_unknown: 'bg-amber-500/15 text-amber-400',
     accepted: 'bg-blue-500/15 text-blue-400',
     filled: 'bg-emerald-500/15 text-emerald-400',
     cancelled: 'bg-muted/50 text-muted-foreground',
@@ -100,6 +102,20 @@ export function orderStatusBg(status: string): string {
   }
   return map[status] ?? 'bg-muted/50 text-muted-foreground'
 }
+
+// Orders still awaiting a final outcome. A submission with an unknown outcome is included
+// (it may be live at the broker) but cannot be cancelled from here: see CANCELLABLE.
+export const OPEN_ORDER_STATUSES: readonly string[] = [
+  'pending_intent',
+  'submitted',
+  'submission_unknown',
+  'accepted',
+]
+export const CANCELLABLE_ORDER_STATUSES: readonly string[] = [
+  'pending_intent',
+  'submitted',
+  'accepted',
+]
 
 export function executionQualityClass(grade: string | null | undefined): string {
   const map: Record<string, string> = {

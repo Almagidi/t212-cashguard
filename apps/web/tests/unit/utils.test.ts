@@ -4,6 +4,8 @@ import {
   executionQualityClass,
   formatCurrency,
   formatPnL,
+  CANCELLABLE_ORDER_STATUSES,
+  OPEN_ORDER_STATUSES,
   orderStatusBg,
   pnlClass,
   timeAgo,
@@ -35,6 +37,8 @@ describe('orderStatusBg', () => {
   it('filled orders get green styling', () => expect(orderStatusBg('filled')).toContain('emerald'))
   it('error orders get red styling', () => expect(orderStatusBg('error')).toContain('red'))
   it('submitted orders get blue styling', () => expect(orderStatusBg('submitted')).toContain('blue'))
+  it('orders with an unknown submission outcome get warning styling', () =>
+    expect(orderStatusBg('submission_unknown')).toContain('amber'))
   it('unknown status returns muted', () => expect(orderStatusBg('unknown')).toContain('muted'))
 })
 
@@ -66,4 +70,13 @@ describe('timeAgo', () => {
     const old = new Date(Date.now() - 120_000).toISOString()
     expect(timeAgo(old)).toContain('m ago')
   })
+})
+
+describe('order status groups', () => {
+  it('an unknown submission counts as open', () =>
+    expect(OPEN_ORDER_STATUSES).toContain('submission_unknown'))
+  it('an unknown submission cannot be cancelled from the dashboard', () =>
+    expect(CANCELLABLE_ORDER_STATUSES).not.toContain('submission_unknown'))
+  it('every cancellable status is an open status', () =>
+    expect(CANCELLABLE_ORDER_STATUSES.every(status => OPEN_ORDER_STATUSES.includes(status))).toBe(true))
 })

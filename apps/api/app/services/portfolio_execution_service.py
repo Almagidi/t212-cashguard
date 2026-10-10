@@ -421,6 +421,7 @@ class PortfolioExecutionService:
         )
         signals_created = 0
         orders_submitted = 0
+        orders_unconfirmed = 0
         dry_run_orders = 0
         risk_blocks = 0
         allocation_blocks = 0
@@ -526,10 +527,35 @@ class PortfolioExecutionService:
                 available_cash=current_cash,
                 estimated_price=order_plan["price"],
             )
-            order = await exec_engine.submit_order(order)
+            already_dispatched = order.status != "pending_intent"
+            if not already_dispatched:
+                order = await exec_engine.submit_order(order)
+            outcome_unknown = order.status == "submission_unknown"
+            if already_dispatched and not outcome_unknown:
+                # An identical order is already working: nothing was sent for this plan
+                # line, so it is not counted and the simulated balances are not advanced.
+                continue
 
             signal.status = "approved" if order.is_dry_run else "executed"
             signal.executed_at = None if order.is_dry_run else datetime.now(UTC)
+            if outcome_unknown:
+                # The order may or may not exist at the broker. Stop here: the rest of the
+                # plan was sized on the assumption that this order filled.
+                orders_unconfirmed += 1
+                await self._add_audit_log(
+                    action="portfolio_rebalance_order_unconfirmed",
+                    actor=actor,
+                    entity_type="order",
+                    entity_id=str(order.id),
+                    payload={
+                        "strategy": strategy.name,
+                        "ticker": order_plan["ticker"],
+                        "side": order_plan["side"],
+                        "quantity": float(order_plan["quantity"]),
+                        "order_status": order.status,
+                    },
+                )
+                break
             current_cash = self._advance_cash_balance(
                 current_cash, order_plan["side"], order_plan["quantity"], order_plan["price"]
             )
@@ -573,7 +599,12 @@ class PortfolioExecutionService:
         await self._update_strategy_state(
             strategy,
             status=final_status,
-            reason=None,
+            reason=(
+                "Rebalance stopped: an order has an unknown submission outcome and needs "
+                "reconciliation."
+                if orders_unconfirmed
+                else None
+            ),
             actor=actor,
             decision_date=decision_date,
             target_weights=target_weights,
@@ -600,6 +631,7 @@ class PortfolioExecutionService:
             "status": "rebalanced",
             "signals_created": signals_created,
             "orders_submitted": orders_submitted,
+            "orders_unconfirmed": orders_unconfirmed,
             "dry_run_orders": dry_run_orders,
             "risk_blocks": risk_blocks,
             "allocation_blocks": allocation_blocks,

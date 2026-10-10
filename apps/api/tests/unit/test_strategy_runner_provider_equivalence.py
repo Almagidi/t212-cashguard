@@ -108,6 +108,7 @@ class FakeSubmittedOrder:
     ticker: str
     side: str
     is_dry_run: bool
+    status: str = "pending_intent"
 
 
 class RecordingTrading212Adapter:
@@ -192,10 +193,16 @@ class RecordingExecutionEngine:
             ticker=str(kwargs["ticker"]),
             side=str(kwargs["side"]),
             is_dry_run=bool(kwargs.get("is_dry_run", False)),
+            status=self.existing_status,
         )
+
+    # Status the fake engine reports after submitting, and for an order that already exists.
+    submission_status: ClassVar[str] = "accepted"
+    existing_status: ClassVar[str] = "pending_intent"
 
     async def submit_order(self, order: FakeSubmittedOrder) -> FakeSubmittedOrder:
         self.submitted_orders.append(order)
+        order.status = self.submission_status
         return order
 
 
@@ -1116,3 +1123,93 @@ async def test_check_exit_live_routes_sell_order_through_execution_engine_only(
     assert [entry.action for entry in db.added if hasattr(entry, "action")] == [
         "strategy_exit_placed"
     ]
+
+
+@pytest.mark.asyncio
+async def test_process_ticker_reports_an_entry_with_unknown_outcome_without_a_success_alert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = FakeSession(results=[Decimal("0")])
+    service = StrategyRunner(db)
+    strategy = _strategy(is_live=True)
+    broker = RecordingBroker()
+    success_alerts: list[Any] = []
+
+    async def recording_alert(*args: Any, **kwargs: Any) -> None:
+        success_alerts.append(kwargs)
+
+    monkeypatch.setattr(service, "_fetch_market_context", _market_context)
+    monkeypatch.setattr(strategy_runner, "alert_trade_submitted", recording_alert)
+    monkeypatch.setattr(RecordingExecutionEngine, "submission_status", "submission_unknown")
+
+    result = await service._process_ticker(
+        ticker="AAPL",
+        strategy=strategy,
+        engine=FakeEntryEngine(),
+        risk=AllowingRiskEngine(),
+        broker=broker,
+        cash=Decimal("1000"),
+        total=Decimal("1500"),
+        n_open=0,
+        pos_map={},
+        all_positions=[],
+        intelligence={"regime": {"regime": "test"}},
+        allocator=AllowingSignalAllocator(),
+        allocation_state=object(),
+    )
+
+    # Generated, but not counted as submitted and not announced as a placed trade.
+    assert result == (1, 0, 0)
+    assert success_alerts == []
+    assert len(RecordingExecutionEngine.submitted_orders) == 1
+    audit = next(
+        entry for entry in db.added if getattr(entry, "action", "") == "strategy_order_placed"
+    )
+    assert audit.payload["order_status"] == "submission_unknown"
+    assert audit.payload["outcome_confirmed"] is False
+    # Kept as dispatched so exit monitoring still covers a position that may exist.
+    assert db.added[0].status == "executed"
+
+
+@pytest.mark.asyncio
+async def test_submit_strategy_order_never_resends_an_order_that_already_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = StrategyRunner(FakeSession(results=[]))
+    monkeypatch.setattr(RecordingExecutionEngine, "existing_status", "submission_unknown")
+
+    order = await service._submit_strategy_order(
+        broker=RecordingBroker(),
+        strategy=_strategy(is_live=True),
+        signal_id=uuid.uuid4(),
+        ticker="AAPL",
+        side="buy",
+        quantity=Decimal("1"),
+        estimated_price=Decimal("100"),
+        order_type="market",
+    )
+
+    assert order.status == "submission_unknown"
+    assert RecordingExecutionEngine.submitted_orders == []
+
+
+@pytest.mark.asyncio
+async def test_submit_strategy_order_still_hands_a_finished_order_to_the_engine_to_refuse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = StrategyRunner(FakeSession(results=[]))
+    monkeypatch.setattr(RecordingExecutionEngine, "existing_status", "error")
+
+    await service._submit_strategy_order(
+        broker=RecordingBroker(),
+        strategy=_strategy(is_live=True),
+        signal_id=uuid.uuid4(),
+        ticker="AAPL",
+        side="buy",
+        quantity=Decimal("1"),
+        estimated_price=Decimal("100"),
+        order_type="market",
+    )
+
+    # The real engine raises for a finished order; the runner must not short-circuit that.
+    assert len(RecordingExecutionEngine.submitted_orders) == 1

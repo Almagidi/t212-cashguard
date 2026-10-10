@@ -15,8 +15,16 @@ from app.execution.state_machine import (
 )
 
 LEGAL_TRANSITIONS = {
-    "pending_intent": {"submitted", "rejected", "cancelled", "error"},
+    "pending_intent": {"submitted", "submission_unknown", "rejected", "cancelled", "error"},
     "submitted": {
+        "accepted",
+        "partially_filled",
+        "filled",
+        "rejected",
+        "cancelled",
+        "error",
+    },
+    "submission_unknown": {
         "accepted",
         "partially_filled",
         "filled",
@@ -33,9 +41,34 @@ def test_active_statuses_are_exactly_known_nonterminal_statuses() -> None:
     assert {
         "pending_intent",
         "submitted",
+        "submission_unknown",
         "accepted",
         "partially_filled",
     } == ACTIVE_ORDER_STATUSES
+
+
+def test_submission_unknown_is_one_canonical_active_non_terminal_state() -> None:
+    assert "submission_unknown" in ACTIVE_ORDER_STATUSES
+    assert not is_terminal_status("submission_unknown")
+    assert can_transition_order_status("pending_intent", "submission_unknown")
+
+
+@pytest.mark.parametrize("to_status", ["pending_intent", "submitted"])
+def test_submission_unknown_never_moves_backward(to_status: str) -> None:
+    order = SimpleNamespace(status="submission_unknown")
+
+    with pytest.raises(InvalidOrderTransition):
+        transition_order_status(order, to_status)
+
+    assert order.status == "submission_unknown"
+
+
+@pytest.mark.parametrize("from_status", ["submitted", "accepted", "partially_filled"])
+def test_acknowledged_states_cannot_become_submission_unknown(from_status: str) -> None:
+    order = SimpleNamespace(status=from_status)
+
+    with pytest.raises(InvalidOrderTransition):
+        transition_order_status(order, "submission_unknown")
 
 
 @pytest.mark.parametrize(

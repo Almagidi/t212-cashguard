@@ -13,7 +13,7 @@ import {
   Card, CardHeader, CardTitle, CardContent,
   Badge, Button, Spinner, EmptyState, TerminalCard,
 } from '@/components/ui'
-import { formatCurrency, formatPnL, pnlClass, formatDateShort, orderStatusBg, cn } from '@/lib/utils'
+import { OPEN_ORDER_STATUSES, formatCurrency, formatPnL, pnlClass, formatDateShort, orderStatusBg, cn } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import { useWebSocket } from '@/hooks/use-websocket'
 import { EquityCurve, Sparkline, type EquityPoint } from '@/components/charts/equity-curve'
@@ -198,9 +198,7 @@ export default function DashboardPage() {
     })
   }, [perfReport])
 
-  const pendingOrders = liveOrders.filter(o =>
-    ['submitted', 'accepted', 'pending_intent'].includes(o.status)
-  )
+  const pendingOrders = liveOrders.filter(o => OPEN_ORDER_STATUSES.includes(o.status))
 
   const portfolioAttributionById = useMemo(
     () => Object.fromEntries(portfolioAttribution.map((item) => [item.strategy_id, item])),

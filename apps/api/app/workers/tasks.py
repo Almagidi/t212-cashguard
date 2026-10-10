@@ -261,11 +261,10 @@ def reconcile_pending_orders(self: Any) -> dict[str, Any]:
                 return {"skipped": True, "reason": "already_running"}
 
             async with AsyncSessionLocal() as db:
-                # Detect orders stuck in 'submitted' with no broker_order_id.
-                # These are orphaned when a worker died after the broker HTTP call
-                # returned but before we saved the response.  We cannot safely
-                # auto-recover without a broker order ID, so we flag them for
-                # manual review via structured error logs.
+                # Detect legacy orders stuck in 'submitted' with no broker_order_id
+                # (written before submissions were committed as 'submission_unknown').
+                # They cannot be auto-recovered without a broker order ID, so they are
+                # flagged for manual review via structured error logs.
                 orphan_cutoff = datetime.now(UTC) - timedelta(minutes=5)
                 orphan_result = await db.execute(
                     select(Order).where(
@@ -294,7 +293,19 @@ def reconcile_pending_orders(self: Any) -> dict[str, Any]:
                     .limit(50)
                 )
                 orders = result.scalars().all()
-                if not orders or app_settings.APP_MODE == "mock":
+                # Submissions whose outcome is unknown and that have no broker order id
+                # can only be resolved from broker history. They are never resubmitted.
+                unknown_result = await db.execute(
+                    select(Order)
+                    .where(
+                        Order.status == "submission_unknown",
+                        Order.is_dry_run.is_(False),
+                        Order.broker_order_id.is_(None),
+                    )
+                    .limit(50)
+                )
+                unknown_orders = unknown_result.scalars().all()
+                if (not orders and not unknown_orders) or app_settings.APP_MODE == "mock":
                     summary: dict[str, Any] = {"reconciled": 0}
                     return await _complete_task(db, "reconcile_pending_orders", summary)
 
@@ -360,7 +371,15 @@ def reconcile_pending_orders(self: Any) -> dict[str, Any]:
                     for order in orders:
                         await engine.reconcile_order(order)
                         count += 1
+                    unknown_resolved = 0
+                    for order in unknown_orders:
+                        await engine.reconcile_unknown_submission(order)
+                        if order.status != "submission_unknown":
+                            unknown_resolved += 1
                 summary = {"reconciled": count}
+                if unknown_orders:
+                    summary["unknown_submissions"] = len(unknown_orders)
+                    summary["unknown_submissions_resolved"] = unknown_resolved
                 return await _complete_task(db, "reconcile_pending_orders", summary)
 
     return run_monitored_task("reconcile_pending_orders", _run)

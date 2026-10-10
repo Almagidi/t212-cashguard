@@ -5,6 +5,7 @@ import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
@@ -192,12 +193,24 @@ class RecordingExecutionEngine:
     async def cancel_order(self, order: FakeOrder) -> None:
         self.cancel_calls.append(order)
 
-    async def create_order_intent(self, **kwargs: Any) -> dict[str, Any]:
-        self.order_intents.append(kwargs)
-        return {"order": kwargs["ticker"]}
+    existing_statuses: ClassVar[dict[str, str]] = {}
 
-    async def submit_order(self, order: Any) -> None:
+    async def create_order_intent(self, **kwargs: Any) -> Any:
+        # Like the real engine: a new intent is pending; an existing order is returned as is.
+        self.order_intents.append(kwargs)
+        ticker = kwargs["ticker"]
+        return SimpleNamespace(
+            order=ticker, status=self.existing_statuses.get(ticker, "pending_intent")
+        )
+
+    submission_statuses: ClassVar[dict[str, str]] = {}
+
+    async def submit_order(self, order: Any) -> Any:
+        # Like the real engine, return the order with the status the submission reached.
         self.submitted_orders.append(order)
+        return SimpleNamespace(
+            order=order.order, status=self.submission_statuses.get(order.order, "accepted")
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -713,7 +726,7 @@ async def test_flatten_all_uses_shared_broker_boundary_and_submits_sell_intents_
             "estimated_price": Decimal("170.25"),
         }
     ]
-    assert RecordingExecutionEngine.submitted_orders == [{"order": "AAPL"}]
+    assert [order.order for order in RecordingExecutionEngine.submitted_orders] == ["AAPL"]
     assert [entry.action for entry in db.added] == ["emergency_flatten_all"]
     assert db.added[0].payload == {"source": "system_control", "flattened": 1}
 
@@ -786,3 +799,74 @@ def test_system_control_file_uses_provider_request_and_helper_without_direct_ada
     assert "create_trading212_provider_adapter" in source
     assert "from app.broker.trading212 import Trading212Adapter" not in source
     assert "Trading212Adapter(" not in source
+
+
+@pytest.mark.asyncio
+async def test_flatten_all_reports_unconfirmed_and_failed_exits_separately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    positions = [
+        {"ticker": "AAPL", "quantity": "2", "currentPrice": "170.25"},
+        {"ticker": "MSFT", "quantity": "1", "currentPrice": "300"},
+        {"ticker": "NVDA", "quantity": "3", "currentPrice": "900"},
+    ]
+    broker = RecordingBroker(positions=positions, fail_on_write=False)
+    db = FakeSession(results=[])
+    service = SystemControlService(db)
+    monkeypatch.setattr(service, "_get_broker", _broker_provider(broker))
+    monkeypatch.setattr(system_control, "ExecutionEngine", RecordingExecutionEngine)
+    monkeypatch.setattr(
+        RecordingExecutionEngine,
+        "submission_statuses",
+        {"MSFT": "submission_unknown", "NVDA": "rejected"},
+    )
+
+    message = await service.flatten_all(actor="operator")
+
+    assert message == (
+        "Flattened 1 positions. 1 exit order(s) have an unknown outcome and need "
+        "reconciliation. 1 exit order(s) failed."
+    )
+    assert db.added[0].payload == {
+        "source": "system_control",
+        "flattened": 1,
+        "unconfirmed": 1,
+        "failed": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_flatten_all_run_again_does_not_resend_or_abort_on_existing_exit_orders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    positions = [
+        {"ticker": "AAPL", "quantity": "2", "currentPrice": "170.25"},
+        {"ticker": "MSFT", "quantity": "1", "currentPrice": "300"},
+        {"ticker": "NVDA", "quantity": "3", "currentPrice": "900"},
+    ]
+    broker = RecordingBroker(positions=positions, fail_on_write=False)
+    db = FakeSession(results=[])
+    service = SystemControlService(db)
+    monkeypatch.setattr(service, "_get_broker", _broker_provider(broker))
+    monkeypatch.setattr(system_control, "ExecutionEngine", RecordingExecutionEngine)
+    # A previous flatten left AAPL with an unknown outcome and MSFT with a working exit.
+    monkeypatch.setattr(
+        RecordingExecutionEngine,
+        "existing_statuses",
+        {"AAPL": "submission_unknown", "MSFT": "accepted"},
+    )
+
+    message = await service.flatten_all(actor="operator")
+
+    # Only the position without an exit order is submitted; the loop reaches the last one.
+    assert [order.order for order in RecordingExecutionEngine.submitted_orders] == ["NVDA"]
+    assert message == (
+        "Flattened 1 positions. 1 exit order(s) have an unknown outcome and need "
+        "reconciliation. 1 exit order(s) were already open."
+    )
+    assert db.added[0].payload == {
+        "source": "system_control",
+        "flattened": 1,
+        "unconfirmed": 1,
+        "already_open": 1,
+    }
