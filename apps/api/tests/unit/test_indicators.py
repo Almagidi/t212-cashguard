@@ -16,7 +16,6 @@ from app.strategies.indicators import (
     atr,
     atr_pct,
     atr_position_size,
-    choppiness_index,
     ema,
     ema_of_closes,
     gap_pct,
@@ -536,41 +535,6 @@ class TestTrailingStopPrice:
             initial_stop=Decimal("98"),
         )
         assert result == Decimal("95")
-
-
-# ── choppiness_index ──────────────────────────────────────────────────────────
-
-
-class TestChoppinessIndex:
-    def test_not_enough_bars_returns_fifty(self):
-        bars = _flat_bars(5)
-        assert choppiness_index(bars, period=14) == Decimal("50")
-
-    def test_zero_range_returns_fifty(self):
-        bars = [_bar(h=100, low=100, c=100) for _ in range(20)]
-        assert choppiness_index(bars, period=14) == Decimal("50")
-
-    def test_choppy_market_returns_high_value(self):
-        # Large ATR relative to range → high choppiness
-        bars = []
-        for i in range(20):
-            if i % 2 == 0:
-                bars.append(_bar(h=150, low=50, c=140, v=10000))
-            else:
-                bars.append(_bar(h=150, low=50, c=60, v=10000))
-        result = choppiness_index(bars, period=14)
-        assert Decimal("0") <= result <= Decimal("100")
-
-    def test_trending_market_returns_lower_value(self):
-        bars = _trending_bars(30, start=50, step=3)
-        result = choppiness_index(bars, period=14)
-        assert Decimal("0") <= result <= Decimal("100")
-
-    def test_result_clamped_between_0_and_100(self):
-        bars = _flat_bars(30)
-        bars[0] = _bar(h=200, low=50)  # one extreme bar
-        result = choppiness_index(bars, period=14)
-        assert Decimal("0") <= result <= Decimal("100")
 
 
 # ── adaptive_atr_multiplier ───────────────────────────────────────────────────

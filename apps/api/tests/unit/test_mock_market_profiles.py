@@ -528,6 +528,53 @@ def test_breakout_profile_generates_supported_orb_signal() -> None:
     assert signal.signal_type == "entry"
 
 
+def test_breakout_profile_signals_at_the_real_worker_proof_clock() -> None:
+    # The required real-worker proof pins the worker to this instant: 25 completed
+    # five-minute bars, enough for the 14-period Choppiness Index (15 bars).
+    as_of = datetime(2026, 1, 7, 16, 35, tzinfo=UTC)
+    rows = MockMarketDataProvider(profile="orb_breakout", seed=212)._orb_breakout_bars(
+        "NVDA", interval_minutes=5, bars=540, as_of=as_of
+    )
+    session_bars = _bars(rows[1:])
+
+    assert len(session_bars) == 25
+    assert market_regime(session_bars) in {"neutral", "trending_up"}
+    signal = OpeningRangeBreakoutStrategy().generate_signal(
+        ticker="NVDA",
+        bars=session_bars,
+        account_value=Decimal("100000"),
+        available_cash=Decimal("100000"),
+        current_time_utc="16:35",
+        prev_close=Decimal(str(rows[0]["close"])),
+    )
+
+    assert signal is not None
+    assert signal.side == "buy"
+
+
+def test_breakout_profile_gives_no_signal_before_the_index_can_be_computed() -> None:
+    # 14 completed bars: one short of what the index needs, so the strategy must wait.
+    as_of = datetime(2026, 1, 7, 15, 40, tzinfo=UTC)
+    rows = MockMarketDataProvider(profile="orb_breakout", seed=212)._orb_breakout_bars(
+        "NVDA", interval_minutes=5, bars=540, as_of=as_of
+    )
+    session_bars = _bars(rows[1:])
+
+    assert len(session_bars) == 14
+    assert market_regime(session_bars) == "unknown"
+    assert (
+        OpeningRangeBreakoutStrategy().generate_signal(
+            ticker="NVDA",
+            bars=session_bars,
+            account_value=Decimal("100000"),
+            available_cash=Decimal("100000"),
+            current_time_utc="15:40",
+            prev_close=Decimal(str(rows[0]["close"])),
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize("app_mode", ["paper", "demo", "live"])
 def test_startup_rejects_non_default_mock_profile_outside_mock(
     monkeypatch: pytest.MonkeyPatch, app_mode: str
