@@ -9,13 +9,19 @@ import os
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+import pytest
 import pytest_asyncio
 
+from tests import network_guard
+
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Generator
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
+
+# Refuse every non-loopback lookup and connection BEFORE any application code can run.
+network_guard.install()
 
 # Override settings BEFORE importing app modules
 os.environ["CASHGUARD_ENV_FILE"] = ""  # never read a developer's .env during tests
@@ -32,8 +38,8 @@ os.environ["TELEGRAM_ALLOWED_CHAT_IDS"] = "12345"
 os.environ["TELEGRAM_ALLOWED_USER_IDS"] = "777"
 os.environ["TELEGRAM_WEBHOOK_SECRET"] = "test-telegram-secret"
 
-from app.db.session import Base, get_db
-from app.main import _login_attempts, _login_lockouts, app
+from app.db.session import Base, get_db  # noqa: E402 - after the guard and settings above
+from app.main import _login_attempts, _login_lockouts, app  # noqa: E402
 
 # ─── Test DB ─────────────────────────────────────────────────────────────────
 
@@ -50,6 +56,29 @@ TestSessionLocal = async_sessionmaker(
     class_=AsyncSession,
     expire_on_commit=False,
 )
+
+
+@pytest.fixture
+def external_network() -> network_guard.ExternalNetworkAttempts:
+    """The session's record of refused external network attempts."""
+    return network_guard.ATTEMPTS
+
+
+@pytest.fixture(autouse=True)
+def _fail_on_external_network_access() -> Generator[None, None, None]:
+    """Fail any test during which something tried to leave this machine."""
+    network_guard.ATTEMPTS.begin_test()
+    yield
+    network_guard.ATTEMPTS.fail_if_any()
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Fail the session if anything outside a test tried to leave this machine."""
+    outside_tests = network_guard.ATTEMPTS.unattributed() + network_guard.ATTEMPTS.pending()
+    if outside_tests:
+        described = ", ".join(f"{kind} {host}" for kind, host in outside_tests)
+        print(f"\nERROR: external network access attempted outside any test: {described}")
+    session.exitstatus = network_guard.session_exit_status(exitstatus)
 
 
 @pytest_asyncio.fixture
