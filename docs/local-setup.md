@@ -7,9 +7,9 @@
 | Docker | 24+ | `docker --version` |
 | Docker Compose | 2.20+ | `docker compose version` |
 | Python | 3.11+ | `python3 --version` |
-| Node.js | 20+ | `node --version` |
+| Node.js | 24.x (see `.nvmrc`) | `node --version` |
 | pip | 23+ | `pip --version` |
-| npm | 9+ | `npm --version` |
+| npm | 11.x | `npm --version` |
 
 ## Step-by-Step Setup
 

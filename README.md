@@ -309,11 +309,9 @@ previously exported cache can be supplied so that every `RUN` instruction runs
 with networking disabled (the builder itself still resolves the base image).
 See [docs/WEB_IMAGE_BUILD.md](docs/WEB_IMAGE_BUILD.md).
 
-Not yet aligned: the macOS setup launcher still installs Node 20, and
-`infra/scripts/quickstart.sh` does not check the Node version. Use Node
-24.21.0 (`.nvmrc` / `.node-version`) for local work until they are updated.
-`make e2e-operator` (and so `make readiness`) now needs the mock API running
-on port 8000.
+The macOS setup launcher installs Node 24, and `infra/scripts/quickstart.sh`
+stops if another major version is active. `make e2e-operator` (and so
+`make readiness`) needs the mock API running on port 8000.
 
 ## Production Operations Runbook
 

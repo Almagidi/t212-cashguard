@@ -82,23 +82,32 @@ fi
 
 PIP="$PYTHON -m pip"
 
-# ── Step 3: Check/Install Node.js 20+ ────────────────────────────────────────
+# ── Step 3: Check/Install Node.js 24 ─────────────────────────────────────────
+# The web app requires this exact major (apps/web/package.json "engines", .nvmrc).
+REQUIRED_NODE_MAJOR=24
+node_major() { node -e "console.log(process.versions.node.split('.')[0])" 2>/dev/null; }
+
 step "Checking Node.js..."
-if command -v node &>/dev/null; then
-    NODE_VER=$(node -e "console.log(process.version.split('.')[0].replace('v',''))")
-    if [ "$NODE_VER" -ge "20" ] 2>/dev/null; then
-        ok "Node.js $(node --version) found"
-    else
-        warn "Node.js version too old (need 20+) — upgrading..."
-        brew install node@20
-        brew link node@20 --force --overwrite 2>/dev/null || true
-        ok "Node.js $(node --version) installed"
-    fi
+if command -v node &>/dev/null && [ "$(node_major)" = "$REQUIRED_NODE_MAJOR" ]; then
+    ok "Node.js $(node --version) found"
 else
-    warn "Node.js not found — installing..."
-    brew install node@20
-    brew link node@20 --force --overwrite 2>/dev/null || true
-    ok "Node.js $(node --version) installed"
+    if command -v node &>/dev/null; then
+        warn "Node.js $(node --version) found, but Node $REQUIRED_NODE_MAJOR is required — installing..."
+    else
+        warn "Node.js not found — installing..."
+    fi
+    brew install node@24
+    # An earlier version of this setup linked Node 20; it has to give way first.
+    brew unlink node@20 2>/dev/null || true
+    brew link node@24 --force --overwrite 2>/dev/null || true
+    if [ "$(node_major)" = "$REQUIRED_NODE_MAJOR" ]; then
+        ok "Node.js $(node --version) installed"
+    else
+        warn "Node $REQUIRED_NODE_MAJOR is not the active 'node' (active: $(command -v node || echo none) $(node --version 2>/dev/null))."
+        warn "Open a new Terminal window, or run 'brew link node@24 --force --overwrite' to see why linking failed, then run this setup again."
+        read -p "  Press ENTER to close..."
+        exit 1
+    fi
 fi
 
 NPM=$(which npm)
