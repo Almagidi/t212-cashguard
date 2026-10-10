@@ -467,6 +467,14 @@ was not caught by a suppressing regime this time by chance across 40 draws.
 
 ### 4.6 The second blocker: a distinct, deterministic, structural gap — not the same one #214 fixed
 
+> **Correction, 2026-10-10 (finding N-10, issue #258).** The explanation below is wrong about
+> the cause. The default mock data was classified "choppy" because `market_regime()` did not
+> use the published Choppiness Index: it computed `100 * ATR * sqrt(n) / range`, which reads
+> about 80 on any random walk. With the published formula the same data reads about 60 at the
+> median, is "choppy" in a minority of draws, and the ORB strategy does signal on some of
+> them. The observations recorded below are kept as they were made; the statement that the
+> index is "by design" near its maximum for this data no longer holds.
+
 This codebase has **two independent, same-named "regime" concepts**, and
 this session's evidence disambiguates them for the first time in this
 document:
@@ -599,6 +607,9 @@ procedure.**
   provider or real ORB production filter logic for a testing-data
   limitation — a materially broader change, same category of judgment call
   §4.4 made about not touching `app/risk/engine.py`).
+  **Corrected 2026-10-10:** this was a strategy-logic defect after all (finding N-10,
+  a non-standard Choppiness Index), not a limitation of the data. See the note at the
+  top of §4.6.
 - The `is_dry_run` fix itself **is** proven, deterministically, at the
   service level (§2, §3) — an enabled strategy that reaches
   `generate_signal()` and creates an order intent in `APP_MODE=mock` now
