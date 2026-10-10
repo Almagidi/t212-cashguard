@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from itertools import pairwise
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -59,7 +60,7 @@ def test_seeded_breakout_profile_is_reproducible_and_seed_sensitive() -> None:
     )
 
 
-def test_breakout_profile_respects_requested_bar_count_and_interval() -> None:
+def test_breakout_profile_returns_the_latest_window_at_the_requested_interval() -> None:
     rows = MockMarketDataProvider(profile="orb_breakout", seed=212)._orb_breakout_bars(
         "NVDA",
         interval_minutes=15,
@@ -68,9 +69,239 @@ def test_breakout_profile_respects_requested_bar_count_and_interval() -> None:
     )
     timestamps = [datetime.fromisoformat(str(row["timestamp"])) for row in rows]
 
-    assert len(rows) == 4
-    assert timestamps[1] == datetime(2026, 1, 6, 14, 30, tzinfo=UTC)
-    assert timestamps[2] - timestamps[1] == timedelta(minutes=15)
+    assert timestamps == [
+        datetime(2026, 1, 6, 18, 0, tzinfo=UTC),
+        datetime(2026, 1, 6, 18, 15, tzinfo=UTC),
+        datetime(2026, 1, 6, 18, 30, tzinfo=UTC),
+        datetime(2026, 1, 6, 18, 45, tzinfo=UTC),
+    ]
+
+
+@pytest.mark.parametrize(
+    "as_of",
+    [
+        datetime(2026, 7, 6, 18, 0, tzinfo=UTC),
+        datetime(2026, 11, 27, 17, 55, tzinfo=UTC),
+        datetime(2026, 3, 9, 13, 32, tzinfo=UTC),
+        datetime(2026, 7, 4, 12, 0, tzinfo=UTC),
+    ],
+    ids=["mid-session", "early-close", "after-dst-change", "holiday-weekend"],
+)
+@pytest.mark.parametrize("interval_minutes", [5, 7, 15, 1440])
+@pytest.mark.parametrize("bars", [1, 2, 4, 20, 50, 78, 79])
+def test_breakout_profile_window_is_a_suffix_of_the_full_history(
+    interval_minutes: int, bars: int, as_of: datetime
+) -> None:
+    provider = MockMarketDataProvider(profile="orb_breakout", seed=212)
+
+    full = provider._orb_breakout_bars(
+        "NVDA", interval_minutes=interval_minutes, bars=500, as_of=as_of
+    )
+    window = provider._orb_breakout_bars(
+        "NVDA", interval_minutes=interval_minutes, bars=bars, as_of=as_of
+    )
+
+    assert full
+    assert window == full[-bars:]
+
+
+def test_breakout_profile_short_window_ends_at_the_latest_completed_bar() -> None:
+    as_of = datetime(2026, 7, 6, 18, 2, tzinfo=UTC)
+    rows = MockMarketDataProvider(profile="orb_breakout", seed=212)._orb_breakout_bars(
+        "NVDA", interval_minutes=5, bars=50, as_of=as_of
+    )
+    timestamps = [datetime.fromisoformat(str(row["timestamp"])) for row in rows]
+
+    assert len(rows) == 50
+    assert timestamps[-1] == datetime(2026, 7, 6, 17, 55, tzinfo=UTC)
+    assert timestamps == sorted(set(timestamps))
+    assert all(later - earlier == timedelta(minutes=5) for earlier, later in pairwise(timestamps))
+    assert rows[-1]["volume"] > rows[-2]["volume"]
+
+
+def test_breakout_profile_before_first_completed_bar_returns_only_prior_close() -> None:
+    as_of = datetime(2026, 7, 6, 13, 32, tzinfo=UTC)
+    rows = MockMarketDataProvider(profile="orb_breakout", seed=212)._orb_breakout_bars(
+        "NVDA", interval_minutes=5, bars=50, as_of=as_of
+    )
+
+    assert [row["timestamp"] for row in rows] == [
+        datetime(2026, 7, 2, 19, 55, tzinfo=UTC).isoformat()
+    ]
+
+
+@pytest.mark.parametrize("bars", [0, -1])
+@pytest.mark.parametrize("interval_minutes", [5, 1440])
+def test_breakout_profile_returns_nothing_for_a_non_positive_window(
+    interval_minutes: int, bars: int
+) -> None:
+    rows = MockMarketDataProvider(profile="orb_breakout")._orb_breakout_bars(
+        "NVDA",
+        interval_minutes=interval_minutes,
+        bars=bars,
+        as_of=datetime(2026, 7, 6, 18, 0, tzinfo=UTC),
+    )
+
+    assert rows == []
+
+
+@pytest.mark.parametrize("interval_minutes", [0, -5, 1441, 10080])
+def test_breakout_profile_rejects_unsupported_intervals(interval_minutes: int) -> None:
+    with pytest.raises(ValueError, match="interval_minutes"):
+        MockMarketDataProvider(profile="orb_breakout")._orb_breakout_bars(
+            "NVDA",
+            interval_minutes=interval_minutes,
+            bars=10,
+            as_of=datetime(2026, 7, 6, 18, 0, tzinfo=UTC),
+        )
+
+
+def test_breakout_profile_daily_history_is_valid_xnys_sessions() -> None:
+    as_of = datetime(2026, 7, 6, 18, 0, tzinfo=UTC)
+    provider = MockMarketDataProvider(profile="orb_breakout", seed=212)
+    daily = provider._orb_breakout_bars("NVDA", interval_minutes=1440, bars=90, as_of=as_of)
+    calendar = calendar_for_venue("XNYS")
+    exchange_timezone = ZoneInfo(calendar.exchange_timezone)
+    local_dates = [
+        datetime.fromisoformat(str(row["timestamp"])).astimezone(exchange_timezone).date()
+        for row in daily
+    ]
+    expected_sessions = [
+        session.local_date
+        for session in calendar.expected_sessions(local_dates[0], date(2026, 7, 6))
+    ]
+
+    assert len(daily) == 90
+    assert local_dates == expected_sessions
+    assert date(2026, 7, 3) not in local_dates
+    assert all(
+        datetime.fromisoformat(str(row["timestamp"])).astimezone(exchange_timezone).time()
+        == datetime.min.time()
+        for row in daily
+    )
+    assert all(
+        0 < row["low"] <= min(row["open"], row["close"])
+        and max(row["open"], row["close"]) <= row["high"]
+        and row["volume"] > 0
+        for row in daily
+    )
+
+
+def test_breakout_profile_daily_history_agrees_with_its_intraday_bars() -> None:
+    as_of = datetime(2026, 7, 6, 18, 0, tzinfo=UTC)
+    provider = MockMarketDataProvider(profile="orb_breakout", seed=212)
+    daily = provider._orb_breakout_bars("NVDA", interval_minutes=1440, bars=30, as_of=as_of)
+    intraday = provider._orb_breakout_bars("NVDA", interval_minutes=5, bars=500, as_of=as_of)
+    session_rows = intraday[1:]
+
+    assert daily[-2]["close"] == intraday[0]["close"]
+    assert daily[-1]["open"] == session_rows[0]["open"]
+    assert daily[-1]["close"] == session_rows[-1]["close"]
+    assert daily[-1]["high"] == max(row["high"] for row in session_rows)
+    assert daily[-1]["low"] == min(row["low"] for row in session_rows)
+    assert daily[-1]["volume"] == sum(row["volume"] for row in session_rows)
+
+
+def test_breakout_profile_daily_history_is_reproducible_and_seed_sensitive() -> None:
+    as_of = datetime(2026, 7, 6, 18, 0, tzinfo=UTC)
+
+    def daily(seed: int) -> list[dict[str, object]]:
+        return MockMarketDataProvider(profile="orb_breakout", seed=seed)._orb_breakout_bars(
+            "SPY", interval_minutes=1440, bars=90, as_of=as_of
+        )
+
+    assert daily(212) == daily(212)
+    assert daily(212) != daily(213)
+
+
+def test_breakout_profile_daily_history_omits_a_session_with_no_completed_bar() -> None:
+    as_of = datetime(2026, 7, 6, 13, 32, tzinfo=UTC)
+    daily = MockMarketDataProvider(profile="orb_breakout", seed=212)._orb_breakout_bars(
+        "NVDA", interval_minutes=1440, bars=5, as_of=as_of
+    )
+    exchange_timezone = ZoneInfo("America/New_York")
+
+    assert len(daily) == 5
+    assert datetime.fromisoformat(str(daily[-1]["timestamp"])).astimezone(
+        exchange_timezone
+    ).date() == date(2026, 7, 2)
+
+
+def test_breakout_profile_get_ohlcv_serves_daily_and_intraday_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    as_of = datetime(2026, 7, 6, 18, 0, tzinfo=UTC)
+    original_bars = MockMarketDataProvider._orb_breakout_bars
+
+    def pinned_bars(
+        self: MockMarketDataProvider, ticker: str, *, interval_minutes: int, bars: int
+    ) -> list[dict[str, object]]:
+        return original_bars(
+            self, ticker, interval_minutes=interval_minutes, bars=bars, as_of=as_of
+        )
+
+    monkeypatch.setattr(MockMarketDataProvider, "_orb_breakout_bars", pinned_bars)
+    provider = MockMarketDataProvider(profile="orb_breakout", seed=212)
+
+    daily = provider.get_ohlcv("SPY", interval_minutes=1440, bars=90)
+    intraday = provider.get_ohlcv("SPY", interval_minutes=5, bars=50)
+
+    assert len(daily) == 90
+    assert len(intraday) == 50
+    assert intraday[-1]["timestamp"] == datetime(2026, 7, 6, 17, 55, tzinfo=UTC).isoformat()
+    assert daily[-1]["close"] == intraday[-1]["close"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "as_of",
+    [
+        datetime(2026, 1, 7, 14, 32, tzinfo=UTC),
+        datetime(2026, 1, 7, 14, 50, tzinfo=UTC),
+        datetime(2026, 1, 7, 16, 35, tzinfo=UTC),
+        datetime(2026, 1, 7, 20, 59, tzinfo=UTC),
+        datetime(2026, 1, 10, 12, 0, tzinfo=UTC),
+        datetime(2026, 1, 7, 13, 0, tzinfo=UTC),
+        datetime(2026, 11, 27, 17, 55, tzinfo=UTC),
+    ],
+    ids=[
+        "no-completed-bar",
+        "opening-range",
+        "mid-session",
+        "last-minute",
+        "weekend",
+        "pre-open",
+        "early-close",
+    ],
+)
+async def test_breakout_profile_gives_the_regime_service_a_classified_uptrend(
+    monkeypatch: pytest.MonkeyPatch, as_of: datetime
+) -> None:
+    from app.core.config import settings
+    from app.services import market_regime as market_regime_module
+    from app.services.feed_health import reset_feed_health
+
+    original_bars = MockMarketDataProvider._orb_breakout_bars
+
+    def pinned_bars(
+        self: MockMarketDataProvider, ticker: str, *, interval_minutes: int, bars: int
+    ) -> list[dict[str, object]]:
+        return original_bars(
+            self, ticker, interval_minutes=interval_minutes, bars=bars, as_of=as_of
+        )
+
+    monkeypatch.setattr(settings, "APP_MODE", "mock")
+    monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", "mock")
+    monkeypatch.setattr(settings, "MOCK_MARKET_PROFILE", "orb_breakout")
+    monkeypatch.setattr(MockMarketDataProvider, "_orb_breakout_bars", pinned_bars)
+    monkeypatch.setattr(market_regime_module, "_cached_regime", None)
+    monkeypatch.setattr(market_regime_module, "_last_evaluated_at", None)
+    reset_feed_health()
+
+    payload = await market_regime_module.MarketRegimeService().evaluate()
+
+    assert payload["regime"] == "trending_up"
+    assert "orb" not in payload["suppressed_strategies"]
 
 
 @pytest.mark.parametrize(

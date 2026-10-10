@@ -10,10 +10,13 @@ import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from app.market_data.exchange_calendar import calendar_for_venue
+
+if TYPE_CHECKING:
+    from app.market_data.exchange_calendar import TradingSession
 
 
 @dataclass
@@ -44,6 +47,13 @@ MOCK_BASE_PRICES: dict[str, float] = {
 # Track current prices to simulate trending
 _current_prices: dict[str, float] = dict(MOCK_BASE_PRICES)
 
+_DAILY_INTERVAL_MINUTES = 24 * 60
+# The orb_breakout profile builds its daily bar for the anchor session from
+# these intraday bars, and every earlier day closes into this prior close.
+_ORB_DAILY_SOURCE_INTERVAL_MINUTES = 5
+_ORB_PRIOR_CLOSE_FACTOR = 0.999
+_ORB_DAILY_VOLUME = 1_500_000
+
 
 class MockMarketDataProvider:
     """
@@ -55,6 +65,10 @@ class MockMarketDataProvider:
         self.profile = profile
         self.seed = seed
 
+    def _orb_base_price(self, ticker: str) -> float:
+        rng = random.Random(f"{self.seed}:{ticker.upper()}")
+        return MOCK_BASE_PRICES.get(ticker, 100.0) * (1 + rng.uniform(-0.02, 0.02))
+
     def _orb_breakout_bars(
         self,
         ticker: str,
@@ -63,14 +77,25 @@ class MockMarketDataProvider:
         bars: int,
         as_of: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        """Return a current XNYS session with a genuine high-volume ORB breakout."""
+        """Return the latest ``bars`` completed bars of a seeded XNYS ORB breakout.
+
+        The history is anchored on the session in progress at ``as_of`` (or the
+        most recent finished one). Intraday history is that session's completed
+        bars preceded by the previous session's terminal bar; daily history is
+        one bar per XNYS session ending with the anchor session. Either way the
+        result is the newest ``bars`` rows, oldest first, so a short window is a
+        suffix of a longer one. The breakout volume sits on the latest completed
+        intraday bar, so that bar's volume changes once a newer bar completes.
+        """
         if interval_minutes <= 0:
             raise ValueError("interval_minutes must be positive")
+        if interval_minutes > _DAILY_INTERVAL_MINUTES:
+            raise ValueError(
+                "interval_minutes above one day is not supported by the orb_breakout profile"
+            )
         if bars <= 0:
             return []
 
-        rng = random.Random(f"{self.seed}:{ticker.upper()}")
-        base = MOCK_BASE_PRICES.get(ticker, 100.0) * (1 + rng.uniform(-0.02, 0.02))
         calendar = calendar_for_venue("XNYS")
         now = (as_of or datetime.now(UTC)).astimezone(UTC)
         local_date = now.astimezone(ZoneInfo(calendar.exchange_timezone)).date()
@@ -84,6 +109,25 @@ class MockMarketDataProvider:
             if now < calendar.session_close(session):
                 session = calendar.previous_session(session)
 
+        if interval_minutes == _DAILY_INTERVAL_MINUTES:
+            rows = self._orb_daily_rows(ticker, bars=bars, session=session, now=now)
+        else:
+            rows = self._orb_intraday_rows(
+                ticker, interval_minutes=interval_minutes, session=session, now=now
+            )
+        return rows[-bars:]
+
+    def _orb_intraday_rows(
+        self,
+        ticker: str,
+        *,
+        interval_minutes: int,
+        session: TradingSession,
+        now: datetime,
+    ) -> list[dict[str, Any]]:
+        """Previous terminal bar plus every completed bar of ``session``."""
+        base = self._orb_base_price(ticker)
+        calendar = calendar_for_venue("XNYS")
         session_open = calendar.session_open(session)
         session_close = calendar.session_close(session)
         completed_through = min(now, session_close)
@@ -96,12 +140,10 @@ class MockMarketDataProvider:
 
         previous_session = calendar.previous_session(session)
         previous_terminal = calendar.session_close(previous_session) - interval
-        timestamps = [previous_terminal, *current_bar_times][:bars]
-        if not timestamps:
-            return []
+        timestamps = [previous_terminal, *current_bar_times]
 
         result: list[dict[str, Any]] = []
-        previous_close = base * 0.999
+        previous_close = base * _ORB_PRIOR_CLOSE_FACTOR
         for index, timestamp in enumerate(timestamps):
             if index == 0:
                 open_price = base * 0.9988
@@ -138,6 +180,71 @@ class MockMarketDataProvider:
                 }
             )
         return result
+
+    def _orb_daily_rows(
+        self,
+        ticker: str,
+        *,
+        bars: int,
+        session: TradingSession,
+        now: datetime,
+    ) -> list[dict[str, Any]]:
+        """The newest ``bars`` daily bars, ending with ``session`` once it has a bar.
+
+        Earlier sessions rise steadily into the prior close the intraday history
+        starts from, and the anchor session is the aggregate of its own completed
+        intraday bars, so both views of the same market agree. The agreement holds
+        for the five-minute view only: the intraday ramp is indexed by bar number,
+        so a coarser intraday interval ends lower than the daily bar.
+        """
+        calendar = calendar_for_venue("XNYS")
+        exchange_timezone = ZoneInfo(calendar.exchange_timezone)
+
+        def label(day_session: TradingSession) -> str:
+            return (
+                datetime.combine(day_session.local_date, datetime.min.time(), exchange_timezone)
+                .astimezone(UTC)
+                .isoformat()
+            )
+
+        newest_first: list[dict[str, Any]] = []
+        session_rows = self._orb_intraday_rows(
+            ticker,
+            interval_minutes=_ORB_DAILY_SOURCE_INTERVAL_MINUTES,
+            session=session,
+            now=now,
+        )[1:]
+        if session_rows:
+            newest_first.append(
+                {
+                    "timestamp": label(session),
+                    "open": session_rows[0]["open"],
+                    "high": max(row["high"] for row in session_rows),
+                    "low": min(row["low"] for row in session_rows),
+                    "close": session_rows[-1]["close"],
+                    "volume": sum(row["volume"] for row in session_rows),
+                }
+            )
+
+        rng = random.Random(f"{self.seed}:{ticker.upper()}:daily")
+        close = self._orb_base_price(ticker) * _ORB_PRIOR_CLOSE_FACTOR
+        day_session = calendar.previous_session(session)
+        while len(newest_first) < bars:
+            open_price = close / (1 + rng.uniform(0.001, 0.004))
+            newest_first.append(
+                {
+                    "timestamp": label(day_session),
+                    "open": round(open_price, 4),
+                    "high": round(close * 1.002, 4),
+                    "low": round(open_price * 0.998, 4),
+                    "close": round(close, 4),
+                    "volume": _ORB_DAILY_VOLUME,
+                }
+            )
+            close = open_price
+            day_session = calendar.previous_session(day_session)
+        newest_first.reverse()
+        return newest_first
 
     def get_quote(self, ticker: str) -> Quote:
         base = MOCK_BASE_PRICES.get(ticker, 100.0)
