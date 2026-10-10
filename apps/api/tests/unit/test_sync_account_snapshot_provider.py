@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Any, ClassVar
 
@@ -78,6 +79,11 @@ class RecordingBroker:
         raise AttributeError(name)
 
 
+@asynccontextmanager
+async def _acquired_task_lock(*_args: Any, **_kwargs: Any) -> Any:
+    yield True
+
+
 @pytest.fixture(autouse=True)
 def _reset_task_state(monkeypatch: pytest.MonkeyPatch) -> None:
     RecordingBroker.entered = 0
@@ -87,6 +93,7 @@ def _reset_task_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "APP_MODE", "live")
     monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", True)
     monkeypatch.setattr(tasks, "_LOOP", None)
+    monkeypatch.setattr("app.core.redis.task_lock", _acquired_task_lock)
 
 
 def _active_conn(*, environment: str = "live", account_currency: str | None = "GBP") -> Any:
