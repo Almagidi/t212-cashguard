@@ -52,6 +52,21 @@ npx playwright test --ui
 npx playwright test tests/e2e/app.spec.ts
 ```
 
+### Real-worker proofs
+```bash
+# Requires Docker. Each script starts its own PostgreSQL and Redis containers
+# on free loopback ports and removes them afterwards.
+make real-worker-paper-smoke             # one scheduled paper fill; a repeat dispatch places nothing
+make real-worker-paper-chaos             # kill switch blocks the next task; needs a committed tree
+make real-worker-lock-recovery           # two workers, one owner; lock recovers after a worker dies
+make real-worker-interruption-recovery   # Redis, PostgreSQL and worker interruptions
+```
+
+These run a real Celery worker against mock market data (`MOCK_MARKET_PROFILE=orb_breakout`,
+clock pinned to a fixed session). The worker aborts on any broker adapter construction and on any
+non-loopback connection. CI runs them in the required `Backend` job, so a failure blocks the
+merge. The interruption-recovery script uses the prefork pool and does not run on macOS.
+
 ---
 
 ## Key Test Coverage

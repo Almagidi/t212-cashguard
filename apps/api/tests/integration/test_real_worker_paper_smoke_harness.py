@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -53,6 +54,18 @@ def test_worker_log_policy_requires_armed_tripwires() -> None:
     smoke.assert_safe_worker_log(
         "CASHGUARD_BROKER_TRIPWIRES_ARMED CASHGUARD_NETWORK_TRIPWIRE_ARMED\nworker ready"
     )
+
+
+def test_harness_runs_alembic_through_its_own_interpreter() -> None:
+    assert smoke.alembic_command("upgrade", "head") == [
+        sys.executable,
+        "-m",
+        "alembic",
+        "upgrade",
+        "head",
+    ]
+    for script in sorted(Path(smoke.__file__).parent.glob("real_worker_*.py")):
+        assert ".venv" not in script.read_text(), script.name
 
 
 def test_harness_uses_actual_registered_task_and_real_worker_launcher() -> None:
