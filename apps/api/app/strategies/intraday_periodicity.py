@@ -183,7 +183,7 @@ class IntradayPeriodicityStrategy:
             return None
 
         regime = market_regime(bars)
-        if regime in {"trending_down", "choppy"}:
+        if regime in {"trending_down", "choppy", "unknown"}:
             return None
 
         current_session_date = bar_times[-1].date() if bar_times else None

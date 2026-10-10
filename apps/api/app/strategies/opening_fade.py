@@ -226,7 +226,7 @@ class OpeningFadeStrategy:
 
         # ── Regime gate: fade is reliable only in choppy/ranging sessions ────
         chop = choppiness_index(bars, period=14)
-        if float(chop) < self.params["chop_threshold"]:
+        if chop is None or float(chop) < self.params["chop_threshold"]:
             return None  # trending session — ORB is better here
 
         # ── Determine fade direction ──────────────────────────────────────────

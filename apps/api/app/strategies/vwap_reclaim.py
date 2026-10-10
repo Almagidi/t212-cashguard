@@ -134,7 +134,7 @@ class VWAPReclaimStrategy:
 
         # Skip choppy markets
         regime = market_regime(bars)
-        if regime == "choppy":
+        if regime in {"choppy", "unknown"}:
             return None
 
         qty = atr_position_size(

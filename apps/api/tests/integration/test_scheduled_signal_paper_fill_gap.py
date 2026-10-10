@@ -74,10 +74,15 @@ def _bar(o: float, h: float, low: float, c: float, v: float) -> Bar:
 
 def _deterministic_breakout_bars() -> list[Bar]:
     # Empirically verified against OpeningRangeBreakoutStrategy(RELAXED_ORB_PARAMS):
-    # opening range 97-103, then a sustained close above the range high on
-    # strong volume -- deterministically yields a "buy" entry signal.
+    # opening range 97-103, then a steady climb above the range high on strong
+    # volume -- deterministically yields a "buy" entry signal. The climb has to be a
+    # real one: 22 identical bars are a flat, choppy market, which ORB refuses. They
+    # used to pass only because fewer than 30 bars left the regime "unknown".
     orb = [_bar(100, 103, 97, 101, 20_000)] * 3
-    rest = [_bar(103, 108, 102, 107, 30_000)] * 22
+    rest = [
+        _bar(103 + step * 0.5, 104.5 + step * 0.5, 102.5 + step * 0.5, 104 + step * 0.5, 30_000)
+        for step in range(22)
+    ]
     return orb + rest
 
 
