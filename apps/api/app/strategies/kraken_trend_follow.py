@@ -21,6 +21,7 @@ Daily bars filter intraday noise and capture multi-day crypto trend breakouts.
 EMA50 ensures the trade aligns with the medium-term trend direction.
 The Donchian upper (computed on prior bars) is the explicit, deterministic breakout level.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -42,8 +43,8 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "ema_trend_period": 50,
     "min_rvol": 1.3,
     "atr_period": 14,
-    "atr_stop_multiplier": 3.0,    # wide stop for daily bars
-    "reward_risk_ratio": 3.0,      # 3R target — trend trades need room
+    "atr_stop_multiplier": 3.0,  # wide stop for daily bars
+    "reward_risk_ratio": 3.0,  # 3R target — trend trades need room
     "risk_per_trade_pct": 0.5,
     "max_position_pct": 6.0,
     "max_choppiness": 55.0,
@@ -78,10 +79,10 @@ class KrakenHTFBreakoutStrategy:
     VENUE = "kraken"
     PAPER_ONLY = True
     DATA_PROVIDER_TYPE = "kraken"
-    BAR_INTERVAL_MINUTES = 1440   # daily bars
+    BAR_INTERVAL_MINUTES = 1440  # daily bars
     history_days = 120
     max_history_bars = 100
-    required_bars = 55            # EMA50 + Donchian20 + ATR14 + 1 lookback bar
+    required_bars = 55  # EMA50 + Donchian20 + ATR14 + 1 lookback bar
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         self.params = {**DEFAULT_PARAMS, **(params or {})}
@@ -115,7 +116,7 @@ class KrakenHTFBreakoutStrategy:
         channel_bars = bars[:-1]
         if len(channel_bars) < breakout_period:
             return None
-        upper, _ = donchian_channel(channel_bars, breakout_period)
+        upper, _lower = donchian_channel(channel_bars, breakout_period)
         if upper <= 0 or current_price <= upper:
             return None
 
@@ -149,7 +150,9 @@ class KrakenHTFBreakoutStrategy:
             atr_stop_multiplier=self.params["atr_stop_multiplier"],
             available_cash=available_cash,
         )
-        max_by_pct = account_value * Decimal(str(self.params["max_position_pct"])) / 100 / current_price
+        max_by_pct = (
+            account_value * Decimal(str(self.params["max_position_pct"])) / 100 / current_price
+        )
         qty = min(qty, max_by_pct)
         if qty < Decimal("0.0001"):
             return None

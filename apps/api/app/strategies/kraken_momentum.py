@@ -28,6 +28,7 @@ Target: 2R (stop distance * reward_risk_ratio)
 
 Crypto is 24/7 — no session time filter applied.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -88,9 +89,9 @@ class KrakenMomentumStrategy:
     APPROVED: bool = False
     DATA_PROVIDER_TYPE = "kraken"
     BAR_INTERVAL_MINUTES = 60
-    history_days = 12        # 12 days * 24h = 288 potential 1h bars (< 720 limit)
+    history_days = 12  # 12 days * 24h = 288 potential 1h bars (< 720 limit)
     max_history_bars = 200
-    required_bars = 25       # EMA21 + Donchian20 + ATR14
+    required_bars = 25  # EMA21 + Donchian20 + ATR14
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         self.params = {**DEFAULT_PARAMS, **(params or {})}
@@ -130,7 +131,7 @@ class KrakenMomentumStrategy:
         channel_bars = bars[:-1]
         if len(channel_bars) < donchian_period:
             return None
-        upper, _ = donchian_channel(channel_bars, donchian_period)
+        upper, _lower = donchian_channel(channel_bars, donchian_period)
         if upper <= 0 or current_price <= upper:
             return None
 
@@ -159,7 +160,9 @@ class KrakenMomentumStrategy:
             atr_stop_multiplier=self.params["atr_stop_multiplier"],
             available_cash=available_cash,
         )
-        max_by_pct = account_value * Decimal(str(self.params["max_position_pct"])) / 100 / current_price
+        max_by_pct = (
+            account_value * Decimal(str(self.params["max_position_pct"])) / 100 / current_price
+        )
         qty = min(qty, max_by_pct)
         if qty < Decimal("0.0001"):
             return None

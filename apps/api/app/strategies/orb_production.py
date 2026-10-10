@@ -2,19 +2,19 @@
 Opening Range Breakout — Production grade.
 All filters, ATR sizing, trailing stops, partial exits.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime  # noqa: TC003 - dataclass field type, kept importable at runtime
 from decimal import Decimal
 from typing import Any
 
 from app.strategies.indicators import (
     Bar,
-    atr,
     adaptive_atr_multiplier,
+    atr,
     atr_position_size,
-    choppiness_index,
     gap_pct,
     is_tradeable_time,
     is_trending_down,
@@ -43,9 +43,9 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # The trail multiplier now adapts to current vs average volatility.
     # Use adaptive_atr_multiplier() at runtime; this value is the *base*.
     "atr_trail_multiplier": 2.5,
-    "atr_trail_multiplier_floor": 1.5,   # minimum trail width (tight trending market)
-    "atr_trail_multiplier_ceiling": 4.0, # maximum trail width (very volatile session)
-    "adaptive_trail": True,              # set False to revert to fixed multiplier
+    "atr_trail_multiplier_floor": 1.5,  # minimum trail width (tight trending market)
+    "atr_trail_multiplier_ceiling": 4.0,  # maximum trail width (very volatile session)
+    "adaptive_trail": True,  # set False to revert to fixed multiplier
     # --- Reward / size ---
     "reward_risk_ratio_min": 1.5,
     "take_profit_1r_pct": 0.5,
@@ -90,6 +90,7 @@ class ORBSignal:
 @dataclass
 class ORBState:
     """Live trade state for exit monitoring."""
+
     ticker: str
     strategy_id: str
     side: str
@@ -175,9 +176,14 @@ class OpeningRangeBreakoutStrategy:
         if regime == "choppy":
             return False, "Market choppy — skip"
 
-        if self.params.get("require_trend") and len(bars) >= self.params["trend_ema_slow"]:
-            if not is_trending_up(bars, self.params["trend_ema_fast"], self.params["trend_ema_slow"]):
-                return False, "No uptrend confirmation"
+        if (
+            self.params.get("require_trend")
+            and len(bars) >= self.params["trend_ema_slow"]
+            and not is_trending_up(
+                bars, self.params["trend_ema_fast"], self.params["trend_ema_slow"]
+            )
+        ):
+            return False, "No uptrend confirmation"
 
         return True, "All filters passed"
 
@@ -230,11 +236,14 @@ class OpeningRangeBreakoutStrategy:
         if regime == "choppy":
             return False, "Market choppy — skip shorts"
 
-        if self.params.get("require_trend") and len(bars) >= self.params["trend_ema_slow"]:
-            if not is_trending_down(
+        if (
+            self.params.get("require_trend")
+            and len(bars) >= self.params["trend_ema_slow"]
+            and not is_trending_down(
                 bars, self.params["trend_ema_fast"], self.params["trend_ema_slow"]
-            ):
-                return False, "No downtrend confirmation for short"
+            )
+        ):
+            return False, "No downtrend confirmation for short"
 
         return True, "All short filters passed"
 
@@ -333,7 +342,9 @@ class OpeningRangeBreakoutStrategy:
             confidence += Decimal("0.10")
         # Confirmation: price has moved convincingly past the breakout/breakdown level
         buffer = orb_high * Decimal("1.005") if side == "buy" else orb_low * Decimal("0.995")
-        if (side == "buy" and current_price > buffer) or (side == "sell" and current_price < buffer):
+        if (side == "buy" and current_price > buffer) or (
+            side == "sell" and current_price < buffer
+        ):
             confidence += Decimal("0.10")
         confidence = min(confidence, Decimal("0.95"))
 
@@ -355,10 +366,15 @@ class OpeningRangeBreakoutStrategy:
                 f"regime={regime}, R:R={float(rr):.2f}"
             ),
             params_snapshot={
-                "orb_high": float(orb_high), "orb_low": float(orb_low),
-                "atr": float(atr_val), "rvol": float(rvol),
-                "stop": float(stop_price), "tp2": float(tp2),
-                "regime": regime, "rr": float(rr), "side": side,
+                "orb_high": float(orb_high),
+                "orb_low": float(orb_low),
+                "atr": float(atr_val),
+                "rvol": float(rvol),
+                "stop": float(stop_price),
+                "tp2": float(tp2),
+                "regime": regime,
+                "rr": float(rr),
+                "side": side,
             },
             reward_risk_ratio=rr,
             atr_value=atr_val,
@@ -410,11 +426,19 @@ class OpeningRangeBreakoutStrategy:
             ok, _ = self._check_filters(bars, current_time_utc, prev_close)
             if ok:
                 return self._build_signal(
-                    ticker=ticker, side="buy", bars=bars,
-                    account_value=account_value, available_cash=available_cash,
-                    orb_high=orb_high, orb_low=orb_low,
-                    atr_val=atr_val, rvol=rvol, regime=regime,
-                    win_rate=win_rate, avg_win_pct=avg_win_pct, avg_loss_pct=avg_loss_pct,
+                    ticker=ticker,
+                    side="buy",
+                    bars=bars,
+                    account_value=account_value,
+                    available_cash=available_cash,
+                    orb_high=orb_high,
+                    orb_low=orb_low,
+                    atr_val=atr_val,
+                    rvol=rvol,
+                    regime=regime,
+                    win_rate=win_rate,
+                    avg_win_pct=avg_win_pct,
+                    avg_loss_pct=avg_loss_pct,
                 )
 
         # ── Short side (breakdown below ORB low) — CFDs only ─────────────────
@@ -422,11 +446,19 @@ class OpeningRangeBreakoutStrategy:
             ok, _ = self._check_filters_short(bars, current_time_utc, prev_close)
             if ok:
                 return self._build_signal(
-                    ticker=ticker, side="sell", bars=bars,
-                    account_value=account_value, available_cash=available_cash,
-                    orb_high=orb_high, orb_low=orb_low,
-                    atr_val=atr_val, rvol=rvol, regime=regime,
-                    win_rate=win_rate, avg_win_pct=avg_win_pct, avg_loss_pct=avg_loss_pct,
+                    ticker=ticker,
+                    side="sell",
+                    bars=bars,
+                    account_value=account_value,
+                    available_cash=available_cash,
+                    orb_high=orb_high,
+                    orb_low=orb_low,
+                    atr_val=atr_val,
+                    rvol=rvol,
+                    regime=regime,
+                    win_rate=win_rate,
+                    avg_win_pct=avg_win_pct,
+                    avg_loss_pct=avg_loss_pct,
                 )
 
         return None
@@ -470,7 +502,7 @@ class OpeningRangeBreakoutStrategy:
         else:
             current_stop = min(state.current_stop, new_trail)
 
-        is_long = (state.side == "buy")
+        is_long = state.side == "buy"
         exit_side = "sell" if is_long else "buy"
 
         # Stop hit
@@ -481,8 +513,11 @@ class OpeningRangeBreakoutStrategy:
             else:
                 stop_type = "trailing_stop" if current_stop < state.initial_stop else "stop"
             return ORBSignal(
-                ticker=ticker, side=exit_side, signal_type=stop_type,
-                entry_price=current_price, stop_price=current_stop,
+                ticker=ticker,
+                side=exit_side,
+                signal_type=stop_type,
+                entry_price=current_price,
+                stop_price=current_stop,
                 take_profit_price=state.take_profit_2r,
                 suggested_quantity=-state.remaining_quantity,
                 confidence=Decimal("1.0"),
@@ -491,11 +526,18 @@ class OpeningRangeBreakoutStrategy:
             )
 
         # Full TP
-        tp_hit = (current_price >= state.take_profit_2r) if is_long else (current_price <= state.take_profit_2r)
+        tp_hit = (
+            (current_price >= state.take_profit_2r)
+            if is_long
+            else (current_price <= state.take_profit_2r)
+        )
         if tp_hit:
             return ORBSignal(
-                ticker=ticker, side=exit_side, signal_type="take_profit",
-                entry_price=current_price, stop_price=current_stop,
+                ticker=ticker,
+                side=exit_side,
+                signal_type="take_profit",
+                entry_price=current_price,
+                stop_price=current_stop,
                 take_profit_price=state.take_profit_2r,
                 suggested_quantity=-state.remaining_quantity,
                 confidence=Decimal("1.0"),
@@ -505,7 +547,8 @@ class OpeningRangeBreakoutStrategy:
 
         # Partial exit at 1R
         partial_hit = (
-            (current_price >= state.take_profit_1r) if is_long
+            (current_price >= state.take_profit_1r)
+            if is_long
             else (current_price <= state.take_profit_1r)
         )
         if not state.partial_exit_done and partial_hit:
@@ -514,8 +557,11 @@ class OpeningRangeBreakoutStrategy:
             ).quantize(Decimal("0.01"))
             if partial >= Decimal("0.01"):
                 return ORBSignal(
-                    ticker=ticker, side=exit_side, signal_type="partial_exit",
-                    entry_price=current_price, stop_price=current_stop,
+                    ticker=ticker,
+                    side=exit_side,
+                    signal_type="partial_exit",
+                    entry_price=current_price,
+                    stop_price=current_stop,
                     take_profit_price=state.take_profit_2r,
                     suggested_quantity=-partial,
                     confidence=Decimal("0.95"),
