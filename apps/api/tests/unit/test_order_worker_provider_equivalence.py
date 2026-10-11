@@ -922,7 +922,6 @@ def test_order_worker_provider_helper_is_wired_and_direct_references_are_localiz
     reconcile_node = _top_level_function("reconcile_pending_orders")
     cancel_node = _top_level_function("cancel_timed_out_orders")
     migrated_node = _top_level_function("sync_account_snapshot")
-    funding_node = _top_level_function("track_cfd_funding")
     provider_helper_functions = {
         node.name
         for node in tree.body
@@ -935,10 +934,11 @@ def test_order_worker_provider_helper_is_wired_and_direct_references_are_localiz
     assert "create_trading212_provider_adapter" in ast.unparse(reconcile_node)
     assert "create_trading212_provider_adapter" in ast.unparse(cancel_node)
     assert "create_trading212_provider_adapter" in ast.unparse(migrated_node)
-    assert "create_trading212_provider_adapter" in ast.unparse(funding_node)
+    assert not any(
+        isinstance(node, ast.FunctionDef) and node.name == "track_cfd_funding" for node in tree.body
+    )
     assert provider_helper_functions == {
         "sync_account_snapshot",
-        "track_cfd_funding",
         "reconcile_pending_orders",
         "cancel_timed_out_orders",
     }

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from pydantic import ValidatorFunctionWrapHandler, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if TYPE_CHECKING:
@@ -59,6 +60,12 @@ _CONFIG_MODULE = Path(__file__).resolve()
 _ENV_FILE_PATH = _resolve_env_file(_CONFIG_MODULE, os.environ)
 # Where a .env is expected, for diagnostics; it may not exist.
 _ENV_FILE = _ENV_FILE_PATH or _project_root(_CONFIG_MODULE) / ".env"
+
+
+CASH_ONLY_REFUSAL = (
+    "CASH_ONLY_MODE cannot be disabled: CashGuard is a cash-only application. "
+    "Margin, leverage, CFDs and short selling are not supported."
+)
 
 
 class Settings(BaseSettings):
@@ -168,7 +175,11 @@ class Settings(BaseSettings):
     def celery_backend(self) -> str:
         return self.CELERY_RESULT_BACKEND or self.REDIS_URL
 
-    # Safety — HARDCODED, NOT configurable via UI
+    # Safety. Cash-only operation is an invariant, not a setting: no configuration source
+    # may supply anything but true (see _cash_only_cannot_be_disabled), and assigning to or
+    # deleting it on the running settings is refused (see __setattr__). Code already
+    # running in the process can still overwrite it by other means; that is not a
+    # configuration path.
     CASH_ONLY_MODE: bool = True
     LIVE_TRADING_ENABLED: bool = False
     POSITION_MONITOR_UNREALIZED_PNL_FAILURE_POLICY: Literal[
@@ -231,6 +242,29 @@ class Settings(BaseSettings):
     PORTFOLIO_ALLOCATOR_MAX_SYMBOL_EXPOSURE_PCT: float = 20.0
     PORTFOLIO_ALLOCATOR_MAX_SLEEVE_SYMBOL_EXPOSURE_PCT: float = 60.0
     PORTFOLIO_ALLOCATOR_MAX_RUN_RISK_PCT: float = 2.0
+
+    @field_validator("CASH_ONLY_MODE", mode="wrap")
+    @classmethod
+    def _cash_only_cannot_be_disabled(
+        cls, value: object, handler: ValidatorFunctionWrapHandler
+    ) -> bool:
+        try:
+            enabled = handler(value)
+        except ValueError:
+            enabled = False
+        if enabled is not True:
+            raise ValueError(CASH_ONLY_REFUSAL)
+        return True
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name == "CASH_ONLY_MODE" and value is not True:
+            raise ValueError(CASH_ONLY_REFUSAL)
+        super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name == "CASH_ONLY_MODE":
+            raise AttributeError(CASH_ONLY_REFUSAL)
+        super().__delattr__(name)
 
 
 settings = Settings()

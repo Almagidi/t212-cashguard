@@ -21,7 +21,6 @@ EXCLUSIVE_LEASES = {
     "daily_reset": 120,
     "morning_scan": 150,
     "purge_old_records": 330,
-    "track_cfd_funding": 90,
 }
 
 

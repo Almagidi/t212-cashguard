@@ -140,7 +140,6 @@ def test_workers_tasks_direct_inventory_and_provider_call_sites_are_locked() -> 
     assert _function_names_with_direct_adapter(tree) == set()
     assert _function_names_with_call(tree, "create_trading212_provider_adapter") == {
         "sync_account_snapshot",
-        "track_cfd_funding",
         "reconcile_pending_orders",
         "cancel_timed_out_orders",
     }
