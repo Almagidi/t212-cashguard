@@ -56,6 +56,7 @@ from app.execution.engine import ExecutionEngine
 from app.execution.paper_engine import PaperExecutionError
 from app.execution.state_machine import ACTIVE_ORDER_STATUSES
 from app.market_data.exchange_calendar import calendar_for_venue
+from app.market_data.indicator_history import continuous_indicator_bars
 from app.risk.engine import RiskEngine, RiskViolation
 from app.services.alert_service import (
     alert_daily_summary,
@@ -69,7 +70,12 @@ from app.services.market_intelligence_monitor import MarketIntelligenceMonitor
 from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 from app.services.signal_allocator import AllocationState, AllocatorCandidate, SignalAllocator
 from app.services.strategy_promotion import StrategyPromotionService
-from app.strategies.indicators import Bar, atr
+from app.strategies.indicators import (
+    INDICATOR_HISTORY_CUTOFF_BARS,
+    Bar,
+    accepts_indicator_bars,
+    atr,
+)
 from app.strategies.orb_production import OpeningRangeBreakoutStrategy, ORBState
 
 if TYPE_CHECKING:
@@ -655,6 +661,7 @@ class StrategyRunner:
         available_cash: Decimal,
         current_time_utc: str,
         prev_close: Decimal | None,
+        indicator_bars: list[Bar] | None = None,
     ) -> dict[str, Any]:
         signature = inspect.signature(engine.generate_signal)
         kwargs: dict[str, Any] = {
@@ -674,6 +681,8 @@ class StrategyRunner:
             kwargs["history_bars"] = history_bars
         if "history_bar_times" in signature.parameters:
             kwargs["history_bar_times"] = history_bar_times
+        if "indicator_bars" in signature.parameters:
+            kwargs["indicator_bars"] = indicator_bars or None
         return kwargs
 
     # ── Main entry ────────────────────────────────────────────────────────────
@@ -1020,6 +1029,21 @@ class StrategyRunner:
             )
             return 0, 0, 1
 
+        indicator_bars: list[Bar] = []
+        if (
+            data_provider_type != "kraken"
+            and len(session_bars) < INDICATOR_HISTORY_CUTOFF_BARS
+            and accepts_indicator_bars(engine)
+        ):
+            # Earlier regular-session bars may be joined to today's only as one unbroken run.
+            indicator_bars = continuous_indicator_bars(
+                history_bars,
+                history_bar_times,
+                session_bars,
+                session_times,
+                interval_minutes=bar_interval_minutes,
+            )
+
         # Entry signal
         signal_obj = engine.generate_signal(
             **self._build_signal_kwargs(
@@ -1033,6 +1057,7 @@ class StrategyRunner:
                 available_cash=cash,
                 current_time_utc=strategy_now_utc,
                 prev_close=prev_close,
+                indicator_bars=indicator_bars,
             )
         )
         if signal_obj is None:

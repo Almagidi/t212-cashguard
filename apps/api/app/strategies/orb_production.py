@@ -11,11 +11,15 @@ from decimal import Decimal
 from typing import Any
 
 from app.strategies.indicators import (
+    ATR_MIN_BARS,
+    REGIME_MIN_BARS,
+    RELATIVE_VOLUME_MIN_BARS,
     Bar,
     adaptive_atr_multiplier,
     atr,
     atr_position_size,
     gap_pct,
+    indicator_series,
     is_tradeable_time,
     is_trending_down,
     is_trending_up,
@@ -136,9 +140,13 @@ class OpeningRangeBreakoutStrategy:
         bars: list[Bar],
         current_time_utc: str,
         prev_close: Decimal | None,
+        indicator_bars: list[Bar] | None = None,
     ) -> tuple[bool, str]:
         if not bars:
             return False, "No bars"
+        # Session bars decide price, time and gap. An indicator the session is still too
+        # short to produce may use validated history instead.
+        trend_bars = indicator_series(bars, indicator_bars, self.params["trend_ema_slow"])
 
         price = bars[-1].close
 
@@ -160,7 +168,7 @@ class OpeningRangeBreakoutStrategy:
             if g > self.params["max_gap_pct"]:
                 return False, f"Gap {g:.1f}% too large"
 
-        atr_val = atr(bars, 14)
+        atr_val = atr(indicator_series(bars, indicator_bars, ATR_MIN_BARS), 14)
         if atr_val > 0:
             atr_p = float(atr_val / price * 100)
             if atr_p < self.params["min_atr_pct"]:
@@ -168,11 +176,11 @@ class OpeningRangeBreakoutStrategy:
             if atr_p > self.params["max_atr_pct"]:
                 return False, f"ATR {atr_p:.2f}% too high"
 
-        rvol = relative_volume(bars, 20)
+        rvol = relative_volume(indicator_series(bars, indicator_bars, RELATIVE_VOLUME_MIN_BARS), 20)
         if float(rvol) < self.params["min_rvol"]:
             return False, f"RVOL {rvol:.2f} < {self.params['min_rvol']}"
 
-        regime = market_regime(bars)
+        regime = market_regime(indicator_series(bars, indicator_bars, REGIME_MIN_BARS))
         if regime == "unknown":
             return False, "Market regime unavailable — skip"
         if regime == "choppy":
@@ -180,9 +188,9 @@ class OpeningRangeBreakoutStrategy:
 
         if (
             self.params.get("require_trend")
-            and len(bars) >= self.params["trend_ema_slow"]
+            and len(trend_bars) >= self.params["trend_ema_slow"]
             and not is_trending_up(
-                bars, self.params["trend_ema_fast"], self.params["trend_ema_slow"]
+                trend_bars, self.params["trend_ema_fast"], self.params["trend_ema_slow"]
             )
         ):
             return False, "No uptrend confirmation"
@@ -194,6 +202,7 @@ class OpeningRangeBreakoutStrategy:
         bars: list[Bar],
         current_time_utc: str,
         prev_close: Decimal | None,
+        indicator_bars: list[Bar] | None = None,
     ) -> tuple[bool, str]:
         """
         Mirrored filter set for the short / breakdown side.
@@ -201,6 +210,7 @@ class OpeningRangeBreakoutStrategy:
         """
         if not bars:
             return False, "No bars"
+        trend_bars = indicator_series(bars, indicator_bars, self.params["trend_ema_slow"])
 
         price = bars[-1].close
 
@@ -222,7 +232,7 @@ class OpeningRangeBreakoutStrategy:
             if g > self.params["max_gap_pct"]:
                 return False, f"Gap {g:.1f}% too large"
 
-        atr_val = atr(bars, 14)
+        atr_val = atr(indicator_series(bars, indicator_bars, ATR_MIN_BARS), 14)
         if atr_val > 0:
             atr_p = float(atr_val / price * 100)
             if atr_p < self.params["min_atr_pct"]:
@@ -230,11 +240,11 @@ class OpeningRangeBreakoutStrategy:
             if atr_p > self.params["max_atr_pct"]:
                 return False, f"ATR {atr_p:.2f}% too high"
 
-        rvol = relative_volume(bars, 20)
+        rvol = relative_volume(indicator_series(bars, indicator_bars, RELATIVE_VOLUME_MIN_BARS), 20)
         if float(rvol) < self.params["min_rvol"]:
             return False, f"RVOL {rvol:.2f} < {self.params['min_rvol']}"
 
-        regime = market_regime(bars)
+        regime = market_regime(indicator_series(bars, indicator_bars, REGIME_MIN_BARS))
         if regime == "unknown":
             return False, "Market regime unavailable — skip shorts"
         if regime == "choppy":
@@ -242,9 +252,9 @@ class OpeningRangeBreakoutStrategy:
 
         if (
             self.params.get("require_trend")
-            and len(bars) >= self.params["trend_ema_slow"]
+            and len(trend_bars) >= self.params["trend_ema_slow"]
             and not is_trending_down(
-                bars, self.params["trend_ema_fast"], self.params["trend_ema_slow"]
+                trend_bars, self.params["trend_ema_fast"], self.params["trend_ema_slow"]
             )
         ):
             return False, "No downtrend confirmation for short"
@@ -398,6 +408,9 @@ class OpeningRangeBreakoutStrategy:
         win_rate: float = 0.5,
         avg_win_pct: float = 0.015,
         avg_loss_pct: float = 0.0075,
+        *,
+        # Validated cross-session history ending with `bars` (see indicator_series).
+        indicator_bars: list[Bar] | None = None,
     ) -> ORBSignal | None:
         """
         Generate an ORB entry signal for the given ticker.
@@ -416,18 +429,21 @@ class OpeningRangeBreakoutStrategy:
         if not ok:
             return None
 
-        atr_val = atr(bars, 14)
+        # The opening range, the breakout price and the gap come from the session's own
+        # bars. ATR, relative volume, regime and trend use validated earlier bars only
+        # while the session is too short to produce them, and never from bar 21 on.
+        atr_val = atr(indicator_series(bars, indicator_bars, ATR_MIN_BARS), 14)
         if atr_val <= 0:
             return None
 
-        rvol = relative_volume(bars, 20)
-        regime = market_regime(bars)
+        rvol = relative_volume(indicator_series(bars, indicator_bars, RELATIVE_VOLUME_MIN_BARS), 20)
+        regime = market_regime(indicator_series(bars, indicator_bars, REGIME_MIN_BARS))
 
         current_price = bars[-1].close
 
         # ── Long side (breakout above ORB high) ──────────────────────────────
         if current_price > orb_high:
-            ok, _ = self._check_filters(bars, current_time_utc, prev_close)
+            ok, _ = self._check_filters(bars, current_time_utc, prev_close, indicator_bars)
             if ok:
                 return self._build_signal(
                     ticker=ticker,
@@ -447,7 +463,7 @@ class OpeningRangeBreakoutStrategy:
 
         # ── Short side (breakdown below ORB low) — CFDs only ─────────────────
         if self.params.get("allow_short", False) and current_price < orb_low:
-            ok, _ = self._check_filters_short(bars, current_time_utc, prev_close)
+            ok, _ = self._check_filters_short(bars, current_time_utc, prev_close, indicator_bars)
             if ok:
                 return self._build_signal(
                     ticker=ticker,
@@ -492,14 +508,19 @@ class OpeningRangeBreakoutStrategy:
         else:
             trail_mult = float(self.params["atr_trail_multiplier"])
 
-        new_trail = trailing_stop_price(
-            entry_price=state.entry_price,
-            current_price=current_price,
-            atr_val=atr_val,
-            side=state.side,
-            atr_multiplier=trail_mult,
-            initial_stop=state.initial_stop,
-        )
+        if atr_val > 0:
+            new_trail = trailing_stop_price(
+                entry_price=state.entry_price,
+                current_price=current_price,
+                atr_val=atr_val,
+                side=state.side,
+                atr_multiplier=trail_mult,
+                initial_stop=state.initial_stop,
+            )
+        else:
+            # No ATR is available, so no trail distance is known. A zero distance would
+            # put the stop at the current price and sell at once; the stop stays put.
+            new_trail = state.current_stop
         # For longs the stop only moves up; for shorts it only moves down
         if state.side == "buy":
             current_stop = max(state.current_stop, new_trail)

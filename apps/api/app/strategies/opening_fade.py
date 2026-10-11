@@ -30,11 +30,15 @@ from decimal import Decimal
 from typing import Any
 
 from app.strategies.indicators import (
+    ATR_MIN_BARS,
+    REGIME_MIN_BARS,
+    RELATIVE_VOLUME_MIN_BARS,
     Bar,
     atr,
     atr_position_size,
     choppiness_index,
     gap_pct,
+    indicator_series,
     relative_volume,
 )
 
@@ -169,6 +173,7 @@ class OpeningFadeStrategy:
         current_time_utc: str,
         prev_close: Decimal | None = None,
         session_open: Decimal | None = None,
+        indicator_bars: list[Bar] | None = None,
     ) -> FadeSignal | None:
         """
         Attempt to generate an Opening Fade entry signal.
@@ -182,6 +187,14 @@ class OpeningFadeStrategy:
             session_open: Override for the session's opening price.  Pass
                           this when ``bars`` includes pre-session history so
                           that bars[0] is NOT the opening bar.
+
+            indicator_bars: Validated cross-session history ending with ``bars``.
+                          The fade window closes before a session has the 15 bars ATR
+                          and the Choppiness Index need or the 21 that relative volume
+                          needs, so each of those three is computed from this series
+                          while the session is too short to produce it. The session
+                          open, the gap, the confirmation bars and the session high and
+                          low always come from ``bars``.
 
         Returns None if conditions are not met; otherwise returns a FadeSignal.
         """
@@ -212,7 +225,7 @@ class OpeningFadeStrategy:
             return None
 
         # ── ATR / RVOL pre-check ──────────────────────────────────────────────
-        atr_val = atr(bars, 14)
+        atr_val = atr(indicator_series(bars, indicator_bars, ATR_MIN_BARS), 14)
         if atr_val <= 0:
             return None
 
@@ -220,12 +233,12 @@ class OpeningFadeStrategy:
         if atr_p < self.params["min_atr_pct"] or atr_p > self.params["max_atr_pct"]:
             return None
 
-        rvol = relative_volume(bars, 20)
+        rvol = relative_volume(indicator_series(bars, indicator_bars, RELATIVE_VOLUME_MIN_BARS), 20)
         if float(rvol) < self.params["min_rvol"]:
             return None
 
         # ── Regime gate: fade is reliable only in choppy/ranging sessions ────
-        chop = choppiness_index(bars, period=14)
+        chop = choppiness_index(indicator_series(bars, indicator_bars, REGIME_MIN_BARS), period=14)
         if chop is None or float(chop) < self.params["chop_threshold"]:
             return None  # trending session — ORB is better here
 
