@@ -4,9 +4,17 @@ CFD Overnight Funding Cost Service.
 Computes and persists the daily financing charge for every open CFD position
 at end-of-day (22:00 UTC, before EOD flatten decisions).
 
+This application is cash-only by default (`CASH_ONLY_MODE`): it holds shares, not CFDs, and
+shares carry no overnight financing. In cash-only mode nothing is recorded. Outside it, only
+a position the broker explicitly marks as a CFD is charged; an unmarked position never is.
+
+Nothing here prevents a second run on the same day from recording a marked CFD position
+twice. The table has no account, environment or instrument-identity column, so a correct
+uniqueness rule cannot be expressed yet; it must be added before any CFD mode is used.
+
 Formula (Chan 2013; T212 documentation):
-  notional     = quantity × price_at_close
-  daily_charge = notional × (annual_rate_pct / 100) / 360
+  notional     = quantity x price_at_close
+  daily_charge = notional x (annual_rate_pct / 100) / 360
 
 The annual_rate_pct is either:
   1. Fetched from broker position data ('overnightFee' field in T212 API)
@@ -19,22 +27,54 @@ attribution report, giving a realistic net return.
 Usage (from Celery task):
     await track_cfd_funding(db, positions, strategy_map)
 """
+
 from __future__ import annotations
 
+import contextlib
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select
 
+from app.core.config import settings
 from app.db.models import CFDFundingCost
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 log = structlog.get_logger()
 
 # Default annual rate used when broker doesn't provide one
 DEFAULT_ANNUAL_RATE_PCT = Decimal("5.5")
+_CFD_INSTRUMENT_TYPE = "CFD"
+_CFD_FLAG_KEYS = ("isCfd", "is_cfd")
+_INSTRUMENT_TYPE_KEYS = ("instrumentType", "instrument_type")
+
+
+def _is_cfd_position(position: dict[str, Any]) -> bool:
+    """True only when a recognised field says the position is a CFD and none says otherwise.
+
+    The recognised fields are the flags ``isCfd`` / ``is_cfd`` and the instrument types
+    ``instrumentType`` / ``instrument_type``; no other field is read. A flag counts only when
+    it is the boolean ``True``. Any other flag value, or any instrument type other than "CFD"
+    (an empty one included), means the position is not charged; a field that is absent or
+    ``None`` says nothing. No broker adapter in this application sets these fields today, so
+    with the shipped adapters nothing is charged.
+    """
+    flags = [position[key] for key in _CFD_FLAG_KEYS if position.get(key) is not None]
+    types = [
+        str(position[key]).strip().upper()
+        for key in _INSTRUMENT_TYPE_KEYS
+        if position.get(key) is not None
+    ]
+    says_cfd = any(flag is True for flag in flags) or _CFD_INSTRUMENT_TYPE in types
+    says_otherwise = any(flag is not True for flag in flags) or any(
+        instrument_type != _CFD_INSTRUMENT_TYPE for instrument_type in types
+    )
+    return says_cfd and not says_otherwise
 
 
 async def track_cfd_funding(
@@ -49,7 +89,9 @@ async def track_cfd_funding(
     Args:
         positions:    Broker position list. Each dict should contain at least:
                       'ticker', 'quantity', 'currentPrice' (or 'current_price'),
-                      and optionally 'overnightFee' (annual % as float).
+                      and optionally 'overnightFee' (annual % as float). Only a
+                      position marked as a CFD ('isCfd' is True or 'instrumentType'
+                      is "CFD") is charged; in cash-only mode none is.
         strategy_map: Optional {ticker: strategy_id_str} for attribution.
         default_rate_pct: Annual rate to use when broker doesn't provide one.
 
@@ -57,9 +99,15 @@ async def track_cfd_funding(
         List of persisted CFDFundingCost records.
     """
     records: list[CFDFundingCost] = []
-    now = datetime.now(timezone.utc)
+    if settings.CASH_ONLY_MODE:
+        # A cash-only account holds no CFDs, so there is no financing to record.
+        log.info("cfd_funding.skipped_cash_only", positions=len(positions))
+        return records
+    now = datetime.now(UTC)
 
     for pos in positions:
+        if not _is_cfd_position(pos):
+            continue
         ticker = pos.get("ticker") or pos.get("symbol", "")
         if not ticker:
             continue
@@ -67,29 +115,29 @@ async def track_cfd_funding(
         # Extract quantity and price
         try:
             qty = Decimal(str(pos.get("quantity") or pos.get("qty") or "0"))
-            price = Decimal(str(
-                pos.get("currentPrice") or pos.get("current_price") or
-                pos.get("averagePrice") or pos.get("avg_price") or "0"
-            ))
+            price = Decimal(
+                str(
+                    pos.get("currentPrice")
+                    or pos.get("current_price")
+                    or pos.get("averagePrice")
+                    or pos.get("avg_price")
+                    or "0"
+                )
+            )
         except Exception:
             continue
 
         if qty <= 0 or price <= 0:
             continue
 
-        # Determine if this is a CFD (T212 uses isCfd flag or instrument type)
-        # If broker data doesn't tag it, we treat all positions as potential CFDs
-        # when the task is called (caller is responsible for filtering)
         annual_rate = default_rate_pct
         broker_rate = pos.get("overnightFee") or pos.get("overnight_fee")
         if broker_rate is not None:
-            try:
+            with contextlib.suppress(Exception):
                 annual_rate = Decimal(str(broker_rate))
-            except Exception:
-                pass
 
         notional = qty * price
-        # daily_charge = notional × (rate / 100) / 360
+        # daily_charge = notional x (rate / 100) / 360
         daily_charge = notional * (annual_rate / 100) / 360
 
         strategy_id_str = (strategy_map or {}).get(ticker)
@@ -132,10 +180,7 @@ async def get_funding_costs_summary(
     Returns total and per-ticker funding costs over the last N days.
     Used in the performance attribution report.
     """
-    from datetime import timedelta
-    from sqlalchemy import func, select
-
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    since = datetime.now(UTC) - timedelta(days=days)
     result = await db.execute(
         select(
             CFDFundingCost.ticker,

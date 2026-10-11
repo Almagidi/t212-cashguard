@@ -990,6 +990,7 @@ def purge_old_records(self: Any) -> dict[str, Any]:
 def track_cfd_funding(self: Any) -> dict[str, Any]:
     """
     Records daily financing charges for all open CFD positions at 22:00 UTC.
+    In cash-only mode (the default) it records nothing and does not read the broker.
     Must run BEFORE EOD flatten so costs are captured even if positions are
     closed at end-of-session.
 
@@ -1015,6 +1016,11 @@ def track_cfd_funding(self: Any) -> dict[str, Any]:
         from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
         async with AsyncSessionLocal() as db:
+            if app_settings.CASH_ONLY_MODE:
+                # Shares carry no overnight financing: nothing to record, no broker read.
+                return await _complete_task(
+                    db, "track_cfd_funding", {"recorded": 0, "skipped": "cash_only_mode"}
+                )
             # Fetch open positions from broker
             if app_settings.APP_MODE == "mock":
                 from app.broker.mock_adapter import MockBrokerAdapter

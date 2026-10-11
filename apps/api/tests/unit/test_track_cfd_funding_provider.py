@@ -86,6 +86,7 @@ class RecordingBroker:
                     "currentPrice": "150.00",
                     "overnightFee": "7.2",
                     "currency": "GBP",
+                    "isCfd": True,
                 }
             ]
             if positions is None
@@ -125,6 +126,9 @@ def _reset_task_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", True)
     monkeypatch.setattr(tasks, "_LOOP", None)
     monkeypatch.setattr("app.core.redis.task_lock", _acquired_task_lock)
+    # These tests describe the broker path of an account that can hold CFDs. The
+    # application itself is cash-only; see the cash-only tests at the end of this file.
+    monkeypatch.setattr(settings, "CASH_ONLY_MODE", False)
 
 
 def _active_conn(*, environment: str = "live") -> Any:
@@ -375,3 +379,41 @@ def test_provider_validation_error_uses_worker_summary_instead_of_crashing(
 
     assert RecordingBroker.positions_calls == 0
     assert fake_db.added == []
+
+
+# ── Cash-only account: the task records nothing and never reads the broker ───
+
+
+@pytest.mark.parametrize("app_mode", ["mock", "paper", "demo", "live"])
+def test_cash_only_task_records_nothing_and_does_not_read_the_broker(
+    monkeypatch: pytest.MonkeyPatch, app_mode: str
+) -> None:
+    provider_calls: list[Any] = []
+    summaries: list[dict[str, Any]] = []
+    fake_db = FakeSession(results=[_active_conn(environment=app_mode), [_strategy()]])
+    _install_session(monkeypatch, fake_db, summaries)
+    _install_decrypt(monkeypatch)
+    monkeypatch.setattr(settings, "CASH_ONLY_MODE", True)
+    monkeypatch.setattr(settings, "APP_MODE", app_mode)
+    monkeypatch.setattr("app.broker.mock_adapter.MockBrokerAdapter", lambda: RecordingBroker())
+    monkeypatch.setattr(
+        "app.broker.provider.create_trading212_provider_adapter",
+        lambda *args, **kwargs: provider_calls.append((args, kwargs)) or RecordingBroker(),
+    )
+
+    result = tasks.track_cfd_funding.run()
+
+    assert result == {"recorded": 0, "skipped": "cash_only_mode"}
+    assert summaries == [{"recorded": 0, "skipped": "cash_only_mode"}]
+    assert provider_calls == []
+    assert RecordingBroker.entered == 0
+    assert RecordingBroker.positions_calls == 0
+    assert fake_db.added == []
+    assert fake_db.executed == 0
+    assert fake_db.commits == 1
+
+
+def test_cash_only_is_the_shipped_configuration() -> None:
+    from app.core.config import Settings
+
+    assert Settings.model_fields["CASH_ONLY_MODE"].default is True
