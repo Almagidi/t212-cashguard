@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import structlog
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, true
 
 from app.core import redis as redis_locks
 from app.core.config import settings
@@ -27,6 +27,7 @@ from app.services.reconciliation_owner import (
     reconciliation_owner_lease_seconds,
     reconciliation_run_limit_seconds,
 )
+from app.services.reconciliation_scope import bound_account_scope
 from app.services.safety_policy import SafetyPolicyViolation
 
 if TYPE_CHECKING:
@@ -266,6 +267,9 @@ class DemoReconciliationWorker:
                 skipped += 1
                 warnings.append("Maximum attempts per run reached.")
                 break
+            # Read the row again: it may have been settled or cancelled since it was
+            # selected, and a decision must not be made from the older copy.
+            await self.db.refresh(order)
             if not is_reconciliation_candidate(
                 order,
                 now=datetime.now(UTC),
@@ -376,10 +380,17 @@ class DemoReconciliationWorker:
             seconds=settings.DEMO_RECONCILIATION_MIN_INTERVAL_SECONDS
         )
         lookback_cutoff = now - timedelta(hours=settings.DEMO_RECONCILIATION_LOOKBACK_HOURS)
+        account_scope = bound_account_scope(self.broker)
+        in_scope = (
+            or_(Order.broker_account_scope.is_(None), Order.broker_account_scope == account_scope)
+            if account_scope is not None
+            else true()
+        )
         result = await self.db.execute(
             select(Order)
             .where(Order.execution_environment == "demo")
             .where(Order.venue == "t212")
+            .where(in_scope)
             .where(Order.is_dry_run.is_(False))
             .where(Order.broker_order_id.is_not(None))
             .where(Order.status.not_in(TERMINAL_ORDER_STATUSES))

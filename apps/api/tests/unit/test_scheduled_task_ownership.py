@@ -289,7 +289,10 @@ def _lock_lease(function: ast.FunctionDef) -> int | None:
             continue
         called = ast.unparse(node.func)
         keywords = {keyword.arg: keyword.value for keyword in node.keywords}
-        if called == "task_lock" and isinstance(keywords.get("ttl_seconds"), ast.Constant):
+        # exclusive_task_lock is the same lock; it only reports a Redis outage differently.
+        if called in {"task_lock", "exclusive_task_lock"} and isinstance(
+            keywords.get("ttl_seconds"), ast.Constant
+        ):
             return int(keywords["ttl_seconds"].value)
         if called == "run_monitored_task" and isinstance(
             keywords.get("exclusive_ttl_seconds"), ast.Constant
