@@ -30,9 +30,158 @@ def _make_db():
 
 
 def _pos(ticker="AAPL", quantity=10, price=150.0, **kwargs):
-    base = {"ticker": ticker, "quantity": quantity, "currentPrice": price}
+    # Marked as a CFD: only such positions carry overnight financing.
+    base = {"ticker": ticker, "quantity": quantity, "currentPrice": price, "isCfd": True}
     base.update(kwargs)
     return base
+
+
+@pytest.fixture(autouse=True)
+def _cfd_capable_account(monkeypatch):
+    """The calculation tests below describe an account that can hold CFDs.
+
+    The application is cash-only by default (`CASH_ONLY_MODE`), where no financing is ever
+    recorded; `TestCashOnlyAccount` restores that setting for its own tests.
+    """
+    monkeypatch.setattr("app.services.cfd_funding.settings.CASH_ONLY_MODE", False)
+
+
+# ── Cash-only account: no financing is recorded, so none can be recorded twice ──
+
+
+class TestCashOnlyAccount:
+    @pytest.fixture(autouse=True)
+    def _cash_only(self, monkeypatch):
+        monkeypatch.setattr("app.services.cfd_funding.settings.CASH_ONLY_MODE", True)
+
+    def test_cash_only_is_the_shipped_configuration(self):
+        from app.core.config import Settings
+
+        assert Settings.model_fields["CASH_ONLY_MODE"].default is True
+
+    @pytest.mark.asyncio
+    async def test_no_financing_is_recorded_for_an_ordinary_share_position(self):
+        db = _make_db()
+        share = {"ticker": "AAPL_US_EQ", "quantity": 10, "currentPrice": 200.0}
+
+        assert await track_cfd_funding(db, [share]) == []
+        db.add.assert_not_called()
+        db.flush.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "marker",
+        [{"isCfd": True}, {"is_cfd": True}, {"instrumentType": "CFD"}, {"instrument_type": "cfd"}],
+    )
+    async def test_no_financing_is_recorded_even_for_a_position_marked_as_a_cfd(self, marker):
+        db = _make_db()
+        position = {"ticker": "TSLA", "quantity": 10, "currentPrice": 200.0, **marker}
+
+        assert await track_cfd_funding(db, [position]) == []
+        db.add.assert_not_called()
+        db.flush.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_second_run_on_the_same_day_also_records_nothing(self):
+        """Cash-only mode cannot duplicate a row because it writes none."""
+        db = _make_db()
+
+        first = await track_cfd_funding(db, [_pos()])
+        second = await track_cfd_funding(db, [_pos()])
+
+        assert first == second == []
+        db.add.assert_not_called()
+
+
+class TestOnlyMarkedCfdPositionsAreCharged:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "marker",
+        [{}, {"isCfd": False}, {"is_cfd": False}, {"instrumentType": "STOCK"}, {"isCfd": "true"}],
+    )
+    async def test_position_without_an_explicit_cfd_marker_is_never_charged(self, marker):
+        db = _make_db()
+        position = {"ticker": "AAPL_US_EQ", "quantity": 10, "currentPrice": 200.0, **marker}
+
+        assert await track_cfd_funding(db, [position]) == []
+        db.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "marker",
+        [{"isCfd": True}, {"is_cfd": True}, {"instrumentType": "CFD"}, {"instrument_type": "cfd"}],
+    )
+    async def test_position_explicitly_marked_as_a_cfd_is_charged(self, marker):
+        db = _make_db()
+        position = {"ticker": "AAPL", "quantity": 10, "currentPrice": 200.0, **marker}
+
+        records = await track_cfd_funding(db, [position])
+
+        assert len(records) == 1
+        assert records[0].notional == Decimal("2000.0")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "markers",
+        [
+            {"isCfd": False, "instrumentType": "CFD"},
+            {"isCfd": True, "instrumentType": "STOCK"},
+            {"isCfd": True, "is_cfd": False},
+            {"instrumentType": "STOCK", "instrument_type": "CFD"},
+            {"isCfd": 1},
+            {"isCfd": ""},
+            {"isCfd": True, "is_cfd": ""},
+            {"instrumentType": "CFD_ETF"},
+            {"instrument": {"type": "CFD"}},
+            {"isCfd": True, "instrumentType": ""},
+            {"isCfd": True, "instrumentType": "  "},
+            {"isCfd": True, "instrumentType": ["CFD"]},
+            {"isCfd": True, "instrumentType": {"type": "CFD"}},
+            {"instrumentType": ["CFD"]},
+        ],
+    )
+    async def test_position_with_contradictory_or_unclear_markers_is_never_charged(self, markers):
+        db = _make_db()
+        position = {"ticker": "AAPL", "quantity": 10, "currentPrice": 200.0, **markers}
+
+        assert await track_cfd_funding(db, [position]) == []
+        db.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "markers",
+        [
+            {"isCfd": True, "is_cfd": None},
+            {"isCfd": True, "instrumentType": None},
+            {"is_cfd": None, "instrument_type": " Cfd "},
+            {"isCfd": True, "is_cfd": True, "instrumentType": "CFD", "instrument_type": "cfd"},
+        ],
+    )
+    async def test_an_absent_or_null_field_says_nothing_about_the_position(self, markers):
+        db = _make_db()
+        position = {"ticker": "AAPL", "quantity": 10, "currentPrice": 200.0, **markers}
+
+        assert len(await track_cfd_funding(db, [position])) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_second_run_outside_cash_only_mode_still_records_a_marked_cfd_again(self):
+        """Known gap: no uniqueness rule exists, so the same day's cost is recorded twice."""
+        db = _make_db()
+
+        first = await track_cfd_funding(db, [_pos()])
+        second = await track_cfd_funding(db, [_pos()])
+
+        assert (len(first), len(second)) == (1, 1)
+        assert db.add.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_only_the_cfd_among_mixed_positions_is_charged(self):
+        db = _make_db()
+        share = {"ticker": "AAPL_US_EQ", "quantity": 10, "currentPrice": 200.0}
+
+        records = await track_cfd_funding(db, [share, _pos(ticker="TSLA")])
+
+        assert [record.ticker for record in records] == ["TSLA"]
 
 
 # ── track_cfd_funding ─────────────────────────────────────────────────────────
@@ -98,7 +247,7 @@ class TestTrackCFDFunding:
     async def test_symbol_field_accepted_as_ticker(self):
         db = _make_db()
         result = await track_cfd_funding(
-            db, [{"symbol": "NVDA", "quantity": 3, "currentPrice": 500}]
+            db, [{"symbol": "NVDA", "quantity": 3, "currentPrice": 500, "isCfd": True}]
         )
         assert len(result) == 1
         assert result[0].ticker == "NVDA"
@@ -131,7 +280,7 @@ class TestTrackCFDFunding:
     @pytest.mark.asyncio
     async def test_alternate_qty_field(self):
         db = _make_db()
-        pos = {"ticker": "TSLA", "qty": 5, "currentPrice": 200}
+        pos = {"ticker": "TSLA", "qty": 5, "currentPrice": 200, "isCfd": True}
         result = await track_cfd_funding(db, [pos])
         assert len(result) == 1
         assert result[0].quantity == Decimal("5")
@@ -139,7 +288,7 @@ class TestTrackCFDFunding:
     @pytest.mark.asyncio
     async def test_current_price_snake_case_accepted(self):
         db = _make_db()
-        pos = {"ticker": "TSLA", "quantity": 5, "current_price": 200}
+        pos = {"ticker": "TSLA", "quantity": 5, "current_price": 200, "isCfd": True}
         result = await track_cfd_funding(db, [pos])
         assert len(result) == 1
         assert result[0].price_at_close == Decimal("200")
@@ -147,7 +296,7 @@ class TestTrackCFDFunding:
     @pytest.mark.asyncio
     async def test_average_price_fallback(self):
         db = _make_db()
-        pos = {"ticker": "MSFT", "quantity": 2, "averagePrice": 300}
+        pos = {"ticker": "MSFT", "quantity": 2, "averagePrice": 300, "isCfd": True}
         result = await track_cfd_funding(db, [pos])
         assert len(result) == 1
         assert result[0].price_at_close == Decimal("300")
@@ -155,7 +304,7 @@ class TestTrackCFDFunding:
     @pytest.mark.asyncio
     async def test_avg_price_snake_case_fallback(self):
         db = _make_db()
-        pos = {"ticker": "MSFT", "quantity": 2, "avg_price": 310}
+        pos = {"ticker": "MSFT", "quantity": 2, "avg_price": 310, "isCfd": True}
         result = await track_cfd_funding(db, [pos])
         assert len(result) == 1
         assert result[0].price_at_close == Decimal("310")
