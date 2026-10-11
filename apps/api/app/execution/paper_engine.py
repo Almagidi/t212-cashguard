@@ -30,6 +30,11 @@ from app.execution.paper_policy import PaperFillDecision, evaluate_paper_fill
 from app.execution.state_machine import transition_order_status_with_evidence
 from app.risk.engine import RiskEngine, RiskViolation
 from app.services.execution_quality import apply_order_execution_quality, milliseconds_between
+from app.services.paper_rejection_audit import (
+    DURABLE_PAPER_REJECTION_ACTIONS,
+    PaperRejectionAuditUnavailable,
+    persist_paper_rejection,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -71,6 +76,28 @@ class PaperExecutionEngine:
         payload: dict[str, Any] | None = None,
         user_id: uuid.UUID | None = None,
     ) -> None:
+        if action in DURABLE_PAPER_REJECTION_ACTIONS:
+            try:
+                await persist_paper_rejection(
+                    self.db,
+                    action=action,
+                    actor=actor,
+                    entity_type=entity_type,
+                    entity_id=entity_id,
+                    payload={
+                        "paper_only": True,
+                        "no_broker_order_sent": True,
+                        "mode": settings.APP_MODE,
+                        **(payload or {}),
+                    },
+                    user_id=user_id,
+                )
+            except PaperRejectionAuditUnavailable as exc:
+                reason = str((payload or {}).get("reason", "Paper fill rejected"))
+                raise PaperExecutionError(
+                    f"{reason}; durable rejection audit unavailable.", status_code=503
+                ) from exc
+            return
         self.db.add(
             AuditLog(
                 user_id=user_id,
