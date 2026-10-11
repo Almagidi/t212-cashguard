@@ -17,6 +17,7 @@ from sqlalchemy import desc, func, select
 
 from app.core.config import settings
 from app.db.models import (
+    AppSettings,
     AuditLog,
     BrokerAccountSnapshot,
     BrokerConnection,
@@ -852,6 +853,33 @@ class PaperExecutionEngine:
         remaining_after = locked.quantity - cumulative_filled
         if remaining_after < 0:
             raise PaperExecutionError("Follow-up fill exceeds remaining quantity.")
+
+        # Read a scalar rather than a potentially cached ORM settings object.
+        # Hold a shared row lock through the caller's commit: an accepted fill
+        # precedes a concurrent halt, while a halt committed first blocks it.
+        halted = await self.db.scalar(
+            select(AppSettings.kill_switch_active)
+            .where(AppSettings.id == 1)
+            .with_for_update(read=True)
+        )
+        if halted is not False:
+            reason = (
+                "Kill switch is active; paper follow-up fills are blocked."
+                if halted is True
+                else "Paper follow-up fill requires initialized safety settings."
+            )
+            await self._audit(
+                "paper_follow_up_fill_blocked",
+                actor=user.email,
+                entity_type="order",
+                entity_id=str(locked.id),
+                user_id=user.id,
+                payload={
+                    "reason": "kill_switch_active" if halted is True else "safety_settings_missing",
+                    "remaining_quantity": str(remaining_before),
+                },
+            )
+            raise PaperExecutionError(reason)
 
         await self._apply_fill_effects(
             user=user,
