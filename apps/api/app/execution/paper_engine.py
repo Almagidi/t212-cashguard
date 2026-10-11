@@ -46,6 +46,16 @@ PAPER_CASH_QUANTUM = Decimal("0.00000001")
 PAPER_MAX_QUANTITY = Decimal("999999999999.99999999")
 
 
+def _sellable_paper_quantity(position: PositionSnapshot | None) -> Decimal:
+    """Availability cannot grant unowned shares; explicit zero is binding."""
+    if position is None:
+        return Decimal("0")
+    available = position.quantity_available
+    if available is None:
+        return position.quantity
+    return min(position.quantity, available)
+
+
 class PaperExecutionError(Exception):
     """Raised when paper execution is blocked before order creation."""
 
@@ -210,7 +220,7 @@ class PaperExecutionEngine:
                 "quantity": position.quantity,
                 "averagePrice": position.avg_price,
                 "currentPrice": position.current_price,
-                "maxSell": position.quantity_available or position.quantity,
+                "maxSell": _sellable_paper_quantity(position),
             }
             for position in latest_positions.values()
             if position.quantity > 0
@@ -306,10 +316,8 @@ class PaperExecutionEngine:
             return
 
         latest_positions = await self._latest_paper_positions(user)
-        available_quantity = Decimal("0")
         current_position = latest_positions.get(body.ticker.upper())
-        if current_position is not None:
-            available_quantity = current_position.quantity_available or current_position.quantity
+        available_quantity = _sellable_paper_quantity(current_position)
 
         if quantity <= available_quantity:
             return
@@ -369,6 +377,30 @@ class PaperExecutionEngine:
         previous_quantity = previous.quantity if previous is not None else Decimal("0")
         previous_avg = previous.avg_price if previous is not None else decision.fill_price
         filled_quantity = decision.filled_quantity
+        # Both callers hold the paper-account row lock. Recheck at the effects
+        # boundary because an order's unfilled remainder is not current stock.
+        available_quantity = _sellable_paper_quantity(previous)
+        if order.side == "sell" and filled_quantity > available_quantity:
+            reason = (
+                f"Paper sell quantity {filled_quantity} exceeds available paper quantity "
+                f"{available_quantity} for {order.ticker}."
+            )
+            await self._audit(
+                "paper_sell_fill_blocked",
+                actor=actor,
+                entity_type="order",
+                entity_id=str(order.id),
+                user_id=user.id,
+                payload={
+                    "ticker": order.ticker,
+                    "quantity": str(filled_quantity),
+                    "available_quantity": str(available_quantity),
+                    "owned_quantity": str(previous_quantity),
+                    "reason": reason,
+                    "decision_code": "paper_oversell_block",
+                },
+            )
+            raise PaperExecutionError(reason)
         gross_value = decision.fill_price * filled_quantity
         previous_account = await self._latest_paper_account(user)
         cash_before = previous_account.cash if previous_account else PAPER_STARTING_CASH
@@ -400,6 +432,7 @@ class PaperExecutionEngine:
 
         if order.side == "buy":
             new_quantity = previous_quantity + filled_quantity
+            new_available_quantity = available_quantity + filled_quantity
             new_avg = (
                 ((previous_quantity * previous_avg) + gross_value + decision.fee_amount)
                 / new_quantity
@@ -407,7 +440,8 @@ class PaperExecutionEngine:
                 else decision.fill_price
             )
         else:
-            new_quantity = max(Decimal("0"), previous_quantity - filled_quantity)
+            new_quantity = previous_quantity - filled_quantity
+            new_available_quantity = available_quantity - filled_quantity
             new_avg = previous_avg
 
             trade = Trade(
@@ -446,7 +480,7 @@ class PaperExecutionEngine:
             avg_price=new_avg,
             current_price=decision.quote_price,
             unrealized_pnl=unrealized,
-            quantity_available=new_quantity,
+            quantity_available=new_available_quantity,
             raw={
                 "paper_only": True,
                 "no_broker_order_sent": True,
