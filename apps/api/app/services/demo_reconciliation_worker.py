@@ -7,18 +7,26 @@ order reconciler, and records batch-level audit/observability metadata.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
+import structlog
 from sqlalchemy import or_, select
 
+from app.core import redis as redis_locks
 from app.core.config import settings
 from app.core.serialization import to_jsonable
 from app.db.models import AppSettings, AuditLog, Order
 from app.execution.paper_engine import PAPER_EXECUTION_ENVIRONMENT
 from app.services.demo_order_reconciliation import DemoOrderReconciler
+from app.services.reconciliation_owner import (
+    RECONCILIATION_OWNER_LOCK,
+    reconciliation_owner_lease_seconds,
+    reconciliation_run_limit_seconds,
+)
 from app.services.safety_policy import SafetyPolicyViolation
 
 if TYPE_CHECKING:
@@ -29,6 +37,9 @@ if TYPE_CHECKING:
 
 TERMINAL_ORDER_STATUSES = {"filled", "cancelled", "rejected", "expired", "failed", "error"}
 WORKER_STATE_KEY = "demo_reconciliation_worker"
+
+
+log = structlog.get_logger()
 
 
 @dataclass(frozen=True)
@@ -135,10 +146,93 @@ class DemoReconciliationWorker:
         self.actor = actor
 
     async def run_once(self, *, require_enabled: bool = True) -> DemoReconciliationWorkerRunSummary:
+        """Reconcile due demo orders, unless another reconciliation owner is already at work."""
         started_at = datetime.now(UTC)
         run_id = uuid.uuid4()
-        audit_event_ids: list[uuid.UUID] = []
         self._require_safe_worker_boundaries(require_enabled=require_enabled)
+        # Bounded below the lock's lease, so a live owner never works past its lease.
+        return await asyncio.wait_for(
+            self._run_once_under_owner_lock(run_id=run_id, started_at=started_at),
+            timeout=reconciliation_run_limit_seconds(),
+        )
+
+    async def _run_once_under_owner_lock(
+        self, *, run_id: uuid.UUID, started_at: datetime
+    ) -> DemoReconciliationWorkerRunSummary:
+        async with redis_locks.exclusive_task_lock(
+            RECONCILIATION_OWNER_LOCK, ttl_seconds=reconciliation_owner_lease_seconds()
+        ) as acquired:
+            if not acquired:
+                return await self._skipped_because_locked(run_id=run_id, started_at=started_at)
+            try:
+                summary = await self._run_once_as_owner(run_id=run_id, started_at=started_at)
+                # Commit while still the owner. Once the lock is released another owner
+                # may select these orders, and it must see what this run decided.
+                await self.db.commit()
+            except BaseException:
+                # A failed or stopped run must not leave unsaved order changes behind for
+                # its caller to save after another owner has started. Discard them now,
+                # while this run is still the owner.
+                await self._discard_unsaved_work()
+                raise
+            return summary
+
+    async def _discard_unsaved_work(self) -> None:
+        """Roll the session back, finishing even if this run is cancelled again meanwhile.
+
+        A second cancellation can arrive while the rollback is in progress (the scheduler
+        has a time limit of its own). The rollback is completed first; the cancellation
+        is then passed on.
+        """
+        rollback = asyncio.ensure_future(self.db.rollback())
+        cancelled_again = False
+        while not rollback.done():
+            try:
+                await asyncio.shield(rollback)
+            except asyncio.CancelledError:
+                cancelled_again = True
+            except Exception:  # the rollback's own failure is reported below
+                break
+        if not rollback.cancelled() and rollback.exception() is not None:
+            log.error(
+                "demo_reconciliation_worker.rollback_failed",
+                error_type=type(rollback.exception()).__name__,
+            )
+        if cancelled_again:
+            raise asyncio.CancelledError
+
+    async def _skipped_because_locked(
+        self, *, run_id: uuid.UUID, started_at: datetime
+    ) -> DemoReconciliationWorkerRunSummary:
+        """Report a run that did nothing. The last real run's stored summary is left alone."""
+        finished_at = datetime.now(UTC)
+        message = "Another reconciliation run holds the owner lock; nothing was reconciled."
+        audit_id = await self._audit(
+            "demo_reconciliation_worker_skipped_locked",
+            {"run_id": str(run_id), "lock": RECONCILIATION_OWNER_LOCK},
+        )
+        return DemoReconciliationWorkerRunSummary(
+            run_id=run_id,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=max(0, int((finished_at - started_at).total_seconds() * 1000)),
+            outcome="skipped_locked",
+            worker_enabled=settings.DEMO_RECONCILIATION_WORKER_ENABLED,
+            read_only_broker_calls=True,
+            no_broker_order_sent=True,
+            app_mode=settings.APP_MODE,
+            broker_environment=getattr(self.broker, "environment", None),
+            live_trading_enabled=bool(settings.LIVE_TRADING_ENABLED),
+            batch_size=settings.DEMO_RECONCILIATION_BATCH_SIZE,
+            audit_event_ids=[audit_id],
+            message=message,
+            warnings=[message],
+        )
+
+    async def _run_once_as_owner(
+        self, *, run_id: uuid.UUID, started_at: datetime
+    ) -> DemoReconciliationWorkerRunSummary:
+        audit_event_ids: list[uuid.UUID] = []
 
         candidates = await self.select_reconciliation_candidates()
         audit_event_ids.append(
@@ -406,4 +500,4 @@ class DemoReconciliationWorker:
 
     @staticmethod
     def _summary_payload(summary: DemoReconciliationWorkerRunSummary) -> dict[str, Any]:
-        return cast(dict[str, Any], to_jsonable(asdict(summary)))
+        return cast("dict[str, Any]", to_jsonable(asdict(summary)))

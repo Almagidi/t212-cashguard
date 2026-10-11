@@ -307,9 +307,10 @@ def reconcile_pending_orders(self: Any) -> dict[str, Any]:
         from app.db.session import AsyncSessionLocal
         from app.execution.engine import ExecutionEngine
         from app.execution.state_machine import ACTIVE_ORDER_STATUSES
+        from app.services.reconciliation_owner import RECONCILIATION_OWNER_LOCK
         from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
-        async with task_lock("reconcile_pending_orders", ttl_seconds=90) as acquired:
+        async with task_lock(RECONCILIATION_OWNER_LOCK, ttl_seconds=90) as acquired:
             if not acquired:
                 log.debug("tasks.skipped_locked", task="reconcile_pending_orders")
                 return {"skipped": True, "reason": "already_running"}
