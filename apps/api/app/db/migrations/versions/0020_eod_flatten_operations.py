@@ -87,6 +87,23 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    # Check under the same exclusive locks required by the destructive DDL. Otherwise
+    # a writer can commit evidence after the check while DROP waits for its lock.
+    bind.execute(sa.text("LOCK TABLE orders, eod_flatten_operations IN ACCESS EXCLUSIVE MODE"))
+    has_evidence = bind.execute(
+        sa.text(
+            "SELECT EXISTS (SELECT 1 FROM eod_flatten_operations) "
+            "OR EXISTS (SELECT 1 FROM orders WHERE broker_account_scope IS NOT NULL)"
+        )
+    ).scalar_one()
+    if has_evidence:
+        # Completed operations remain financial history; terminal order status does
+        # not authorize deleting an account identity or an EOD recovery record.
+        raise RuntimeError(
+            "Refusing to downgrade: EOD operation history or order account identity "
+            "would be lost. Preserve the current schema and use forward recovery."
+        )
     op.drop_index(
         "ix_eod_flatten_operations_session",
         table_name="eod_flatten_operations",
