@@ -27,6 +27,11 @@ from app.broker.trading212 import make_sell_quantity
 from app.broker.trading212_mappers import map_trading212_history_order_to_snapshot
 from app.core.config import settings
 from app.db.models import Order, OrderEvent, OrderSubmissionAttempt, RiskEvent
+from app.execution.acknowledgement import (
+    Acknowledgement,
+    UntrustedAcknowledgement,
+    interpret_acknowledgement,
+)
 from app.execution.state_machine import (
     ACTIVE_ORDER_STATUSES,
     can_transition_order_status,
@@ -494,6 +499,8 @@ class ExecutionEngine:
         """Redacted description of a failure: type and HTTP status only."""
         if isinstance(exc, BrokerSubmissionError):
             return {"error_type": exc.error_type, "http_status": exc.http_status}
+        if isinstance(exc, UntrustedAcknowledgement):
+            return {"error_type": type(exc).__name__, "http_status": None, "reason": exc.reason}
         return {"error_type": type(exc).__name__, "http_status": None}
 
     async def _audit_broker_failure(
@@ -828,30 +835,55 @@ class ExecutionEngine:
         response: Any,
         broker_environment: str | None,
     ) -> None:
-        # Interpret the acknowledgement completely before changing anything, so that a
-        # malformed one leaves the order unknown instead of half-updated.
+        # Interpret the acknowledgement completely before changing anything. One that is
+        # malformed, or that contradicts the order that was sent, leaves the order unknown
+        # (with the broker's order id when it gave a usable one) for reconciliation to
+        # settle by reading; nothing is half-updated and nothing is sent again.
         try:
-            if not isinstance(response, dict):
-                raise ValueError("Broker acknowledgement is not an object")
-            raw_id = response.get("id")
-            broker_order_id = "" if raw_id is None else str(raw_id)
-            broker_status = str(response.get("status", "") or "")
-            filled_quantity = avg_fill_price = Decimal("0")
-            if broker_status == "FILLED":
-                filled_quantity = Decimal(
-                    str(response.get("filledQuantity", float(abs(order.quantity))))
-                )
-                avg_fill_price = Decimal(str(response.get("filledPrice", 0) or 0))
-            if not broker_order_id:
-                raise ValueError("Broker acknowledgement has no order id")
+            acknowledgement = interpret_acknowledgement(
+                response, side=order.side, quantity=order.quantity
+            )
         except Exception as exc:
-            partial_id = None
-            if isinstance(response, dict) and response.get("id") not in (None, ""):
-                partial_id = str(response["id"])
             await self._record_unknown_outcome(
-                order, attempt, exc, broker_environment, broker_order_id=partial_id
+                order,
+                attempt,
+                exc,
+                broker_environment,
+                broker_order_id=getattr(exc, "broker_order_id", None),
             )
             return
+        try:
+            await self._save_acknowledgement(
+                order, attempt, response, acknowledgement, broker_environment
+            )
+        except Exception as exc:
+            # The answer was trusted but could not be saved (a number too large for its
+            # column, for example). Nothing of it was kept; record the outcome as unknown,
+            # with the broker's order id, so reconciliation settles it by reading. If the
+            # database itself is failing this raises, and the committed dispatch stands.
+            await self.db.rollback()
+            await self.db.refresh(order)
+            await self.db.refresh(attempt)
+            await self._record_unknown_outcome(
+                order,
+                attempt,
+                exc,
+                broker_environment,
+                broker_order_id=acknowledgement.broker_order_id,
+            )
+
+    async def _save_acknowledgement(
+        self,
+        order: Order,
+        attempt: OrderSubmissionAttempt,
+        response: dict[str, Any],
+        acknowledgement: Acknowledgement,
+        broker_environment: str | None,
+    ) -> None:
+        """Write a trusted acknowledgement and commit it, all or nothing."""
+        broker_order_id = acknowledgement.broker_order_id
+        broker_status = acknowledgement.broker_status
+        new_status = acknowledgement.order_status
 
         if await self._resolved_elsewhere(
             order,
@@ -867,29 +899,19 @@ class ExecutionEngine:
         order.first_ack_at = first_ack_at
         order.broker_latency_ms = milliseconds_between(order.submitted_at, first_ack_at)
 
-        if broker_status == "FILLED":
-            new_status, reason = "filled", "broker returned FILLED"
-        elif broker_status == "CANCELLED":
-            new_status, reason = "cancelled", "broker returned CANCELLED"
-        elif broker_status == "REJECTED":
-            new_status, reason = "rejected", "broker returned REJECTED"
-        elif broker_status in ("WORKING", "PENDING"):
-            new_status, reason = "accepted", "broker returned working status"
-        else:
-            new_status, reason = "accepted", "broker status defaulted to accepted"
         transition_event = transition_order_status_with_evidence(
             self.db,
             order,
             new_status,
             event_type="broker_accepted",
-            reason=reason,
+            reason=acknowledgement.transition_reason,
             actor="execution_engine",
             correlation_id=order.client_order_key,
             payload={"broker_status": broker_status, "attempt_id": str(attempt.id)},
         )
         if new_status == "filled":
-            order.filled_quantity = filled_quantity
-            order.avg_fill_price = avg_fill_price
+            order.filled_quantity = acknowledgement.filled_quantity
+            order.avg_fill_price = acknowledgement.fill_price
             order.filled_at = first_ack_at
             order.fill_latency_ms = milliseconds_between(order.submitted_at, first_ack_at)
             order.reconciliation_latency_ms = order.fill_latency_ms
