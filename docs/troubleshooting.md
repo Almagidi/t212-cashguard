@@ -165,6 +165,37 @@ connection, a gateway error, or the process stopped). **An order may exist at Tr
   Check the Trading 212 app: cancel it there if it is still open.
 - A critical alert and a `submission_unknown` risk event are recorded when this happens.
 
+#### The broker answered, but the answer was not trusted
+
+The same state is used when the broker did answer the order request but the answer cannot be
+relied on. The order stays "outcome unknown", is not sent again, and — when the answer named
+an order in a usable way — keeps that broker order id, so reconciliation asks the broker about
+it directly on its next run. It is settled once the broker gives a reading that
+reconciliation accepts (the full quantity for `FILLED`, never a negative amount); until then
+it stays unknown. The reason is stored on the
+submission attempt (`outcome_evidence.reason`), on the `submission_outcome_unknown` order
+event and on the risk event:
+
+| Reason | What the answer said |
+|---|---|
+| `filled_quantity_exceeds_order`, `filled_quantity_below_order`, `filled_without_a_fill` | `FILLED`, but not for exactly the quantity that was ordered |
+| `filled_quantity_missing` | `FILLED` with no filled quantity |
+| `filled_quantity_not_a_number` | a filled quantity that is not a finite number, on `FILLED`, `CANCELLED` or `REJECTED` |
+| `filled_quantity_sign_contradicts_side` | a negative filled quantity on a buy |
+| `fill_price_missing`, `fill_price_not_a_number`, `fill_price_not_positive` | `FILLED` with no usable fill price |
+| `final_status_reports_a_fill` | `CANCELLED` or `REJECTED`, yet with a filled quantity above zero |
+| `order_id_not_usable`, `not_an_object` | no usable broker order id, or not an answer at all; no id is kept |
+
+An answer that was trusted but could not be saved (a number too large to store, for
+example) is treated the same way; its evidence carries the error type instead of a reason.
+
+If reconciliation keeps getting the same contradictory answer, the order stays unknown
+until you check it at the broker; after the first alert there is only a warning in the log
+on each attempt. Check the broker before anything cancels such an order: a cancellation the
+broker accepts is recorded as a plain cancellation, without any part that had already
+filled. A cancellation can be sent by hand, by "cancel all pending", by the emergency stop,
+and automatically for a limit or stop order older than 60 minutes.
+
 ### Order returns `REJECTED`
 
 Common Trading 212 rejection reasons:
