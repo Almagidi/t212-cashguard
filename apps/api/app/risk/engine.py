@@ -609,7 +609,8 @@ class RiskEngine:
         # Portfolio heat inputs (optional — skipped if not provided)
         stop_price: Decimal | None = None,
         open_positions: list[dict] | None = None,
-        # CFD-specific inputs (optional — checks run only when is_cfd=True)
+        # Kept for signature compatibility. is_cfd=True is refused (cash-only);
+        # free_margin_pct is unused.
         is_cfd: bool = False,
         free_margin_pct: Decimal | None = None,
     ) -> None:
@@ -624,6 +625,12 @@ class RiskEngine:
             open_positions:  Full broker position list with optional
                              'riskDollars' fields for existing heat.
         """
+        # 0. Cash-only: an order treated as a CFD is refused outright.
+        if is_cfd:
+            msg = f"CFD order for {ticker} refused: CashGuard is a cash-only application"
+            await self._log("cash_only_cfd_block", msg, ticker=ticker, signal_id=signal_id)
+            raise RiskViolation(msg, "cash_only_cfd_block")
+
         # 1. Kill switch — absolute stop
         await self.check_kill_switch()
 
@@ -670,19 +677,6 @@ class RiskEngine:
                 new_position_risk=new_risk,
                 account_value=account_value,
                 open_positions=open_positions,
-                signal_id=signal_id,
-                risk_profile=risk_profile,
-            )
-
-        # 12. CFD-specific checks (leverage, tighter limits, margin guard)
-        if is_cfd:
-            await self.check_cfd_limits(
-                ticker=ticker,
-                quantity=quantity,
-                estimated_price=estimated_price,
-                account_value=account_value,
-                realized_pnl_today=realized_pnl_today,
-                free_margin_pct=free_margin_pct,
                 signal_id=signal_id,
                 risk_profile=risk_profile,
             )

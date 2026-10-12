@@ -207,11 +207,25 @@ class DemoReconciliationScheduler:
                     timeout=max(1, settings.DEMO_RECONCILIATION_SCHEDULER_MAX_RUNTIME_SECONDS),
                 )
             except Exception as exc:
+                # The worker discards its unsaved work before it lets the owner lock go.
+                # Roll back here as well, so that nothing a failed run touched can be
+                # saved with the failure record below. This also drops the tick-started
+                # audit row, so the failure record lists no earlier audit rows.
+                await self.db.rollback()
                 return await self._record_failed_run(
                     run_id=run_id,
                     started_at=started_at,
                     exc=exc,
-                    audit_event_ids=audit_event_ids,
+                    audit_event_ids=[],
+                )
+
+            if worker_summary.outcome == "skipped_locked":
+                # Another reconciliation owner was at work: nothing ran, so this tick is
+                # not a success and must not make the schedule look fresh.
+                return await self._record_skipped_run(
+                    run_id=run_id,
+                    started_at=started_at,
+                    skip_reason="reconciliation_owner_busy",
                 )
 
             return await self.record_run_summary(
