@@ -288,11 +288,106 @@ def run_position_monitor(self: Any) -> dict[str, Any]:
     soft_time_limit=45,
 )
 def reconcile_pending_orders(self: Any) -> dict[str, Any]:
+    """Ask the broker about orders that are still open or whose submission is unknown.
+
+    Which orders, in what order and how often is decided in
+    ``app.services.scheduled_reconciliation``. This task takes the reconciliation owner
+    lock, builds one read-only provider per active connection, and reports the run.
+    """
+    task_name = "reconcile_pending_orders"
+
     async def _run() -> dict[str, Any]:
-        from datetime import timedelta
+        from app.core.redis import TaskLockUnavailable, exclusive_task_lock
+        from app.services.reconciliation_owner import RECONCILIATION_OWNER_LOCK
 
-        from sqlalchemy import select
+        try:
+            async with exclusive_task_lock(RECONCILIATION_OWNER_LOCK, ttl_seconds=90) as acquired:
+                if not acquired:
+                    log.debug("tasks.skipped_locked", task=task_name)
+                    return {"skipped": True, "reason": "already_running"}
+                return await _reconcile_as_owner()
+        except TaskLockUnavailable:
+            # Not the same as "another run is active": nobody could be asked.
+            log.error("tasks.owner_lock_unavailable", task=task_name)
+            return {"skipped": True, "reason": "owner_lock_unavailable"}
 
+    async def _reconcile_as_owner() -> dict[str, Any]:
+        from contextlib import AsyncExitStack
+
+        from celery.exceptions import SoftTimeLimitExceeded
+
+        from app.core.config import settings as app_settings
+        from app.db.session import AsyncSessionLocal
+        from app.execution.engine import ExecutionEngine
+        from app.services.reconciliation_queue import (
+            active_connections,
+            count_awaiting_reconciliation,
+            count_awaiting_without_environment,
+            report_orphaned_submissions,
+        )
+        from app.services.scheduled_reconciliation import ScheduledReconciler
+
+        environment = app_settings.APP_MODE
+        async with AsyncSessionLocal() as db:
+            summary: dict[str, Any] = {"reconciled": 0}
+            # Orders nobody can be asked about are reported on every run, busy or idle.
+            orphans = await report_orphaned_submissions(db, datetime.now(UTC))
+            if orphans:
+                summary["orphaned_submitted"] = orphans
+            out_of_scope: dict[str, int] = {}
+            no_environment = await count_awaiting_without_environment(db)
+            if no_environment:
+                out_of_scope["no_environment"] = no_environment
+                summary["out_of_scope"] = out_of_scope
+            if environment == "mock" or not await count_awaiting_reconciliation(db, environment):
+                return await _report(db, summary)
+
+            connections = await active_connections(db, environment)
+            if not connections:
+                return await _report(db, {**summary, "skipped": "no_connection"})
+
+            async with AsyncExitStack() as providers:
+                accounts, refusals = await _open_accounts(db, connections, providers)
+                blocked = next((r for r in refusals if "decision_code" in r), None)
+                if blocked is not None:
+                    return await _report(
+                        db,
+                        {
+                            **summary,
+                            "skipped": blocked["decision_code"],
+                            "reason": blocked["reason"],
+                        },
+                    )
+                if refusals:
+                    # A connection that was switched off must stay off whatever happens next.
+                    await db.commit()
+                if not accounts:
+                    return await _report(db, {**summary, **refusals[-1]})
+                reconciler = ScheduledReconciler(
+                    db,
+                    environment=environment,
+                    engine_factory=ExecutionEngine,
+                    fatal_errors=(SoftTimeLimitExceeded,),
+                )
+                outcome = await reconciler.run(accounts, active_connection_count=len(connections))
+            out_of_scope = {**outcome.pop("out_of_scope", {}), **out_of_scope}
+            summary = {**summary, **outcome}
+            if out_of_scope:
+                summary["out_of_scope"] = out_of_scope
+            if refusals:
+                summary["connections_unusable"] = len(refusals)
+            return await _report(db, summary)
+
+    async def _report(db: Any, summary: dict[str, Any]) -> dict[str, Any]:
+        if summary.get("out_of_scope"):
+            log.warning("tasks.reconcile_orders_out_of_scope", **summary["out_of_scope"])
+        return await _complete_task(db, task_name, summary)
+
+    async def _open_accounts(
+        db: Any, connections: list[Any], providers: Any
+    ) -> tuple[list[Any], list[dict[str, Any]]]:
+        """Build a provider for each connection. Returns the usable ones and why the rest
+        were refused. A safety-policy refusal stops at once: it applies to the whole run."""
         from app.broker.provider import (
             BrokerProviderCredentials,
             BrokerProviderRequest,
@@ -301,143 +396,55 @@ def reconcile_pending_orders(self: Any) -> dict[str, Any]:
             create_trading212_provider_adapter,
         )
         from app.core.config import settings as app_settings
-        from app.core.redis import task_lock
         from app.core.security import CredentialDecryptionError, decrypt_field
-        from app.db.models import BrokerConnection, Order
-        from app.db.session import AsyncSessionLocal
-        from app.execution.engine import ExecutionEngine
-        from app.execution.state_machine import ACTIVE_ORDER_STATUSES
-        from app.services.reconciliation_owner import RECONCILIATION_OWNER_LOCK
+        from app.services.reconciliation_broker import AccountBroker
+        from app.services.reconciliation_scope import bound_account_scope
         from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
-        async with task_lock(RECONCILIATION_OWNER_LOCK, ttl_seconds=90) as acquired:
-            if not acquired:
-                log.debug("tasks.skipped_locked", task="reconcile_pending_orders")
-                return {"skipped": True, "reason": "already_running"}
-
-            async with AsyncSessionLocal() as db:
-                # Detect legacy orders stuck in 'submitted' with no broker_order_id
-                # (written before submissions were committed as 'submission_unknown').
-                # They cannot be auto-recovered without a broker order ID, so they are
-                # flagged for manual review via structured error logs.
-                orphan_cutoff = datetime.now(UTC) - timedelta(minutes=5)
-                orphan_result = await db.execute(
-                    select(Order).where(
-                        Order.status == "submitted",
-                        Order.broker_order_id.is_(None),
-                        Order.is_dry_run.is_(False),
-                        Order.created_at < orphan_cutoff,
-                    )
+        accounts: list[Any] = []
+        refusals: list[dict[str, Any]] = []
+        for conn in connections:
+            try:
+                require_broker_environment(conn.environment, action="worker reconcile")
+            except SafetyPolicyViolation as exc:
+                return [], [{"decision_code": exc.decision_code, "reason": exc.reason}]
+            try:
+                api_key = decrypt_field(conn.api_key_encrypted)
+                api_secret = decrypt_field(conn.api_secret_encrypted)
+            except CredentialDecryptionError as exc:
+                log.warning("tasks.credentials_invalid", task=task_name, error=str(exc))
+                await _mark_connection_reconnect_required(
+                    db,
+                    conn,
+                    str(exc),
+                    actor="worker:reconcile_pending_orders",
                 )
-                for orphan in orphan_result.scalars().all():
-                    log.error(
-                        "execution.orphaned_submitted_order",
-                        order_id=str(orphan.id),
-                        ticker=orphan.ticker,
-                        side=orphan.side,
-                        created_at=orphan.created_at.isoformat(),
-                    )
-
-                result = await db.execute(
-                    select(Order)
-                    .where(
-                        Order.status.in_(ACTIVE_ORDER_STATUSES),
-                        Order.is_dry_run.is_(False),
-                        Order.broker_order_id.isnot(None),
-                    )
-                    .limit(50)
+                refusals.append({"skipped": "credential_error"})
+                continue
+            try:
+                provider_broker = create_trading212_provider_adapter(
+                    BrokerProviderRequest(
+                        broker_id="trading212",
+                        environment=cast("BrokerRuntimeEnvironment", conn.environment),
+                        purpose="worker_reconcile",
+                        user_id=conn.user_id,
+                        account_id=getattr(conn, "account_id", None),
+                    ),
+                    BrokerProviderCredentials(
+                        api_key=api_key,
+                        api_secret=api_secret,
+                    ),
+                    app_mode=app_settings.APP_MODE,
+                    live_trading_enabled=bool(app_settings.LIVE_TRADING_ENABLED),
                 )
-                orders = result.scalars().all()
-                # Submissions whose outcome is unknown and that have no broker order id
-                # can only be resolved from broker history. They are never resubmitted.
-                unknown_result = await db.execute(
-                    select(Order)
-                    .where(
-                        Order.status == "submission_unknown",
-                        Order.is_dry_run.is_(False),
-                        Order.broker_order_id.is_(None),
-                    )
-                    .limit(50)
-                )
-                unknown_orders = unknown_result.scalars().all()
-                if (not orders and not unknown_orders) or app_settings.APP_MODE == "mock":
-                    summary: dict[str, Any] = {"reconciled": 0}
-                    return await _complete_task(db, "reconcile_pending_orders", summary)
+            except BrokerProviderValidationError as exc:
+                refusals.append({"skipped": "provider_validation_error", "reason": str(exc)})
+                continue
+            broker = await providers.enter_async_context(provider_broker)
+            accounts.append(AccountBroker(broker, bound_account_scope(broker)))
+        return accounts, refusals
 
-                conn_result = await db.execute(
-                    select(BrokerConnection)
-                    .where(BrokerConnection.is_active)
-                    .where(BrokerConnection.environment == app_settings.APP_MODE)
-                    .limit(1)
-                )
-                conn = conn_result.scalar_one_or_none()
-                if not conn:
-                    summary = {"reconciled": 0, "skipped": "no_connection"}
-                    return await _complete_task(db, "reconcile_pending_orders", summary)
-                try:
-                    require_broker_environment(conn.environment, action="worker reconcile")
-                except SafetyPolicyViolation as exc:
-                    summary = {"reconciled": 0, "skipped": exc.decision_code, "reason": exc.reason}
-                    return await _complete_task(db, "reconcile_pending_orders", summary)
-
-                count = 0
-                try:
-                    api_key = decrypt_field(conn.api_key_encrypted)
-                    api_secret = decrypt_field(conn.api_secret_encrypted)
-                except CredentialDecryptionError as exc:
-                    log.warning(
-                        "tasks.credentials_invalid", task="reconcile_pending_orders", error=str(exc)
-                    )
-                    await _mark_connection_reconnect_required(
-                        db,
-                        conn,
-                        str(exc),
-                        actor="worker:reconcile_pending_orders",
-                    )
-                    summary = {"reconciled": 0, "skipped": "credential_error"}
-                    return await _complete_task(db, "reconcile_pending_orders", summary)
-
-                try:
-                    provider_broker = create_trading212_provider_adapter(
-                        BrokerProviderRequest(
-                            broker_id="trading212",
-                            environment=cast("BrokerRuntimeEnvironment", conn.environment),
-                            purpose="worker_reconcile",
-                            user_id=conn.user_id,
-                            account_id=getattr(conn, "account_id", None),
-                        ),
-                        BrokerProviderCredentials(
-                            api_key=api_key,
-                            api_secret=api_secret,
-                        ),
-                        app_mode=app_settings.APP_MODE,
-                        live_trading_enabled=bool(app_settings.LIVE_TRADING_ENABLED),
-                    )
-                except BrokerProviderValidationError as exc:
-                    summary = {
-                        "reconciled": 0,
-                        "skipped": "provider_validation_error",
-                        "reason": str(exc),
-                    }
-                    return await _complete_task(db, "reconcile_pending_orders", summary)
-
-                async with provider_broker as broker:
-                    engine = ExecutionEngine(db, broker)
-                    for order in orders:
-                        await engine.reconcile_order(order)
-                        count += 1
-                    unknown_resolved = 0
-                    for order in unknown_orders:
-                        await engine.reconcile_unknown_submission(order)
-                        if order.status != "submission_unknown":
-                            unknown_resolved += 1
-                summary = {"reconciled": count}
-                if unknown_orders:
-                    summary["unknown_submissions"] = len(unknown_orders)
-                    summary["unknown_submissions_resolved"] = unknown_resolved
-                return await _complete_task(db, "reconcile_pending_orders", summary)
-
-    return run_monitored_task("reconcile_pending_orders", _run)
+    return run_monitored_task(task_name, _run)
 
 
 # ── Account snapshot (every 60s) ─────────────────────────────────────────────
