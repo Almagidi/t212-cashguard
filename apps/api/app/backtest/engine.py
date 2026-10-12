@@ -27,6 +27,8 @@ import structlog
 from app.backtest.data_contract import validate_bar_series
 from app.execution.paper_policy import PaperFillDecision, evaluate_paper_fill
 from app.market_data.exchange_calendar import TradingSession, calendar_for_venue
+from app.market_data.indicator_history import continuous_indicator_bars
+from app.strategies.indicators import INDICATOR_HISTORY_CUTOFF_BARS, accepts_indicator_bars
 
 if TYPE_CHECKING:
     from app.strategies.indicators import Bar
@@ -155,6 +157,7 @@ def generate_strategy_signal(
     bar_times: list[datetime] | None = None,
     history_bars: list[Bar] | None = None,
     history_bar_times: list[datetime] | None = None,
+    indicator_bars: list[Bar] | None = None,
     account_value: Decimal,
     available_cash: Decimal,
     current_time_utc: str,
@@ -179,6 +182,8 @@ def generate_strategy_signal(
         kwargs["history_bars"] = history_bars
     if "history_bar_times" in signature.parameters:
         kwargs["history_bar_times"] = history_bar_times
+    if "indicator_bars" in signature.parameters:
+        kwargs["indicator_bars"] = indicator_bars or None
     return strategy.generate_signal(**kwargs)
 
 
@@ -575,6 +580,9 @@ class Backtester:
         strategy_history_times: list[datetime] = []
         session_bars: list[Bar] = []
         session_strategy_times: list[datetime] = []
+        session_times: list[datetime] = []
+        history_times: list[datetime] = []
+        uses_indicator_bars = accepts_indicator_bars(self.strategy)
         current_session_id: str | None = None
         previous_session_close: Decimal | None = None
         session_is_eligible = False
@@ -603,9 +611,11 @@ class Backtester:
                 current_session_id = session.session_id
                 session_bars = []
                 session_strategy_times = []
+                session_times = []
 
             history_bars.append(bar)
             strategy_history_times.append(strategy_ts)
+            history_times.append(ts.astimezone(UTC))
 
             # Retain earlier regular sessions only as warm-up context.
             if self.start_date and session.local_date < self.start_date:
@@ -633,6 +643,7 @@ class Backtester:
             filtered_session_dates.append(session.local_date)
             session_bars.append(bar)
             session_strategy_times.append(strategy_ts)
+            session_times.append(ts.astimezone(UTC))
 
             current_time_utc = strategy_ts.strftime("%H:%M")
 
@@ -834,6 +845,15 @@ class Backtester:
                     bar_times=session_strategy_times,
                     history_bars=history_bars[-history_limit:],
                     history_bar_times=strategy_history_times[-history_limit:],
+                    indicator_bars=continuous_indicator_bars(
+                        history_bars[-history_limit:],
+                        history_times[-history_limit:],
+                        session_bars,
+                        session_times,
+                        interval_minutes=self.bar_interval_minutes,
+                    )
+                    if uses_indicator_bars and len(session_bars) < INDICATOR_HISTORY_CUTOFF_BARS
+                    else None,
                     account_value=capital,
                     available_cash=available_cash,
                     current_time_utc=current_time_utc,

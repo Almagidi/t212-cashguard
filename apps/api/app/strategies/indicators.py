@@ -8,6 +8,7 @@ Inputs are lists of dicts with OHLCV keys.
 
 from __future__ import annotations
 
+import inspect
 import math
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from typing import NamedTuple
@@ -19,6 +20,48 @@ class Bar(NamedTuple):
     low: Decimal
     close: Decimal
     volume: Decimal
+
+
+# Session bars each indicator needs before the session alone can produce it.
+ATR_MIN_BARS = 15  # atr(bars, 14)
+RELATIVE_VOLUME_MIN_BARS = 21  # relative_volume(bars, 20)
+REGIME_MIN_BARS = 15  # choppiness_index(bars, 14); market_regime(bars) is then not "unknown"
+# From this many session bars on, validated history is never consulted, whatever the
+# strategy's parameters, so an entry at or after this bar is the same with or without it.
+INDICATOR_HISTORY_CUTOFF_BARS = RELATIVE_VOLUME_MIN_BARS
+
+
+def indicator_series(
+    session_bars: list[Bar], indicator_bars: list[Bar] | None, minimum_bars: int
+) -> list[Bar]:
+    """Bars for one indicator: the session's own once it has ``minimum_bars`` of them.
+
+    Only while the session is shorter than that, and shorter than
+    ``INDICATOR_HISTORY_CUTOFF_BARS``, may validated cross-session history be used
+    instead, so an indicator the session can already produce is never changed.
+    ``indicator_bars`` is used only if it is longer than the session and ends with exactly
+    the session's bars, so it can never contain anything later than the latest session
+    bar. Otherwise the session bars are returned and the indicator stays unavailable.
+    """
+    count = len(session_bars)
+    if count >= min(minimum_bars, INDICATOR_HISTORY_CUTOFF_BARS):
+        return session_bars
+    if (
+        count
+        and indicator_bars
+        and len(indicator_bars) > count
+        and indicator_bars[-count:] == session_bars
+    ):
+        return indicator_bars
+    return session_bars
+
+
+def accepts_indicator_bars(strategy: object) -> bool:
+    """True when the strategy's ``generate_signal`` takes an ``indicator_bars`` series."""
+    generate_signal = getattr(strategy, "generate_signal", None)
+    if not callable(generate_signal):
+        return False
+    return "indicator_bars" in inspect.signature(generate_signal).parameters
 
 
 # ── ATR (Average True Range) ──────────────────────────────────────────────────
