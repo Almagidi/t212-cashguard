@@ -79,6 +79,8 @@ MAX_CASH_BLOCKED_ATTEMPTS = 3
 # How long after an order of this strategy last changed before its effect is taken to show
 # in the broker's positions and cash.
 ORDER_SETTLE_TIME = timedelta(minutes=5)
+# Risk refusals that mean "trading is stopped", not "this order is unsuitable".
+HALT_EVENT_TYPES = frozenset({"kill_switch_block", "auto_trading_disabled"})
 
 
 @dataclass
@@ -458,6 +460,7 @@ class PortfolioExecutionService:
         dry_run_orders = 0
         risk_blocks = 0
         cash_blocks = 0
+        halt_blocks = 0
         allocation_blocks = 0
         allocation_decisions: list[dict[str, Any]] = []
 
@@ -522,7 +525,9 @@ class PortfolioExecutionService:
                         current_open_positions=effective_open_positions,
                         signal_id=signal.id,
                         risk_profile=strategy.risk_profile,
-                        skip_auto_trading_check=True,
+                        # Checked for every buy unless the operator forced this run: a
+                        # pause set after the run began must stop the buys not yet made.
+                        skip_auto_trading_check=force,
                         open_positions=current_positions,
                     )
                     await risk_engine.check_sector_and_correlation(
@@ -537,6 +542,8 @@ class PortfolioExecutionService:
                     signal.risk_rejected = True
                     signal.risk_rejection_reason = exc.reason
                     risk_blocks += 1
+                    if exc.event_type in HALT_EVENT_TYPES:
+                        halt_blocks += 1
                     await self._add_audit_log(
                         action="portfolio_rebalance_blocked",
                         actor=actor,
@@ -670,8 +677,11 @@ class PortfolioExecutionService:
         cash_blocked_attempts = (
             self._cash_blocked_attempts(strategy, decision_date) + 1 if cash_blocks else 0
         )
-        to_be_continued = 0 < cash_blocked_attempts < MAX_CASH_BLOCKED_ATTEMPTS
-        final_status = "cash_blocked" if cash_blocks else "rebalanced"
+        # A buy refused because trading was halted or paused after the run began has not
+        # been made either. While the halt lasts no run starts, so there is nothing to
+        # count; when it is lifted the period is still due and the rebalance is finished.
+        to_be_continued = halt_blocks > 0 or 0 < cash_blocked_attempts < MAX_CASH_BLOCKED_ATTEMPTS
+        final_status = "halted" if halt_blocks else "cash_blocked" if cash_blocks else "rebalanced"
         await self._update_strategy_state(
             strategy,
             status=final_status,
@@ -679,6 +689,9 @@ class PortfolioExecutionService:
                 "Rebalance stopped: an order has an unknown submission outcome and needs "
                 "reconciliation."
                 if orders_unconfirmed
+                else "Rebalance incomplete: trading was halted or paused before its buys were "
+                "made; it will be continued."
+                if halt_blocks
                 else (
                     "Rebalance incomplete: buys were refused because the cash was already "
                     + ("claimed; it will be continued." if to_be_continued else "claimed.")

@@ -727,6 +727,10 @@ class StrategyRunner:
             return summary
 
         intelligence = await MarketIntelligenceMonitor(self.db).evaluate_and_alert()
+        # The monitor may have written its state to the settings row, which is also the
+        # row that holds the kill switch. End that transaction here: left open for the
+        # rest of the run it would make an operator's halt wait for this run to commit.
+        await self.db.commit()
 
         broker = await self._get_broker()
         if broker is None:
@@ -1208,7 +1212,9 @@ class StrategyRunner:
                 realized_pnl_today=realized_pnl_today,
                 current_open_positions=n_open,
                 signal_id=sig.id,
-                skip_auto_trading_check=True,
+                # The auto-trading switch is checked here for every entry, not only at
+                # the start of the run: an operator's pause must stop the entries that
+                # the run has not made yet. Exits do not come through this call.
                 # Portfolio heat check: pass stop price so the engine can
                 # compute new_risk = |entry - stop| * qty and cap total exposure.
                 stop_price=signal_obj.stop_price,
@@ -1416,6 +1422,14 @@ class StrategyRunner:
         try:
             await risk.check_kill_switch()
         except RiskViolation:
+            # Not sent, and said so: a position that has reached its exit stays open
+            # because trading is halted, and somebody has to know that.
+            log.warning(
+                "runner.exit_blocked_by_kill_switch",
+                strategy=strategy.name,
+                ticker=ticker,
+                exit_type=exit_sig.signal_type,
+            )
             return None
 
         exit_signal = Signal(
