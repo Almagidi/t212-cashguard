@@ -771,6 +771,95 @@ async def test_run_all_enabled_safety_gates_skip_before_broker_and_strategy_exec
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("force", [False, True])
+async def test_run_strategy_once_has_the_auto_trading_switch_checked_for_each_buy_unless_forced(
+    monkeypatch: pytest.MonkeyPatch, force: bool
+) -> None:
+    """A pause set after the run began must stop the buys not yet made. Only a run the
+    operator forced, which is allowed to start with auto trading off, skips the check."""
+    asked: list[dict[str, Any]] = []
+
+    class RecordingRiskEngine(AllowingRiskEngine):
+        async def run_all_checks(self, **kwargs: Any) -> None:
+            asked.append(kwargs)
+
+    db = FakeSession(results=[[]])
+    service = PortfolioExecutionService(db)
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(portfolio_execution_service, "ExecutionEngine", RecordingExecutionEngine)
+    monkeypatch.setattr(portfolio_execution_service, "RiskEngine", RecordingRiskEngine)
+    monkeypatch.setattr(portfolio_execution_service, "SignalAllocator", AllowingSignalAllocator)
+    monkeypatch.setattr(service, "_load_market_snapshot", _load_market_snapshot)
+    monkeypatch.setattr(service, "_load_regime_payload", _load_regime_payload)
+    monkeypatch.setattr(service, "_decision_now", lambda: datetime(2026, 1, 6, 15, 0, tzinfo=UTC))
+
+    await service.run_strategy_once(
+        _portfolio_strategy(is_live=False),
+        broker=RecordingBroker(),
+        account_value=Decimal("1000"),
+        available_cash=Decimal("1000"),
+        broker_positions=[],
+        force=force,
+        actor="portfolio-test",
+    )
+
+    assert asked, "no buy went through the risk checks; nothing is proved"
+    assert {call["skip_auto_trading_check"] for call in asked} == {force}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event_type", "status", "last_status", "period_recorded"),
+    [
+        # Trading was stopped after the run began: the rebalance is unfinished and stays due.
+        ("kill_switch_block", "due", "halted", False),
+        ("auto_trading_disabled", "due", "halted", False),
+        # An ordinary risk refusal of one order is a decision about that order, as before.
+        ("position_size_block", "rebalanced", "rebalanced", True),
+    ],
+)
+async def test_run_strategy_once_leaves_a_rebalance_due_when_a_halt_stopped_its_buys(
+    monkeypatch: pytest.MonkeyPatch,
+    event_type: str,
+    status: str,
+    last_status: str,
+    period_recorded: bool,
+) -> None:
+    from app.risk.engine import RiskViolation
+
+    class RefusingRiskEngine(AllowingRiskEngine):
+        async def run_all_checks(self, **_kwargs: Any) -> None:
+            raise RiskViolation("refused", event_type)
+
+    db = FakeSession(results=[[]])
+    service = PortfolioExecutionService(db)
+    strategy = _portfolio_strategy(is_live=False)
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(portfolio_execution_service, "ExecutionEngine", RecordingExecutionEngine)
+    monkeypatch.setattr(portfolio_execution_service, "RiskEngine", RefusingRiskEngine)
+    monkeypatch.setattr(portfolio_execution_service, "SignalAllocator", AllowingSignalAllocator)
+    monkeypatch.setattr(service, "_load_market_snapshot", _load_market_snapshot)
+    monkeypatch.setattr(service, "_load_regime_payload", _load_regime_payload)
+    monkeypatch.setattr(service, "_decision_now", lambda: datetime(2026, 1, 6, 15, 0, tzinfo=UTC))
+
+    summary = await service.run_strategy_once(
+        strategy,
+        broker=RecordingBroker(),
+        account_value=Decimal("1000"),
+        available_cash=Decimal("1000"),
+        broker_positions=[],
+        force=False,
+        actor="portfolio-test",
+    )
+
+    assert summary["risk_blocks"] >= 1, "no buy was refused; nothing is proved"
+    assert summary["status"] == status
+    state = strategy.params["portfolio_execution"]
+    assert state["last_status"] == last_status
+    assert ("last_rebalance_signal_at" in state) is period_recorded
+
+
+@pytest.mark.asyncio
 async def test_run_strategy_once_routes_dry_run_rebalance_orders_through_execution_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

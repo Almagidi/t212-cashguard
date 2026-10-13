@@ -72,9 +72,24 @@ class RiskEngine:
 
     # ── Individual checks ─────────────────────────────────────────────────────
 
+    async def _saved_setting(self, column: Any) -> Any:
+        """The value of one settings column as the database has it now.
+
+        A session keeps the settings object it first loaded, and a later query for the same
+        row hands that object back unchanged. A long run would therefore go on trading on
+        the kill switch as it stood when the run began. Reading the column itself goes to
+        the database every time.
+        """
+        result = await self.db.execute(select(column).where(AppSettings.id == 1))
+        return result.scalar_one_or_none()
+
     async def check_kill_switch(self) -> None:
         s = await self._get_settings()
-        if s.kill_switch_active:
+        # Halted unless both say otherwise: this session's copy (which may hold an
+        # activation it has not saved yet) and the saved row (which another process may
+        # have changed). A saved value that is missing counts as halted.
+        saved = await self._saved_setting(AppSettings.kill_switch_active)
+        if s.kill_switch_active or saved is not False:
             await self._log("kill_switch_block", "Kill switch active — all trading blocked")
             raise RiskViolation(
                 "Kill switch is active. Disable it from Emergency Controls.",
@@ -83,7 +98,9 @@ class RiskEngine:
 
     async def check_auto_trading_enabled(self) -> None:
         s = await self._get_settings()
-        if not s.auto_trading_enabled:
+        # On only if both say so, for the same reasons as the kill switch.
+        saved = await self._saved_setting(AppSettings.auto_trading_enabled)
+        if not s.auto_trading_enabled or saved is not True:
             raise RiskViolation(
                 "Auto-trading is disabled. Enable it from the dashboard.",
                 "auto_trading_disabled",
