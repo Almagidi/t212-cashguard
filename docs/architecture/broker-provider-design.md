@@ -1,5 +1,7 @@
 # Broker Provider Design
 
+> **2026-10-11:** the CFD funding task (`track_cfd_funding`) and its provider purpose `worker_cfd_funding` are retired; CashGuard is cash-only. Mentions of them below describe history. See [CFD_FUNDING_RETIREMENT.md](../CFD_FUNDING_RETIREMENT.md).
+
 Date: 2026-05-15
 
 ## Scope
@@ -110,7 +112,6 @@ class BrokerProviderRequest:
         "credential_test",
         "demo_reconciliation",
         "worker_account_sync",
-        "worker_cfd_funding",
         "worker_reconcile",
         "worker_cancel",
         "worker_cancel_timed_out_orders",

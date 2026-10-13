@@ -72,9 +72,24 @@ class RiskEngine:
 
     # ── Individual checks ─────────────────────────────────────────────────────
 
+    async def _saved_setting(self, column: Any) -> Any:
+        """The value of one settings column as the database has it now.
+
+        A session keeps the settings object it first loaded, and a later query for the same
+        row hands that object back unchanged. A long run would therefore go on trading on
+        the kill switch as it stood when the run began. Reading the column itself goes to
+        the database every time.
+        """
+        result = await self.db.execute(select(column).where(AppSettings.id == 1))
+        return result.scalar_one_or_none()
+
     async def check_kill_switch(self) -> None:
         s = await self._get_settings()
-        if s.kill_switch_active:
+        # Halted unless both say otherwise: this session's copy (which may hold an
+        # activation it has not saved yet) and the saved row (which another process may
+        # have changed). A saved value that is missing counts as halted.
+        saved = await self._saved_setting(AppSettings.kill_switch_active)
+        if s.kill_switch_active or saved is not False:
             await self._log("kill_switch_block", "Kill switch active — all trading blocked")
             raise RiskViolation(
                 "Kill switch is active. Disable it from Emergency Controls.",
@@ -83,7 +98,9 @@ class RiskEngine:
 
     async def check_auto_trading_enabled(self) -> None:
         s = await self._get_settings()
-        if not s.auto_trading_enabled:
+        # On only if both say so, for the same reasons as the kill switch.
+        saved = await self._saved_setting(AppSettings.auto_trading_enabled)
+        if not s.auto_trading_enabled or saved is not True:
             raise RiskViolation(
                 "Auto-trading is disabled. Enable it from the dashboard.",
                 "auto_trading_disabled",
@@ -609,7 +626,8 @@ class RiskEngine:
         # Portfolio heat inputs (optional — skipped if not provided)
         stop_price: Decimal | None = None,
         open_positions: list[dict] | None = None,
-        # CFD-specific inputs (optional — checks run only when is_cfd=True)
+        # Kept for signature compatibility. is_cfd=True is refused (cash-only);
+        # free_margin_pct is unused.
         is_cfd: bool = False,
         free_margin_pct: Decimal | None = None,
     ) -> None:
@@ -624,6 +642,12 @@ class RiskEngine:
             open_positions:  Full broker position list with optional
                              'riskDollars' fields for existing heat.
         """
+        # 0. Cash-only: an order treated as a CFD is refused outright.
+        if is_cfd:
+            msg = f"CFD order for {ticker} refused: CashGuard is a cash-only application"
+            await self._log("cash_only_cfd_block", msg, ticker=ticker, signal_id=signal_id)
+            raise RiskViolation(msg, "cash_only_cfd_block")
+
         # 1. Kill switch — absolute stop
         await self.check_kill_switch()
 
@@ -670,19 +694,6 @@ class RiskEngine:
                 new_position_risk=new_risk,
                 account_value=account_value,
                 open_positions=open_positions,
-                signal_id=signal_id,
-                risk_profile=risk_profile,
-            )
-
-        # 12. CFD-specific checks (leverage, tighter limits, margin guard)
-        if is_cfd:
-            await self.check_cfd_limits(
-                ticker=ticker,
-                quantity=quantity,
-                estimated_price=estimated_price,
-                account_value=account_value,
-                realized_pnl_today=realized_pnl_today,
-                free_margin_pct=free_margin_pct,
                 signal_id=signal_id,
                 risk_profile=risk_profile,
             )

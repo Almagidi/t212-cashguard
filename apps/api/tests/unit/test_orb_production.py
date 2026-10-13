@@ -33,6 +33,17 @@ def _flat_bars(n=25, price=100, volume=10_000):
     return [_bar(price, price + 2, price - 2, price, volume) for _ in range(n)]
 
 
+def _run_of_bars(n=22, start=101, step=0.5, volume=30_000):
+    """A steady directional run: each bar opens where the last closed and moves by `step`."""
+    bars = []
+    for i in range(n):
+        opened, closed = start + step * i, start + step * (i + 1)
+        bars.append(
+            _bar(opened, max(opened, closed) + 0.5, min(opened, closed) - 0.5, closed, v=volume)
+        )
+    return bars
+
+
 def _trending_bars(n=40, start=80, step=1, volume=10_000):
     bars = []
     for i in range(n):
@@ -174,9 +185,18 @@ class TestCheckFilters:
 
     def test_all_filters_pass_returns_true(self):
         svc = self._svc()
-        bars = _flat_bars(25, volume=30_000)
+        # A steady rise: the regime is computable and not choppy. Flat bars used to pass
+        # here only because fewer than 30 bars meant "unknown", which was let through.
+        bars = _trending_bars(25, volume=30_000)
         ok, _ = svc._check_filters(bars, VALID_TIME, None)
         assert ok is True
+
+    def test_flat_session_is_blocked_as_choppy(self):
+        svc = self._svc()
+        bars = _flat_bars(25, volume=30_000)
+        ok, reason = svc._check_filters(bars, VALID_TIME, None)
+        assert ok is False
+        assert "choppy" in reason
 
     def test_atr_too_low_returns_false(self):
         svc = self._svc(min_atr_pct=10.0)
@@ -220,9 +240,17 @@ class TestCheckFiltersShort:
 
     def test_all_short_filters_pass(self):
         svc = self._svc()
-        bars = _flat_bars(25, volume=30_000)
+        # A steady fall: the regime is computable and not choppy (see the long-side test).
+        bars = list(reversed(_trending_bars(25, volume=30_000)))
         ok, _ = svc._check_filters_short(bars, VALID_TIME, None)
         assert ok is True
+
+    def test_flat_session_is_blocked_as_choppy_for_shorts(self):
+        svc = self._svc()
+        bars = _flat_bars(25, volume=30_000)
+        ok, reason = svc._check_filters_short(bars, VALID_TIME, None)
+        assert ok is False
+        assert "choppy" in reason
 
     def test_require_trend_no_downtrend_returns_false(self):
         svc = OpeningRangeBreakoutStrategy(
@@ -467,12 +495,12 @@ class TestGenerateSignal:
         svc = self._svc()
         # ORB bars: high=103, low=97
         orb = [_bar(100, 103, 97, 101, v=20_000)] * 3
-        # Current bar: close above ORB high
-        rest = [_bar(103, 108, 102, 107, v=30_000)] * 22
-        bars = orb + rest
+        # A steady climb through the ORB high. (22 identical bars are a flat, choppy
+        # market by the published Choppiness Index, and no entry is taken in one.)
+        bars = orb + _run_of_bars(step=0.5)
         result = svc.generate_signal("AAPL", bars, ACCOUNT, CASH, VALID_TIME)
-        if result is not None:
-            assert result.side == "buy"
+        assert result is not None
+        assert result.side == "buy"
 
     def test_no_breakout_returns_none(self):
         svc = self._svc()
@@ -486,11 +514,10 @@ class TestGenerateSignal:
     def test_breakdown_below_orb_low_with_allow_short(self):
         svc = self._svc(allow_short=True)
         orb = [_bar(100, 103, 97, 101, v=20_000)] * 3
-        rest = [_bar(97, 98, 93, 94, v=30_000)] * 22
-        bars = orb + rest
+        bars = orb + _run_of_bars(step=-0.5)
         result = svc.generate_signal("AAPL", bars, ACCOUNT, CASH, VALID_TIME)
-        if result is not None:
-            assert result.side == "sell"
+        assert result is not None
+        assert result.side == "sell"
 
     def test_breakdown_without_allow_short_returns_none(self):
         svc = self._svc(allow_short=False)
@@ -660,37 +687,23 @@ class TestCheckExitConditions:
             assert result.signal_type == "trailing_stop"
 
 
-# ── MockMarketDataProvider characterization (Agent A, 2026-07-26) ─────────────
+# ── MockMarketDataProvider characterization ──────────────────────────────────
 #
-# Documents a real-worker Route B observation finding: a real Celery worker,
-# dispatched 40 times over ~49 minutes against one enabled/is_live ORB
-# strategy, produced zero signals in every dispatch even with a 36-bar
-# session window (well past the 21-bar trend-confirmation threshold) and
-# risk_blocks=0 throughout (MarketRegimeService/RiskEngine were not the
-# obstacle — see docs/SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md §4.6).
+# History: on 2026-07-26 a real-worker observation found that an ORB strategy
+# produced no signal in 40 dispatches against the default mock data, and these
+# tests pinned "the driftless mock walk is classified choppy, so ORB never
+# signals" (docs/SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md §4.6).
 #
-# Root cause: MockMarketDataProvider.get_ohlcv() generates a driftless,
-# memoryless random walk (each bar's open is the prior close; the new close
-# is drawn uniformly in a fresh symmetric band with no carried-forward
-# momentum). indicators.market_regime()'s Choppiness Index is, by design,
-# close to its maximum for exactly this kind of walk, and
-# OpeningRangeBreakoutStrategy._check_filters() unconditionally rejects a
-# "choppy" regime. These tests pin that behaviour with a seeded PRNG so it
-# is a locked, reproducible regression rather than an anecdote.
+# That was an effect of the regime code, not of the data: market_regime() used
+# 100 * ATR * sqrt(n) / range instead of the published Choppiness Index
+# (finding N-10), which reads roughly 80 on a random walk. With the published
+# formula the same walk reads about 59 at the median, is "choppy" in a minority
+# of draws, and ORB does signal on some of them. These tests pin the corrected
+# behaviour with the same seeded draws.
 
 
-class TestMockProviderChoppyRegimeCharacterization:
-    """
-    Characterizes real MockMarketDataProvider output against the real
-    production regime/strategy classes it feeds in mock mode. Not a bug
-    report and not something this test suite fixes — see the module-level
-    comment above and docs/SCHEDULED_SIGNAL_PAPER_FILL_OBSERVATION.md §4.6
-    for why fixing it is out of scope (broader blast radius across
-    position_monitor.py / portfolio_execution_service.py /
-    portfolio_attribution*.py / strategy_runner.py's own async-provider
-    branch selection, or changing real ORB production filter logic for a
-    testing-data limitation).
-    """
+class TestMockProviderRegimeCharacterization:
+    """How the default mock data is classified by the regime code it feeds in mock mode."""
 
     def _session_bars(self, provider, ticker="NVDA", n_bars=36):
         from app.strategies.indicators import Bar as _Bar
@@ -707,7 +720,7 @@ class TestMockProviderChoppyRegimeCharacterization:
             for r in raw
         ]
 
-    def test_mock_provider_bars_are_classified_choppy_by_orb_regime_detector(self):
+    def test_mock_provider_bars_are_choppy_in_a_minority_of_draws(self):
         import random as _random
 
         from app.market_data.mock_provider import MockMarketDataProvider
@@ -717,16 +730,12 @@ class TestMockProviderChoppyRegimeCharacterization:
         provider = MockMarketDataProvider()
         regimes = [market_regime(self._session_bars(provider)) for _ in range(50)]
         choppy_count = regimes.count("choppy")
-        # Observed 200/200 in the real Route B session; require a large
-        # majority here (not 100%) so this stays robust to the PRNG
-        # implementation details while still failing if the underlying
-        # driftless-walk behaviour changes materially.
-        assert choppy_count >= 45, (
-            f"expected the driftless mock walk to classify as 'choppy' in "
-            f"the large majority of draws, got {choppy_count}/50: {regimes}"
-        )
 
-    def test_orb_strategy_generates_no_signal_against_driftless_mock_walk(self):
+        # 18 of 50 with this seed; the old formula gave at least 45.
+        assert "unknown" not in regimes
+        assert 8 <= choppy_count <= 28, f"{choppy_count}/50 choppy: {regimes}"
+
+    def test_orb_strategy_can_signal_against_the_driftless_mock_walk(self):
         import random as _random
 
         from app.market_data.mock_provider import MockMarketDataProvider
@@ -748,11 +757,6 @@ class TestMockProviderChoppyRegimeCharacterization:
             if sig is not None:
                 signals += 1
 
-        # Observed 0/300 in the real Route B session's diagnostic sample.
-        # This is a real, current limitation of the mock data generator for
-        # momentum/breakout strategies, not a fluke of one run's PRNG state.
-        assert signals == 0, (
-            f"expected the choppy-classified driftless mock walk to produce "
-            f"no ORB signals; got {signals}/50 — either the mock data "
-            f"generator or the choppy-regime gate has changed"
-        )
+        # Mock mode is no longer silent for ORB: a handful of the 50 draws signal.
+        # The old formula gave 0 of 50.
+        assert 1 <= signals <= 20, f"{signals}/50 draws produced an ORB signal"
