@@ -280,7 +280,7 @@ def test_system_control_is_mixed_write_capable_for_emergency_cancel_and_flatten(
     get_snapshot = _method_node(service_class, "get_snapshot")
     get_positions_summary = _method_node(service_class, "get_positions_summary")
     cancel_all_pending = _method_node(service_class, "cancel_all_pending_summary")
-    flatten_all = _method_node(service_class, "flatten_all")
+    flatten_all = _method_node(service_class, "flatten_all_summary")
     method_names = {
         node.name
         for node in service_class.body
