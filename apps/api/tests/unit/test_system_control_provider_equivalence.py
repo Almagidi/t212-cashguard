@@ -686,9 +686,15 @@ async def test_cancel_all_pending_reports_broker_cancellation_failures(
 
     message = await service.cancel_all_pending(actor="operator")
 
-    assert message == "Cancelled 1 pending orders; 1 cancellation attempts require reconciliation."
+    # The order whose cancellation failed is named, so the operator knows which one.
+    assert message == (
+        "Cancelled 1 pending orders; 1 cancellation attempts require reconciliation (MSFT)."
+    )
     assert RecordingExecutionEngine.cancel_calls == selected_orders
     assert [entry.action for entry in db.added] == ["emergency_cancel_all"]
+    # The record names the order whose cancellation failed, not only how many there were.
+    (still_open,) = db.added[0].payload.pop("failed_orders")
+    assert still_open["ticker"] == "MSFT"
     assert db.added[0].payload == {
         "source": "system_control",
         "cancelled_count": 1,
@@ -737,7 +743,7 @@ def test_system_control_source_is_provider_backed_and_mixed_write_capable() -> N
     get_snapshot = _method_node("get_snapshot")
     get_positions_summary = _method_node("get_positions_summary")
     cancel_all_pending = _method_node("cancel_all_pending_summary")
-    flatten_all = _method_node("flatten_all")
+    flatten_all = _method_node("flatten_all_summary")
 
     assert _adapter_counts(get_broker) == {"construct": 0, "import": 0}
     assert "create_trading212_provider_adapter" in _call_names(get_broker)
@@ -776,7 +782,7 @@ def test_system_control_read_status_methods_have_no_write_or_provider_surface() 
 
 def test_system_control_emergency_methods_are_write_capable_not_read_only() -> None:
     cancel_all_pending = _method_node("cancel_all_pending_summary")
-    flatten_all = _method_node("flatten_all")
+    flatten_all = _method_node("flatten_all_summary")
 
     assert "ExecutionEngine" in ast.unparse(cancel_all_pending)
     assert "cancel_order" in _call_names(cancel_all_pending)
@@ -823,15 +829,18 @@ async def test_flatten_all_reports_unconfirmed_and_failed_exits_separately(
 
     message = await service.flatten_all(actor="operator")
 
+    # Each exit that needs attention is named, in the message and in the record.
     assert message == (
         "Flattened 1 positions. 1 exit order(s) have an unknown outcome and need "
-        "reconciliation. 1 exit order(s) failed."
+        "reconciliation (MSFT). 1 exit order(s) failed (NVDA)."
     )
     assert db.added[0].payload == {
         "source": "system_control",
         "flattened": 1,
         "unconfirmed": 1,
+        "unconfirmed_tickers": ["MSFT"],
         "failed": 1,
+        "failed_tickers": ["NVDA"],
     }
 
 
@@ -862,11 +871,12 @@ async def test_flatten_all_run_again_does_not_resend_or_abort_on_existing_exit_o
     assert [order.order for order in RecordingExecutionEngine.submitted_orders] == ["NVDA"]
     assert message == (
         "Flattened 1 positions. 1 exit order(s) have an unknown outcome and need "
-        "reconciliation. 1 exit order(s) were already open."
+        "reconciliation (AAPL). 1 exit order(s) were already open."
     )
     assert db.added[0].payload == {
         "source": "system_control",
         "flattened": 1,
         "unconfirmed": 1,
+        "unconfirmed_tickers": ["AAPL"],
         "already_open": 1,
     }

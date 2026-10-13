@@ -92,10 +92,12 @@ async def emergency_flatten_all(
     db: AsyncSession = Depends(get_db),
 ) -> EmergencyActionResult:
     """Close all open positions via market sell orders."""
-    message = await SystemControlService(db, current_user.id).flatten_all(current_user.email)
+    summary = await SystemControlService(db, current_user.id).flatten_all_summary(
+        current_user.email
+    )
     return EmergencyActionResult(
-        success=True,
+        success=summary.complete,
         action="flatten_all",
-        message=message,
+        message=summary.message,
         timestamp=datetime.now(UTC),
     )

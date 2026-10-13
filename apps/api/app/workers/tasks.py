@@ -655,7 +655,11 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
         from app.db.models import BrokerConnection, Order
         from app.db.session import AsyncSessionLocal
         from app.execution.engine import ExecutionEngine, OrderCancellationFailed
-        from app.execution.state_machine import ACTIVE_ORDER_STATUSES
+        from app.execution.state_machine import (
+            ACTIVE_ORDER_STATUSES,
+            InvalidOrderTransition,
+            require_already_finished,
+        )
         from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
         ORDER_TIMEOUT_MINUTES = 60  # Cancel working orders after 1 hour
@@ -753,6 +757,7 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
                 async with provider_broker as broker:
                     engine = ExecutionEngine(db, broker)
                     failed = 0
+                    already_finished = 0
                     for order in timed_out:
                         try:
                             await engine.cancel_order(order)
@@ -763,6 +768,18 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
                                 order_id=str(order.id),
                                 ticker=order.ticker,
                                 requires_reconciliation=True,
+                            )
+                            continue
+                        except InvalidOrderTransition:
+                            # It ended (a fill was recorded, say) after this run listed
+                            # it. Nothing to cancel; the rest of the list still is.
+                            require_already_finished(order)
+                            already_finished += 1
+                            log.info(
+                                "tasks.order_timeout_already_finished",
+                                order_id=str(order.id),
+                                ticker=order.ticker,
+                                status=order.status,
                             )
                             continue
                         log.warning(
@@ -776,6 +793,8 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
                 summary = {"cancelled": count}
                 if failed:
                     summary["failed"] = failed
+                if already_finished:
+                    summary["already_finished"] = already_finished
                 return await _complete_task(db, "cancel_timed_out_orders", summary)
 
     return run_monitored_task("cancel_timed_out_orders", _run)

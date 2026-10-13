@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import desc, func, select
@@ -36,12 +37,14 @@ from app.execution.paper_engine import (
     PaperExecutionEngine,
     PaperExecutionError,
 )
+from app.execution.state_machine import InvalidOrderTransition, require_already_finished
 from app.risk.engine import RiskEngine, RiskViolation
 from app.services.cash_only import sellable_quantity
 from app.services.live_readiness import LiveReadinessService
 from app.services.safety_policy import SafetyPolicyViolation, audit_safety_decision
 
 router = APIRouter(prefix="/orders", tags=["orders"])
+log = structlog.get_logger()
 
 _PAPER_HISTORY_DEFAULT_LIMIT = 25
 _PAPER_HISTORY_MAX_LIMIT = 100
@@ -643,6 +646,11 @@ async def cancel_all_pending(
     orders = await repo.list_pending()
     cancelled = 0
     failed = 0
+    # An order that ended between being listed and being reached has nothing left to
+    # cancel. It must not stop the orders after it from being cancelled.
+    already_finished = 0
+    failed_orders: list[Order] = []
+    finished_orders: list[Order] = []
     async with broker as b:
         engine = ExecutionEngine(db, b)
         for order in orders:
@@ -651,13 +659,37 @@ async def cancel_all_pending(
                 cancelled += 1
             except OrderCancellationFailed:
                 failed += 1
+                failed_orders.append(order)
+            except InvalidOrderTransition:
+                require_already_finished(order)
+                already_finished += 1
+                finished_orders.append(order)
 
+    counts: dict[str, int] = {"cancelled": cancelled, "failed": failed}
+    if already_finished:
+        counts["already_finished"] = already_finished
+    payload: dict[str, Any] = {f"{name}_count": count for name, count in counts.items()}
+    if failed_orders:
+        payload["failed_orders"] = [
+            {"order_id": str(order.id), "ticker": order.ticker} for order in failed_orders
+        ]
+    if finished_orders:
+        payload["already_finished_orders"] = [
+            {"order_id": str(order.id), "ticker": order.ticker, "status": order.status}
+            for order in finished_orders
+        ]
+    if failed_orders or finished_orders:
+        log.warning(
+            "orders.cancel_all_needs_attention",
+            failed=[str(order.id) for order in failed_orders],
+            already_finished={str(order.id): order.status for order in finished_orders},
+        )
     db.add(
         AuditLog(
             action="cancel_all_pending",
             actor=current_user.email,
-            payload={"cancelled_count": cancelled, "failed_count": failed},
+            payload=payload,
             occurred_at=datetime.now(UTC),
         )
     )
-    return {"cancelled": cancelled, "failed": failed}
+    return counts
