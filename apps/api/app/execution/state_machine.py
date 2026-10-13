@@ -61,6 +61,19 @@ def is_terminal_status(status: str) -> bool:
     return status in TERMINAL_ORDER_STATUSES
 
 
+def require_already_finished(order: Order) -> None:
+    """For a batch that skips an order because it could not be cancelled any more.
+
+    The only good reason is that the order has ended. Anything else (a status this code
+    does not know, say) is a fault, and it is raised again instead of being counted as
+    "already finished".
+    """
+    if order.status not in TERMINAL_ORDER_STATUSES:
+        raise InvalidOrderTransition(
+            f"Order {order.id} could not be cancelled from status {order.status!r}"
+        )
+
+
 def can_transition_order_status(from_status: str, to_status: str) -> bool:
     if from_status not in KNOWN_ORDER_STATUSES or to_status not in KNOWN_ORDER_STATUSES:
         return False
