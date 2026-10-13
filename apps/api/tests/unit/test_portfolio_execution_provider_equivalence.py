@@ -808,6 +808,7 @@ async def test_run_strategy_once_routes_dry_run_rebalance_orders_through_executi
         "signal_id": db.added[0].id,
         "is_dry_run": True,
         "available_cash": Decimal("1000"),
+        "cash_read_at": None,
         "estimated_price": Decimal("100.0000"),
     }
     assert RecordingExecutionEngine.submitted_orders[0].is_dry_run is True
