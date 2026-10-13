@@ -52,10 +52,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Never delete evidence of a submission whose outcome is still unknown. An order is
-    # unresolved while its status is submission_unknown; the attempt row of an order that
-    # reconciliation has since resolved is history and does not block the downgrade.
     bind = op.get_bind()
+    # Match the orders-first lock order in revision 0020. Check only after pending
+    # writers finish; otherwise DROP can discard evidence committed while it waits.
+    bind.execute(sa.text("LOCK TABLE orders, order_submission_attempts IN ACCESS EXCLUSIVE MODE"))
     unresolved_orders = bind.execute(
         sa.text("SELECT count(*) FROM orders WHERE status = 'submission_unknown'")
     ).scalar_one()
@@ -64,5 +64,13 @@ def downgrade() -> None:
             f"Refusing to downgrade: {unresolved_orders} order(s) still have an unknown "
             "submission outcome. Their status must first become accepted, filled, cancelled, "
             "rejected or error through reconciliation."
+        )
+    has_history = bind.execute(
+        sa.text("SELECT EXISTS (SELECT 1 FROM order_submission_attempts)")
+    ).scalar_one()
+    if has_history:
+        raise RuntimeError(
+            "Refusing to downgrade: durable submission attempt history would be lost. "
+            "Preserve the current schema and use forward recovery."
         )
     op.drop_table("order_submission_attempts")

@@ -431,9 +431,9 @@ See [`docs/implementation-roadmap.md`](docs/implementation-roadmap.md) for the t
 
 | Guarantee | Implementation |
 |-----------|----------------|
-| Cash-only | `CASH_ONLY_MODE = True` hardcoded; pre-order cash guard check in risk engine |
+| Cash-only | `CASH_ONLY_MODE` is an invariant: any value other than true stops the API, worker and scheduler from starting; short selling and CFD treatment are refused; pre-order cash guard check in risk engine |
 | No deposits | Zero deposit/bank/card routes, models, or UI exist anywhere in codebase |
-| No leverage | Only equity positions; no margin, CFD, or leverage parameters |
+| No leverage | Only equity positions; no margin, CFD or leverage is used. The `cfd_*` fields on risk profiles are inert leftovers and no order path reads them |
 | Live mode gated | Requires `APP_MODE=live` + explicit DB flag + confirmation modal |
 | Order dedup | SHA-256 `client_order_key` prevents duplicate submissions |
 | Sell convention | `make_sell_quantity()` always negates for T212 compliance |
