@@ -146,7 +146,7 @@ class ClosingMomentumStrategy:
             return None
 
         regime = market_regime(bars)
-        if regime in {"trending_down", "choppy"}:
+        if regime in {"trending_down", "choppy", "unknown"}:
             return None
 
         atr_value = atr(bars, 14)

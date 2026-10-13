@@ -183,9 +183,10 @@ class RiskProfile(Base):
     Risk rules applied per strategy.
 
     Equity fields control standard cash-equity trading.
-    CFD fields (cfd_*) override equity limits when the strategy operates
-    CFDs (higher leverage, overnight funding, margin calls).
-    When a cfd_* field is NULL it inherits the equivalent equity value.
+    The CFD fields (cfd_*, min_free_margin_pct) are inert: CashGuard is cash-only and no
+    order path reads them. They are kept only so the schema and its migrations stay intact
+    (see docs/CFD_FUNDING_RETIREMENT.md). They were written to override equity limits for
+    a strategy operating CFDs; a NULL cfd_* field inherited the equity value.
 
     Scientific basis:
       Equity sizing  — Kelly (1956); Thorp (2006)
@@ -678,9 +679,14 @@ class Trade(Base):
 
 class CFDFundingCost(Base):
     """
-    Daily financing charge on a CFD position held overnight.
+    Historical table only. CashGuard is cash-only and the task that wrote these rows is
+    retired; nothing in the application reads or writes this table. Existing rows are
+    estimates, many recorded against ordinary share positions, and none was reported by
+    a broker: they must not be used in any financial report. The model is kept so the
+    schema and its migrations stay intact (see docs/CFD_FUNDING_RETIREMENT.md).
 
-    Formula: daily_charge = notional x (annual_rate_pct / 100) / 360
+    What the retired task recorded: a daily financing charge on a CFD position held
+    overnight. Formula: daily_charge = notional x (annual_rate_pct / 100) / 360
     where notional = quantity x price_at_close.
 
     Scientific basis (Chan 2013):
