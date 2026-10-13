@@ -65,6 +65,7 @@ from app.services.alert_service import (
     alert_trade_submitted,
 )
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
+from app.services.cash_only import short_selling_parameters
 from app.services.market_intelligence_monitor import MarketIntelligenceMonitor
 from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 from app.services.signal_allocator import AllocationState, AllocatorCandidate, SignalAllocator
@@ -1020,6 +1021,19 @@ class StrategyRunner:
             )
             return 0, 0, 1
 
+        # Cash-only: a strategy configured to sell short opens no position at all.
+        # Its existing positions are still managed by the exit check above.
+        short_parameters = short_selling_parameters(strategy.params)
+        if short_parameters:
+            log.error(
+                "runner.cash_only_entry_blocked",
+                strategy=strategy.name,
+                ticker=ticker,
+                reason="short_selling_parameter",
+                parameters=short_parameters,
+            )
+            return 0, 0, 1
+
         # Entry signal
         signal_obj = engine.generate_signal(
             **self._build_signal_kwargs(
@@ -1037,6 +1051,17 @@ class StrategyRunner:
         )
         if signal_obj is None:
             return 0, 0, 0
+
+        if signal_obj.side != "buy":
+            # No position is held here, so a sell would open a short. Cash-only: refuse.
+            log.error(
+                "runner.cash_only_entry_blocked",
+                strategy=strategy.name,
+                ticker=ticker,
+                reason="sell_entry",
+                side=signal_obj.side,
+            )
+            return 0, 0, 1
 
         self._apply_signal_intelligence_overlay(
             strategy=strategy,
@@ -1145,9 +1170,6 @@ class StrategyRunner:
             return 1, 0, 0
 
         # Risk checks
-        # Determine if the strategy is operating as a CFD (allow_short = True
-        # means the strategy will short, which requires a margin/CFD account).
-        is_cfd = bool(strategy.params.get("allow_short", False))
         try:
             realized_pnl_today = await self._get_realized_pnl_today()
         except Exception as exc:
@@ -1177,8 +1199,6 @@ class StrategyRunner:
                 # compute new_risk = |entry - stop| * qty and cap total exposure.
                 stop_price=signal_obj.stop_price,
                 open_positions=all_positions,
-                # CFD-specific checks (leverage cap, tighter sizing, margin guard)
-                is_cfd=is_cfd,
             )
             await risk.check_sector_and_correlation(
                 ticker=ticker,

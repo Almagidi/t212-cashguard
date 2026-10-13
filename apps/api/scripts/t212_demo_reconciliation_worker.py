@@ -19,6 +19,7 @@ from app.broker.provider import (
     BrokerProviderValidationError,
     create_trading212_provider_adapter,
 )
+from app.core.redis import TaskLockUnavailable
 from app.core.serialization import to_jsonable
 from app.db.session import AsyncSessionLocal
 from app.services.demo_reconciliation_worker import DemoReconciliationWorker
@@ -94,6 +95,12 @@ async def main() -> int:
     except BrokerProviderValidationError as exc:
         print(f"Safety gate refused worker run: {exc}")
         return 2
+    except TaskLockUnavailable as exc:
+        print(f"Reconciliation did not run: {exc}")
+        return 1
+    except TimeoutError:
+        print("Reconciliation was stopped at its time limit; its unsaved work was discarded.")
+        return 1
     except SafetyPolicyViolation as exc:
         print(f"Safety gate refused worker run: {exc.reason}")
         return 2
