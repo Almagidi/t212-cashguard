@@ -164,7 +164,9 @@ services:
     depends_on:
       - api
       - web
-    networks: [external]
+      - grafana
+    # Resolve Grafana without joining the database/monitoring backend network.
+    networks: [external, monitoring_ingress]
 
   # ── Monitoring ────────────────────────────────────────────────────────────
   prometheus:
@@ -250,7 +252,7 @@ services:
     expose: ["3000"]
     depends_on:
       - prometheus
-    networks: [internal]
+    networks: [internal, monitoring_ingress]
 
 volumes:
   postgres_data:
@@ -266,3 +268,7 @@ networks:
     internal: true
   external:
     driver: bridge
+  # Private ingress-to-Grafana link; no datastores or other monitoring services.
+  monitoring_ingress:
+    driver: bridge
+    internal: true
