@@ -927,15 +927,18 @@ async def test_operator_status_kill_switch_active_has_blocked_reason(
 
 
 @pytest.mark.asyncio
-async def test_operator_status_cash_only_mode_disabled_has_blocked_reason(
+async def test_operator_status_cannot_be_put_into_a_cash_only_disabled_state(
     client,
     auth_headers,
     db,
-    monkeypatch,
 ):
     from app.core.config import settings
 
-    monkeypatch.setattr(settings, "CASH_ONLY_MODE", False)
+    try:
+        with pytest.raises(ValueError, match="cash-only"):
+            settings.CASH_ONLY_MODE = False
+    finally:
+        object.__setattr__(settings, "CASH_ONLY_MODE", True)
     db.add_all([_venue("t212"), _venue("kraken")])
     await db.commit()
 
@@ -943,10 +946,8 @@ async def test_operator_status_cash_only_mode_disabled_has_blocked_reason(
     assert response.status_code == 200
     body = response.json()
 
-    assert body["overall_status"] == "blocked"
-    reasons = {reason["code"]: reason for reason in body["why_blocked"]}
-    assert "cash_only_mode_disabled" in reasons
-    assert reasons["cash_only_mode_disabled"]["severity"] == "blocked"
+    assert settings.CASH_ONLY_MODE is True
+    assert "cash_only_mode_disabled" not in {reason["code"] for reason in body["why_blocked"]}
 
 
 @pytest.mark.asyncio

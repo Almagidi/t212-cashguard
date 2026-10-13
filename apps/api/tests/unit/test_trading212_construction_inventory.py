@@ -15,12 +15,11 @@ TRADING212_ADAPTER_PATH = APP_ROOT / "broker" / "trading212.py"
 
 PROVIDER_BACKED_OPERATIONAL_PATHS = {
     "app/workers/tasks.py": {
-        "provider_construct": 4,
+        "provider_construct": 3,
         "call_sites": {
             "cancel_timed_out_orders",
             "reconcile_pending_orders",
             "sync_account_snapshot",
-            "track_cfd_funding",
         },
     },
     "app/services/position_monitor.py": {
@@ -205,9 +204,9 @@ def test_post_provider_migration_operational_paths_are_provider_backed() -> None
     provider_call_counts = _provider_adapter_call_counts()
 
     for path, expected in PROVIDER_BACKED_OPERATIONAL_PATHS.items():
-        assert (
-            path not in direct_references
-        ), f"{path} must stay provider-backed without direct Trading212Adapter import/construction"
+        assert path not in direct_references, (
+            f"{path} must stay provider-backed without direct Trading212Adapter import/construction"
+        )
         assert provider_call_counts.get(path) == expected["provider_construct"], (
             path,
             expected["call_sites"],
@@ -217,8 +216,8 @@ def test_post_provider_migration_operational_paths_are_provider_backed() -> None
 def test_remaining_direct_trading212_adapter_paths_are_precisely_classified() -> None:
     actual_paths = set(_trading212_adapter_references()) | {_relative(TRADING212_ADAPTER_PATH)}
 
-    assert actual_paths == set(
-        REMAINING_DIRECT_TRADING212_ADAPTER_PATHS
-    ), "Remaining direct Trading212Adapter paths changed; classify any new path precisely."
+    assert actual_paths == set(REMAINING_DIRECT_TRADING212_ADAPTER_PATHS), (
+        "Remaining direct Trading212Adapter paths changed; classify any new path precisely."
+    )
     assert TRADING212_ADAPTER_PATH.exists()
     assert "class Trading212Adapter" in TRADING212_ADAPTER_PATH.read_text()

@@ -173,6 +173,8 @@ class OpeningRangeBreakoutStrategy:
             return False, f"RVOL {rvol:.2f} < {self.params['min_rvol']}"
 
         regime = market_regime(bars)
+        if regime == "unknown":
+            return False, "Market regime unavailable — skip"
         if regime == "choppy":
             return False, "Market choppy — skip"
 
@@ -233,6 +235,8 @@ class OpeningRangeBreakoutStrategy:
             return False, f"RVOL {rvol:.2f} < {self.params['min_rvol']}"
 
         regime = market_regime(bars)
+        if regime == "unknown":
+            return False, "Market regime unavailable — skip shorts"
         if regime == "choppy":
             return False, "Market choppy — skip shorts"
 
