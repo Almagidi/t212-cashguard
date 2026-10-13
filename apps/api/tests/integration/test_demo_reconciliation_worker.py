@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -74,8 +75,15 @@ async def _actions(db) -> list[str]:
     ]
 
 
+@asynccontextmanager
+async def _granted_owner_lock(name: str, *, ttl_seconds: int):
+    """These tests are not about locking: the reconciliation owner lock is always free."""
+    yield True
+
+
 @pytest.fixture(autouse=True)
 def _demo_safety(monkeypatch):
+    monkeypatch.setattr("app.core.redis.exclusive_task_lock", _granted_owner_lock)
     monkeypatch.setattr(settings, "APP_MODE", "demo")
     monkeypatch.setattr(settings, "T212_ENVIRONMENT", "demo")
     monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", False)

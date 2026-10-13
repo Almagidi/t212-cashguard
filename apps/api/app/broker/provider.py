@@ -23,7 +23,6 @@ BrokerProviderPurpose = Literal[
     "credential_test",
     "demo_reconciliation",
     "worker_account_sync",
-    "worker_cfd_funding",
     "worker_reconcile",
     "worker_cancel",
     "worker_cancel_timed_out_orders",
@@ -43,7 +42,6 @@ _READ_STATUS_PURPOSES: frozenset[str] = frozenset(
         "credential_test",
         "demo_reconciliation",
         "worker_account_sync",
-        "worker_cfd_funding",
         "worker_reconcile",
         "operator_system_control_read",
     }
@@ -64,7 +62,6 @@ _LIVE_ONLY_PURPOSES: frozenset[str] = frozenset({"worker_cancel"})
 _USER_SCOPED_PURPOSES: frozenset[str] = frozenset(
     {
         "worker_account_sync",
-        "worker_cfd_funding",
         "worker_reconcile",
         "worker_cancel",
         "worker_cancel_timed_out_orders",

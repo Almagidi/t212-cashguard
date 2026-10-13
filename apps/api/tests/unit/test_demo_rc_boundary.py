@@ -247,9 +247,16 @@ async def test_kill_switch_blocks_demo_submit_before_broker_call(db, monkeypatch
         await engine.submit_order(order)
 
     assert broker.calls == []
-    audit = (await db.execute(select(AuditLog))).scalar_one()
-    assert audit.action == "demo_order_blocked_by_kill_switch"
+    audit = (
+        await db.execute(
+            select(AuditLog).where(AuditLog.action == "demo_order_blocked_by_kill_switch")
+        )
+    ).scalar_one()
     assert audit.payload["no_broker_order_sent"] is True
+    # A buy that may not be sent is closed with its own evidence, so that it does not go
+    # on reserving cash as a pending intent.
+    assert order.status == "rejected"
+    assert order.broker_order_id is None
 
 
 @pytest.mark.asyncio

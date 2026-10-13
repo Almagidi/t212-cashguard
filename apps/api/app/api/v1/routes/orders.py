@@ -37,6 +37,7 @@ from app.execution.paper_engine import (
     PaperExecutionError,
 )
 from app.risk.engine import RiskEngine, RiskViolation
+from app.services.cash_only import sellable_quantity
 from app.services.live_readiness import LiveReadinessService
 from app.services.safety_policy import SafetyPolicyViolation, audit_safety_decision
 
@@ -312,11 +313,30 @@ async def place_order(
     # Fetch broker account state for risk calculations.
     # Broker-side rate limits/auth/API errors must return structured HTTP errors,
     # not an unhandled 500, and this happens before any broker order submission.
+    # Cash-only: outside mock mode a sell must be covered by a position the broker reports.
+    # In mock mode nothing reaches a broker; this route then uses the mock adapter, which
+    # does not check a sell against holdings.
+    needs_holding_check = body.side == "sell" and settings.APP_MODE != "mock"
+    positions: object = None
+    cash_read_at = datetime.now(UTC)
     try:
         async with broker as b:
             summary = await b.get_account_summary()
+            if needs_holding_check:
+                positions = await b.get_positions()
     except (T212RateLimitError, T212AuthError, T212APIError) as exc:
         raise broker_http_exception(exc) from exc
+
+    if needs_holding_check:
+        sellable = sellable_quantity(positions, body.ticker)
+        if body.quantity > sellable:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Sell of {body.quantity} {body.ticker.upper()} refused: {sellable} is held "
+                    "and free to sell. Short selling is not supported; CashGuard is cash-only."
+                ),
+            )
 
     normalised_summary = _normalise_account_summary(summary)
     available_cash = Decimal(str(normalised_summary["free_funds"]))
@@ -349,19 +369,24 @@ async def place_order(
     # --- Execute ---
     async with broker as b:
         engine = ExecutionEngine(db, b)
-        order = await engine.create_order_intent(
-            ticker=body.ticker.upper(),
-            side=body.side,
-            order_type=body.order_type,
-            quantity=body.quantity,
-            signal_id=body.signal_id,
-            limit_price=body.limit_price,
-            stop_price=body.stop_price,
-            time_validity=body.time_validity,
-            is_dry_run=(settings.APP_MODE == "mock"),
-            available_cash=available_cash,
-            estimated_price=estimated_price,
-        )
+        try:
+            order = await engine.create_order_intent(
+                ticker=body.ticker.upper(),
+                side=body.side,
+                order_type=body.order_type,
+                quantity=body.quantity,
+                signal_id=body.signal_id,
+                limit_price=body.limit_price,
+                stop_price=body.stop_price,
+                time_validity=body.time_validity,
+                is_dry_run=(settings.APP_MODE == "mock"),
+                available_cash=available_cash,
+                estimated_price=estimated_price,
+                cash_read_at=cash_read_at,
+            )
+        except RiskViolation as exc:
+            # The account's other open buy orders already claim this cash.
+            raise HTTPException(status_code=422, detail=exc.reason) from exc
         if order.status != "pending_intent":
             # An identical order already exists (for example one whose submission outcome
             # is still unknown). It is reported, never sent a second time.

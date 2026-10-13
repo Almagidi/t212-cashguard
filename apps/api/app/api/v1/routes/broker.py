@@ -25,6 +25,7 @@ from app.api.schemas import (
     DemoReconciliationWorkerStatus,
 )
 from app.core.config import settings
+from app.core.redis import TaskLockUnavailable
 from app.core.security import CredentialDecryptionError, decrypt_field, encrypt_field
 from app.db.models import AuditLog, BrokerConnection, User
 from app.db.session import get_db
@@ -463,6 +464,23 @@ async def run_demo_reconciliation_once(
             ).run_once()
     except SafetyPolicyViolation as exc:
         raise HTTPException(status_code=403, detail=exc.reason) from exc
+    except TaskLockUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Reconciliation did not run: the reconciliation owner lock could not be "
+                "requested because Redis is unavailable."
+            ),
+        ) from exc
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "Reconciliation was stopped at its time limit and its unsaved work was "
+                "discarded. If the stop came while saving, some results may already be "
+                "saved. The next run checks the orders again."
+            ),
+        ) from exc
 
     await db.commit()
     return DemoReconciliationWorkerRunSummary.model_validate(summary)

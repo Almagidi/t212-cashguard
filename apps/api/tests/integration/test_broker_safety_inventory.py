@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -216,8 +217,15 @@ async def test_multi_order_smoke_guard_delegates_read_only_methods() -> None:
     assert guard.write_calls == []
 
 
+@asynccontextmanager
+async def _granted_owner_lock(name: str, *, ttl_seconds: int):
+    """This test is not about locking: the reconciliation owner lock is free."""
+    yield True
+
+
 @pytest.mark.asyncio
-async def test_reconciliation_worker_uses_read_only_broker_path(db) -> None:
+async def test_reconciliation_worker_uses_read_only_broker_path(db, monkeypatch) -> None:
+    monkeypatch.setattr("app.core.redis.exclusive_task_lock", _granted_owner_lock)
     order = _demo_order()
     db.add(order)
     await db.flush()
