@@ -82,6 +82,8 @@ log = structlog.get_logger()
 class StrategyRunner:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
+        # When this run read the account's cash from the broker.
+        self._cash_read_at: datetime | None = None
 
     @staticmethod
     def _signal_decision_key(
@@ -192,6 +194,7 @@ class StrategyRunner:
             }
             if available_cash is not None:
                 intent_kwargs["available_cash"] = available_cash
+                intent_kwargs["cash_read_at"] = self._cash_read_at
             if limit_price is not None:
                 intent_kwargs["limit_price"] = limit_price
             order = await exec_engine.create_order_intent(
@@ -202,7 +205,17 @@ class StrategyRunner:
                 # outcome). It is reported with its own status and never sent again. A
                 # finished order still goes to submit_order, which refuses it as before.
                 return order
-            return await exec_engine.submit_order(order)
+            try:
+                order = await exec_engine.submit_order(order)
+            except SafetyPolicyViolation:
+                # The engine has closed the order. End the transaction now, so the cash
+                # admission turn taken for it is not kept for the rest of this run.
+                await self.db.commit()
+                raise
+            if order.status == "error":
+                # Nothing was sent and nothing was committed yet; same reason as above.
+                await self.db.commit()
+            return order
 
     async def _get_realized_pnl_today(self) -> Decimal:
         today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -727,6 +740,7 @@ class StrategyRunner:
                 return {**summary, "skipped": "no_paper_admin"}
             account, positions = await PaperExecutionEngine(self.db).portfolio_state(paper_user)
         else:
+            self._cash_read_at = datetime.now(UTC)
             async with broker as b:
                 account = await b.get_account_summary()
                 positions = await b.get_positions()
@@ -1293,6 +1307,13 @@ class StrategyRunner:
                     reason=signal_obj.reason or "",
                 )
             return 1, 1, 0
+        except RiskViolation as exc:
+            # Refused at admission: the cash is already promised to other open buy orders.
+            sig.status = "rejected"
+            sig.risk_rejected = True
+            sig.risk_rejection_reason = exc.reason
+            log.info("runner.risk_block", ticker=ticker, reason=exc.reason)
+            return 1, 0, 1
         except (PaperExecutionError, SafetyPolicyViolation) as exc:
             sig.status = "error"
             sig.risk_rejection_reason = str(exc)

@@ -318,6 +318,7 @@ async def place_order(
     # does not check a sell against holdings.
     needs_holding_check = body.side == "sell" and settings.APP_MODE != "mock"
     positions: object = None
+    cash_read_at = datetime.now(UTC)
     try:
         async with broker as b:
             summary = await b.get_account_summary()
@@ -368,19 +369,24 @@ async def place_order(
     # --- Execute ---
     async with broker as b:
         engine = ExecutionEngine(db, b)
-        order = await engine.create_order_intent(
-            ticker=body.ticker.upper(),
-            side=body.side,
-            order_type=body.order_type,
-            quantity=body.quantity,
-            signal_id=body.signal_id,
-            limit_price=body.limit_price,
-            stop_price=body.stop_price,
-            time_validity=body.time_validity,
-            is_dry_run=(settings.APP_MODE == "mock"),
-            available_cash=available_cash,
-            estimated_price=estimated_price,
-        )
+        try:
+            order = await engine.create_order_intent(
+                ticker=body.ticker.upper(),
+                side=body.side,
+                order_type=body.order_type,
+                quantity=body.quantity,
+                signal_id=body.signal_id,
+                limit_price=body.limit_price,
+                stop_price=body.stop_price,
+                time_validity=body.time_validity,
+                is_dry_run=(settings.APP_MODE == "mock"),
+                available_cash=available_cash,
+                estimated_price=estimated_price,
+                cash_read_at=cash_read_at,
+            )
+        except RiskViolation as exc:
+            # The account's other open buy orders already claim this cash.
+            raise HTTPException(status_code=422, detail=exc.reason) from exc
         if order.status != "pending_intent":
             # An identical order already exists (for example one whose submission outcome
             # is still unknown). It is reported, never sent a second time.

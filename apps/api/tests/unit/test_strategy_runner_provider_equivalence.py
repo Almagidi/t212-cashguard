@@ -944,6 +944,7 @@ async def test_process_ticker_live_entry_routes_order_through_execution_engine_o
             "signal_id": db.added[0].id,
             "is_dry_run": False,  # APP_MODE="demo" in this fixture, not "mock"
             "available_cash": Decimal("1000"),
+            "cash_read_at": None,
             "estimated_price": Decimal("105"),
             "limit_price": Decimal("105.10"),
             "venue": "t212",
@@ -1169,6 +1170,55 @@ async def test_process_ticker_reports_an_entry_with_unknown_outcome_without_a_su
     assert audit.payload["outcome_confirmed"] is False
     # Kept as dispatched so exit monitoring still covers a position that may exist.
     assert db.added[0].status == "executed"
+
+
+@pytest.mark.asyncio
+async def test_process_ticker_treats_a_refused_cash_reservation_as_a_risk_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.execution.cash_reservation import CashReservationRefused
+
+    db = FakeSession(results=[Decimal("0")])
+    service = StrategyRunner(db)
+    alerts: list[Any] = []
+
+    async def recording_alert(*args: Any, **kwargs: Any) -> None:
+        alerts.append((args, kwargs))
+
+    async def refused(**_kwargs: Any) -> Any:
+        raise CashReservationRefused("Cash reservation: already promised")
+
+    monkeypatch.setattr(service, "_fetch_market_context", _market_context)
+    monkeypatch.setattr(service, "_submit_strategy_order", refused)
+    monkeypatch.setattr(strategy_runner, "alert_trade_submitted", recording_alert)
+    monkeypatch.setattr(strategy_runner, "alert_order_failed", recording_alert)
+
+    result = await service._process_ticker(
+        ticker="AAPL",
+        strategy=_strategy(is_live=True),
+        engine=FakeEntryEngine(),
+        risk=AllowingRiskEngine(),
+        broker=RecordingBroker(),
+        cash=Decimal("1000"),
+        total=Decimal("1500"),
+        n_open=0,
+        pos_map={},
+        all_positions=[],
+        intelligence={"regime": {"regime": "test"}},
+        allocator=AllowingSignalAllocator(),
+        allocation_state=object(),
+    )
+
+    # Generated, not submitted, counted as blocked by risk; not reported as a failed order.
+    assert result == (1, 0, 1)
+    signal = db.added[0]
+    assert signal.status == "rejected"
+    assert signal.risk_rejected is True
+    assert signal.risk_rejection_reason == "Cash reservation: already promised"
+    assert alerts == []
+    assert not [
+        entry for entry in db.added if getattr(entry, "action", "") == "strategy_order_placed"
+    ]
 
 
 @pytest.mark.asyncio
