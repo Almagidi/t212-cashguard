@@ -73,7 +73,7 @@ echo ""
 # ── 3. Config loading ─────────────────────────────────────────────────────────
 echo "3. Config / Settings"
 if [ -f "$VENV/bin/python" ]; then
-    source "$ENV_FILE" 2>/dev/null || true
+    # .env is data, not executable shell. Pydantic loads it from _ENV_FILE.
     CONFIG_CHECK=$("$PYTHON" -c "
 import sys; sys.path.insert(0,'$PROJECT_ROOT/apps/api')
 from app.core.config import settings, _ENV_FILE
