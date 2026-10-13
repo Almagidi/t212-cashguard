@@ -140,7 +140,6 @@ def test_workers_tasks_direct_inventory_and_provider_call_sites_are_locked() -> 
     assert _function_names_with_direct_adapter(tree) == set()
     assert _function_names_with_call(tree, "create_trading212_provider_adapter") == {
         "sync_account_snapshot",
-        "track_cfd_funding",
         "reconcile_pending_orders",
         "cancel_timed_out_orders",
     }
@@ -281,7 +280,7 @@ def test_system_control_is_mixed_write_capable_for_emergency_cancel_and_flatten(
     get_snapshot = _method_node(service_class, "get_snapshot")
     get_positions_summary = _method_node(service_class, "get_positions_summary")
     cancel_all_pending = _method_node(service_class, "cancel_all_pending_summary")
-    flatten_all = _method_node(service_class, "flatten_all")
+    flatten_all = _method_node(service_class, "flatten_all_summary")
     method_names = {
         node.name
         for node in service_class.body

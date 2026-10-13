@@ -18,8 +18,14 @@ from app.broker.trading212 import (
     T212RateLimitError,
     Trading212Adapter,
 )
+from app.core.redis import TaskLockUnavailable, exclusive_task_lock
 from app.db.session import AsyncSessionLocal
 from app.services.demo_order_reconciliation import DemoOrderReconciler
+from app.services.reconciliation_owner import (
+    RECONCILIATION_OWNER_LOCK,
+    reconciliation_owner_lease_seconds,
+    reconciliation_run_limit_seconds,
+)
 from app.services.safety_policy import SafetyPolicyViolation
 
 
@@ -68,15 +74,29 @@ async def main() -> int:
 
     try:
         async with (
+            asyncio.timeout(reconciliation_run_limit_seconds()),
             AsyncSessionLocal() as db,
             Trading212Adapter(api_key, api_secret, "demo") as broker,
+            exclusive_task_lock(
+                RECONCILIATION_OWNER_LOCK, ttl_seconds=reconciliation_owner_lease_seconds()
+            ) as owner,
         ):
+            if not owner:
+                print("Another reconciliation run is active. Nothing was reconciled.")
+                return 1
             reconciler = DemoOrderReconciler(db, broker, actor="script:t212_demo_reconcile_order")
             if order_id_raw:
                 result = await reconciler.reconcile_by_order_id(uuid.UUID(order_id_raw))
             else:
                 result = await reconciler.reconcile_by_broker_order_id(broker_order_id)
+            # Commit while still the owner (see app/services/reconciliation_owner.py).
             await db.commit()
+    except TaskLockUnavailable as exc:
+        print(f"Reconciliation did not run: {exc}")
+        return 1
+    except TimeoutError:
+        print("Reconciliation was stopped at its time limit; its unsaved work was discarded.")
+        return 1
     except ValueError as exc:
         print(f"Local order lookup failed: {exc}")
         return 1

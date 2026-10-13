@@ -11,6 +11,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
+from app.services.cash_only import reject_short_selling_parameters
+
 # ─── Base ───────────────────────────────────────────────────────────────────
 
 
@@ -671,6 +673,7 @@ def _reject_reserved_strategy_params(value: dict[str, Any] | None) -> dict[str, 
         raise ValueError(
             "The 'promotion' strategy parameter is reserved for the promotion service."
         )
+    reject_short_selling_parameters(value)
     return value
 
 
@@ -735,6 +738,12 @@ class StrategyUpdate(BaseModel):
     extended_hours: bool | None = None
     eod_flatten: bool | None = None
     is_live: bool | None = None
+
+    @field_validator("params")
+    @classmethod
+    def reject_short_selling(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        reject_short_selling_parameters(value)
+        return value
 
 
 class StrategyOut(BaseSchema):

@@ -1,4 +1,5 @@
 """Celery configuration with all periodic tasks."""
+
 from __future__ import annotations
 
 from celery import Celery
@@ -85,12 +86,6 @@ celery_app.conf.update(
         "order-timeout": {
             "task": "app.workers.tasks.cancel_timed_out_orders",
             "schedule": 300.0,
-        },
-        # CFD overnight funding cost — 22:00 UTC (before EOD flatten at 21:00)
-        # Runs after NYSE close so all intraday positions are priced at day close.
-        "cfd-funding": {
-            "task": "app.workers.tasks.track_cfd_funding",
-            "schedule": crontab(hour=22, minute=0),
         },
         # Data retention — purge old audit logs and risk events at 03:00 UTC
         # Runs in the overnight quiet window, well away from market-hours tasks.

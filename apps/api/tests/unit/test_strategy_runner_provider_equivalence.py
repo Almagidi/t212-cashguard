@@ -64,7 +64,12 @@ class FakeSession:
         self.executed: list[Any] = []
         self.added: list[Any] = []
         self.flushed = 0
+        self.committed_after_executes: list[int] = []
         self.nested_begins = 0
+
+    async def commit(self) -> None:
+        # How many statements had run when each commit was made.
+        self.committed_after_executes.append(len(self.executed))
 
     async def execute(self, statement: Any) -> ExecuteResult:
         if self.events is not None:
@@ -716,11 +721,25 @@ async def test_run_all_enabled_reads_account_and_positions_before_strategy_execu
     monkeypatch.setattr(service, "_run_strategy", run_strategy)
     monkeypatch.setattr(strategy_runner, "MarketIntelligenceMonitor", FakeMarketIntelligenceMonitor)
     monkeypatch.setattr(strategy_runner, "alert_daily_summary", lambda *_args, **_kwargs: None)
+    seen_at_commit: list[tuple[list[str], int]] = []
+    commit = db.commit
+
+    async def recording_commit() -> None:
+        seen_at_commit.append((list(broker.read_calls), len(observed)))
+        await commit()
+
+    monkeypatch.setattr(db, "commit", recording_commit)
 
     summary = await service.run_all_enabled()
 
     assert broker.read_calls == ["get_account_summary", "get_positions"]
     assert broker.write_calls == []
+    # The transaction that may have touched the settings row (the row holding the kill
+    # switch) is ended before the long part of the run, so an operator's halt is not
+    # made to wait for it: one commit, after the two reads that open the run and before
+    # the broker is read or any strategy is run.
+    assert db.committed_after_executes == [2]
+    assert seen_at_commit == [([], 0)]
     assert observed[0]["broker"] is broker
     assert observed[0]["cash"] == Decimal("900.50")
     assert observed[0]["total"] == Decimal("1200.25")
@@ -944,6 +963,7 @@ async def test_process_ticker_live_entry_routes_order_through_execution_engine_o
             "signal_id": db.added[0].id,
             "is_dry_run": False,  # APP_MODE="demo" in this fixture, not "mock"
             "available_cash": Decimal("1000"),
+            "cash_read_at": None,
             "estimated_price": Decimal("105"),
             "limit_price": Decimal("105.10"),
             "venue": "t212",
@@ -1169,6 +1189,86 @@ async def test_process_ticker_reports_an_entry_with_unknown_outcome_without_a_su
     assert audit.payload["outcome_confirmed"] is False
     # Kept as dispatched so exit monitoring still covers a position that may exist.
     assert db.added[0].status == "executed"
+
+
+@pytest.mark.asyncio
+async def test_process_ticker_treats_a_refused_cash_reservation_as_a_risk_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.execution.cash_reservation import CashReservationRefused
+
+    db = FakeSession(results=[Decimal("0")])
+    service = StrategyRunner(db)
+    alerts: list[Any] = []
+
+    async def recording_alert(*args: Any, **kwargs: Any) -> None:
+        alerts.append((args, kwargs))
+
+    async def refused(**_kwargs: Any) -> Any:
+        raise CashReservationRefused("Cash reservation: already promised")
+
+    monkeypatch.setattr(service, "_fetch_market_context", _market_context)
+    monkeypatch.setattr(service, "_submit_strategy_order", refused)
+    monkeypatch.setattr(strategy_runner, "alert_trade_submitted", recording_alert)
+    monkeypatch.setattr(strategy_runner, "alert_order_failed", recording_alert)
+
+    result = await service._process_ticker(
+        ticker="AAPL",
+        strategy=_strategy(is_live=True),
+        engine=FakeEntryEngine(),
+        risk=AllowingRiskEngine(),
+        broker=RecordingBroker(),
+        cash=Decimal("1000"),
+        total=Decimal("1500"),
+        n_open=0,
+        pos_map={},
+        all_positions=[],
+        intelligence={"regime": {"regime": "test"}},
+        allocator=AllowingSignalAllocator(),
+        allocation_state=object(),
+    )
+
+    # Generated, not submitted, counted as blocked by risk; not reported as a failed order.
+    assert result == (1, 0, 1)
+    signal = db.added[0]
+    assert signal.status == "rejected"
+    assert signal.risk_rejected is True
+    assert signal.risk_rejection_reason == "Cash reservation: already promised"
+    assert alerts == []
+    assert not [
+        entry for entry in db.added if getattr(entry, "action", "") == "strategy_order_placed"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_process_ticker_has_the_auto_trading_switch_checked_for_every_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run checks the switch once at its start; an operator's pause after that must
+    still stop the entries the run has not made yet."""
+    db = FakeSession(results=[Decimal("0")])
+    service = StrategyRunner(db)
+    risk = AllowingRiskEngine()
+    monkeypatch.setattr(service, "_fetch_market_context", _market_context)
+
+    await service._process_ticker(
+        ticker="AAPL",
+        strategy=_strategy(is_live=True),
+        engine=FakeEntryEngine(),
+        risk=risk,
+        broker=RecordingBroker(),
+        cash=Decimal("1000"),
+        total=Decimal("1500"),
+        n_open=0,
+        pos_map={},
+        all_positions=[],
+        intelligence={"regime": {"regime": "test"}},
+        allocator=AllowingSignalAllocator(),
+        allocation_state=object(),
+    )
+
+    (checks,) = risk.run_all_calls
+    assert not checks.get("skip_auto_trading_check", False)
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,7 @@
 # Broker Interface Readiness Audit
 
+> **2026-10-11:** the CFD funding task (`track_cfd_funding`) and its provider purpose `worker_cfd_funding` are retired; CashGuard is cash-only. Mentions of them below describe history. See [CFD_FUNDING_RETIREMENT.md](../CFD_FUNDING_RETIREMENT.md).
+
 Date: 2026-05-14
 
 ## Scope
