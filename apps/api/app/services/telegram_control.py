@@ -1,6 +1,7 @@
 """
 Telegram monitoring and control workflow with confirmation gates.
 """
+
 from __future__ import annotations
 
 import secrets
@@ -45,10 +46,7 @@ class TelegramControlService:
     def control_enabled() -> bool:
         return bool(
             settings.TELEGRAM_BOT_TOKEN
-            and (
-                settings.telegram_allowed_chat_ids
-                or settings.telegram_allowed_user_ids
-            )
+            and (settings.telegram_allowed_chat_ids or settings.telegram_allowed_user_ids)
         )
 
     @staticmethod
@@ -270,7 +268,11 @@ class TelegramControlService:
             elif pending.action == "cancelall":
                 reply_text = await self.system_control.cancel_all_pending(actor)
             elif pending.action == "flatten":
-                reply_text = await self.system_control.flatten_all(actor)
+                flatten = await self.system_control.flatten_all_summary(actor)
+                reply_text = flatten.message
+                if flatten.refused and flatten.nothing_went_out:
+                    # Nothing was done: the request is not recorded as carried out.
+                    raise SystemControlError(reply_text)
             else:
                 reply_text = f"Unsupported Telegram action: {pending.action}"
         except SystemControlError as exc:
@@ -361,17 +363,19 @@ class TelegramControlService:
 
         lines = ["Open positions:"]
         for position in positions[:8]:
-            lines.append(
-                f"- {position['ticker']}: qty {position.get('quantity', 0)}"
-            )
+            lines.append(f"- {position['ticker']}: qty {position.get('quantity', 0)}")
         return "\n".join(lines)
 
     async def _watchlist_text(self) -> str:
         from app.db.models import Strategy
 
         strategies = (
-            await self.db.execute(select(Strategy).where(Strategy.is_enabled == True))  # noqa: E712
-        ).scalars().all()
+            (
+                await self.db.execute(select(Strategy).where(Strategy.is_enabled == True))  # noqa: E712
+            )
+            .scalars()
+            .all()
+        )
         watchlist: list[str] = []
         for strategy in strategies:
             params = strategy.params or {}
@@ -392,9 +396,7 @@ class TelegramControlService:
             lines.append("Top catalysts:")
             for item in news[:3]:
                 tickers = ",".join(item.get("tickers", [])[:2]) or "market"
-                lines.append(
-                    f"- {tickers}: {item['event_type']} ({item['catalyst_score']:.2f})"
-                )
+                lines.append(f"- {tickers}: {item['event_type']} ({item['catalyst_score']:.2f})")
         return "\n".join(lines)
 
     async def _risk_text(self) -> str:
@@ -420,9 +422,7 @@ class TelegramControlService:
             f"Detail: {feed['detail']}",
         ]
         for symbol in feed["symbols"][:3]:
-            lines.append(
-                f"- {symbol['ticker']}: {symbol['status']} via {symbol['used_source']}"
-            )
+            lines.append(f"- {symbol['ticker']}: {symbol['status']} via {symbol['used_source']}")
         return "\n".join(lines)
 
     async def _send_message(self, chat_id: str, text: str) -> None:
