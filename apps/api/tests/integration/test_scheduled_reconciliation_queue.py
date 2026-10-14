@@ -506,11 +506,15 @@ async def test_orders_the_broker_does_not_know_wait_but_do_not_stop_the_account(
 
     assert broker.order_reads == [*(f"gone-{index}" for index in range(5)), "working"]
     assert "stopped" not in summary
-    assert summary["failed"] == 5
+    # "No such open order" is an answer, not a failed read: the history is asked next,
+    # and an order found in neither is counted as having no record, not as a failure.
+    assert "failed" not in summary
+    assert summary["no_broker_record"] == 5
     assert summary["reconciled"] == 1
     assert (await stored(db, gone[0].id)).retry_count == 1
     payload = dict((await _backoff_events(db, gone[0].id))[0].payload or {})
-    assert payload["outcome"] == "broker_rejected_read"
+    assert payload["outcome"] == "no_broker_record"
+    assert payload["error_type"] is None
 
 
 @pytest.mark.parametrize(

@@ -10,6 +10,7 @@ import hashlib
 import inspect
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,20 @@ from app.execution.acknowledgement import (
     Acknowledgement,
     UntrustedAcknowledgement,
     interpret_acknowledgement,
+)
+from app.execution.broker_record import (
+    NO_BROKER_RECORD,
+    FinalRecord,
+    LocalOrder,
+    OpenRecord,
+    UntrustedRecord,
+    as_amount,
+    has_older_records,
+    interpret_history,
+    interpret_open_order_read,
+    require_reads_agree,
+    require_same_order,
+    says_no_such_order,
 )
 from app.execution.cash_reservation import (
     CashReservationRefused,
@@ -93,6 +108,20 @@ def _request_fingerprint(order: Order, request_payload: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+# orders.fill_latency_ms and orders.reconciliation_latency_ms are 32-bit integers.
+LARGEST_STORED_LATENCY_MS = 2_147_483_647
+
+
+@dataclass(frozen=True)
+class BrokerRecord:
+    """What the broker said became of an order, the record it said it in, and where that
+    record was read: among the open orders or in the order history."""
+
+    verdict: FinalRecord | OpenRecord
+    evidence: dict[str, Any]
+    source: str
+
+
 class OrderCancellationFailed(RuntimeError):
     """Raised after a failed broker cancellation is staged for persistence."""
 
@@ -112,9 +141,15 @@ class ExecutionEngine:
     # flight (the broker client times out after 30 seconds).
     UNKNOWN_SUBMISSION_MIN_AGE = timedelta(seconds=90)
 
+    # One page of order history: the most the broker returns for one request.
+    HISTORY_PAGE_SIZE = 50
+
     def __init__(self, db: AsyncSession, broker: Any):
         self.db = db
         self.broker = broker
+        # Set by reconcile_order when the broker answered and nothing could be settled
+        # from the answer: a fixed word saying why. None after every other outcome.
+        self.unsettled_reason: str | None = None
 
     def _make_client_order_key(
         self,
@@ -634,7 +669,7 @@ class ExecutionEngine:
         """Redacted description of a failure: type and HTTP status only."""
         if isinstance(exc, BrokerSubmissionError):
             return {"error_type": exc.error_type, "http_status": exc.http_status}
-        if isinstance(exc, UntrustedAcknowledgement):
+        if isinstance(exc, UntrustedAcknowledgement | UntrustedRecord):
             return {"error_type": type(exc).__name__, "http_status": None, "reason": exc.reason}
         return {"error_type": type(exc).__name__, "http_status": None}
 
@@ -860,11 +895,19 @@ class ExecutionEngine:
         broker_environment: str | None,
         *,
         broker_order_id: str | None = None,
+        named_broker_order_id: str | None = None,
     ) -> None:
-        """Keep the order in submission_unknown and raise a durable critical event."""
+        """Keep the order in submission_unknown and raise a durable critical event.
+
+        ``broker_order_id`` becomes the order's identity at the broker.
+        ``named_broker_order_id`` is an id the broker gave in an answer about another
+        order: it is recorded in the evidence and nowhere else.
+        """
         evidence = self._failure_evidence(exc)
         if broker_order_id:
             evidence = {**evidence, "broker_order_id": broker_order_id}
+        if named_broker_order_id:
+            evidence = {**evidence, "named_broker_order_id": named_broker_order_id}
         if await self._resolved_elsewhere(order, attempt, "ambiguous", evidence):
             return
         if broker_order_id:
@@ -985,6 +1028,24 @@ class ExecutionEngine:
                 exc,
                 broker_environment,
                 broker_order_id=getattr(exc, "broker_order_id", None),
+            )
+            return
+        try:
+            require_same_order(
+                response, self._as_local_order(order, acknowledgement.broker_order_id)
+            )
+        except UntrustedRecord as exc:
+            # The answer names an order, but says it is for another instrument, side, type
+            # or quantity than the one that was sent. Whatever now exists at the broker is
+            # not known to be this order, so its id is kept as evidence only and never as
+            # this order's identity: nothing may later read, settle or cancel by it. The
+            # order stays unknown and is looked for in the history by what was sent.
+            await self._record_unknown_outcome(
+                order,
+                attempt,
+                exc,
+                broker_environment,
+                named_broker_order_id=acknowledgement.broker_order_id,
             )
             return
         try:
@@ -1397,6 +1458,39 @@ class ExecutionEngine:
             new_status = None
         if filled_quantity is not None and filled_quantity > order.quantity:
             new_status = None
+        fill_price = match.average_fill_price
+        fill_time: datetime | None = None
+        if new_status in ("filled", "cancelled", "rejected"):
+            # The record is ours. Whether it may also settle the order is decided by the
+            # same checks as any other history record; if it fails one, the identity is
+            # kept and reconciliation by order id goes on asking (and raises it in time).
+            try:
+                judged = interpret_history(
+                    [match.raw or {}],
+                    order=self._as_local_order(order, match.broker_order_id),
+                )
+            except UntrustedRecord as refusal:
+                if refusal.about_another_order:
+                    # The matcher took the record for ours, but read in full it is about
+                    # another order: its id is not adopted.
+                    order.last_reconciled_at = now
+                    log.warning(
+                        "execution.unknown_submission_unresolved",
+                        order_id=str(order.id),
+                        ticker=order.ticker,
+                        candidate_count=1,
+                        reason=refusal.reason,
+                    )
+                    await self.db.flush()
+                    return order
+                unresolved_reason = refusal.reason
+                judged = None
+            if judged is None or judged[0].order_status != new_status:
+                new_status = None
+            else:
+                filled_quantity = judged[0].filled_quantity
+                fill_price = judged[0].fill_price
+                fill_time = judged[0].filled_at
 
         order.broker_order_id = match.broker_order_id
         order.last_reconciled_at = now
@@ -1409,6 +1503,8 @@ class ExecutionEngine:
             "attempt_id": str(attempt.id) if attempt is not None else None,
             "matched_records": 1,
         }
+        if new_status is None and unresolved_reason is not None:
+            evidence["not_settled_because"] = unresolved_reason
         if new_status is None:
             await self._log_order_event(
                 order.id,
@@ -1431,35 +1527,39 @@ class ExecutionEngine:
             payload=evidence,
         )
         order.error_message = None
-        terminal_at = self._as_utc(match.filled_at) if match.filled_at else now
         if new_status == "filled":
-            order.filled_quantity = filled_quantity
-            if match.average_fill_price is not None:
-                order.avg_fill_price = match.average_fill_price
-            order.filled_at = terminal_at
-            order.fill_latency_ms = milliseconds_between(order.submitted_at, order.filled_at)
+            order.filled_quantity = order.quantity
+            order.avg_fill_price = fill_price
+            order.filled_at = self._believable_fill_time(order, fill_time, now)
+            order.fill_latency_ms = self._stored_latency(order.submitted_at, order.filled_at)
         else:
             if filled_quantity:
                 # A partial fill before the cancellation or rejection is real exposure.
                 order.filled_quantity = filled_quantity
-                if match.average_fill_price is not None:
-                    order.avg_fill_price = match.average_fill_price
+                order.avg_fill_price = fill_price
+            # The record gives no time for a cancellation or a rejection.
             if new_status == "cancelled":
-                order.cancelled_at = terminal_at
+                order.cancelled_at = now
             elif new_status == "rejected":
-                order.rejected_at = terminal_at
-        order.reconciliation_latency_ms = milliseconds_between(order.submitted_at, now)
+                order.rejected_at = now
+        order.reconciliation_latency_ms = self._stored_latency(order.submitted_at, now)
         apply_order_execution_quality(order)
         await self._maybe_alert_abnormal_slippage(order)
         await self.db.flush()
         return order
 
     async def reconcile_order(self, order: Order) -> Order:
+        """Ask the broker what became of an active order, by its exact id.
+
+        The open orders are asked first. When the broker no longer lists the order there,
+        or calls it final without the numbers that takes, its order history is read for
+        the same id. A final state is recorded only from a record that is about this
+        order and complete (see ``broker_record``). Otherwise the order is left exactly
+        as it is, and ``unsettled_reason`` says why when the reason is the record itself.
+
+        This method only reads from the broker, and never retries on an uncertain state.
         """
-        Poll broker for latest order status.
-        Only reconcile orders in active state.
-        NEVER blindly retry on uncertain state.
-        """
+        self.unsettled_reason = None
         if order.status not in ACTIVE_ORDER_STATUSES or not order.broker_order_id:
             return order
 
@@ -1467,136 +1567,30 @@ class ExecutionEngine:
             return order
 
         try:
-            response = await self.broker.get_order_by_id(order.broker_order_id)
-            broker_status = response.get("status", "")
-
-            if broker_status == "FILLED":
-                reconciled_at = datetime.now(UTC)
-                current_filled = order.filled_quantity or Decimal("0")
-                reported_filled = Decimal(str(response.get("filledQuantity", 0)))
-                if reported_filled < 0 or reported_filled > order.quantity:
-                    raise ValueError("Broker reported an invalid filled quantity")
-                reconciled_filled = max(current_filled, reported_filled)
-                if reconciled_filled != order.quantity:
-                    raise ValueError("Broker FILLED response does not cover the order quantity")
-                reconciled_price = order.avg_fill_price
-                if reported_filled >= current_filled and response.get("filledPrice") is not None:
-                    reported_price = Decimal(str(response.get("filledPrice") or 0))
-                    if reported_price > 0:
-                        reconciled_price = reported_price
-                transition_event = transition_order_status_with_evidence(
-                    self.db,
-                    order,
-                    "filled",
-                    event_type="reconciled_fill",
-                    reason="reconciliation returned FILLED",
-                    actor="execution_engine",
-                    correlation_id=order.client_order_key,
-                    payload={
-                        "broker_status": broker_status,
-                        "filled_quantity": str(reconciled_filled),
-                        "remaining_quantity": "0",
-                        "avg_fill_price": str(reconciled_price)
-                        if reconciled_price is not None
-                        else None,
-                    },
+            found = await self._read_broker_record(order)
+            if found is None:
+                # Not among the open orders and not in the history that was read. Nothing
+                # is assumed about an order the broker shows no record of.
+                self.unsettled_reason = NO_BROKER_RECORD
+                log.warning(
+                    "execution.reconcile_no_broker_record",
+                    order_id=str(order.id),
+                    broker_order_id=order.broker_order_id,
                 )
-                order.filled_quantity = reconciled_filled
-                if reconciled_price is not None:
-                    order.avg_fill_price = reconciled_price
-                order.broker_response = response
-                order.filled_at = order.filled_at or reconciled_at
-                order.fill_latency_ms = milliseconds_between(order.submitted_at, order.filled_at)
-                order.reconciliation_latency_ms = milliseconds_between(
-                    order.submitted_at, reconciled_at
-                )
-                order.last_reconciled_at = reconciled_at
-                order.execution_quality_notes = None
-                order.slippage_pct = None
-                order.slippage_value = None
-                quality = apply_order_execution_quality(order)
-                await self._maybe_alert_abnormal_slippage(order)
-                if transition_event is not None:
-                    transition_event.payload = {
-                        **dict(transition_event.payload or {}),
-                        "broker_status": broker_status,
-                        "fill_latency_ms": order.fill_latency_ms,
-                        "reconciliation_latency_ms": order.reconciliation_latency_ms,
-                        "execution_quality_score": float(quality["execution_quality_score"])
-                        if quality["execution_quality_score"] is not None
-                        else None,
-                        "slippage_pct": float(quality["slippage_pct"])
-                        if quality["slippage_pct"] is not None
-                        else None,
-                    }
-            elif broker_status in ("CANCELLED", "REJECTED"):
-                reconciled_at = datetime.now(UTC)
-                current_filled = order.filled_quantity or Decimal("0")
-                broker_filled = current_filled
-                broker_fill_price = order.avg_fill_price
-                if response.get("filledQuantity") is not None:
-                    reported_filled = Decimal(str(response["filledQuantity"]))
-                    if reported_filled < 0 or reported_filled > order.quantity:
-                        raise ValueError("Broker reported an invalid terminal filled quantity")
-                    if reported_filled >= current_filled:
-                        broker_filled = reported_filled
-                        if response.get("filledPrice") is not None:
-                            reported_price = Decimal(str(response["filledPrice"] or 0))
-                            if reported_price > 0:
-                                broker_fill_price = reported_price
-                remaining_quantity = max(Decimal("0"), order.quantity - broker_filled)
-                transition_order_status_with_evidence(
-                    self.db,
-                    order,
-                    broker_status.lower(),
-                    event_type="reconciled_status",
-                    reason=f"reconciliation returned {broker_status}",
-                    actor="execution_engine",
-                    correlation_id=order.client_order_key,
-                    payload={
-                        "broker_status": broker_status,
-                        "filled_quantity": str(broker_filled),
-                        "remaining_quantity": str(remaining_quantity),
-                        "avg_fill_price": str(broker_fill_price)
-                        if broker_fill_price is not None
-                        else None,
-                    },
-                )
-                order.filled_quantity = broker_filled
-                if broker_filled > 0 and broker_fill_price is not None:
-                    order.avg_fill_price = broker_fill_price
-                if order.status == "cancelled":
-                    order.cancelled_at = order.cancelled_at or reconciled_at
-                else:
-                    order.rejected_at = order.rejected_at or reconciled_at
-                order.reconciliation_latency_ms = milliseconds_between(
-                    order.submitted_at, reconciled_at
-                )
-                order.last_reconciled_at = reconciled_at
-                order.broker_response = response
-                order.execution_quality_notes = None
-                order.slippage_pct = None
-                order.slippage_value = None
-                apply_order_execution_quality(order)
-            elif order.status == "submission_unknown" and broker_status in ("WORKING", "PENDING"):
-                transition_order_status_with_evidence(
-                    self.db,
-                    order,
-                    "accepted",
-                    event_type="unknown_submission_resolved",
-                    reason="broker reports the order as working",
-                    actor="execution_engine",
-                    correlation_id=order.client_order_key,
-                    payload={
-                        "broker_status": broker_status,
-                        "broker_order_id": order.broker_order_id,
-                    },
-                )
-                order.error_message = None
-                order.last_reconciled_at = datetime.now(UTC)
+            elif isinstance(found.verdict, FinalRecord):
+                await self._record_final_state(order, found.verdict, found)
             else:
-                order.last_reconciled_at = datetime.now(UTC)
-
+                self._record_still_open(order, found.verdict)
+        except UntrustedRecord as refusal:
+            # The broker answered, and the answer cannot be acted on. The order keeps its
+            # state; the reason is kept for whoever decides how long to wait.
+            self.unsettled_reason = refusal.reason
+            log.warning(
+                "execution.reconcile_refused",
+                order_id=str(order.id),
+                broker_order_id=order.broker_order_id,
+                reason=refusal.reason,
+            )
         except Exception as e:
             # Deliberately do not mutate order status on a reconciliation error —
             # better to keep our in-flight belief than flip to a wrong terminal
@@ -1611,3 +1605,185 @@ class ExecutionEngine:
 
         await self.db.flush()
         return order
+
+    def _believable_fill_time(
+        self, order: Order, reported: datetime | None, now: datetime
+    ) -> datetime:
+        """The broker's own time of the fill when it gave one that can be true: not before
+        the order was sent and not in the future. Otherwise the time of this read."""
+        sent_at = order.submitted_at or order.created_at
+        if (
+            reported is not None
+            and sent_at is not None
+            and self._as_utc(sent_at) <= reported <= now
+        ):
+            return reported
+        return now
+
+    @staticmethod
+    def _plain(number: Decimal) -> str:
+        """A number as it is written in an event: no exponent and no trailing zeros."""
+        return format(number.normalize(), "f")
+
+    @staticmethod
+    def _stored_latency(start: datetime | None, end: datetime | None) -> int | None:
+        """A latency as its column can hold it. The latency columns are 32-bit integers:
+        an order settled more than 24.8 days after it was sent is recorded at that ceiling
+        instead of failing to save, which would leave it unsettled for good."""
+        elapsed = milliseconds_between(start, end)
+        return None if elapsed is None else min(elapsed, LARGEST_STORED_LATENCY_MS)
+
+    @staticmethod
+    def _as_local_order(order: Order, broker_order_id: str) -> LocalOrder:
+        return LocalOrder(
+            broker_order_id=broker_order_id,
+            ticker=order.ticker,
+            side=order.side,
+            order_type=order.order_type,
+            quantity=as_amount(order.quantity),
+        )
+
+    async def _read_broker_record(self, order: Order) -> BrokerRecord | None:
+        """Read what the broker says became of the order; None when it has no record.
+
+        Raises ``UntrustedRecord`` when a record with the order's id cannot be relied on,
+        and whatever the broker read raised when the broker did not answer.
+        """
+        if not order.broker_order_id:
+            return None
+        facts = self._as_local_order(order, order.broker_order_id)
+        incomplete: UntrustedRecord | None = None
+        try:
+            answer = await self.broker.get_order_by_id(order.broker_order_id)
+        except Exception as exc:
+            if not says_no_such_order(exc):
+                raise
+            # The broker no longer lists it among the open orders. Whatever became of it
+            # is in the order history.
+        else:
+            try:
+                verdict = interpret_open_order_read(answer, order=facts)
+                return BrokerRecord(verdict, dict(answer), "open_orders")
+            except UntrustedRecord as refusal:
+                if not refusal.lacks_detail:
+                    raise
+                # Final, and about this order, but a number is missing: the history may
+                # have it. A record that contradicts the order is never looked past.
+                incomplete = refusal
+
+        # The newest orders of the whole account first: one page serves every order that
+        # ended lately. Only when older records exist beyond that page is the instrument's
+        # own history asked for as well.
+        searches: tuple[dict[str, Any], ...] = ({}, {"ticker": order.ticker})
+        for search in searches:
+            page = await self.broker.get_historical_orders(**search, limit=self.HISTORY_PAGE_SIZE)
+            in_history = interpret_history(page, order=facts)
+            if in_history is not None:
+                final, records = in_history
+                if incomplete is not None:
+                    # The history is read for the number the answer left out. It may not
+                    # tell another story than the answer did.
+                    require_reads_agree(incomplete, final)
+                evidence = (
+                    dict(records[0])
+                    if len(records) == 1
+                    else {"records": [dict(record) for record in records]}
+                )
+                return BrokerRecord(final, evidence, "order_history")
+            if not has_older_records(page, self.HISTORY_PAGE_SIZE):
+                break
+        if incomplete is not None:
+            raise incomplete
+        return None
+
+    def _record_still_open(self, order: Order, record: OpenRecord) -> None:
+        if order.status == "submission_unknown" and record.broker_status in ("WORKING", "PENDING"):
+            transition_order_status_with_evidence(
+                self.db,
+                order,
+                "accepted",
+                event_type="unknown_submission_resolved",
+                reason="broker reports the order as working",
+                actor="execution_engine",
+                correlation_id=order.client_order_key,
+                payload={
+                    "broker_status": record.broker_status,
+                    "broker_order_id": order.broker_order_id,
+                },
+            )
+            order.error_message = None
+        order.last_reconciled_at = datetime.now(UTC)
+
+    async def _record_final_state(
+        self, order: Order, record: FinalRecord, found: BrokerRecord
+    ) -> None:
+        """Write a final state the broker reported. The record was judged before this is
+        called, so nothing here turns on what the broker sent; what can still fail is the
+        save itself, which the caller's transaction undoes as a whole."""
+        reconciled_at = datetime.now(UTC)
+        known = order.filled_quantity or Decimal("0")
+        price: Decimal | None
+        if record.order_status == "filled":
+            # The record covers the whole order; the order's own quantity is what is kept.
+            filled, price = order.quantity, record.fill_price
+        elif record.filled_quantity < known:
+            # The record states less than is already known here: what is known is kept,
+            # together with its own price.
+            filled, price = known, order.avg_fill_price
+        else:
+            filled, price = record.filled_quantity, record.fill_price
+
+        transition_event = transition_order_status_with_evidence(
+            self.db,
+            order,
+            record.order_status,
+            event_type="reconciled_fill"
+            if record.order_status == "filled"
+            else "reconciled_status",
+            reason=f"reconciliation returned {record.broker_status}",
+            actor="execution_engine",
+            correlation_id=order.client_order_key,
+            payload={
+                "broker_status": record.broker_status,
+                "filled_quantity": self._plain(filled),
+                "remaining_quantity": self._plain(max(Decimal("0"), order.quantity - filled)),
+                "avg_fill_price": self._plain(price) if price is not None else None,
+                "source": found.source,
+            },
+        )
+        order.filled_quantity = filled
+        if filled > 0 and price is not None:
+            order.avg_fill_price = price
+        order.broker_response = found.evidence
+        if order.status == "filled":
+            # The record gives no time for a cancellation or a rejection; those take the
+            # time of this read.
+            order.filled_at = order.filled_at or self._believable_fill_time(
+                order, record.filled_at, reconciled_at
+            )
+            order.fill_latency_ms = self._stored_latency(order.submitted_at, order.filled_at)
+        elif order.status == "cancelled":
+            order.cancelled_at = order.cancelled_at or reconciled_at
+        else:
+            order.rejected_at = order.rejected_at or reconciled_at
+        order.reconciliation_latency_ms = self._stored_latency(order.submitted_at, reconciled_at)
+        order.last_reconciled_at = reconciled_at
+        order.execution_quality_notes = None
+        order.slippage_pct = None
+        order.slippage_value = None
+        quality = apply_order_execution_quality(order)
+        if order.status != "filled":
+            return
+        await self._maybe_alert_abnormal_slippage(order)
+        if transition_event is not None:
+            transition_event.payload = {
+                **dict(transition_event.payload or {}),
+                "fill_latency_ms": order.fill_latency_ms,
+                "reconciliation_latency_ms": order.reconciliation_latency_ms,
+                "execution_quality_score": float(quality["execution_quality_score"])
+                if quality["execution_quality_score"] is not None
+                else None,
+                "slippage_pct": float(quality["slippage_pct"])
+                if quality["slippage_pct"] is not None
+                else None,
+            }

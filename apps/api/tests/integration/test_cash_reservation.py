@@ -702,8 +702,8 @@ async def test_a_working_order_keeps_its_reservation_through_reconciliation(worl
     ("reading", "status"),
     [
         (filled(6), "filled"),
-        ({"status": "REJECTED"}, "rejected"),
-        ({"status": "CANCELLED"}, "cancelled"),
+        ({"status": "REJECTED", "filledQuantity": 0}, "rejected"),
+        ({"status": "CANCELLED", "filledQuantity": 0}, "cancelled"),
     ],
 )
 async def test_reconciliation_ends_a_reservation_only_for_later_cash_figures(

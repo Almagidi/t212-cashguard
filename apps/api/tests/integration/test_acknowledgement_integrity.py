@@ -562,6 +562,99 @@ async def test_a_fill_hidden_behind_cancelled_is_recorded_when_the_order_is_read
     assert len(broker.posts) == 1
 
 
+# --- an answer about another order (N-22) --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("claims", "reason"),
+    [
+        ({"ticker": "SOME_OTHER_EQ"}, "ticker_differs"),
+        ({"side": "SELL"}, "side_differs"),
+        ({"type": "LIMIT"}, "order_type_differs"),
+        ({"quantity": 3}, "quantity_differs"),
+        ({"quantity": -2}, "quantity_sign_contradicts_side"),
+        ({"quantity": "plenty"}, "quantity_not_a_number"),
+    ],
+)
+@pytest.mark.parametrize("status", ["FILLED", "WORKING", "REJECTED"])
+async def test_an_answer_that_says_it_is_about_another_order_is_not_adopted(
+    world: Saved, claims: dict[str, Any], reason: str, status: str
+) -> None:
+    answer = {**filled_ack(quantity=2, price=50.25), "status": status, **claims}
+    if status != "FILLED":
+        answer["filledQuantity"] = 0
+    broker = AnsweringBroker(answer)
+
+    await _submit(world, broker)
+
+    # The id the broker gave belongs to an order that is not this one: it is kept as
+    # evidence, never as the order's identity, so nothing can settle or cancel by it.
+    attempt = await _assert_kept_unresolved(world, broker, broker_order_id=None)
+    assert attempt.outcome_evidence["reason"] == reason
+    assert attempt.outcome_evidence["error_type"] == "UntrustedRecord"
+    assert attempt.outcome_evidence["named_broker_order_id"] == "BRK-1"
+    assert "broker_order_id" not in attempt.outcome_evidence
+
+
+async def test_an_answer_that_agrees_with_the_order_in_every_stated_detail_is_adopted(
+    world: Saved,
+) -> None:
+    broker = AnsweringBroker(
+        {
+            **filled_ack(quantity=2, price=50.25),
+            "ticker": world.ticker.lower(),
+            "side": "Buy",
+            "type": "MARKET",
+            "quantity": 2.0,
+        }
+    )
+
+    await _submit(world, broker)
+
+    order = await world.order()
+    assert order.status == "filled"
+    assert order.broker_order_id == "BRK-1"
+    assert await world.risk_events("submission_unknown") == []
+
+
+async def test_a_sell_answered_with_its_negative_quantity_is_adopted(world: Saved) -> None:
+    broker = AnsweringBroker(
+        {**filled_ack(quantity=-2, price=50.25), "ticker": world.ticker, "quantity": -2}
+    )
+
+    await _submit(world, broker, side="sell")
+
+    order = await world.order()
+    assert order.status == "filled"
+    assert order.filled_quantity == Decimal("2")
+
+
+async def test_an_order_named_for_another_instrument_cannot_be_settled_or_cancelled_by_that_id(
+    world: Saved,
+) -> None:
+    broker = AnsweringBroker({**filled_ack(), "ticker": "SOME_OTHER_EQ"})
+    await _submit(world, broker)
+    await _assert_kept_unresolved(world, broker, broker_order_id=None)
+    # A later answer for that id which no longer names the instrument would have been
+    # adopted as a fill of this order if the id had been kept.
+    broker.by_id["BRK-1"] = filled_ack()
+
+    async with world.sessions() as later:
+        order = (
+            await later.execute(select(Order).where(Order.ticker == world.ticker))
+        ).scalar_one()
+        engine = ExecutionEngine(later, broker)
+        await engine.reconcile_order(order)
+        await later.commit()
+
+    order = await world.order()
+    assert order.status == "submission_unknown"
+    assert order.broker_order_id is None
+    assert order.avg_fill_price is None
+    assert broker.reads == [], "the other order's id was read as if it were this order's"
+    assert len(broker.posts) == 1
+
+
 async def test_a_refused_sell_is_recovered_by_reading_the_order(world: Saved) -> None:
     broker = AnsweringBroker(filled_ack(quantity=1))
     await _submit(world, broker, side="sell")
