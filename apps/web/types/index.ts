@@ -1378,6 +1378,41 @@ export interface MarketDataHealth {
   symbols: MarketDataSymbolHealth[];
 }
 
+// ── Order cancellation ───────────────────────────────────────────────────────
+// 200: cancelled (possibly after part of the order filled). 202: the broker took the
+// request and has not confirmed what became of the order; it stays open until it does.
+// 409: the order ended another way (it filled, or was rejected) before the cancel.
+export interface CancelOrderResult {
+  cancelled: boolean;
+  order_id: string;
+  filled_quantity?: string;
+  awaiting_confirmation?: boolean;
+  status?: string;
+  reason?: string;
+  requires_reconciliation?: boolean;
+}
+
+export interface CancelAllOrderNote {
+  order_id: string;
+  ticker: string;
+  status?: string;
+  filled_quantity?: string;
+  quantity?: string;
+}
+
+export interface CancelAllResult {
+  cancelled: number;
+  failed: number;
+  already_finished?: number;
+  awaiting_confirmation?: number;
+  // Orders that ended another way first (a fill among them is exposure the cancel
+  // did not prevent), cancellations that came after part of a fill, and orders
+  // whose cancellation the broker has not confirmed (still open).
+  already_finished_orders?: CancelAllOrderNote[];
+  cancelled_after_partial_fill?: CancelAllOrderNote[];
+  awaiting_confirmation_orders?: CancelAllOrderNote[];
+}
+
 // ── Emergency ─────────────────────────────────────────────────────────────────
 export interface EmergencyActionResult {
   success: boolean;

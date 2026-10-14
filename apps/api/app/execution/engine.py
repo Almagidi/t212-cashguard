@@ -6,6 +6,7 @@ Trading 212 order placement is NOT idempotent — app-level dedup is mandatory.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -47,6 +48,19 @@ from app.execution.broker_record import (
     require_same_order,
     says_no_such_order,
 )
+from app.execution.cancellation import (
+    ASKED_AGAIN,
+    BATCH_CANCEL_READ_SECONDS,
+    LOCAL_ERROR,
+    NOT_READ,
+    SINGLE_CANCEL_READ_SECONDS,
+    STILL_OPEN,
+    TIME_SPENT,
+    WORKING_STATUSES,
+    CancelBatch,
+    CancelReads,
+    read_failure_reason,
+)
 from app.execution.cash_reservation import (
     CashReservationRefused,
     cash_promised_elsewhere,
@@ -55,7 +69,9 @@ from app.execution.cash_reservation import (
 )
 from app.execution.state_machine import (
     ACTIVE_ORDER_STATUSES,
+    InvalidOrderTransition,
     can_transition_order_status,
+    require_already_finished,
     transition_order_status_with_evidence,
 )
 from app.services.execution_quality import (
@@ -108,6 +124,11 @@ def _request_fingerprint(order: Order, request_payload: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def plain_amount(number: Decimal | None) -> str:
+    """An amount as it is shown and audited: no exponent and no trailing zeros; none is 0."""
+    return format((number or Decimal("0")).normalize(), "f")
+
+
 # orders.fill_latency_ms and orders.reconciliation_latency_ms are 32-bit integers.
 LARGEST_STORED_LATENCY_MS = 2_147_483_647
 
@@ -130,6 +151,31 @@ class OrderCancellationFailed(RuntimeError):
         super().__init__("Broker cancellation failed; reconciliation is required.")
 
 
+class OrderCancellationUnconfirmed(OrderCancellationFailed):
+    """The broker accepted the cancel request, and has not yet said what became of the order.
+
+    Accepting the request does not say that the order ended, nor how much of it filled first.
+    The order keeps its status until a final record of it is read, here or by reconciliation.
+    ``reason`` is a fixed word, safe to store and show; ``broker_status`` is the open status
+    the broker listed the order under, if it did. ``may_ask_again`` is true only when the
+    request was made earlier and the broker still lists the order as working.
+    """
+
+    def __init__(
+        self,
+        order: Order,
+        reason: str,
+        *,
+        broker_status: str | None = None,
+        may_ask_again: bool = False,
+    ):
+        super().__init__(order)
+        self.reason = reason
+        self.broker_status = broker_status
+        self.may_ask_again = may_ask_again
+        self.args = ("Cancellation requested; the broker has not yet confirmed the outcome.",)
+
+
 class ExecutionEngine:
     DUPLICATE_LOOKBACK_SECONDS = 180
     # A broker record can match an unknown submission only if it was created in this window
@@ -150,6 +196,9 @@ class ExecutionEngine:
         # Set by reconcile_order when the broker answered and nothing could be settled
         # from the answer: a fixed word saying why. None after every other outcome.
         self.unsettled_reason: str | None = None
+        # The cancel_request_accepted event of each request sent by this engine and not yet
+        # confirmed: the confirmation writes its outcome into it.
+        self._accepted_now: dict[uuid.UUID, OrderEvent] = {}
 
     def _make_client_order_key(
         self,
@@ -1153,7 +1202,123 @@ class ExecutionEngine:
         await self.db.commit()
 
     async def cancel_order(self, order: Order) -> Order:
-        """Cancel a pending order at the broker."""
+        """Cancel one order: ask the broker, then record what its record of the order says.
+
+        Returns the order once it has ended: cancelled (with whatever filled first), or filled
+        or rejected when that beat the cancellation. Raises ``OrderCancellationUnconfirmed``
+        when the broker took the request and has not yet said what became of the order, and
+        ``OrderCancellationFailed`` when it refused the request.
+        """
+        order = await self.request_cancel(order)
+        if order.status not in ACTIVE_ORDER_STATUSES:
+            return order
+        reads = CancelReads.within(SINGLE_CANCEL_READ_SECONDS)
+        try:
+            return await self.confirm_cancel(order, reads)
+        except OrderCancellationUnconfirmed as unconfirmed:
+            if not unconfirmed.may_ask_again:
+                raise
+        # A request was accepted earlier and the broker still lists the order as working:
+        # it is asked once more, and the outcome read again.
+        await self._send_cancel(order)
+        return await self.confirm_cancel(order, reads)
+
+    async def cancel_many(
+        self, orders: list[Order], *, read_seconds: float = BATCH_CANCEL_READ_SECONDS
+    ) -> CancelBatch:
+        """Cancel several orders: every request first, then the reads that confirm them.
+
+        A read the broker answers with "too many requests" makes the adapter hold its next
+        request; reading only after every cancel request has gone out keeps that from
+        delaying a cancellation. The reads share ``read_seconds`` and stop at the first that
+        fails; the orders left unread are reported as awaiting confirmation.
+
+        An order whose earlier cancel request the broker accepted, and which it still lists
+        as working, is asked once more at the end, and only when no read failed (so that the
+        adapter holds no pause); it is not read again in this batch.
+        """
+        batch = CancelBatch()
+        asked: list[Order] = []
+        for listed in orders:
+            try:
+                order = await self.request_cancel(listed)
+            except OrderCancellationFailed:
+                batch.failed.append(listed)
+                continue
+            except InvalidOrderTransition:
+                require_already_finished(listed)
+                batch.finished.append(listed)
+                continue
+            if order.status in ACTIVE_ORDER_STATUSES:
+                asked.append(order)
+            else:
+                (batch.cancelled if order.status == "cancelled" else batch.finished).append(order)
+
+        reads = CancelReads.within(read_seconds)
+        still_working: list[tuple[Order, str | None]] = []
+        for order in asked:
+            # Each confirmation in its own savepoint: a local failure while recording one
+            # order cannot undo the record of the cancel requests already sent. A rolled-back
+            # savepoint expires what it changed, so the identity is taken down first.
+            order_id, broker_order_id = order.id, order.broker_order_id
+            savepoint = await self.db.begin_nested()
+            try:
+                await self.confirm_cancel(order, reads)
+            except OrderCancellationUnconfirmed as unconfirmed:
+                await savepoint.commit()
+                if unconfirmed.may_ask_again:
+                    still_working.append((order, unconfirmed.broker_status))
+                else:
+                    batch.unconfirmed.append((order, unconfirmed.reason))
+                continue
+            except Exception as exc:
+                await savepoint.rollback()
+                log.error(
+                    "execution.cancel_confirmation_failed",
+                    order_id=str(order_id),
+                    broker_order_id=broker_order_id,
+                    error_type=type(exc).__name__,
+                )
+                # The order as it is stored: what the savepoint changed is gone. Its row
+                # lock is still held by the transaction.
+                await self.db.refresh(order)
+                batch.unconfirmed.append((order, LOCAL_ERROR))
+                continue
+            await savepoint.commit()
+            (batch.cancelled if order.status == "cancelled" else batch.finished).append(order)
+
+        # A refused re-send may have set the adapter's pause: the rest are not asked again.
+        resend_refused = False
+        for order, broker_status in still_working:
+            if reads.stopped_because is not None or resend_refused:
+                batch.unconfirmed.append((order, STILL_OPEN))
+                continue
+            try:
+                await self._send_cancel(order)
+            except OrderCancellationFailed:
+                resend_refused = True
+                batch.failed.append(order)
+                continue
+            accepted = self._accepted_now.pop(order.id, None)
+            if accepted is not None:
+                accepted.payload = {
+                    **dict(accepted.payload or {}),
+                    "outcome": "awaiting_confirmation",
+                    "reason": ASKED_AGAIN,
+                    "broker_status": broker_status,
+                }
+                await self.db.flush()
+            batch.unconfirmed.append((order, ASKED_AGAIN))
+        return batch
+
+    async def request_cancel(self, order: Order) -> Order:
+        """Lock the order and send its cancel request; nothing is recorded as ended yet.
+
+        An order that never reached a broker (no broker id, or paper) is cancelled here, as
+        before. An order the broker already took a cancel request for is not asked again.
+        Raises ``OrderCancellationFailed`` when the request is refused or cannot be sent, and
+        ``InvalidOrderTransition`` when the order has already ended.
+        """
         locked_result = await self.db.execute(
             select(Order)
             .where(Order.id == order.id)
@@ -1163,9 +1328,8 @@ class ExecutionEngine:
         order = locked_result.scalar_one()
         if order.status == "cancelled":
             return order
-        if order.status == "submission_unknown" and not order.is_dry_run:
-            return await self._cancel_unknown_submission(order)
-        if not can_transition_order_status(order.status, "cancelled"):
+        unknown = order.status == "submission_unknown" and not order.is_dry_run
+        if not unknown and not can_transition_order_status(order.status, "cancelled"):
             transition_order_status_with_evidence(
                 self.db,
                 order,
@@ -1175,28 +1339,88 @@ class ExecutionEngine:
                 actor="execution_engine",
                 correlation_id=order.client_order_key,
             )
+        if unknown and not order.broker_order_id:
+            # Nothing can be cancelled at the broker without its id, and marking the order
+            # cancelled here would hide an order that may be live.
+            await self._block_unknown_submission_cancel(order, None)
+        if not order.broker_order_id or order.is_dry_run:
+            return await self._cancel_locally(order)
+        if not await self._cancel_already_accepted(order):
+            await self._send_cancel(order)
+        return order
 
-        if order.broker_order_id and not order.is_dry_run:
-            try:
-                await self.broker.cancel_order(order.broker_order_id)
-            except Exception as e:
-                # The broker did not confirm the cancellation, so the order may still be
-                # open there. It keeps its status: reconciliation goes on reading it and
-                # its cash stays reserved. Calling it finished here would hide a live order.
-                await self._log_order_event(
-                    order.id,
-                    "cancel_failed",
-                    from_status=order.status,
-                    to_status=order.status,
-                    payload={
-                        "error_type": type(e).__name__,
-                        "reason": "broker cancellation failed; the order may still be open",
-                    },
-                )
-                order.error_message = _safe_broker_error_reason(e)
-                await self.db.flush()
-                raise OrderCancellationFailed(order) from None
+    async def confirm_cancel(self, order: Order, reads: CancelReads) -> Order:
+        """After ``request_cancel``: record what the broker's final record says, or leave the
+        order exactly as it is and raise ``OrderCancellationUnconfirmed``.
 
+        A request accepted is not an order ended, and says nothing of a fill.
+        """
+        accepted = self._accepted_now.pop(order.id, None)
+        found = await self._read_after_cancel(order, reads)
+        if isinstance(found, BrokerRecord) and isinstance(found.verdict, FinalRecord):
+            if accepted is not None:
+                accepted.payload = {
+                    **dict(accepted.payload or {}),
+                    "outcome": found.verdict.order_status,
+                }
+            await self._record_final_state(order, found.verdict, found)
+            await self.db.flush()
+            return order
+        broker_status = found.verdict.broker_status if isinstance(found, BrokerRecord) else None
+        reason = STILL_OPEN if isinstance(found, BrokerRecord) else found
+        if accepted is not None:
+            accepted.payload = {
+                **dict(accepted.payload or {}),
+                "outcome": "awaiting_confirmation",
+                "reason": reason,
+                "broker_status": broker_status,
+            }
+            await self.db.flush()
+        raise OrderCancellationUnconfirmed(
+            order,
+            reason,
+            broker_status=broker_status,
+            may_ask_again=accepted is None and broker_status in WORKING_STATUSES,
+        )
+
+    async def _send_cancel(self, order: Order) -> None:
+        """Send the cancel request and record that the broker took it."""
+        try:
+            await self.broker.cancel_order(order.broker_order_id)
+        except Exception as e:
+            if order.status == "submission_unknown":
+                await self._block_unknown_submission_cancel(order, e)
+            # The broker did not confirm the cancellation, so the order may still be open
+            # there. It keeps its status: reconciliation goes on reading it and its cash
+            # stays reserved. Calling it finished here would hide a live order.
+            await self._log_order_event(
+                order.id,
+                "cancel_failed",
+                from_status=order.status,
+                to_status=order.status,
+                payload={
+                    "error_type": type(e).__name__,
+                    "reason": "broker cancellation failed; the order may still be open",
+                },
+            )
+            order.error_message = _safe_broker_error_reason(e)
+            await self.db.flush()
+            raise OrderCancellationFailed(order) from None
+        accepted = OrderEvent(
+            id=uuid.uuid4(),
+            order_id=order.id,
+            event_type="cancel_request_accepted",
+            from_status=order.status,
+            to_status=order.status,
+            payload={"broker_order_id": order.broker_order_id},
+            occurred_at=datetime.now(UTC),
+        )
+        self.db.add(accepted)
+        self._accepted_now[order.id] = accepted
+        await self.db.flush()
+
+    async def _cancel_locally(self, order: Order) -> Order:
+        """Cancel an order that never reached a broker: there is nothing there to read."""
         now = datetime.now(UTC)
         cancellation_payload = {
             "reconciliation_latency_ms": milliseconds_between(order.submitted_at, now),
@@ -1219,37 +1443,10 @@ class ExecutionEngine:
         await self.db.flush()
         return order
 
-    async def _cancel_unknown_submission(self, order: Order) -> Order:
-        """Cancel an order whose submission outcome is unknown, on broker evidence only.
-
-        Without a broker order id nothing can be cancelled at the broker, and marking the
-        order cancelled locally would hide an order that may be live. With an id the
-        cancellation is attempted; a failure leaves the order unknown.
-        """
-        failure: Exception | None = None
-        if order.broker_order_id:
-            try:
-                await self.broker.cancel_order(order.broker_order_id)
-            except Exception as exc:
-                failure = exc
-            else:
-                now = datetime.now(UTC)
-                transition_order_status_with_evidence(
-                    self.db,
-                    order,
-                    "cancelled",
-                    event_type="cancelled",
-                    reason="broker accepted cancellation of an unconfirmed order",
-                    actor="execution_engine",
-                    correlation_id=order.client_order_key,
-                    payload={"broker_order_id": order.broker_order_id},
-                )
-                order.cancelled_at = now
-                order.reconciliation_latency_ms = milliseconds_between(order.submitted_at, now)
-                apply_order_execution_quality(order)
-                await self.db.flush()
-                return order
-
+    async def _block_unknown_submission_cancel(
+        self, order: Order, failure: Exception | None
+    ) -> None:
+        """A submission_unknown order could not be asked to cancel: it stays unknown."""
         await self._log_order_event(
             order.id,
             "cancel_blocked_unknown_submission",
@@ -1263,6 +1460,45 @@ class ExecutionEngine:
         )
         await self.db.flush()
         raise OrderCancellationFailed(order) from None
+
+    async def _cancel_already_accepted(self, order: Order) -> bool:
+        """True when the broker has already accepted a cancel request for this order."""
+        found = await self.db.execute(
+            select(OrderEvent.id)
+            .where(
+                OrderEvent.order_id == order.id,
+                OrderEvent.event_type == "cancel_request_accepted",
+            )
+            .limit(1)
+        )
+        return found.scalar_one_or_none() is not None
+
+    async def _read_after_cancel(self, order: Order, reads: CancelReads) -> BrokerRecord | str:
+        """The broker's record of the order, or a fixed word saying why there is none to act
+        on. Never raises for anything the broker sent or failed to send."""
+        if reads.stopped_because is not None:
+            return NOT_READ
+        seconds = reads.seconds_left()
+        if seconds <= 0:
+            reads.stopped_because = TIME_SPENT
+            return TIME_SPENT
+        try:
+            async with asyncio.timeout(seconds):
+                found = await self._read_broker_record(order)
+        except UntrustedRecord as refusal:
+            return refusal.reason
+        except Exception as exc:
+            reason = read_failure_reason(exc)
+            reads.stopped_because = reason
+            log.warning(
+                "execution.cancel_read_failed",
+                order_id=str(order.id),
+                broker_order_id=order.broker_order_id,
+                error_type=type(exc).__name__,
+                reason=reason,
+            )
+            return reason
+        return NO_BROKER_RECORD if found is None else found
 
     @staticmethod
     def _as_utc(value: datetime) -> datetime:
@@ -1623,7 +1859,7 @@ class ExecutionEngine:
     @staticmethod
     def _plain(number: Decimal) -> str:
         """A number as it is written in an event: no exponent and no trailing zeros."""
-        return format(number.normalize(), "f")
+        return plain_amount(number)
 
     @staticmethod
     def _stored_latency(start: datetime | None, end: datetime | None) -> int | None:

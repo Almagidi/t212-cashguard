@@ -163,6 +163,8 @@ async def test_the_cancel_all_route_cancels_the_rest_when_one_order_ended_meanwh
     )
     await db.commit()
 
+    (finished,) = answer.pop("already_finished_orders")
+    assert (finished["status"], finished["filled_quantity"]) == ("filled", "0")
     assert answer == {"cancelled": 2, "failed": 0, "already_finished": 1}
     _assert_the_rest_were_cancelled(broker, await _statuses(db))
     audit = (

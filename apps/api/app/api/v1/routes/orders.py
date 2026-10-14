@@ -31,7 +31,12 @@ from app.core.config import settings
 from app.db.models import AppSettings, AuditLog, Order, User
 from app.db.repositories import OrderRepository
 from app.db.session import get_db
-from app.execution.engine import ExecutionEngine, OrderCancellationFailed
+from app.execution.engine import (
+    ExecutionEngine,
+    OrderCancellationFailed,
+    OrderCancellationUnconfirmed,
+    plain_amount,
+)
 from app.execution.paper_engine import (
     PAPER_EXECUTION_ENVIRONMENT,
     PaperExecutionEngine,
@@ -603,6 +608,34 @@ async def cancel_order(
         async with broker as b:
             engine = ExecutionEngine(db, b)
             order = await engine.cancel_order(order)
+    except OrderCancellationUnconfirmed as exc:
+        # The broker took the request; it has not said yet what became of the order. The
+        # order stays open here, its cash reserved, until a final record of it is read.
+        db.add(
+            AuditLog(
+                action="order_cancel_unconfirmed",
+                entity_type="order",
+                entity_id=str(order_id),
+                actor=current_user.email,
+                payload={
+                    "status": exc.order.status,
+                    "reason": exc.reason,
+                    "requires_reconciliation": True,
+                },
+                occurred_at=datetime.now(UTC),
+            )
+        )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "cancelled": False,
+                "awaiting_confirmation": True,
+                "order_id": str(order_id),
+                "status": exc.order.status,
+                "reason": exc.reason,
+                "requires_reconciliation": True,
+            },
+        )
     except OrderCancellationFailed as exc:
         db.add(
             AuditLog(
@@ -623,17 +656,51 @@ async def cancel_order(
                 "requires_reconciliation": True,
             },
         )
+    except InvalidOrderTransition:
+        # It ended (a fill recorded by reconciliation, say) after it was read above.
+        require_already_finished(order)
+        return _cancelled_too_late(db, order, current_user)
 
+    if order.status != "cancelled":
+        # The broker's own record shows the order ended another way (it filled, or was
+        # rejected) before the cancellation could take effect.
+        return _cancelled_too_late(db, order, current_user)
+
+    filled = plain_amount(order.filled_quantity)
     db.add(
         AuditLog(
             action="order_cancelled",
             entity_type="order",
             entity_id=str(order_id),
             actor=current_user.email,
+            payload={"filled_quantity": filled} if order.filled_quantity else None,
             occurred_at=datetime.now(UTC),
         )
     )
-    return {"cancelled": True, "order_id": str(order_id)}
+    return {"cancelled": True, "order_id": str(order_id), "filled_quantity": filled}
+
+
+def _cancelled_too_late(db: AsyncSession, order: Order, current_user: User) -> JSONResponse:
+    filled = plain_amount(order.filled_quantity)
+    db.add(
+        AuditLog(
+            action="order_cancel_too_late",
+            entity_type="order",
+            entity_id=str(order.id),
+            actor=current_user.email,
+            payload={"status": order.status, "filled_quantity": filled},
+            occurred_at=datetime.now(UTC),
+        )
+    )
+    return JSONResponse(
+        status_code=409,
+        content={
+            "cancelled": False,
+            "order_id": str(order.id),
+            "status": order.status,
+            "filled_quantity": filled,
+        },
+    )
 
 
 @router.post("/cancel-all-pending")
@@ -644,45 +711,66 @@ async def cancel_all_pending(
 ) -> Any:
     repo = OrderRepository(db)
     orders = await repo.list_pending()
-    cancelled = 0
-    failed = 0
-    # An order that ended between being listed and being reached has nothing left to
-    # cancel. It must not stop the orders after it from being cancelled.
-    already_finished = 0
-    failed_orders: list[Order] = []
-    finished_orders: list[Order] = []
+    # Every cancel request goes out before any order is read back (see cancel_many). An
+    # order that ended between being listed and being reached, or whose final record shows
+    # it filled first, is reported as already finished; it does not stop the rest.
     async with broker as b:
-        engine = ExecutionEngine(db, b)
-        for order in orders:
-            try:
-                await engine.cancel_order(order)
-                cancelled += 1
-            except OrderCancellationFailed:
-                failed += 1
-                failed_orders.append(order)
-            except InvalidOrderTransition:
-                require_already_finished(order)
-                already_finished += 1
-                finished_orders.append(order)
+        batch = await ExecutionEngine(db, b).cancel_many(list(orders))
+    cancelled = len(batch.cancelled)
+    failed = len(batch.failed)
+    already_finished = len(batch.finished)
+    failed_orders = batch.failed
+    finished_orders = batch.finished
+    unconfirmed_orders = [order for order, _reason in batch.unconfirmed]
+    partly_filled_orders = batch.partly_filled
 
     counts: dict[str, int] = {"cancelled": cancelled, "failed": failed}
     if already_finished:
         counts["already_finished"] = already_finished
+    if unconfirmed_orders:
+        counts["awaiting_confirmation"] = len(unconfirmed_orders)
     payload: dict[str, Any] = {f"{name}_count": count for name, count in counts.items()}
     if failed_orders:
         payload["failed_orders"] = [
             {"order_id": str(order.id), "ticker": order.ticker} for order in failed_orders
         ]
     if finished_orders:
+        # A fill among these is exposure the cancel did not prevent.
         payload["already_finished_orders"] = [
-            {"order_id": str(order.id), "ticker": order.ticker, "status": order.status}
+            {
+                "order_id": str(order.id),
+                "ticker": order.ticker,
+                "status": order.status,
+                "filled_quantity": plain_amount(order.filled_quantity),
+            }
             for order in finished_orders
         ]
-    if failed_orders or finished_orders:
+    if unconfirmed_orders:
+        payload["awaiting_confirmation_orders"] = [
+            {
+                "order_id": str(order.id),
+                "ticker": order.ticker,
+                "status": order.status,
+                "reason": reason,
+            }
+            for order, reason in batch.unconfirmed
+        ]
+    if partly_filled_orders:
+        payload["cancelled_after_partial_fill"] = [
+            {
+                "order_id": str(order.id),
+                "ticker": order.ticker,
+                "filled_quantity": plain_amount(order.filled_quantity),
+                "quantity": plain_amount(order.quantity),
+            }
+            for order in partly_filled_orders
+        ]
+    if failed_orders or finished_orders or unconfirmed_orders:
         log.warning(
             "orders.cancel_all_needs_attention",
             failed=[str(order.id) for order in failed_orders],
             already_finished={str(order.id): order.status for order in finished_orders},
+            awaiting_confirmation=[str(order.id) for order in unconfirmed_orders],
         )
     db.add(
         AuditLog(
@@ -692,4 +780,14 @@ async def cancel_all_pending(
             occurred_at=datetime.now(UTC),
         )
     )
-    return counts
+    # The operator is told which orders need a look, not only how many: a fill before or
+    # instead of the cancellation is exposure, and an unconfirmed order is still open.
+    answer: dict[str, Any] = dict(counts)
+    for name in (
+        "already_finished_orders",
+        "cancelled_after_partial_fill",
+        "awaiting_confirmation_orders",
+    ):
+        if name in payload:
+            answer[name] = payload[name]
+    return answer
