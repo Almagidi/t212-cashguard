@@ -3,7 +3,8 @@ from __future__ import annotations
 import ast
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
@@ -18,6 +19,7 @@ from app.broker.provider import (
 )
 from app.core.config import settings
 from app.core.security import CredentialDecryptionError
+from app.execution.cancellation import CancelBatch
 from app.execution.engine import OrderCancellationFailed
 from app.services.safety_policy import SafetyPolicyViolation
 from app.workers import tasks
@@ -78,6 +80,8 @@ class FakeOrder:
     order_type: str = "limit"
     broker_order_id: str | None = "t212-order-1"
     status: str = "accepted"
+    quantity: Decimal = Decimal("1")
+    filled_quantity: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -132,10 +136,21 @@ class RecordingExecutionEngine:
     async def reconcile_unknown_submission(self, order: FakeOrder) -> None:
         self.unknown_submission_calls.append(order)
 
-    async def cancel_order(self, order: FakeOrder) -> None:
+    async def cancel_order(self, order: FakeOrder) -> FakeOrder:
         self.cancel_calls.append(order)
         if order.ticker in self.cancellation_failure_tickers:
             raise OrderCancellationFailed(order)  # type: ignore[arg-type]
+        return replace(order, status="cancelled")
+
+    async def cancel_many(self, orders: list[FakeOrder], **_kwargs: Any) -> CancelBatch:
+        # As the real engine reports a batch, built from this fake's own cancel_order.
+        batch = CancelBatch()
+        for order in orders:
+            try:
+                batch.cancelled.append(await self.cancel_order(order))  # type: ignore[arg-type]
+            except OrderCancellationFailed:
+                batch.failed.append(order)  # type: ignore[arg-type]
+        return batch
 
 
 @asynccontextmanager
