@@ -1090,6 +1090,24 @@ class OrderCreate(BaseModel):
     time_validity: Literal["DAY", "GTC"] = "DAY"
     signal_id: uuid.UUID | None = None
 
+    @model_validator(mode="after")
+    def prices_match_the_order_type(self) -> OrderCreate:
+        # A price the order type does not use would be costed by the checks and never sent.
+        if self.order_type in ("market", "stop") and self.limit_price is not None:
+            raise ValueError(f"limit_price is not used by a {self.order_type} order")
+        if self.order_type in ("market", "limit") and self.stop_price is not None:
+            raise ValueError(f"stop_price is not used by a {self.order_type} order")
+        return self
+
+    @field_validator("ticker")
+    @classmethod
+    def normalise_ticker(cls, v: str) -> str:
+        # As the order is stored and sent, so that every check sees the same instrument.
+        ticker = v.strip().upper()
+        if not ticker:
+            raise ValueError("ticker must not be blank")
+        return ticker
+
     @field_validator("limit_price")
     @classmethod
     def validate_limit_price(cls, v: Decimal | None, info: ValidationInfo) -> Decimal | None:

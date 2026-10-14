@@ -630,6 +630,7 @@ class RiskEngine:
         # free_margin_pct is unused.
         is_cfd: bool = False,
         free_margin_pct: Decimal | None = None,
+        is_exit: bool = False,
     ) -> None:
         """
         Run ALL checks in priority order.
@@ -664,11 +665,12 @@ class RiskEngine:
         # 4. Duplicate order dedup
         await self.check_duplicate_order(ticker, side, signal_id)
 
-        # 5. Daily loss limit
-        await self.check_daily_loss_limit(realized_pnl_today, account_value, risk_profile)
-
-        # 6. Max open positions
-        await self.check_max_open_positions(current_open_positions, risk_profile)
+        # 5. Daily loss limit, and 6. max open positions: limits on taking on risk. An exit
+        # (``is_exit``, a cash-only sell of a held position) takes none on and is not held
+        # back by them; the kill switch and the other checks above still apply to it.
+        if not is_exit:
+            await self.check_daily_loss_limit(realized_pnl_today, account_value, risk_profile)
+            await self.check_max_open_positions(current_open_positions, risk_profile)
 
         # 7. Position size
         if side == "buy":

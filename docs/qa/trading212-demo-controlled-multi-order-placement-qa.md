@@ -44,7 +44,7 @@ T212_DEMO_ORDER_ENABLED=true
 T212_DEMO_MULTI_ORDER_ENABLED=true
 T212_DEMO_MULTI_ORDER_CONFIRM=PLACE_MULTI_DEMO_ORDERS
 DEMO_RECONCILIATION_SCHEDULER_ENABLED=false
-T212_DEMO_MULTI_ORDER_PLAN=AAPL_US_EQ:0.01,MSFT_US_EQ:0.01
+T212_DEMO_MULTI_ORDER_PLAN=AAPL_US_EQ:0.01@250,MSFT_US_EQ:0.01@500
 ```
 
 ## Exact Command
@@ -66,7 +66,7 @@ Run the placement smoke:
 
 ```bash
 T212_DEMO_MULTI_ORDER_CONFIRM=PLACE_MULTI_DEMO_ORDERS \
-T212_DEMO_MULTI_ORDER_PLAN="AAPL_US_EQ:0.01,MSFT_US_EQ:0.01" \
+T212_DEMO_MULTI_ORDER_PLAN="AAPL_US_EQ:0.01@250,MSFT_US_EQ:0.01@500" \
 T212_DEMO_API_KEY=... \
 T212_DEMO_API_SECRET=... \
 make t212-demo-controlled-multi-order
@@ -189,3 +189,6 @@ The command should be empty for this PR.
 - Remove the disposable DB if no longer needed: `rm -f /tmp/t212_demo_controlled_order.db`.
 - Do not reuse the smoke confirmation variables in a normal shell session.
 - If a broker order is accepted but later cannot be reconciled immediately, wait for Trading 212 history availability and rerun the read-only reconciliation smoke.
+
+
+Each plan item is `TICKER:QUANTITY@LIMIT`: the orders are limit buys, because the API refuses a market buy (it has no price to check against cash and risk limits; N-02). Choose limits at or near the current price.

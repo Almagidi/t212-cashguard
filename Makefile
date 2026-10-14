@@ -923,6 +923,7 @@ t212-demo-controlled-order-test: ## Place one tiny Trading 212 DEMO order; requi
 		T212_DEMO_API_URL=http://127.0.0.1:$(T212_DEMO_ORDER_API_PORT) \
 		T212_DEMO_ORDER_TICKER=$(T212_DEMO_ORDER_TICKER) \
 		T212_DEMO_ORDER_QUANTITY=$(T212_DEMO_ORDER_QUANTITY) \
+		T212_DEMO_ORDER_LIMIT_PRICE="$$T212_DEMO_ORDER_LIMIT_PRICE" \
 		PYTHONPATH=. \
 		$(PYTHON) scripts/t212_demo_controlled_order.py
 	@echo "$(GREEN)✓ Controlled Trading 212 DEMO order test passed$(RESET)"
@@ -939,7 +940,7 @@ t212-demo-controlled-multi-order-arm: ## Arm disposable DB for controlled multi-
 t212-demo-controlled-multi-order: ## Place tiny bounded Trading 212 DEMO orders; requires explicit plan and confirmation
 	@echo "$(YELLOW)→ Running controlled Trading 212 DEMO multi-order placement smoke...$(RESET)"
 	@test "$$T212_DEMO_MULTI_ORDER_CONFIRM" = "PLACE_MULTI_DEMO_ORDERS" || (echo "$(RED)Set T212_DEMO_MULTI_ORDER_CONFIRM=PLACE_MULTI_DEMO_ORDERS to confirm this demo multi-order placement smoke.$(RESET)" && exit 1)
-	@test -n "$$T212_DEMO_MULTI_ORDER_PLAN" || (echo "$(RED)Set T212_DEMO_MULTI_ORDER_PLAN, for example AAPL_US_EQ:0.01,MSFT_US_EQ:0.01.$(RESET)" && exit 1)
+	@test -n "$$T212_DEMO_MULTI_ORDER_PLAN" || (echo "$(RED)Set T212_DEMO_MULTI_ORDER_PLAN as TICKER:QUANTITY@LIMIT, for example AAPL_US_EQ:0.01@250,MSFT_US_EQ:0.01@500.$(RESET)" && exit 1)
 	@test -n "$$T212_DEMO_API_KEY" -a -n "$$T212_DEMO_API_SECRET" || (echo "$(RED)Both T212_DEMO_API_KEY and T212_DEMO_API_SECRET must be loaded.$(RESET)" && exit 1)
 	@test "$${LIVE_TRADING_ENABLED:-false}" != "true" || (echo "$(RED)LIVE_TRADING_ENABLED must be false.$(RESET)" && exit 1)
 	@test "$${DEMO_RECONCILIATION_SCHEDULER_ENABLED:-false}" != "true" || (echo "$(RED)DEMO_RECONCILIATION_SCHEDULER_ENABLED must be false for this placement smoke.$(RESET)" && exit 1)
