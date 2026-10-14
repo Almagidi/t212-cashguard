@@ -65,6 +65,7 @@ from app.services.alert_service import (
     alert_trade_submitted,
 )
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
+from app.services.cash_only import short_selling_parameters
 from app.services.market_intelligence_monitor import MarketIntelligenceMonitor
 from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 from app.services.signal_allocator import AllocationState, AllocatorCandidate, SignalAllocator
@@ -81,6 +82,8 @@ log = structlog.get_logger()
 class StrategyRunner:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
+        # When this run read the account's cash from the broker.
+        self._cash_read_at: datetime | None = None
 
     @staticmethod
     def _signal_decision_key(
@@ -191,6 +194,7 @@ class StrategyRunner:
             }
             if available_cash is not None:
                 intent_kwargs["available_cash"] = available_cash
+                intent_kwargs["cash_read_at"] = self._cash_read_at
             if limit_price is not None:
                 intent_kwargs["limit_price"] = limit_price
             order = await exec_engine.create_order_intent(
@@ -201,7 +205,17 @@ class StrategyRunner:
                 # outcome). It is reported with its own status and never sent again. A
                 # finished order still goes to submit_order, which refuses it as before.
                 return order
-            return await exec_engine.submit_order(order)
+            try:
+                order = await exec_engine.submit_order(order)
+            except SafetyPolicyViolation:
+                # The engine has closed the order. End the transaction now, so the cash
+                # admission turn taken for it is not kept for the rest of this run.
+                await self.db.commit()
+                raise
+            if order.status == "error":
+                # Nothing was sent and nothing was committed yet; same reason as above.
+                await self.db.commit()
+            return order
 
     async def _get_realized_pnl_today(self) -> Decimal:
         today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -713,6 +727,10 @@ class StrategyRunner:
             return summary
 
         intelligence = await MarketIntelligenceMonitor(self.db).evaluate_and_alert()
+        # The monitor may have written its state to the settings row, which is also the
+        # row that holds the kill switch. End that transaction here: left open for the
+        # rest of the run it would make an operator's halt wait for this run to commit.
+        await self.db.commit()
 
         broker = await self._get_broker()
         if broker is None:
@@ -726,6 +744,7 @@ class StrategyRunner:
                 return {**summary, "skipped": "no_paper_admin"}
             account, positions = await PaperExecutionEngine(self.db).portfolio_state(paper_user)
         else:
+            self._cash_read_at = datetime.now(UTC)
             async with broker as b:
                 account = await b.get_account_summary()
                 positions = await b.get_positions()
@@ -1020,6 +1039,19 @@ class StrategyRunner:
             )
             return 0, 0, 1
 
+        # Cash-only: a strategy configured to sell short opens no position at all.
+        # Its existing positions are still managed by the exit check above.
+        short_parameters = short_selling_parameters(strategy.params)
+        if short_parameters:
+            log.error(
+                "runner.cash_only_entry_blocked",
+                strategy=strategy.name,
+                ticker=ticker,
+                reason="short_selling_parameter",
+                parameters=short_parameters,
+            )
+            return 0, 0, 1
+
         # Entry signal
         signal_obj = engine.generate_signal(
             **self._build_signal_kwargs(
@@ -1037,6 +1069,17 @@ class StrategyRunner:
         )
         if signal_obj is None:
             return 0, 0, 0
+
+        if signal_obj.side != "buy":
+            # No position is held here, so a sell would open a short. Cash-only: refuse.
+            log.error(
+                "runner.cash_only_entry_blocked",
+                strategy=strategy.name,
+                ticker=ticker,
+                reason="sell_entry",
+                side=signal_obj.side,
+            )
+            return 0, 0, 1
 
         self._apply_signal_intelligence_overlay(
             strategy=strategy,
@@ -1145,9 +1188,6 @@ class StrategyRunner:
             return 1, 0, 0
 
         # Risk checks
-        # Determine if the strategy is operating as a CFD (allow_short = True
-        # means the strategy will short, which requires a margin/CFD account).
-        is_cfd = bool(strategy.params.get("allow_short", False))
         try:
             realized_pnl_today = await self._get_realized_pnl_today()
         except Exception as exc:
@@ -1172,13 +1212,13 @@ class StrategyRunner:
                 realized_pnl_today=realized_pnl_today,
                 current_open_positions=n_open,
                 signal_id=sig.id,
-                skip_auto_trading_check=True,
+                # The auto-trading switch is checked here for every entry, not only at
+                # the start of the run: an operator's pause must stop the entries that
+                # the run has not made yet. Exits do not come through this call.
                 # Portfolio heat check: pass stop price so the engine can
                 # compute new_risk = |entry - stop| * qty and cap total exposure.
                 stop_price=signal_obj.stop_price,
                 open_positions=all_positions,
-                # CFD-specific checks (leverage cap, tighter sizing, margin guard)
-                is_cfd=is_cfd,
             )
             await risk.check_sector_and_correlation(
                 ticker=ticker,
@@ -1273,6 +1313,13 @@ class StrategyRunner:
                     reason=signal_obj.reason or "",
                 )
             return 1, 1, 0
+        except RiskViolation as exc:
+            # Refused at admission: the cash is already promised to other open buy orders.
+            sig.status = "rejected"
+            sig.risk_rejected = True
+            sig.risk_rejection_reason = exc.reason
+            log.info("runner.risk_block", ticker=ticker, reason=exc.reason)
+            return 1, 0, 1
         except (PaperExecutionError, SafetyPolicyViolation) as exc:
             sig.status = "error"
             sig.risk_rejection_reason = str(exc)
@@ -1375,6 +1422,14 @@ class StrategyRunner:
         try:
             await risk.check_kill_switch()
         except RiskViolation:
+            # Not sent, and said so: a position that has reached its exit stays open
+            # because trading is halted, and somebody has to know that.
+            log.warning(
+                "runner.exit_blocked_by_kill_switch",
+                strategy=strategy.name,
+                ticker=ticker,
+                exit_type=exit_sig.signal_type,
+            )
             return None
 
         exit_signal = Signal(

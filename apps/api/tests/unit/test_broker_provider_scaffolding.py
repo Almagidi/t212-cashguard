@@ -443,22 +443,21 @@ def test_demo_app_mode_allows_read_only_worker_account_sync() -> None:
     )
 
 
-def test_demo_app_mode_allows_read_only_worker_cfd_funding() -> None:
+@pytest.mark.parametrize("app_mode", ["demo", "live"])
+def test_retired_cfd_funding_purpose_is_no_longer_accepted(app_mode: str) -> None:
     request = BrokerProviderRequest(
         broker_id="trading212",
-        environment="demo",
-        purpose="worker_cfd_funding",
+        environment=cast("BrokerRuntimeEnvironment", app_mode),
+        purpose=cast("BrokerProviderPurpose", "worker_cfd_funding"),
         user_id=uuid.uuid4(),
     )
 
-    assert (
+    with pytest.raises(BrokerProviderValidationError, match="Unsupported provider purpose"):
         validate_broker_provider_request(
             request,
-            app_mode="demo",
-            live_trading_enabled=False,
+            app_mode=app_mode,
+            live_trading_enabled=app_mode == "live",
         )
-        is request
-    )
 
 
 def test_live_app_mode_rejects_demo_only_purpose() -> None:
@@ -480,7 +479,6 @@ def test_live_app_mode_rejects_demo_only_purpose() -> None:
     "purpose",
     [
         "worker_account_sync",
-        "worker_cfd_funding",
         "worker_reconcile",
         "worker_cancel",
         "worker_cancel_timed_out_orders",
@@ -522,7 +520,6 @@ def test_existing_provider_purpose_classifications_are_not_weakened() -> None:
                 "credential_test",
                 "demo_reconciliation",
                 "worker_account_sync",
-                "worker_cfd_funding",
                 "worker_reconcile",
                 "operator_system_control_read",
             }

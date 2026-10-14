@@ -32,6 +32,12 @@ from app.execution.acknowledgement import (
     UntrustedAcknowledgement,
     interpret_acknowledgement,
 )
+from app.execution.cash_reservation import (
+    CashReservationRefused,
+    cash_promised_elsewhere,
+    reading_time_or_assumed,
+    take_admission_turn,
+)
 from app.execution.state_machine import (
     ACTIVE_ORDER_STATUSES,
     can_transition_order_status,
@@ -44,6 +50,7 @@ from app.services.execution_quality import (
     should_alert_abnormal_slippage,
 )
 from app.services.safety_policy import (
+    SafetyPolicyViolation,
     audit_broker_request_attempt,
     audit_safety_decision,
     current_runtime_mode,
@@ -51,6 +58,8 @@ from app.services.safety_policy import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.broker.snapshots import BrokerOrderSnapshot
@@ -158,10 +167,16 @@ class ExecutionEngine:
         estimated_price: Decimal | None = None,
         venue: str = "t212",
         stable_operation_identity: str | None = None,
+        cash_read_at: datetime | None = None,
     ) -> Order:
         """
         Create an order intent in the DB before any broker call.
         Checks for duplicates by client_order_key.
+
+        A real buy that comes with a cash figure is admitted only if its cost, added to
+        what the account's other open buy orders have been promised, fits that figure.
+        ``cash_read_at`` is when the figure was read from the broker. Raises
+        ``CashReservationRefused`` otherwise; nothing is created then.
         """
         salt = str(uuid.uuid4())[:8]  # Small salt for non-signal orders
         client_key = self._make_client_order_key(
@@ -172,14 +187,15 @@ class ExecutionEngine:
             stable_operation_identity,
         )
 
-        # Dedup check
-        result = await self.db.execute(select(Order).where(Order.client_order_key == client_key))
-        existing = result.scalar_one_or_none()
-        if existing:
-            return existing
-
-        duplicate = None
-        if stable_operation_identity is None:
+        async def standing_order() -> tuple[Order | None, bool]:
+            """An order that already stands for this request, and whether it is a
+            look-alike (the same order asked for again) rather than the same request."""
+            result = await self.db.execute(
+                select(Order).where(Order.client_order_key == client_key)
+            )
+            existing = result.scalar_one_or_none()
+            if existing is not None or stable_operation_identity is not None:
+                return existing, False
             duplicate = await self._find_recent_duplicate_intent(
                 ticker=ticker,
                 side=side,
@@ -191,20 +207,7 @@ class ExecutionEngine:
                 time_validity=time_validity,
                 is_dry_run=is_dry_run,
             )
-        if duplicate:
-            await self._log_order_event(
-                duplicate.id,
-                "duplicate_blocked",
-                from_status=duplicate.status,
-                to_status=duplicate.status,
-                payload={
-                    "ticker": ticker,
-                    "side": side,
-                    "order_type": order_type,
-                    "quantity": float(quantity),
-                },
-            )
-            return duplicate
+            return duplicate, duplicate is not None
 
         cash_used = None
         if side == "buy" and estimated_price and quantity > 0:
@@ -214,6 +217,36 @@ class ExecutionEngine:
         broker_account_scope = inspect.getattr_static(self.broker, "account_scope", None)
         if not isinstance(broker_account_scope, str) or not broker_account_scope.strip():
             broker_account_scope = None
+        execution_environment = "dry_run" if is_dry_run else settings.APP_MODE
+
+        standing, is_look_alike = await standing_order()
+        if standing is None and side == "buy" and not is_dry_run and available_cash is not None:
+            standing, is_look_alike = await self._admit_against_cash(
+                ticker=ticker,
+                signal_id=signal_id,
+                cost=cash_used,
+                available_cash=available_cash,
+                cash_read_at=cash_read_at,
+                environment=execution_environment,
+                venue=venue,
+                account_scope=broker_account_scope,
+                standing_order=standing_order,
+            )
+        if standing is not None:
+            if is_look_alike:
+                await self._log_order_event(
+                    standing.id,
+                    "duplicate_blocked",
+                    from_status=standing.status,
+                    to_status=standing.status,
+                    payload={
+                        "ticker": ticker,
+                        "side": side,
+                        "order_type": order_type,
+                        "quantity": float(quantity),
+                    },
+                )
+            return standing
 
         order = Order(
             id=uuid.uuid4(),
@@ -229,7 +262,7 @@ class ExecutionEngine:
             status="pending_intent",
             is_dry_run=is_dry_run,
             venue=venue,
-            execution_environment="dry_run" if is_dry_run else settings.APP_MODE,
+            execution_environment=execution_environment,
             broker_account_scope=broker_account_scope,
             expected_fill_price=expected_fill_price,
             cash_used=cash_used,
@@ -260,6 +293,103 @@ class ExecutionEngine:
             },
         )
         return order
+
+    async def _close_blocked_buy(self, order: Order, exc: SafetyPolicyViolation) -> None:
+        """End a real buy that was not allowed to be sent.
+
+        Left as a pending intent it would keep its cash reserved for ever, because nothing
+        sends or cancels an intent again. Sell intents are left as they are: some callers
+        persist one and send it on a later attempt.
+        """
+        transition_order_status_with_evidence(
+            self.db,
+            order,
+            "rejected",
+            event_type="submission_blocked",
+            reason="submission not allowed; nothing was sent",
+            actor="execution_engine",
+            correlation_id=order.client_order_key,
+            payload={"decision_code": exc.decision_code},
+        )
+        order.error_message = "Submission was blocked by the safety policy; nothing was sent."
+        order.rejected_at = datetime.now(UTC)
+        await self.db.flush()
+
+    async def _admit_against_cash(
+        self,
+        *,
+        ticker: str,
+        signal_id: uuid.UUID | None,
+        cost: Decimal | None,
+        available_cash: Decimal,
+        cash_read_at: datetime | None,
+        environment: str,
+        venue: str,
+        account_scope: str | None,
+        standing_order: Callable[[], Awaitable[tuple[Order | None, bool]]],
+    ) -> tuple[Order | None, bool]:
+        """Refuse a real buy whose cost, with the account's other open buys, exceeds its cash.
+
+        When the order is admitted, the admission turn stays with the caller's transaction
+        until it ends, so the order row created next is visible to the following admission
+        before that one counts. When it is refused, the turn is given back at once.
+
+        A request that waited for its turn may find that the same order was created
+        meanwhile; that order is then returned (with the turn given back) and nothing new
+        is admitted.
+        """
+        if cost is None:
+            raise CashReservationRefused(
+                f"Cash reservation: the cost of the {ticker} order cannot be estimated"
+            )
+        promised: Decimal | None = None
+        message: str | None = None
+        standing: tuple[Order | None, bool] = (None, False)
+        async with self.db.begin_nested() as turn:
+            if not await take_admission_turn(self.db, environment=environment, venue=venue):
+                message = (
+                    f"Cash reservation: {ticker} order not admitted because another order "
+                    "admission did not finish in time; nothing was sent"
+                )
+            elif (standing := await standing_order())[0] is not None:
+                await turn.rollback()
+            else:
+                promised = await cash_promised_elsewhere(
+                    self.db,
+                    environment=environment,
+                    venue=venue,
+                    account_scope=account_scope,
+                    cash_read_at=reading_time_or_assumed(cash_read_at),
+                )
+                if cost + promised > available_cash:
+                    message = (
+                        f"Cash reservation: {ticker} order cost {cost:.2f} plus {promised:.2f} "
+                        "already promised to other open buy orders exceeds available cash "
+                        f"{available_cash:.2f}"
+                    )
+            if message is not None:
+                # Undo the savepoint: a turn taken inside it is released with it.
+                await turn.rollback()
+        if message is None:
+            return standing
+        self.db.add(
+            RiskEvent(
+                event_type="cash_reservation_block",
+                ticker=ticker,
+                signal_id=signal_id,
+                message=message,
+                payload={
+                    "cost": str(cost),
+                    "promised_elsewhere": str(promised) if promised is not None else None,
+                    "available": str(available_cash),
+                    "cash_read_at": cash_read_at.isoformat() if cash_read_at else None,
+                    "account_scope": account_scope,
+                },
+                occurred_at=datetime.now(UTC),
+            )
+        )
+        await self.db.flush()
+        raise CashReservationRefused(message)
 
     async def _find_recent_duplicate_intent(
         self,
@@ -340,11 +470,16 @@ class ExecutionEngine:
             raise ValueError(f"Cannot submit order in status {order.status!r}")
 
         broker_environment = getattr(self.broker, "environment", None)
-        await require_order_submission_allowed(
-            self.db,
-            order=order,
-            broker_environment=broker_environment,
-        )
+        try:
+            await require_order_submission_allowed(
+                self.db,
+                order=order,
+                broker_environment=broker_environment,
+            )
+        except SafetyPolicyViolation as exc:
+            if order.side == "buy" and not order.is_dry_run:
+                await self._close_blocked_buy(order, exc)
+            raise
 
         # Dry-run: simulate fill
         if order.is_dry_run:
@@ -984,21 +1119,20 @@ class ExecutionEngine:
             try:
                 await self.broker.cancel_order(order.broker_order_id)
             except Exception as e:
-                now = datetime.now(UTC)
-                transition_order_status_with_evidence(
-                    self.db,
-                    order,
-                    "error",
-                    event_type="cancel_failed",
-                    reason="broker cancellation failed",
-                    actor="execution_engine",
-                    correlation_id=order.client_order_key,
-                    payload={"error_type": type(e).__name__},
+                # The broker did not confirm the cancellation, so the order may still be
+                # open there. It keeps its status: reconciliation goes on reading it and
+                # its cash stays reserved. Calling it finished here would hide a live order.
+                await self._log_order_event(
+                    order.id,
+                    "cancel_failed",
+                    from_status=order.status,
+                    to_status=order.status,
+                    payload={
+                        "error_type": type(e).__name__,
+                        "reason": "broker cancellation failed; the order may still be open",
+                    },
                 )
                 order.error_message = _safe_broker_error_reason(e)
-                order.rejected_at = now
-                order.reconciliation_latency_ms = milliseconds_between(order.submitted_at, now)
-                apply_order_execution_quality(order)
                 await self.db.flush()
                 raise OrderCancellationFailed(order) from None
 

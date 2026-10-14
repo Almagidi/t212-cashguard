@@ -633,9 +633,12 @@ export const useEmergencyFlattenAll = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.emergencyFlattenAll.bind(api),
-    onSuccess: (d: any) => {
+    onSuccess: (d: EmergencyActionResult) => {
       qc.invalidateQueries({ queryKey: ["positions", "orders"] });
-      toast.success(d.message);
+      // A flatten that was refused, or that left an exit failed or unconfirmed, is
+      // answered normally with success: false. It must not look like a success.
+      if (d.success) toast.success(d.message);
+      else toast.error(d.message);
     },
   });
 };
