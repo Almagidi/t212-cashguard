@@ -7,6 +7,7 @@ decryption and the broker adapter the provider would build.
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -70,6 +71,9 @@ class FakeBroker:
         self.history_reads.append(str(kwargs.get("ticker")))
         if isinstance(self.history, BaseException):
             raise self.history
+        if callable(self.history):
+            page = self.history(**kwargs)
+            return await page if inspect.isawaitable(page) else page
         return self.history
 
     def __getattr__(self, name: str) -> Any:
@@ -167,6 +171,8 @@ async def add_order(
     retry_count: int = 0,
     order_id: uuid.UUID | None = None,
     ticker: str = "AAPL_US_EQ",
+    side: str = "buy",
+    quantity: str = "1",
     commit: bool = True,
 ) -> Order:
     identifier = order_id or uuid.uuid4()
@@ -176,9 +182,9 @@ async def add_order(
         id=identifier,
         client_order_key=f"key-{identifier.hex}",
         ticker=ticker,
-        side="buy",
+        side=side,
         order_type="limit",
-        quantity=Decimal("1"),
+        quantity=Decimal(quantity),
         limit_price=Decimal("10"),
         status=status,
         broker_order_id=broker_order_id,

@@ -309,7 +309,7 @@ async def test_without_its_own_account_connected_the_order_is_not_read(world: Wo
 
 async def test_a_rejected_reading_closes_the_refused_order_without_a_fill(world: World) -> None:
     submitter = await left_unresolved(world)
-    world.reader.responses[world.broker_order_id] = {"status": "REJECTED"}
+    world.reader.responses[world.broker_order_id] = {"status": "REJECTED", "filledQuantity": 0}
 
     await run_task()
 
@@ -317,4 +317,45 @@ async def test_a_rejected_reading_closes_the_refused_order_without_a_fill(world:
     assert order.status == "rejected"
     assert not order.filled_quantity, "a rejection was recorded with a fill"
     assert order.avg_fill_price is None
+    assert_read_only(world, submitter)
+
+
+async def test_a_rejected_reading_that_does_not_state_the_fill_is_not_the_last_word(
+    world: World,
+) -> None:
+    submitter = await left_unresolved(world)
+    world.reader.responses[world.broker_order_id] = {"status": "REJECTED"}
+
+    await run_task()
+
+    # Whether anything filled before the rejection is not said, and the history has no
+    # record: the order is not closed on a guess.
+    order = await world.order()
+    assert order.status == "submission_unknown"
+    assert order.rejected_at is None
+    assert order.retry_count == 1
+    assert world.reader.history_reads == ["None"]
+    assert_read_only(world, submitter)
+
+    world.reader.history = {
+        "items": [
+            {
+                "order": {
+                    "id": world.broker_order_id,
+                    "status": "REJECTED",
+                    "filledQuantity": 0,
+                }
+            }
+        ]
+    }
+    async with world.sessions() as session:
+        waiting = await session.get(Order, order.id)
+        waiting.last_reconciled_at = None
+        await session.commit()
+
+    await run_task()
+
+    order = await world.order()
+    assert order.status == "rejected"
+    assert not order.filled_quantity
     assert_read_only(world, submitter)

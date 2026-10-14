@@ -26,16 +26,19 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 from sqlalchemy import and_, func, or_, select
 
-from app.db.models import Order, OrderEvent
+from app.db.models import Order, OrderEvent, RiskEvent
+from app.execution.broker_record import NO_BROKER_RECORD
 from app.services.reconciliation_backoff import (
+    MAX_BACKOFF_LEVEL,
     backoff_delay_seconds,
     level_after_unsettled_attempt,
     usable_retry_after_seconds,
@@ -60,13 +63,34 @@ log = structlog.get_logger()
 # Orders handled in one run, shared between the accounts in turn. The run is also bounded
 # by time, below.
 BATCH_LIMIT = 50
-# No new order is started after this long. Each order needs one broker read, which has
-# its own limit, so a run ends well inside the task's 45 second soft time limit.
+# No new order is started after this long. The broker reads one order takes share one
+# time limit (see ``reconciliation_broker``), so a run ends inside the task's 45 second
+# soft time limit however many of its orders need the history as well.
 RUN_BUDGET_SECONDS = 30.0
 # After this many reads in a row that the broker did not answer, the account is left alone
 # for the rest of the run.
 MAX_FAILED_READS_IN_A_ROW = 3
 UNSCOPED = "unscoped"
+# Outcomes that are about one order, not about the broker being unreachable: its record is
+# missing or refused, an unknown submission still has no single matching record, the
+# broker refuses the read of it, or its settlement cannot be saved. An order that ends an
+# attempt this way while its wait is already the longest will not settle by waiting, and
+# is raised as a risk event.
+ORDER_NOT_SETTLING_OUTCOMES = frozenset(
+    {
+        "broker_answer_refused",
+        NO_BROKER_RECORD,
+        "unresolved",
+        "broker_rejected_read",
+        "local_error",
+    }
+)
+# An order that goes on not settling is raised again after this long, not on every attempt.
+RAISE_AGAIN_AFTER = timedelta(hours=24)
+ORDER_NOT_SETTLING_MESSAGE = (
+    "The broker's record of this order cannot be used to settle it. "
+    "The order stays open here and its cash stays reserved; check it at the broker."
+)
 
 
 class _Engine(Protocol):
@@ -298,14 +322,22 @@ class ScheduledReconciler:
                 # The engine treats every failed read alike; a stop request is not one.
                 raise broker.failure
 
+            unsettled_reason = getattr(engine, "unsettled_reason", None)
             outcome = self._outcome(
                 order,
                 broker,
                 had_broker_order_id=had_broker_order_id,
                 status_before=status_before,
                 attempt_before=attempt_before,
+                unsettled_reason=unsettled_reason,
             )
-            counted = self._record(order, broker, outcome, had_broker_order_id=had_broker_order_id)
+            counted = await self._record(
+                order,
+                broker,
+                outcome,
+                had_broker_order_id=had_broker_order_id,
+                unsettled_reason=unsettled_reason,
+            )
             if outcome == "not_attempted":
                 await self.db.rollback()
                 return
@@ -337,6 +369,7 @@ class ScheduledReconciler:
         had_broker_order_id: bool,
         status_before: str,
         attempt_before: datetime | None,
+        unsettled_reason: str | None = None,
     ) -> str:
         if broker.failure is not None:
             return failure_outcome(broker.failure)
@@ -349,17 +382,22 @@ class ScheduledReconciler:
             return "settled"
         if had_broker_order_id:
             # The engine records the time of every answer it accepts. An answer it did
-            # not record was one it refused to act on.
-            return "unchanged" if attempt_recorded else "broker_answer_refused"
+            # not record was one it refused to act on, or no record of the order at all.
+            if attempt_recorded:
+                return "unchanged"
+            if unsettled_reason == NO_BROKER_RECORD:
+                return NO_BROKER_RECORD
+            return "broker_answer_refused"
         return "settled" if order.broker_order_id else "unresolved"
 
-    def _record(
+    async def _record(
         self,
         order: Order,
         broker: ReadOnlyBroker,
         outcome: str,
         *,
         had_broker_order_id: bool,
+        unsettled_reason: str | None = None,
     ) -> tuple[str, ...]:
         """Apply the outcome to the order. Returns what to count once it has been saved."""
         if outcome == "not_attempted":
@@ -376,14 +414,19 @@ class ScheduledReconciler:
             return looked_at
 
         retry_after = getattr(broker.failure, "retry_after", None)
-        self._wait_longer(
+        await self._wait_longer(
             order,
             outcome=outcome,
             error_type=type(broker.failure).__name__ if broker.failure is not None else None,
             retry_after=retry_after if outcome == "rate_limited" else None,
+            reason=unsettled_reason,
         )
         if outcome == "unresolved":
             return looked_at
+        if outcome == NO_BROKER_RECORD:
+            # The broker answered every read; it is not unavailable, and nothing failed.
+            broker.failed_reads_in_a_row = 0
+            return (NO_BROKER_RECORD,)
         if outcome == "rate_limited":
             broker.stopped = "rate_limited"
             return (*looked_at, "rate_limited")
@@ -398,13 +441,14 @@ class ScheduledReconciler:
             broker.failed_reads_in_a_row = 0
         return (*looked_at, "failed")
 
-    def _wait_longer(
+    async def _wait_longer(
         self,
         order: Order,
         *,
         outcome: str,
         error_type: str | None,
         retry_after: object,
+        reason: str | None = None,
     ) -> None:
         """Raise the order's backoff level and keep a record of why it is waiting.
 
@@ -420,6 +464,46 @@ class ScheduledReconciler:
             "attempts_in_a_row": level,
             "wait_seconds": backoff_delay_seconds(level),
         }
+        if reason is not None:
+            payload["reason"] = reason
+        if (
+            level >= MAX_BACKOFF_LEVEL
+            and outcome in ORDER_NOT_SETTLING_OUTCOMES
+            and not await self._raised_lately(order, now)
+        ):
+            # Waiting has not helped and will not: say so where an operator looks. It does
+            # not matter how the wait came to be the longest (an outage may have got it
+            # there); what matters is that the order still does not settle now that the
+            # broker answers. Reconciliation itself goes on asking.
+            log.error(
+                "reconciliation.order_not_settling",
+                order_id=str(order.id),
+                broker_order_id=order.broker_order_id,
+                outcome=outcome,
+                reason=reason,
+            )
+            self.db.add(
+                RiskEvent(
+                    id=uuid.uuid4(),
+                    event_type="order_not_settling",
+                    ticker=order.ticker,
+                    signal_id=order.signal_id,
+                    order_id=order.id,
+                    message=ORDER_NOT_SETTLING_MESSAGE,
+                    payload={
+                        "severity": "critical",
+                        "outcome": outcome,
+                        "reason": reason,
+                        "error_type": error_type,
+                        "attempts_in_a_row": level,
+                        "broker_order_id": order.broker_order_id,
+                        "status": order.status,
+                        "side": order.side,
+                        "quantity": str(order.quantity),
+                    },
+                    occurred_at=now,
+                )
+            )
         asked_for = usable_retry_after_seconds(retry_after)
         if asked_for is not None:
             payload["retry_after_seconds"] = asked_for
@@ -433,6 +517,19 @@ class ScheduledReconciler:
                 occurred_at=now,
             )
         )
+
+    async def _raised_lately(self, order: Order, now: datetime) -> bool:
+        """True when this order was already raised as not settling within the last day."""
+        raised = await self.db.execute(
+            select(RiskEvent.id)
+            .where(
+                RiskEvent.order_id == order.id,
+                RiskEvent.event_type == "order_not_settling",
+                RiskEvent.occurred_at > now - RAISE_AGAIN_AFTER,
+            )
+            .limit(1)
+        )
+        return raised.scalar_one_or_none() is not None
 
     async def _record_local_failure(self, order_id: Any, failure: Exception) -> None:
         """After a rollback, note in a transaction of its own that this order failed here.
@@ -452,7 +549,7 @@ class ScheduledReconciler:
                 await self.db.rollback()
                 self._count("skipped_locked")
                 return
-            self._wait_longer(
+            await self._wait_longer(
                 order,
                 outcome="local_error",
                 error_type=type(failure).__name__,
@@ -504,7 +601,14 @@ class ScheduledReconciler:
             summary["unknown_submissions_resolved"] = self._counts.get(
                 "unknown_submissions_resolved", 0
             )
-        for name in ("failed", "rate_limited", "skipped_locked", "no_longer_due", "deferred"):
+        for name in (
+            "failed",
+            NO_BROKER_RECORD,
+            "rate_limited",
+            "skipped_locked",
+            "no_longer_due",
+            "deferred",
+        ):
             if self._counts.get(name):
                 summary[name] = self._counts[name]
         if left_for_next_run > 0:

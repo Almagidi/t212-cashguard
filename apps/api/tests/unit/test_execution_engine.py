@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 import app.services.execution_quality as _eq
 from app.broker.protocols import BrokerSubmissionNotTransmitted, BrokerSubmissionRejected
+from app.broker.trading212 import T212APIError
 from app.db.models import (
     Alert,
     AppSettings,
@@ -589,6 +590,254 @@ async def test_reconcile_order_skips_already_filled(db):
     assert order.status == "filled"
     order = await engine.reconcile_order(order)  # no-op: not in accepted/submitted
     assert order.status == "filled"
+
+
+# ── an order that has ended is read from the order history ──────────────────
+
+
+class EndedBroker(WorkingBroker):
+    """An order that has ended: gone from the open orders, present in the history."""
+
+    def __init__(self, *records):
+        self.records = list(records)
+        self.history_reads = []
+        self.open_orders_answer = T212APIError(404, "not found")
+
+    async def get_order_by_id(self, broker_order_id):
+        if isinstance(self.open_orders_answer, BaseException):
+            raise self.open_orders_answer
+        return self.open_orders_answer
+
+    async def get_historical_orders(self, **query):
+        self.history_reads.append(query)
+        return {"items": self.records}
+
+
+def _ended(status="FILLED", *, filled=10, price=101.5):
+    return {
+        "order": {"id": "B-WRK", "status": status, "quantity": 10, "filledQuantity": filled},
+        "fill": {"quantity": filled, "price": price},
+    }
+
+
+async def _working_order(db, broker, *, quantity="10"):
+    engine = ExecutionEngine(db, broker)
+    order = await engine.create_order_intent(
+        ticker="META",
+        side="buy",
+        order_type="market",
+        quantity=Decimal(quantity),
+        estimated_price=Decimal("100"),
+        is_dry_run=False,
+    )
+    order = await engine.submit_order(order)
+    assert order.status == "accepted"
+    return engine, order
+
+
+@pytest.mark.asyncio
+async def test_reconcile_settles_an_ended_order_from_its_history_record(db):
+    broker = EndedBroker(_ended())
+    engine, order = await _working_order(db, broker)
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "filled"
+    assert order.filled_quantity == Decimal("10")
+    assert order.avg_fill_price == Decimal("101.5")
+    assert order.broker_response == _ended()
+    assert engine.unsettled_reason is None
+    assert broker.history_reads == [{"limit": 50}]
+    event = (
+        await db.execute(
+            select(OrderEvent).where(
+                OrderEvent.order_id == order.id, OrderEvent.event_type == "reconciled_fill"
+            )
+        )
+    ).scalar_one()
+    assert event.payload["source"] == "order_history"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_from_history_never_lowers_a_fill_already_known(db):
+    broker = EndedBroker(_ended("CANCELLED", filled=5, price=101))
+    engine, order = await _working_order(db, broker)
+    transition_order_status(order, "partially_filled")
+    order.filled_quantity = Decimal("7")
+    order.avg_fill_price = Decimal("100")
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "cancelled"
+    assert order.filled_quantity == Decimal("7")
+    assert order.avg_fill_price == Decimal("100")
+
+
+@pytest.mark.asyncio
+async def test_reconcile_with_no_record_anywhere_changes_nothing_and_says_so(db):
+    broker = EndedBroker()
+    engine, order = await _working_order(db, broker)
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "accepted"
+    assert order.last_reconciled_at is None
+    assert order.filled_quantity is None
+    assert engine.unsettled_reason == "no_broker_record"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_says_why_a_record_settled_nothing_and_forgets_it_next_time(db):
+    broker = EndedBroker(_ended(filled=4))
+    engine, order = await _working_order(db, broker)
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "accepted"
+    assert order.last_reconciled_at is None
+    assert engine.unsettled_reason == "filled_quantity_below_order"
+
+    broker.open_orders_answer = {"id": "B-WRK", "status": "WORKING"}
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "accepted"
+    assert order.last_reconciled_at is not None
+    assert engine.unsettled_reason is None
+
+
+@pytest.mark.asyncio
+async def test_reconcile_does_not_read_history_when_the_broker_did_not_answer(db):
+    broker = EndedBroker(_ended())
+    broker.open_orders_answer = RuntimeError("connection reset")
+    engine, order = await _working_order(db, broker)
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "accepted"
+    assert order.last_reconciled_at is None
+    assert engine.unsettled_reason is None
+    assert broker.history_reads == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_does_not_read_history_for_an_order_that_is_still_open(db):
+    broker = EndedBroker(_ended())
+    broker.open_orders_answer = {"id": "B-WRK", "status": "WORKING", "filledQuantity": 0}
+    engine, order = await _working_order(db, broker)
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "accepted"
+    assert broker.history_reads == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_takes_the_records_price_when_it_states_the_fill_already_known(db):
+    broker = EndedBroker(_ended("CANCELLED", filled=5, price=101))
+    engine, order = await _working_order(db, broker)
+    transition_order_status(order, "partially_filled")
+    order.filled_quantity = Decimal("5")
+    order.avg_fill_price = Decimal("100")
+
+    order = await engine.reconcile_order(order)
+
+    assert order.status == "cancelled"
+    assert order.avg_fill_price == Decimal("101")
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({"filledPrice": None}, "fill_price_missing"),
+        ({"filledPrice": "Infinity"}, "fill_price_not_a_number"),
+        (
+            {"status": "CANCELLED", "filledQuantity": None, "filledPrice": None},
+            "filled_quantity_missing",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_an_unknown_submission_is_identified_but_not_settled_by_a_record_that_fails_a_check(
+    db, reconcile_immediately, changes, reason
+):
+    broker = TimeoutAfterTransmissionBroker()
+    engine, order = await _unknown_order(db, broker)
+    broker.history = [_history_item(order, **changes)]
+
+    order = await engine.reconcile_unknown_submission(order)
+
+    assert order.status == "submission_unknown"
+    assert order.broker_order_id == "BROKER-77"
+    assert order.avg_fill_price is None
+    assert order.filled_at is None
+    event = (
+        await db.execute(
+            select(OrderEvent).where(OrderEvent.event_type == "unknown_submission_identified")
+        )
+    ).scalar_one()
+    assert event.payload["not_settled_because"] == reason
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_submission_is_not_given_the_id_of_a_record_about_another_order(
+    db, reconcile_immediately
+):
+    broker = TimeoutAfterTransmissionBroker()
+    engine, order = await _unknown_order(db, broker)
+    # The matcher reads the flat quantity; read in full, the record states another one too.
+    broker.history = [_history_item(order, orderedQuantity=float(order.quantity) + 1)]
+
+    order = await engine.reconcile_unknown_submission(order)
+
+    assert order.status == "submission_unknown"
+    assert order.broker_order_id is None
+    assert order.last_reconciled_at is not None
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_submission_settled_long_after_dispatch_keeps_storable_latencies(
+    db, reconcile_immediately
+):
+    broker = TimeoutAfterTransmissionBroker()
+    engine, order = await _unknown_order(db, broker)
+    broker.history = [_history_item(order)]
+    order.submitted_at = order.submitted_at - timedelta(days=40)
+
+    order = await engine.reconcile_unknown_submission(order)
+
+    assert order.status == "filled"
+    assert order.reconciliation_latency_ms == 2_147_483_647
+    assert order.fill_latency_ms == 2_147_483_647
+
+
+class EchoingBroker(WorkingBroker):
+    """Answers with the quantity as the broker stores it: eight decimal places."""
+
+    async def place_market_order(self, ticker, quantity, time_validity="DAY"):
+        return {
+            "id": "B-ECHO",
+            "status": "WORKING",
+            "ticker": ticker,
+            "quantity": round(float(quantity), 8),
+        }
+
+
+@pytest.mark.asyncio
+async def test_an_order_quantity_finer_than_the_stored_scale_still_matches_its_echo(db):
+    engine = ExecutionEngine(db, EchoingBroker())
+    order = await engine.create_order_intent(
+        ticker="META",
+        side="buy",
+        order_type="market",
+        quantity=Decimal("0.123456789"),
+        estimated_price=Decimal("100"),
+        is_dry_run=False,
+    )
+
+    order = await engine.submit_order(order)
+
+    assert order.status == "accepted"
+    assert order.broker_order_id == "B-ECHO"
 
 
 # ── cancel_order coverage ─────────────────────────────────────────────────────
