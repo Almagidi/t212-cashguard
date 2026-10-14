@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -144,6 +145,38 @@ class RuntimeBoundaryContracts(unittest.TestCase):
             "https://nginx/grafana/",
         )
 
+    def test_missing_public_origin_does_not_block_restoring_application(self):
+        result = render_compose(missing="PUBLIC_ORIGIN")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            json.loads(result.stdout)["services"]["grafana"]["environment"][
+                "GF_SERVER_ROOT_URL"
+            ],
+            "/grafana/",
+        )
+
+    def test_nginx_request_time_dns_and_auth_limits(self):
+        source = (ROOT / "infra/nginx/nginx.conf").read_text()
+        route = source.split("location /grafana/ {", 1)[1].split("}", 1)[0]
+        for required in (
+            "resolver 127.0.0.11 valid=10s ipv6=off;",
+            "resolver_timeout 3s;",
+            "set $grafana_upstream http://grafana:3000;",
+            "proxy_pass $grafana_upstream;",
+            "limit_req zone=grafana_login burst=3 nodelay;",
+            "limit_req zone=grafana burst=60 nodelay;",
+            "limit_req_status 429;",
+        ):
+            self.assertIn(required, route)
+        self.assertIn("~^/grafana/login/?$ $binary_remote_addr;", source)
+        self.assertIn("zone=grafana_login:1m rate=5r/m;", source)
+        self.assertNotIn("server grafana:", source)
+
+    def test_basic_auth_cannot_bypass_login_limit(self):
+        self.assertEqual(
+            self.services["grafana"]["environment"]["GF_AUTH_BASIC_ENABLED"], "false"
+        )
+
     def test_only_nginx_publishes_host_ports(self):
         for name, service in self.services.items():
             with self.subTest(service=name):
@@ -176,7 +209,7 @@ class RuntimeBoundaryContracts(unittest.TestCase):
 
     def test_missing_required_secrets_refuse_rendering_without_echoing_values(self):
         for key in SYNTHETIC:
-            if key in ("APP_MODE", "LIVE_TRADING_ENABLED"):
+            if key in ("APP_MODE", "LIVE_TRADING_ENABLED", "PUBLIC_ORIGIN"):
                 continue
             with self.subTest(key=key):
                 result = render_compose(missing=key)
@@ -187,6 +220,69 @@ class RuntimeBoundaryContracts(unittest.TestCase):
                         continue
                     self.assertNotIn(sentinel, result.stderr)
                 self.assertEqual(result.stdout, "")
+
+
+class IdentityOutputContracts(unittest.TestCase):
+    def test_fixture_docker_client_does_not_receive_password_in_argv(self):
+        from runtime_probe import docker
+
+        secret = SYNTHETIC["GRAFANA_PASSWORD"]
+        with patch(
+            "runtime_probe.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ) as runner:
+            docker("run", "-e", "GF_SECURITY_ADMIN_PASSWORD=" + secret, "fixture-image")
+        invocation = runner.call_args.args[0]
+        self.assertFalse(
+            any(secret in item for item in invocation),
+            "Fixture credential in Docker client argv",
+        )
+        self.assertTrue(
+            runner.call_args.kwargs["env"]["GF_SECURITY_ADMIN_PASSWORD"] == secret,
+            "Literal fixture environment changed",
+        )
+
+    def test_complete_supported_cli_identity_output(self):
+        # Exercise the exact source shell gate, not a copied parser. These are
+        # CLI-output fixtures; API normalization is a separate runtime fact.
+        source = (ROOT / "infra/grafana/start-grafana.sh").read_text()
+        start = source.index("# Only the known single-admin identity")
+        end = source.index("\nreset 1\nchanged\n", start)
+        gate = "fail() { exit 1; };\n" + source[start:end]
+        heading = "Please try to run the command again specifying a user-id (--user-id) from the list below:"
+        fixtures = [
+            ("\t Username: admin ID: 1\n", True),
+            ("\t Username: admin ID: 1\nx ID: 1\n", False),
+            (
+                "\t Username: admin ID: 1\n\t Username: Please try to run the command again specifying a user-id ID: 2\n",
+                False,
+            ),
+            ("\t Username: " + heading + "\nUsername: admin ID: 1\n", False),
+            ("\t Username: admin ID: 2\n", False),
+            ("\t Username: admin ID: 1\n\t Username: admin ID: 1\n", False),
+            ("", False),
+        ]
+        with tempfile.TemporaryDirectory(prefix="cg-identity-output-") as temporary:
+            private = Path(temporary)
+            for rows, accepted in fixtures:
+                with self.subTest(accepted=accepted, rows=rows):
+                    result_file = private / "result"
+                    result_file.write_text(
+                        "Admin user cannot be found\n" + heading + "\n" + rows
+                    )
+                    result_file.chmod(0o600)
+                    result = subprocess.run(
+                        ["sh", "-c", gate],
+                        env={
+                            "PATH": os.environ["PATH"],
+                            "LC_ALL": "C",
+                            "private_dir": str(private),
+                        },
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    self.assertEqual(result.returncode == 0, accepted)
 
 
 class CleanupFailureContracts(unittest.TestCase):
@@ -233,6 +329,30 @@ class CleanupFailureContracts(unittest.TestCase):
 
     def test_cleanup_refuses_resources_without_this_run_label(self):
         self.exercise_failure("unowned")
+
+    def test_container_removal_failure_does_not_skip_owned_volume_cleanup(self):
+        from runtime_probe import cleanup_owned
+
+        calls = []
+
+        def fake(*args, **kwargs):
+            calls.append(args)
+            if "inspect" in args:
+                metadata = {"Labels": {"cashguard.run": "test-run"}}
+                if args[0] == "container":
+                    metadata = {"Config": metadata}
+                return subprocess.CompletedProcess(args, 0, json.dumps([metadata]), "")
+            if args[:2] == ("rm", "-f"):
+                return subprocess.CompletedProcess(args, 1, "", "injected failure")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with patch("runtime_probe.docker", side_effect=fake):
+            with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
+                cleanup_owned(["container"], [], "test-run", ["volume"])
+        self.assertIn(("volume", "rm", "volume"), calls)
+        self.assertIn(
+            ("volume", "ls", "-q", "--filter", "label=cashguard.run=test-run"), calls
+        )
 
 
 if __name__ == "__main__":
