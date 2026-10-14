@@ -43,7 +43,8 @@ async def test_demo_order_route_blocks_by_default_before_broker_submission(
         json={
             "ticker": "AAPL",
             "side": "buy",
-            "order_type": "market",
+            "order_type": "limit",
+            "limit_price": "100",
             "quantity": "1",
             "time_validity": "DAY",
         },
@@ -123,7 +124,8 @@ async def test_demo_order_route_returns_429_when_preflight_account_summary_is_ra
         json={
             "ticker": "AAPL_US_EQ",
             "side": "buy",
-            "order_type": "market",
+            "order_type": "limit",
+            "limit_price": "100",
             "quantity": "0.01",
             "time_validity": "DAY",
         },
@@ -187,6 +189,9 @@ async def test_demo_order_route_uses_normalised_trading212_cash_for_risk_checks(
                 "currencyCode": "GBP",
             }
 
+        async def get_positions(self):
+            return []
+
         async def place_market_order(self, ticker, quantity, time_validity="DAY"):
             self.calls.append((ticker, quantity, time_validity))
             return {
@@ -195,6 +200,9 @@ async def test_demo_order_route_uses_normalised_trading212_cash_for_risk_checks(
                 "filledQuantity": 0,
                 "filledPrice": 0,
             }
+
+        async def place_limit_order(self, ticker, quantity, _limit_price, time_validity="DAY"):
+            return await self.place_market_order(ticker, quantity, time_validity)
 
     broker = BrokerWithNestedTrading212Cash()
 
@@ -209,7 +217,8 @@ async def test_demo_order_route_uses_normalised_trading212_cash_for_risk_checks(
         json={
             "ticker": "AAPL_US_EQ",
             "side": "buy",
-            "order_type": "market",
+            "order_type": "limit",
+            "limit_price": "100",
             "quantity": "0.01",
             "time_validity": "DAY",
         },

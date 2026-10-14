@@ -13,7 +13,8 @@ from app.db.models import AppSettings, Order, OrderSubmissionAttempt
 ORDER = {
     "ticker": "AAPL_US_EQ",
     "side": "buy",
-    "order_type": "market",
+    "order_type": "limit",
+    "limit_price": "100",
     "quantity": "0.01",
     "time_validity": "DAY",
 }
@@ -42,9 +43,15 @@ class LostResponseBroker:
             "currencyCode": "GBP",
         }
 
+    async def get_positions(self):
+        return []
+
     async def place_market_order(self, ticker, quantity, time_validity="DAY"):
         self.posts.append((ticker, quantity))
         raise httpx.ReadTimeout("response lost after the broker accepted the order")
+
+    async def place_limit_order(self, ticker, quantity, _limit_price, time_validity="DAY"):
+        return await self.place_market_order(ticker, quantity, time_validity)
 
     async def cancel_order(self, broker_order_id):
         self.cancel_calls.append(broker_order_id)

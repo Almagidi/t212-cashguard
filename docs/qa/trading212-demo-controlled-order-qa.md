@@ -62,3 +62,6 @@ Total focused test result:
 Controlled Trading 212 demo broker-backed order validation accepted.
 
 This was demo-only. Live trading remained disabled.
+
+
+`T212_DEMO_ORDER_LIMIT_PRICE` is required: the controlled order is a limit buy at that price, because the API refuses a market buy (it has no price to check against cash and risk limits; N-02). Choose a limit at or near the current price.

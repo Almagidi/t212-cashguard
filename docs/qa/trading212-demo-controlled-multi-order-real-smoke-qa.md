@@ -17,7 +17,7 @@ Capture real Trading 212 DEMO evidence from the controlled multi-order placement
 Command:
 
 T212_DEMO_MULTI_ORDER_CONFIRM=PLACE_MULTI_DEMO_ORDERS
-T212_DEMO_MULTI_ORDER_PLAN="AAPL_US_EQ:0.01,MSFT_US_EQ:0.01"
+T212_DEMO_MULTI_ORDER_PLAN="AAPL_US_EQ:0.01@250,MSFT_US_EQ:0.01@500"
 make t212-demo-controlled-multi-order
 
 Result:
@@ -115,3 +115,6 @@ The next check should be read-only only:
 1. Check pending orders again.
 2. If no longer pending, rerun the multi-order reconciliation smoke.
 3. Capture whether the order reconciles to filled, cancelled, or expired from Trading 212 history.
+
+
+Each plan item is `TICKER:QUANTITY@LIMIT`: the orders are limit buys, because the API refuses a market buy (it has no price to check against cash and risk limits; N-02). Choose limits at or near the current price.
