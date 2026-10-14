@@ -626,8 +626,12 @@ async def test_cancel_order_failure_records_safe_error_without_claiming_cancelle
         await engine.cancel_order(order)
     order = exc_info.value.order
 
-    assert order.status == "error"
+    # The broker did not confirm the cancellation, so the order may still be open there:
+    # it stays open here too, for reconciliation to settle. (It used to be marked "error",
+    # which is final and hid an order that could still fill.)
+    assert order.status == "accepted"
     assert order.cancelled_at is None
+    assert order.rejected_at is None
     assert order.error_message == "Broker request failed with RuntimeError."
     event = (
         await db.execute(select(OrderEvent).where(OrderEvent.event_type == "cancel_failed"))

@@ -163,6 +163,7 @@ def _reset_worker_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", True)
     monkeypatch.setattr(tasks, "_LOOP", None)
     monkeypatch.setattr("app.core.redis.task_lock", _acquired_task_lock)
+    monkeypatch.setattr("app.core.redis.exclusive_task_lock", _acquired_task_lock)
     monkeypatch.setattr("app.broker.trading212.Trading212Adapter", RecordingTrading212Adapter)
     monkeypatch.setattr("app.execution.engine.ExecutionEngine", RecordingExecutionEngine)
 
@@ -254,6 +255,106 @@ def _install_session(
     monkeypatch.setattr(tasks, "_complete_task", complete_task)
 
 
+class ScriptedReconciler:
+    """Stands in for the scheduled reconciler: hands scripted orders to the engine.
+
+    Which orders are selected, and how each is locked and saved, is covered against a real
+    database in tests/integration/test_scheduled_reconciliation_*.py. These tests are
+    about the gates in front of the provider and what the task passes on.
+    """
+
+    script: ClassVar[tuple[list[Any], list[Any]]] = ([], [])
+    runs: ClassVar[list[dict[str, Any]]] = []
+    asked: ClassVar[list[str]] = []
+
+    def __init__(self, db: Any, **options: Any) -> None:
+        self.db = db
+        self.options = options
+
+    async def run(self, accounts: Any, *, active_connection_count: int) -> dict[str, Any]:
+        from app.services.reconciliation_broker import ReadOnlyBroker
+
+        active, unknown = self.script
+        self.runs.append(
+            {
+                "accounts": list(accounts),
+                "active_connection_count": active_connection_count,
+                **self.options,
+            }
+        )
+        (account,) = accounts
+        broker = ReadOnlyBroker(account.broker, account_scope=account.account_scope)
+        engine = self.options["engine_factory"](self.db, broker)
+        for order in active:
+            await engine.reconcile_order(order)
+        for order in unknown:
+            await engine.reconcile_unknown_submission(order)
+        summary: dict[str, Any] = {"reconciled": len(active)}
+        if unknown:
+            summary["unknown_submissions"] = len(unknown)
+            summary["unknown_submissions_resolved"] = 0
+        return summary
+
+
+def _reconcile_session(monkeypatch: pytest.MonkeyPatch, script: list[Any]) -> FakeSession:
+    """A session for the reconciler, with its queue answered from ``script``.
+
+    ``script`` is [orphans, active orders, unknown submissions, connection (optional)].
+    The session itself has no scripted results, so any query the task runs outside the
+    queue functions fails the test.
+    """
+    orphans, active, unknown = script[0], script[1], script[2]
+    connections = [script[3]] if len(script) > 3 and script[3] is not None else []
+
+    asked: list[str] = []
+
+    async def report_orphans(_db: Any, _now: Any) -> int:
+        asked.append("orphans")
+        return len(orphans)
+
+    async def count_awaiting(_db: Any, _environment: str) -> int:
+        asked.append("awaiting")
+        return len(active) + len(unknown)
+
+    async def none_without_environment(_db: Any) -> int:
+        asked.append("no_environment")
+        return 0
+
+    async def connections_for(_db: Any, _environment: str) -> list[Any]:
+        asked.append("connections")
+        return connections
+
+    ScriptedReconciler.script = (list(active), list(unknown))
+    ScriptedReconciler.runs = []
+    ScriptedReconciler.asked = asked
+    queue = "app.services.reconciliation_queue"
+    monkeypatch.setattr(f"{queue}.report_orphaned_submissions", report_orphans)
+    monkeypatch.setattr(f"{queue}.count_awaiting_reconciliation", count_awaiting)
+    monkeypatch.setattr(f"{queue}.count_awaiting_without_environment", none_without_environment)
+    monkeypatch.setattr(f"{queue}.active_connections", connections_for)
+    monkeypatch.setattr(
+        "app.services.scheduled_reconciliation.ScheduledReconciler", ScriptedReconciler
+    )
+    return FakeSession(results=[])
+
+
+def _session_for(
+    monkeypatch: pytest.MonkeyPatch, task_name: str, results: list[Any]
+) -> FakeSession:
+    if task_name == "reconcile_pending_orders":
+        return _reconcile_session(monkeypatch, results)
+    return FakeSession(results=results)
+
+
+def _assert_only_expected_queries(fake_db: FakeSession, task_name: str, asked: list[str]) -> None:
+    """The cancel task consumed exactly its scripted queries; the reconciler ran no query
+    of its own and asked its queue exactly these questions, in this order."""
+    assert fake_db.results == []
+    if task_name == "reconcile_pending_orders":
+        assert fake_db.executed == []
+        assert ScriptedReconciler.asked == asked
+
+
 def _install_decrypt(monkeypatch: pytest.MonkeyPatch) -> None:
     lookup = {
         "encrypted-live-active-key": "decrypted-live-key",
@@ -319,7 +420,7 @@ def test_order_workers_skip_safely_in_mock_mode_without_constructing_adapter(
 ) -> None:
     summaries: list[tuple[str, dict[str, Any]]] = []
     provider_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-    fake_db = FakeSession(results=results)
+    fake_db = _session_for(monkeypatch, task_name, results)
     _install_session(monkeypatch, fake_db, summaries)
     _install_adapter_sentinel(monkeypatch)
     _install_provider_sentinel(monkeypatch, provider_calls)
@@ -327,8 +428,8 @@ def test_order_workers_skip_safely_in_mock_mode_without_constructing_adapter(
 
     assert run_task() == expected
 
-    # Mock mode skips adapter construction after the existing query sequence.
-    assert fake_db.results == []
+    # Mock mode skips adapter construction.
+    _assert_only_expected_queries(fake_db, task_name, ["orphans", "no_environment"])
     assert summaries == [(task_name, expected)]
     assert provider_calls == []
     assert RecordingTrading212Adapter.constructed == []
@@ -362,7 +463,7 @@ def test_order_workers_skip_safely_when_no_candidate_orders_exist(
 ) -> None:
     summaries: list[tuple[str, dict[str, Any]]] = []
     provider_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-    fake_db = FakeSession(results=results)
+    fake_db = _session_for(monkeypatch, task_name, results)
     _install_session(monkeypatch, fake_db, summaries)
     _install_adapter_sentinel(monkeypatch)
     _install_provider_sentinel(monkeypatch, provider_calls)
@@ -370,7 +471,7 @@ def test_order_workers_skip_safely_when_no_candidate_orders_exist(
     assert run_task() == expected
 
     assert summaries == [(task_name, expected)]
-    assert fake_db.results == []
+    _assert_only_expected_queries(fake_db, task_name, ["orphans", "no_environment", "awaiting"])
     assert provider_calls == []
     assert RecordingTrading212Adapter.constructed == []
     _assert_no_adapter_context_entered()
@@ -402,14 +503,16 @@ def test_order_workers_skip_safely_when_no_active_connection_exists(
 ) -> None:
     summaries: list[tuple[str, dict[str, Any]]] = []
     provider_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-    fake_db = FakeSession(results=results)
+    fake_db = _session_for(monkeypatch, task_name, results)
     _install_session(monkeypatch, fake_db, summaries)
     _install_adapter_sentinel(monkeypatch)
     _install_provider_sentinel(monkeypatch, provider_calls)
 
     assert run_task() == expected
 
-    assert fake_db.results == []
+    _assert_only_expected_queries(
+        fake_db, task_name, ["orphans", "no_environment", "awaiting", "connections"]
+    )
     assert summaries == [(task_name, expected)]
     assert provider_calls == []
     assert RecordingTrading212Adapter.constructed == []
@@ -447,7 +550,7 @@ def test_order_workers_mark_reconnect_required_when_credential_decryption_fails(
     summaries: list[tuple[str, dict[str, Any]]] = []
     provider_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     reconnect_calls: list[tuple[FakeSession, Any, str, str]] = []
-    fake_db = FakeSession(results=results)
+    fake_db = _session_for(monkeypatch, task_name, results)
     expected_conn = results[-1]
     _install_session(monkeypatch, fake_db, summaries)
     _install_adapter_sentinel(monkeypatch)
@@ -464,7 +567,9 @@ def test_order_workers_mark_reconnect_required_when_credential_decryption_fails(
 
     assert run_task() == expected
 
-    assert fake_db.results == []
+    _assert_only_expected_queries(
+        fake_db, task_name, ["orphans", "no_environment", "awaiting", "connections"]
+    )
     assert summaries == [(task_name, expected)]
     assert reconnect_calls == [
         (fake_db, expected_conn, "cannot decrypt active worker credentials", actor)
@@ -512,7 +617,7 @@ def test_order_workers_do_not_construct_adapter_when_environment_gate_rejects(
     summaries: list[tuple[str, dict[str, Any]]] = []
     provider_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     gate_calls: list[tuple[str, str]] = []
-    fake_db = FakeSession(results=results)
+    fake_db = _session_for(monkeypatch, task_name, results)
     _install_session(monkeypatch, fake_db, summaries)
     _install_adapter_sentinel(monkeypatch)
     _install_provider_sentinel(monkeypatch, provider_calls)
@@ -528,7 +633,9 @@ def test_order_workers_do_not_construct_adapter_when_environment_gate_rejects(
 
     assert run_task() == expected
 
-    assert fake_db.results == []
+    _assert_only_expected_queries(
+        fake_db, task_name, ["orphans", "no_environment", "awaiting", "connections"]
+    )
     assert gate_calls == [("live", action)]
     assert summaries == [(task_name, expected)]
     assert provider_calls == []
@@ -576,7 +683,7 @@ def test_order_workers_do_not_construct_adapter_on_live_disabled_mismatch(
 ) -> None:
     summaries: list[tuple[str, dict[str, Any]]] = []
     provider_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-    fake_db = FakeSession(results=results)
+    fake_db = _session_for(monkeypatch, task_name, results)
     _install_session(monkeypatch, fake_db, summaries)
     _install_adapter_sentinel(monkeypatch)
     _install_provider_sentinel(monkeypatch, provider_calls)
@@ -585,7 +692,9 @@ def test_order_workers_do_not_construct_adapter_on_live_disabled_mismatch(
 
     assert run_task() == expected
 
-    assert fake_db.results == []
+    _assert_only_expected_queries(
+        fake_db, task_name, ["orphans", "no_environment", "awaiting", "connections"]
+    )
     assert summaries == [(task_name, expected)]
     assert provider_calls == []
     assert RecordingTrading212Adapter.constructed == []
@@ -620,7 +729,7 @@ def test_reconcile_pending_orders_calls_provider_after_all_gates_and_reconciles_
     ]
     conn = _active_conn(environment=environment)
     summaries: list[tuple[str, dict[str, Any]]] = []
-    fake_db = FakeSession(results=[[], selected_orders, [], conn])
+    fake_db = _reconcile_session(monkeypatch, [[], selected_orders, [], conn])
     events: list[str] = []
     provider_calls: list[dict[str, Any]] = []
     _install_session(monkeypatch, fake_db, summaries)
@@ -666,7 +775,11 @@ def test_reconcile_pending_orders_calls_provider_after_all_gates_and_reconciles_
 
     assert tasks.reconcile_pending_orders.run() == {"reconciled": 2}
 
-    assert fake_db.results == []
+    _assert_only_expected_queries(
+        fake_db,
+        "reconcile_pending_orders",
+        ["orphans", "no_environment", "awaiting", "connections"],
+    )
     assert events == [f"gate:{environment}:worker reconcile", f"provider:{environment}"]
     assert provider_calls == [
         {
@@ -693,6 +806,13 @@ def test_reconcile_pending_orders_calls_provider_after_all_gates_and_reconciles_
     assert RecordingExecutionEngine.cancel_calls == []
     assert RecordingTrading212Adapter.write_calls == []
     assert summaries == [("reconcile_pending_orders", {"reconciled": 2})]
+    (run,) = ScriptedReconciler.runs
+    assert run["environment"] == app_mode
+    assert run["active_connection_count"] == 1
+    assert run["engine_factory"] is RecordingExecutionEngine
+    (account,) = run["accounts"]
+    assert isinstance(account.broker, RecordingTrading212Adapter)
+    assert account.account_scope is None, "a connection without an account id has no scope"
 
 
 def test_reconcile_pending_orders_provider_validation_error_uses_skipped_summary(
@@ -700,7 +820,9 @@ def test_reconcile_pending_orders_provider_validation_error_uses_skipped_summary
 ) -> None:
     selected_orders = [_order(broker_order_id="broker-1")]
     summaries: list[tuple[str, dict[str, Any]]] = []
-    fake_db = FakeSession(results=[[], selected_orders, [], _active_conn(environment="live")])
+    fake_db = _reconcile_session(
+        monkeypatch, [[], selected_orders, [], _active_conn(environment="live")]
+    )
     _install_session(monkeypatch, fake_db, summaries)
     _install_decrypt(monkeypatch)
     _install_adapter_sentinel(monkeypatch)
@@ -718,7 +840,11 @@ def test_reconcile_pending_orders_provider_validation_error_uses_skipped_summary
         "reason": "provider refused worker reconcile",
     }
 
-    assert fake_db.results == []
+    _assert_only_expected_queries(
+        fake_db,
+        "reconcile_pending_orders",
+        ["orphans", "no_environment", "awaiting", "connections"],
+    )
     assert RecordingExecutionEngine.reconcile_calls == []
     assert RecordingExecutionEngine.brokers == []
     assert RecordingTrading212Adapter.constructed == []
@@ -922,7 +1048,6 @@ def test_order_worker_provider_helper_is_wired_and_direct_references_are_localiz
     reconcile_node = _top_level_function("reconcile_pending_orders")
     cancel_node = _top_level_function("cancel_timed_out_orders")
     migrated_node = _top_level_function("sync_account_snapshot")
-    funding_node = _top_level_function("track_cfd_funding")
     provider_helper_functions = {
         node.name
         for node in tree.body
@@ -935,10 +1060,11 @@ def test_order_worker_provider_helper_is_wired_and_direct_references_are_localiz
     assert "create_trading212_provider_adapter" in ast.unparse(reconcile_node)
     assert "create_trading212_provider_adapter" in ast.unparse(cancel_node)
     assert "create_trading212_provider_adapter" in ast.unparse(migrated_node)
-    assert "create_trading212_provider_adapter" in ast.unparse(funding_node)
+    assert not any(
+        isinstance(node, ast.FunctionDef) and node.name == "track_cfd_funding" for node in tree.body
+    )
     assert provider_helper_functions == {
         "sync_account_snapshot",
-        "track_cfd_funding",
         "reconcile_pending_orders",
         "cancel_timed_out_orders",
     }
@@ -951,8 +1077,8 @@ def test_reconcile_pending_orders_reconciles_unknown_submissions_without_writing
 ) -> None:
     unknown = _order(broker_order_id=None, status="submission_unknown")
     summaries: list[tuple[str, dict[str, Any]]] = []
-    # orphan query, acknowledged active orders, unknown submissions, broker connection
-    fake_db = FakeSession(results=[[], [], [unknown], _active_conn(environment="live")])
+    # orphans, acknowledged active orders, unknown submissions, broker connection
+    fake_db = _reconcile_session(monkeypatch, [[], [], [unknown], _active_conn(environment="live")])
     _install_session(monkeypatch, fake_db, summaries)
     _install_decrypt(monkeypatch)
 
@@ -962,7 +1088,11 @@ def test_reconcile_pending_orders_reconciles_unknown_submissions_without_writing
         "unknown_submissions_resolved": 0,
     }
 
-    assert fake_db.results == []
+    _assert_only_expected_queries(
+        fake_db,
+        "reconcile_pending_orders",
+        ["orphans", "no_environment", "awaiting", "connections"],
+    )
     assert RecordingExecutionEngine.unknown_submission_calls == [unknown]
     assert RecordingExecutionEngine.reconcile_calls == []
     assert RecordingExecutionEngine.cancel_calls == []

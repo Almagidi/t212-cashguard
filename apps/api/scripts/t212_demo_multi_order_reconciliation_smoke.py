@@ -21,6 +21,7 @@ from app.broker.trading212 import (
     T212RateLimitError,
     Trading212Adapter,
 )
+from app.core.redis import TaskLockUnavailable
 from app.core.serialization import to_jsonable
 from app.db.session import AsyncSessionLocal
 from app.services.demo_reconciliation_worker import DemoReconciliationWorker
@@ -128,6 +129,12 @@ async def main() -> int:
     except SafetyPolicyViolation as exc:
         print(f"Safety gate refused smoke run: {exc.reason}")
         return 2
+    except TaskLockUnavailable as exc:
+        print(f"Reconciliation did not run: {exc}")
+        return 1
+    except TimeoutError:
+        print("Reconciliation was stopped at its time limit; its unsaved work was discarded.")
+        return 1
     except T212RateLimitError as exc:
         print(f"Rate limited by Trading 212 demo API. Retry after {exc.retry_after}s.")
         return 3

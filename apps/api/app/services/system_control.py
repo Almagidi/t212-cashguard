@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, cast
 
+import structlog
 from sqlalchemy import select
 
 from app.broker.provider import (
@@ -21,9 +22,10 @@ from app.broker.provider import (
 )
 from app.core.config import settings
 from app.core.security import CredentialDecryptionError, decrypt_field
-from app.db.models import AppSettings, AuditLog, BrokerConnection
+from app.db.models import AppSettings, AuditLog, BrokerConnection, Order, OrderEvent
 from app.db.repositories import OrderRepository
 from app.execution.engine import ExecutionEngine, OrderCancellationFailed
+from app.execution.state_machine import InvalidOrderTransition, require_already_finished
 from app.risk.engine import activate_kill_switch
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
 from app.services.live_readiness import LiveReadinessService
@@ -35,6 +37,8 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+log = structlog.get_logger()
+
 
 class SystemControlError(Exception):
     """Raised when a system-control operation cannot be completed safely."""
@@ -44,17 +48,47 @@ class SystemControlError(Exception):
 class CancellationSummary:
     cancelled: int
     failed: int
+    # Orders that were listed as pending but had ended (filled, rejected) by the time
+    # their turn came. There was nothing left to cancel.
+    already_finished: int = 0
+    # Which orders those were, and which still need attention, so that the operator does
+    # not have to go looking: "TICKER" for a failed cancellation, "TICKER status" for an
+    # order that had ended. A fill among them is exposure the cancel did not prevent.
+    failed_orders: tuple[str, ...] = ()
+    finished_orders: tuple[str, ...] = ()
 
     @property
     def message(self) -> str:
-        if self.cancelled == 0 and self.failed == 0:
+        if self.cancelled == 0 and self.failed == 0 and self.already_finished == 0:
             return "No pending orders to cancel."
+        finished = ""
+        if self.already_finished:
+            finished = f" {self.already_finished} had already finished" + (
+                f" ({', '.join(self.finished_orders)})." if self.finished_orders else "."
+            )
         if self.failed:
+            still_open = f" ({', '.join(self.failed_orders)})" if self.failed_orders else ""
             return (
                 f"Cancelled {self.cancelled} pending orders; {self.failed} cancellation "
-                "attempts require reconciliation."
+                f"attempts require reconciliation{still_open}.{finished}"
             )
-        return f"Cancelled {self.cancelled} pending orders."
+        return f"Cancelled {self.cancelled} pending orders.{finished}"
+
+
+@dataclass(frozen=True)
+class FlattenSummary:
+    message: str
+    # True when the safety policy (the kill switch, live readiness) did not allow an exit
+    # order to be sent. Nothing after that point was attempted.
+    refused: bool
+    # Exit orders the broker accepted.
+    flattened: int = 0
+    # True when no exit request left this process at all: none accepted, none failed at
+    # the broker, none with an unknown outcome.
+    nothing_went_out: bool = True
+    # False when anything is left for the operator: a refusal, a failed exit, or an exit
+    # whose outcome is unknown.
+    complete: bool = True
 
 
 class SystemControlService:
@@ -236,13 +270,24 @@ class SystemControlService:
 
         cancelled = 0
         failed = 0
+        # An order can end (a fill recorded by reconciliation, say) between being listed
+        # and being reached. That is not a reason to stop: the orders after it still have
+        # to be cancelled, and the cancellations already made still have to be saved.
+        already_finished = 0
+        failed_orders: list[Order] = []
+        finished_orders: list[Order] = []
         paper_orders = [order for order in orders if order.is_dry_run]
         external_orders = [order for order in orders if not order.is_dry_run]
         if paper_orders:
             paper_engine = ExecutionEngine(self.db, None)
             for order in paper_orders:
-                await paper_engine.cancel_order(order)
-                cancelled += 1
+                try:
+                    await paper_engine.cancel_order(order)
+                    cancelled += 1
+                except InvalidOrderTransition:
+                    require_already_finished(order)
+                    already_finished += 1
+                    finished_orders.append(order)
 
         if external_orders:
             broker = await self._get_broker("operator_system_control_emergency")
@@ -254,6 +299,11 @@ class SystemControlService:
                         cancelled += 1
                     except OrderCancellationFailed:
                         failed += 1
+                        failed_orders.append(order)
+                    except InvalidOrderTransition:
+                        require_already_finished(order)
+                        already_finished += 1
+                        finished_orders.append(order)
 
         audit_payload: dict[str, Any] = {
             "source": "system_control",
@@ -261,6 +311,21 @@ class SystemControlService:
         }
         if failed:
             audit_payload["failed_count"] = failed
+            audit_payload["failed_orders"] = [
+                {"order_id": str(order.id), "ticker": order.ticker} for order in failed_orders
+            ]
+        if already_finished:
+            audit_payload["already_finished_count"] = already_finished
+            audit_payload["already_finished_orders"] = [
+                {"order_id": str(order.id), "ticker": order.ticker, "status": order.status}
+                for order in finished_orders
+            ]
+        if failed or already_finished:
+            log.warning(
+                "system_control.cancel_all_needs_attention",
+                failed=[str(order.id) for order in failed_orders],
+                already_finished={str(order.id): order.status for order in finished_orders},
+            )
         self.db.add(
             AuditLog(
                 action="emergency_cancel_all",
@@ -269,14 +334,27 @@ class SystemControlService:
                 occurred_at=datetime.now(UTC),
             )
         )
-        return CancellationSummary(cancelled=cancelled, failed=failed)
+        return CancellationSummary(
+            cancelled=cancelled,
+            failed=failed,
+            already_finished=already_finished,
+            failed_orders=tuple(order.ticker for order in failed_orders),
+            finished_orders=tuple(f"{order.ticker} {order.status}" for order in finished_orders),
+        )
 
     async def flatten_all(self, actor: str) -> str:
+        return (await self.flatten_all_summary(actor)).message
+
+    async def flatten_all_summary(self, actor: str) -> FlattenSummary:
         broker = await self._get_broker("operator_system_control_emergency")
         flattened = 0
         unconfirmed = 0
         failed = 0
         already_open = 0
+        refused_reason: str | None = None
+        still_open: list[str] = []
+        unconfirmed_tickers: list[str] = []
+        failed_tickers: list[str] = []
         async with broker as active_broker:
             positions = await active_broker.get_positions()
             engine = ExecutionEngine(self.db, active_broker)
@@ -284,6 +362,11 @@ class SystemControlService:
                 qty = Decimal(str(position.get("quantity", 0)))
                 if qty <= 0:
                     continue
+                if refused_reason is not None:
+                    # Nothing more is attempted after a refusal; the position is named.
+                    still_open.append(str(position["ticker"]))
+                    continue
+                asked_at = datetime.now(UTC)
                 order = await engine.create_order_intent(
                     ticker=position["ticker"],
                     side="sell",
@@ -295,28 +378,59 @@ class SystemControlService:
                     ),
                 )
                 if order.status == "pending_intent":
-                    order = await engine.submit_order(order)
+                    try:
+                        order = await engine.submit_order(order)
+                    except SafetyPolicyViolation as exc:
+                        # Trading is halted, or not ready: the exit may not be sent. Say
+                        # so, close the intent that was not sent, and stop. Raising from
+                        # here would turn the refusal into an error page and discard the
+                        # record of it. Only an intent this call created is closed: one
+                        # that was already there belongs to whoever made it.
+                        if await self._created_since(order, asked_at):
+                            await engine.cancel_order(order)
+                        refused_reason = exc.reason
+                        still_open.append(str(position["ticker"]))
+                        continue
                 elif order.status != "submission_unknown":
                     # An identical exit order is already working; it is not sent again.
                     already_open += 1
                     continue
                 if order.status == "submission_unknown":
                     unconfirmed += 1
+                    unconfirmed_tickers.append(str(position["ticker"]))
                 elif order.status in {"error", "rejected"}:
                     failed += 1
+                    failed_tickers.append(str(position["ticker"]))
                 else:
                     flattened += 1
 
         audit_payload: dict[str, Any] = {"source": "system_control", "flattened": flattened}
         message = f"Flattened {flattened} positions."
+        if refused_reason is not None:
+            audit_payload["refused"] = refused_reason
+            audit_payload["not_attempted"] = still_open
+            nothing_went_out = flattened + unconfirmed + failed == 0
+            message = (
+                f"Flatten refused: {refused_reason} "
+                + (
+                    "No exit order was sent."
+                    if nothing_went_out
+                    else f"{flattened} exit order(s) had been accepted by the broker before that."
+                )
+                + f" {len(still_open)} position(s) remain OPEN and were not attempted"
+                + f" ({', '.join(still_open)})."
+            )
         if unconfirmed:
             audit_payload["unconfirmed"] = unconfirmed
+            audit_payload["unconfirmed_tickers"] = unconfirmed_tickers
             message += (
-                f" {unconfirmed} exit order(s) have an unknown outcome and need reconciliation."
+                f" {unconfirmed} exit order(s) have an unknown outcome and need reconciliation"
+                f" ({', '.join(unconfirmed_tickers)})."
             )
         if failed:
             audit_payload["failed"] = failed
-            message += f" {failed} exit order(s) failed."
+            audit_payload["failed_tickers"] = failed_tickers
+            message += f" {failed} exit order(s) failed ({', '.join(failed_tickers)})."
         if already_open:
             audit_payload["already_open"] = already_open
             message += f" {already_open} exit order(s) were already open."
@@ -328,7 +442,34 @@ class SystemControlService:
                 occurred_at=datetime.now(UTC),
             )
         )
-        return message
+        refused = refused_reason is not None
+        return FlattenSummary(
+            message=message,
+            refused=refused,
+            flattened=flattened,
+            nothing_went_out=flattened + unconfirmed + failed == 0,
+            complete=not refused and failed == 0 and unconfirmed == 0,
+        )
+
+    async def _created_since(self, order: Order, since: datetime) -> bool:
+        """True when the order intent was created at or after ``since``.
+
+        Asking for an exit can hand back an identical intent that already exists, made by
+        another part of the application (the end-of-day flatten keeps one and sends it
+        later). Only an intent this flatten created may be closed by it.
+        """
+        # The event of a new intent may still be waiting to be written.
+        await self.db.flush()
+        result = await self.db.execute(
+            select(OrderEvent.id)
+            .where(
+                OrderEvent.order_id == order.id,
+                OrderEvent.event_type == "intent_created",
+                OrderEvent.occurred_at >= since,
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
 
     @staticmethod
     def confirmation_expiry() -> datetime:

@@ -25,9 +25,9 @@ def _bar(o=100, h=105, low=98, c=102, v=10_000, volume=None):
     )
 
 
-def _base_bars(n=25, price=100, volume=10_000):
+def _base_bars(n=25, price=100, volume=10_000, spread=5):
     """N flat bars — provide enough history for VWAP and ATR."""
-    return [_bar(price, price + 5, price - 5, price, volume) for _ in range(n)]
+    return [_bar(price, price + spread, price - spread, price, volume) for _ in range(n)]
 
 
 def _build_reclaim_bars(n_history=23, dip_n=2, reclaim_price=105, volume=50_000):
@@ -38,7 +38,10 @@ def _build_reclaim_bars(n_history=23, dip_n=2, reclaim_price=105, volume=50_000)
     - one reclaim bar closing above VWAP with elevated volume
     """
     base_price = 100
-    bars = _base_bars(n_history, base_price, volume=10_000)
+    # Quiet history (bars of +/-2), so that the dip and the reclaim are a directional move
+    # and not noise: with the published Choppiness Index the wider +/-5 history reads as
+    # choppy and the strategy, correctly, takes no entry.
+    bars = _base_bars(n_history, base_price, volume=10_000, spread=2)
     # Current VWAP of the base bars will be near 100
     # Add dip bars (below VWAP)
     for _ in range(dip_n):
@@ -141,56 +144,56 @@ class TestVWAPReclaimSignal:
     def test_signal_is_buy(self):
         bars = _build_reclaim_bars(volume=80_000)
         result = self.svc.generate_signal("TSLA", bars, self.account, self.cash, VALID_TIME)
-        if result is not None:
-            assert result.side == "buy"
-            assert result.signal_type == "entry"
+        assert result is not None
+        assert result.side == "buy"
+        assert result.signal_type == "entry"
 
     def test_signal_has_correct_ticker(self):
         bars = _build_reclaim_bars(volume=80_000)
         result = self.svc.generate_signal("TSLA", bars, self.account, self.cash, VALID_TIME)
-        if result is not None:
-            assert result.ticker == "TSLA"
+        assert result is not None
+        assert result.ticker == "TSLA"
 
     def test_signal_stop_below_entry(self):
         bars = _build_reclaim_bars(volume=80_000)
         result = self.svc.generate_signal("AAPL", bars, self.account, self.cash, VALID_TIME)
-        if result is not None:
-            assert result.stop_price < result.entry_price
+        assert result is not None
+        assert result.stop_price < result.entry_price
 
     def test_signal_tp_above_entry(self):
         bars = _build_reclaim_bars(volume=80_000)
         result = self.svc.generate_signal("AAPL", bars, self.account, self.cash, VALID_TIME)
-        if result is not None:
-            assert result.take_profit_price > result.entry_price
+        assert result is not None
+        assert result.take_profit_price > result.entry_price
 
     def test_signal_confidence_in_range(self):
         bars = _build_reclaim_bars(volume=80_000)
         result = self.svc.generate_signal("AAPL", bars, self.account, self.cash, VALID_TIME)
-        if result is not None:
-            assert Decimal("0") <= result.confidence <= Decimal("1")
+        assert result is not None
+        assert Decimal("0") <= result.confidence <= Decimal("1")
 
     def test_signal_has_params_snapshot(self):
         bars = _build_reclaim_bars(volume=80_000)
         result = self.svc.generate_signal("AAPL", bars, self.account, self.cash, VALID_TIME)
-        if result is not None:
-            assert "vwap" in result.params_snapshot
-            assert "atr" in result.params_snapshot
-            assert "rvol" in result.params_snapshot
+        assert result is not None
+        assert "vwap" in result.params_snapshot
+        assert "atr" in result.params_snapshot
+        assert "rvol" in result.params_snapshot
 
     def test_returns_vwap_signal_instance(self):
         bars = _build_reclaim_bars(volume=80_000)
         result = self.svc.generate_signal("AAPL", bars, self.account, self.cash, VALID_TIME)
-        if result is not None:
-            assert isinstance(result, VWAPSignal)
+        assert result is not None
+        assert isinstance(result, VWAPSignal)
 
     def test_high_rvol_boosts_confidence(self):
         svc = VWAPReclaimStrategy(params=RELAXED_PARAMS)
         # Generate with very high volume (rvol >= 2.0)
         bars = _build_reclaim_bars(volume=200_000)
         result = svc.generate_signal("AAPL", bars, self.account, self.cash, VALID_TIME)
-        if result is not None:
-            # confidence bumped by +0.15 for high rvol
-            assert result.confidence >= Decimal("0.55")
+        assert result is not None
+        # confidence bumped by +0.15 for high rvol
+        assert result.confidence >= Decimal("0.55")
 
 
 class TestVWAPReclaimConfidenceFactors:
@@ -199,21 +202,21 @@ class TestVWAPReclaimConfidenceFactors:
         svc = VWAPReclaimStrategy(params=RELAXED_PARAMS)
         bars = _build_reclaim_bars(volume=50_000)
         result = svc.generate_signal("AAPL", bars, Decimal("100000"), Decimal("50000"), VALID_TIME)
-        if result is not None:
-            assert result.confidence >= Decimal("0.55")
-            assert result.confidence <= Decimal("0.90")
+        assert result is not None
+        assert result.confidence >= Decimal("0.55")
+        assert result.confidence <= Decimal("0.90")
 
     def test_signal_reason_mentions_vwap(self):
         svc = VWAPReclaimStrategy(params=RELAXED_PARAMS)
         bars = _build_reclaim_bars(volume=80_000)
         result = svc.generate_signal("AAPL", bars, Decimal("100000"), Decimal("50000"), VALID_TIME)
-        if result is not None:
-            assert "VWAP" in result.reason
+        assert result is not None
+        assert "VWAP" in result.reason
 
     def test_max_position_pct_caps_quantity(self):
         svc = VWAPReclaimStrategy(params={**RELAXED_PARAMS, "max_position_pct": 1.0})
         bars = _build_reclaim_bars(volume=80_000)
         result = svc.generate_signal("AAPL", bars, Decimal("100000"), Decimal("50000"), VALID_TIME)
-        if result is not None:
-            # max = 100000 * 1% / price ≈ 10 shares
-            assert result.suggested_quantity <= Decimal("15")
+        assert result is not None
+        # max = 100000 * 1% / price ≈ 10 shares
+        assert result.suggested_quantity <= Decimal("15")

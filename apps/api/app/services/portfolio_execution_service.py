@@ -14,12 +14,12 @@ from __future__ import annotations
 import inspect
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import TYPE_CHECKING, Any, cast
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 
 from app.backtest.portfolio_engine import (
@@ -43,8 +43,17 @@ from app.broker.provider import (
     create_trading212_provider_adapter,
 )
 from app.core.config import settings
-from app.db.models import AppSettings, AuditLog, BrokerConnection, Instrument, Signal, Strategy
+from app.db.models import (
+    AppSettings,
+    AuditLog,
+    BrokerConnection,
+    Instrument,
+    Order,
+    Signal,
+    Strategy,
+)
 from app.execution.engine import ExecutionEngine
+from app.execution.state_machine import ACTIVE_ORDER_STATUSES
 from app.market_data import get_live_provider, get_provider_name
 from app.market_data.exchange_calendar import calendar_for_venue
 from app.risk.engine import RiskEngine, RiskViolation
@@ -64,6 +73,14 @@ PORTFOLIO_STATE_KEY = "portfolio_execution"
 DEFAULT_MIN_TRADE_VALUE = Decimal("25")
 DEFAULT_MIN_WEIGHT_DELTA_PCT = Decimal("1.0")
 DEFAULT_CAPITAL_FRACTION = Decimal("1.0")
+CASH_BLOCKED_STATE_KEY = "cash_blocked"
+# How many runs may try to finish one period's rebalance whose buys were refused for cash.
+MAX_CASH_BLOCKED_ATTEMPTS = 3
+# How long after an order of this strategy last changed before its effect is taken to show
+# in the broker's positions and cash.
+ORDER_SETTLE_TIME = timedelta(minutes=5)
+# Risk refusals that mean "trading is stopped", not "this order is unsuitable".
+HALT_EVENT_TYPES = frozenset({"kill_switch_block", "auto_trading_disabled"})
 
 
 @dataclass
@@ -174,11 +191,13 @@ class PortfolioExecutionService:
             return {**summary, "skipped_reason": "no_broker"}
 
         async with broker as broker_client:
+            cash_read_at = datetime.now(UTC)
             account = await broker_client.get_account_summary()
             positions = await broker_client.get_positions()
 
             total_equity = Decimal(str(account.get("total", 0)))
             current_cash = Decimal(str(account.get("free", account.get("cash", 0))))
+            broker_cash = current_cash
             current_positions = list(positions)
             allocator = SignalAllocator()
             allocation_state = allocator.new_state()
@@ -195,6 +214,8 @@ class PortfolioExecutionService:
                         force=force,
                         actor=actor,
                         allocator_state=allocation_state,
+                        broker_cash=broker_cash,
+                        broker_cash_read_at=cash_read_at,
                     )
                 except Exception as exc:
                     log.exception(
@@ -239,7 +260,13 @@ class PortfolioExecutionService:
         actor: str = "system",
         override_is_live: bool | None = None,
         allocator_state: AllocationState | None = None,
+        broker_cash: Decimal | None = None,
+        broker_cash_read_at: datetime | None = None,
     ) -> dict[str, Any]:
+        # broker_cash is the free cash as the broker reported it at broker_cash_read_at.
+        # available_cash is this run's own running estimate, which already assumes that
+        # its earlier orders filled; the engine's cash reservation counts those orders
+        # itself, so it is given the broker's figure, not the estimate.
         # The broker argument must come from _get_broker/provider construction
         # and is expected to be the already-open, context-owned broker for this run.
         if not is_portfolio_strategy_type(strategy.type):
@@ -362,6 +389,14 @@ class PortfolioExecutionService:
                     decision_date=decision_date,
                 )
                 return {"status": "skipped", "reason": promotion_reason or "promotion_blocked"}
+            if await self._has_orders_in_flight(strategy):
+                # Orders of an earlier run are still open, or only just ended. The broker's
+                # positions and cash may not show them, so a plan made now could ask for
+                # the same sells or buys a second time. The period is not marked.
+                await self._update_strategy_state(
+                    strategy, status="skipped", reason="orders_in_flight", actor=actor
+                )
+                return {"status": "skipped", "reason": "orders_in_flight"}
         sleeve_fraction = self._strategy_capital_fraction(strategy)
         sleeve_value = (account_value * sleeve_fraction).quantize(Decimal("0.01"))
 
@@ -424,6 +459,8 @@ class PortfolioExecutionService:
         orders_unconfirmed = 0
         dry_run_orders = 0
         risk_blocks = 0
+        cash_blocks = 0
+        halt_blocks = 0
         allocation_blocks = 0
         allocation_decisions: list[dict[str, Any]] = []
 
@@ -488,7 +525,9 @@ class PortfolioExecutionService:
                         current_open_positions=effective_open_positions,
                         signal_id=signal.id,
                         risk_profile=strategy.risk_profile,
-                        skip_auto_trading_check=True,
+                        # Checked for every buy unless the operator forced this run: a
+                        # pause set after the run began must stop the buys not yet made.
+                        skip_auto_trading_check=force,
                         open_positions=current_positions,
                     )
                     await risk_engine.check_sector_and_correlation(
@@ -503,6 +542,8 @@ class PortfolioExecutionService:
                     signal.risk_rejected = True
                     signal.risk_rejection_reason = exc.reason
                     risk_blocks += 1
+                    if exc.event_type in HALT_EVENT_TYPES:
+                        halt_blocks += 1
                     await self._add_audit_log(
                         action="portfolio_rebalance_blocked",
                         actor=actor,
@@ -517,19 +558,51 @@ class PortfolioExecutionService:
                     continue
 
             exec_engine = ExecutionEngine(self.db, broker)
-            order = await exec_engine.create_order_intent(
-                ticker=order_plan["ticker"],
-                side=order_plan["side"],
-                order_type="market",
-                quantity=order_plan["quantity"],
-                signal_id=signal.id,
-                is_dry_run=not execute_live,
-                available_cash=current_cash,
-                estimated_price=order_plan["price"],
-            )
+            try:
+                order = await exec_engine.create_order_intent(
+                    ticker=order_plan["ticker"],
+                    side=order_plan["side"],
+                    order_type="market",
+                    quantity=order_plan["quantity"],
+                    signal_id=signal.id,
+                    is_dry_run=not execute_live,
+                    available_cash=broker_cash if broker_cash is not None else available_cash,
+                    estimated_price=order_plan["price"],
+                    cash_read_at=broker_cash_read_at,
+                )
+            except RiskViolation as exc:
+                # Refused at admission: other open buy orders already claim this cash.
+                signal.status = "rejected"
+                signal.risk_rejected = True
+                signal.risk_rejection_reason = exc.reason
+                risk_blocks += 1
+                cash_blocks += 1
+                await self._add_audit_log(
+                    action="portfolio_rebalance_blocked",
+                    actor=actor,
+                    entity_type="strategy",
+                    entity_id=str(strategy.id),
+                    payload={
+                        "strategy": strategy.name,
+                        "ticker": order_plan["ticker"],
+                        "reason": exc.reason,
+                    },
+                )
+                continue
             already_dispatched = order.status != "pending_intent"
             if not already_dispatched:
-                order = await exec_engine.submit_order(order)
+                try:
+                    order = await exec_engine.submit_order(order)
+                except SafetyPolicyViolation as exc:
+                    signal.status = "error"
+                    signal.risk_rejection_reason = exc.reason
+                    if execute_live:
+                        # The engine has closed the order. End the transaction now, so
+                        # the cash admission turn taken for it is given back.
+                        await self.db.commit()
+                    raise
+                if execute_live and order.status == "error":
+                    await self.db.commit()
             outcome_unknown = order.status == "submission_unknown"
             if already_dispatched and not outcome_unknown:
                 # An identical order is already working: nothing was sent for this plan
@@ -595,7 +668,20 @@ class PortfolioExecutionService:
                 },
             )
 
-        final_status = "rebalanced"
+        # A buy that was refused because the cash is still claimed (typically by this run's
+        # own sales, whose proceeds no cash figure shows yet) has not been made. The period
+        # is then not recorded as rebalanced, so a later run reads the cash again and
+        # finishes the job; recording it would leave the sleeve in cash until next period.
+        # That is tried a limited number of times; after the last the period is recorded,
+        # still as cash_blocked, and the strategy waits for the next period.
+        cash_blocked_attempts = (
+            self._cash_blocked_attempts(strategy, decision_date) + 1 if cash_blocks else 0
+        )
+        # A buy refused because trading was halted or paused after the run began has not
+        # been made either. While the halt lasts no run starts, so there is nothing to
+        # count; when it is lifted the period is still due and the rebalance is finished.
+        to_be_continued = halt_blocks > 0 or 0 < cash_blocked_attempts < MAX_CASH_BLOCKED_ATTEMPTS
+        final_status = "halted" if halt_blocks else "cash_blocked" if cash_blocks else "rebalanced"
         await self._update_strategy_state(
             strategy,
             status=final_status,
@@ -603,10 +689,18 @@ class PortfolioExecutionService:
                 "Rebalance stopped: an order has an unknown submission outcome and needs "
                 "reconciliation."
                 if orders_unconfirmed
-                else None
+                else "Rebalance incomplete: trading was halted or paused before its buys were "
+                "made; it will be continued."
+                if halt_blocks
+                else (
+                    "Rebalance incomplete: buys were refused because the cash was already "
+                    + ("claimed; it will be continued." if to_be_continued else "claimed.")
+                    if cash_blocks
+                    else None
+                )
             ),
             actor=actor,
-            decision_date=decision_date,
+            decision_date=None if to_be_continued else decision_date,
             target_weights=target_weights,
             current_weights=self._current_weights(
                 {
@@ -625,10 +719,11 @@ class PortfolioExecutionService:
             allocation_decisions=allocation_decisions,
             allocation_blocks=allocation_blocks,
         )
+        self._record_cash_blocked_attempts(strategy, decision_date, cash_blocked_attempts)
         strategy.last_signal_at = datetime.now(UTC)
 
         return {
-            "status": "rebalanced",
+            "status": "due" if to_be_continued else final_status,
             "signals_created": signals_created,
             "orders_submitted": orders_submitted,
             "orders_unconfirmed": orders_unconfirmed,
@@ -638,6 +733,52 @@ class PortfolioExecutionService:
             "available_cash": float(current_cash),
             "positions": current_positions,
         }
+
+    async def _has_orders_in_flight(self, strategy: Strategy) -> bool:
+        """True while a real order of this strategy is at the broker, or changed a moment ago.
+
+        An intent that was never sent is not in flight: nothing sends it later, so waiting
+        for it would stop the strategy for good.
+        """
+        settled_before = datetime.now(UTC) - ORDER_SETTLE_TIME
+        result = await self.db.execute(
+            select(func.count(Order.id))
+            .join(Signal, Signal.id == Order.signal_id)
+            .where(
+                Signal.strategy_id == strategy.id,
+                Order.is_dry_run.is_not(True),
+                or_(
+                    Order.status.in_(ACTIVE_ORDER_STATUSES - {"pending_intent"}),
+                    Order.updated_at >= settled_before,
+                ),
+            )
+        )
+        return bool(result.scalar_one())
+
+    @staticmethod
+    def _cash_blocked_attempts(strategy: Strategy, decision_date: date) -> int:
+        """Runs already spent on this period's rebalance that ended cash-blocked."""
+        state = dict((strategy.params or {}).get(PORTFOLIO_STATE_KEY, {}))
+        recorded = state.get(CASH_BLOCKED_STATE_KEY) or {}
+        if recorded.get("decision_date") != decision_date.isoformat():
+            return 0
+        return int(recorded.get("attempts", 0))
+
+    @staticmethod
+    def _record_cash_blocked_attempts(
+        strategy: Strategy, decision_date: date, attempts: int
+    ) -> None:
+        params = dict(strategy.params or {})
+        state = dict(params.get(PORTFOLIO_STATE_KEY, {}))
+        if attempts:
+            state[CASH_BLOCKED_STATE_KEY] = {
+                "decision_date": decision_date.isoformat(),
+                "attempts": attempts,
+            }
+        else:
+            state.pop(CASH_BLOCKED_STATE_KEY, None)
+        params[PORTFOLIO_STATE_KEY] = state
+        strategy.params = params
 
     async def _get_settings(self) -> AppSettings | None:
         result = await self.db.execute(select(AppSettings).where(AppSettings.id == 1))

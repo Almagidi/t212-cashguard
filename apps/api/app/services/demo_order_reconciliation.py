@@ -24,6 +24,7 @@ from app.services.execution_quality import (
     apply_order_execution_quality,
     milliseconds_between,
 )
+from app.services.reconciliation_scope import bound_account_scope
 from app.services.safety_policy import SafetyPolicyViolation
 
 if TYPE_CHECKING:
@@ -292,6 +293,16 @@ class DemoOrderReconciler:
             raise SafetyPolicyViolation(
                 "Demo order reconciliation blocked: local order has no broker_order_id.",
                 decision_code="demo_reconciliation_missing_broker_order_id",
+            )
+        broker_scope = bound_account_scope(self.broker)
+        if (
+            broker_scope is not None
+            and order.broker_account_scope is not None
+            and order.broker_account_scope != broker_scope
+        ):
+            raise SafetyPolicyViolation(
+                "Demo order reconciliation blocked: the order belongs to another broker account.",
+                decision_code="demo_reconciliation_account_scope_block",
             )
 
     @staticmethod

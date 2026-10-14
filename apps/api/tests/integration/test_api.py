@@ -1580,11 +1580,12 @@ class TestOrderFlow:
         assert resp.json() == {
             "cancelled": False,
             "order_id": str(order.id),
-            "status": "error",
+            "status": "accepted",
             "requires_reconciliation": True,
         }
         await db.refresh(order)
-        assert order.status == "error"
+        # Not confirmed by the broker, so still open: reconciliation settles it.
+        assert order.status == "accepted"
         assert order.error_message == "Broker request failed with RuntimeError."
         actions = (
             (await db.execute(select(AuditLog.action).where(AuditLog.entity_id == str(order.id))))
@@ -1644,7 +1645,9 @@ class TestOrderFlow:
         assert resp.json() == {"cancelled": 1, "failed": 1}
         await db.refresh(orders[0])
         await db.refresh(orders[1])
-        assert [order.status for order in orders] == ["cancelled", "error"]
+        # The order whose cancellation the broker did not confirm stays open for
+        # reconciliation; it is not written off as "error".
+        assert [order.status for order in orders] == ["cancelled", "accepted"]
 
     async def test_kill_switch_blocks_manual_order_before_account_summary(
         self,
