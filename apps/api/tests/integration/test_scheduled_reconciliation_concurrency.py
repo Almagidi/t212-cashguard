@@ -10,7 +10,8 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm.exc import StaleDataError
 from sqlalchemy.pool import NullPool
 
+from app.broker.trading212 import T212APIError
 from app.db.models import AuditLog, BrokerConnection, Order, OrderEvent, RiskEvent, User
 from app.execution.engine import ExecutionEngine
 from app.execution.state_machine import InvalidOrderTransition
@@ -268,6 +270,107 @@ async def test_a_cancellation_during_reconciliation_waits_and_then_sees_the_fill
 
     assert cancelling.cancel_calls == [], "a filled order was sent to the broker for cancelling"
     assert (await world.current(order)).status == "filled"
+
+
+def _history_record(world: World, name: str, *, price: str = "10.5") -> dict[str, Any]:
+    return {
+        "order": {
+            "id": world.broker_id(name),
+            "ticker": world.ticker,
+            "status": "FILLED",
+            "side": "BUY",
+            "type": "LIMIT",
+            "quantity": 1,
+            "filledQuantity": 1,
+        },
+        "fill": {"quantity": 1, "price": price, "filledAt": "2026-10-05T14:00:03Z"},
+    }
+
+
+async def test_an_ended_order_is_settled_from_history_and_the_result_is_committed(
+    world: World,
+) -> None:
+    order = await world.order("x")
+    world.broker.responses[world.broker_id("x")] = T212APIError(404, "not found")
+    world.broker.history = {"items": [_history_record(world, "x", price="10.12345678")]}
+
+    summary = await one_run()
+
+    saved = await world.current(order)
+    assert saved.status == "filled"
+    assert saved.filled_quantity == Decimal("1")
+    assert saved.avg_fill_price == Decimal("10.12345678")
+    assert saved.filled_at == datetime(2026, 10, 5, 14, 0, 3, tzinfo=UTC)
+    assert saved.retry_count == 0
+    assert summary["reconciled"] == 1
+    assert "failed" not in summary
+    assert await world.lockable(order)
+
+
+async def test_the_order_row_stays_locked_while_the_history_is_being_read(world: World) -> None:
+    order = await world.order("x")
+    world.broker.responses[world.broker_id("x")] = T212APIError(404, "not found")
+    entered, release = asyncio.Event(), asyncio.Event()
+    _OPEN_GATES.append(release)
+
+    async def held_history(**_query: Any) -> dict[str, Any]:
+        entered.set()
+        await release.wait()
+        return {"items": [_history_record(world, "x")]}
+
+    world.broker.history = held_history
+    cancelling = CancellingBroker()
+
+    run = in_background(one_run())
+    async with asyncio.timeout(WAIT):
+        await entered.wait()
+    locked_during_the_read = not await world.lockable(order)
+    cancellation = in_background(_cancel(world, order, cancelling))
+    await world.wait_for_a_lock_waiter()
+    assert not cancellation.done()
+
+    release.set()
+    async with asyncio.timeout(WAIT):
+        await run
+    with pytest.raises(InvalidOrderTransition):
+        async with asyncio.timeout(WAIT):
+            await cancellation
+
+    assert locked_during_the_read
+    assert cancelling.cancel_calls == [], "a filled order was sent to the broker for cancelling"
+    assert (await world.current(order)).status == "filled"
+    assert await world.lockable(order)
+
+
+async def test_an_order_sent_more_than_a_month_ago_can_still_be_settled(world: World) -> None:
+    # Its latencies exceed a 32-bit column in milliseconds; the save must not fail.
+    order = await world.order("x", seconds=-40 * 86400)
+    world.broker.responses[world.broker_id("x")] = T212APIError(404, "not found")
+    world.broker.history = {"items": [_history_record(world, "x")]}
+
+    summary = await one_run()
+
+    saved = await world.current(order)
+    assert saved.status == "filled"
+    assert saved.reconciliation_latency_ms == 2_147_483_647
+    assert summary["reconciled"] == 1
+
+
+async def test_an_order_with_no_record_is_left_as_it_was_and_its_wait_is_committed(
+    world: World,
+) -> None:
+    order = await world.order("x")
+    world.broker.responses[world.broker_id("x")] = T212APIError(404, "not found")
+
+    summary = await one_run()
+
+    saved = await world.current(order)
+    assert saved.status == "accepted"
+    assert saved.retry_count == 1
+    assert saved.last_reconciled_at is not None
+    assert saved.filled_quantity is None
+    assert summary["no_broker_record"] == 1
+    assert await world.lockable(order)
 
 
 async def test_an_order_being_cancelled_is_skipped_unread_and_other_orders_still_run(
