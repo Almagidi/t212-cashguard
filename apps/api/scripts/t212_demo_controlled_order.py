@@ -27,6 +27,8 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me")
 TICKER = os.getenv("T212_DEMO_ORDER_TICKER", "AAPL").strip().upper()
 QUANTITY = os.getenv("T212_DEMO_ORDER_QUANTITY", "0.001").strip()
 COOLDOWN_SECONDS = float(os.getenv("T212_DEMO_ORDER_COOLDOWN_SECONDS", "5"))
+# The order is a limit buy: the API refuses a market buy (no price to check it against).
+LIMIT_PRICE_ENV = "T212_DEMO_ORDER_LIMIT_PRICE"
 
 
 def require_env(name: str, expected: str | None = None) -> str:
@@ -136,7 +138,8 @@ def main() -> int:
         payload={
             "ticker": TICKER,
             "side": "buy",
-            "order_type": "market",
+            "order_type": "limit",
+            "limit_price": require_env(LIMIT_PRICE_ENV),
             "quantity": QUANTITY,
             "time_validity": "DAY",
         },

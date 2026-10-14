@@ -63,6 +63,11 @@ class HoldingBroker:
         self.posts.append((ticker, Decimal(str(quantity))))
         raise httpx.ReadTimeout("response lost after the broker accepted the order")
 
+    async def place_limit_order(
+        self, ticker: str, quantity: Any, _limit_price: Any, time_validity: str = "DAY"
+    ) -> Any:
+        return await self.place_market_order(ticker, quantity, time_validity)
+
 
 @pytest_asyncio.fixture
 async def broker(db: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -161,11 +166,14 @@ async def test_sell_covered_by_a_held_position_is_sent_once(
 
 
 @pytest.mark.asyncio
-async def test_buy_is_not_affected_and_reads_no_positions(
+async def test_a_buy_is_not_checked_against_holdings(
     client: Any, auth_headers: Any, broker: HoldingBroker
 ) -> None:
-    response = await client.post("/v1/orders", headers=auth_headers, json=_order("buy", "0.01"))
+    # Nothing is held. A buy reads the positions only to count them for the risk limits.
+    buy = {**_order("buy", "0.01"), "order_type": "limit", "limit_price": "100"}
+
+    response = await client.post("/v1/orders", headers=auth_headers, json=buy)
 
     assert response.status_code in {201, 202}
-    assert broker.position_reads == 0
+    assert broker.position_reads == 1
     assert len(broker.posts) == 1

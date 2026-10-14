@@ -2332,8 +2332,9 @@ class TestLiveModeSafetyFlow:
             json={
                 "ticker": "MSFT",
                 "side": "buy",
-                "order_type": "market",
+                "order_type": "limit",
                 "quantity": "1",
+                "limit_price": "101.25",
             },
         )
 
@@ -2769,8 +2770,9 @@ class TestBrokerExecutionFlow:
             json={
                 "ticker": "AAPL",
                 "side": "buy",
-                "order_type": "market",
+                "order_type": "limit",
                 "quantity": "1",
+                "limit_price": "101.25",
             },
         )
         assert order_resp.status_code == 201, order_resp.text
@@ -2847,8 +2849,11 @@ class TestBrokerExecutionFlow:
             json={
                 "ticker": "MSFT",
                 "side": "buy",
-                "order_type": "market",
+                "order_type": "limit",
                 "quantity": "1",
+                # The fake broker fills at 101.25: 1.25% above this limit is the abnormal
+                # slippage whose alert this test follows to Telegram.
+                "limit_price": "100",
             },
         )
         assert order_resp.status_code == 201, order_resp.text

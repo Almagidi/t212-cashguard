@@ -44,6 +44,7 @@ from app.execution.paper_engine import (
 )
 from app.execution.state_machine import InvalidOrderTransition, require_already_finished
 from app.risk.engine import RiskEngine, RiskViolation
+from app.risk.realized_pnl import realized_pnl_today
 from app.services.cash_only import sellable_quantity
 from app.services.live_readiness import LiveReadinessService
 from app.services.safety_policy import SafetyPolicyViolation, audit_safety_decision
@@ -284,6 +285,42 @@ async def _ensure_manual_order_not_halted(
     raise HTTPException(status_code=403, detail=reason)
 
 
+# Order types whose price does not cap what a buy can cost (N-02).
+_UNCAPPED_ORDER_TYPES = frozenset({"market", "stop"})
+# Mock mode only (nothing reaches a broker): the placeholder a market buy was always costed at.
+_MOCK_MARKET_PRICE = Decimal("100")
+
+
+def _price_estimate(positions: object, body: OrderCreate) -> Decimal:
+    """The price the checks cost an order at, by its type.
+
+    A limit or stop-limit order: its limit. A stop order: its stop (a sell, outside mock
+    mode). A market sell: the broker's current price of the held instrument, or 0 when none
+    is usable (a sell spends no cash, so nothing is costed by it). A mock market buy keeps
+    its placeholder; a real market or stop buy was refused before this is reached.
+    """
+    if body.order_type in ("limit", "stop_limit") and body.limit_price is not None:
+        return body.limit_price
+    if body.order_type == "stop" and body.stop_price is not None:
+        return body.stop_price
+    if body.side == "buy":
+        return _MOCK_MARKET_PRICE
+    if isinstance(positions, list):
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            if str(position.get("ticker", "")).strip().upper() != body.ticker:
+                continue
+            for key in ("currentPrice", "averagePrice"):
+                try:
+                    price = Decimal(str(position.get(key)))
+                except ArithmeticError:
+                    continue
+                if price.is_finite() and price > 0:
+                    return price
+    return Decimal("0")
+
+
 @router.get("", response_model=list[OrderOut])
 async def list_orders(
     status: str | None = Query(None),
@@ -316,6 +353,23 @@ async def place_order(
     await _ensure_manual_order_not_halted(db=db, current_user=current_user, body=body)
     await _ensure_live_order_ready(db=db, current_user=current_user, body=body)
     await _ensure_demo_order_enabled(db=db, current_user=current_user, body=body)
+
+    if (
+        body.side == "buy"
+        and body.order_type in _UNCAPPED_ORDER_TYPES
+        and (settings.APP_MODE != "mock")
+    ):
+        # N-02: a market buy has no price, and a stop buy's stop is a trigger, not a cap: it
+        # fills at the market once triggered. The cash and risk limits need the most a buy
+        # can cost, which only a limit states.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"A {body.order_type} buy has no price that caps its cost, so it cannot be "
+                "checked against cash and risk limits. Place a limit or stop-limit order "
+                "instead: its limit price caps the cost."
+            ),
+        )
     broker = await get_broker(current_user=current_user, db=db)
 
     # Fetch broker account state for risk calculations.
@@ -324,14 +378,14 @@ async def place_order(
     # Cash-only: outside mock mode a sell must be covered by a position the broker reports.
     # In mock mode nothing reaches a broker; this route then uses the mock adapter, which
     # does not check a sell against holdings.
+    # The broker's positions are also what counts as open positions for the risk limits.
     needs_holding_check = body.side == "sell" and settings.APP_MODE != "mock"
     positions: object = None
     cash_read_at = datetime.now(UTC)
     try:
         async with broker as b:
             summary = await b.get_account_summary()
-            if needs_holding_check:
-                positions = await b.get_positions()
+            positions = await b.get_positions()
     except (T212RateLimitError, T212AuthError, T212APIError) as exc:
         raise broker_http_exception(exc) from exc
 
@@ -349,13 +403,21 @@ async def place_order(
     normalised_summary = _normalise_account_summary(summary)
     available_cash = Decimal(str(normalised_summary["free_funds"]))
     account_value = Decimal(str(normalised_summary["total_value"]))
-    estimated_price = body.limit_price or body.stop_price or Decimal("100")
+    estimated_price = _price_estimate(positions, body)
 
-    # Count currently open positions
-    open_result = await db.execute(
-        select(func.count(Order.id)).where(Order.status.in_(["accepted", "filled"]))
-    )
-    open_count: int = open_result.scalar_one()
+    # N-03: open positions are the broker's, not every order that ever filled.
+    if not isinstance(positions, list):
+        raise HTTPException(
+            status_code=502, detail="The broker's positions could not be read; order refused."
+        )
+    open_count = len(positions)
+    try:
+        pnl_today = await realized_pnl_today(db)
+    except Exception as exc:
+        log.error("orders.realized_pnl_unavailable", error_type=type(exc).__name__)
+        raise HTTPException(
+            status_code=503, detail="Today's realised result could not be read; order refused."
+        ) from None
 
     # --- Risk gate (all checks must pass) ---
     risk = RiskEngine(db)
@@ -367,9 +429,11 @@ async def place_order(
             estimated_price=estimated_price,
             available_cash=available_cash,
             account_value=account_value,
-            realized_pnl_today=Decimal("0"),
+            realized_pnl_today=pnl_today,
             current_open_positions=open_count,
             signal_id=body.signal_id,
+            # A sell of a held position (cash-only) is an exit: entry limits do not hold it back.
+            is_exit=body.side == "sell",
         )
     except RiskViolation as exc:
         raise HTTPException(status_code=422, detail=exc.reason) from exc
