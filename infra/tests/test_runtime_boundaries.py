@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SYNTHETIC = {
@@ -16,7 +17,8 @@ SYNTHETIC = {
     "REDIS_PASSWORD": "synthetic-redis-runtime-only",
     "SECRET_KEY": "synthetic-session-key-runtime-only",
     "MASTER_KEY": "synthetic-master-key-runtime-only",
-    "GRAFANA_PASSWORD": "synthetic-grafana-runtime-only",
+    "PUBLIC_ORIGIN": "https://nginx",
+    "GRAFANA_PASSWORD": "synthetic-grafana-'\"\\${SMTP_USER}$(printf nope)",
     "APP_MODE": "mock",
     "LIVE_TRADING_ENABLED": "false",
 }
@@ -56,6 +58,18 @@ def render_compose(missing=None):
     return json.loads(result.stdout)
 
 
+def runtime_environment(service):
+    """Compose serializes dollar signs doubled for safe re-parsing.
+
+    Docker CLI receives the resulting runtime values rather than Compose JSON's
+    escaped representation. A separate actual Compose-create control verifies this.
+    """
+    return {
+        k: v.replace("$$", "$") if isinstance(v, str) else v
+        for k, v in service["environment"].items()
+    }
+
+
 class RuntimeBoundaryContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -66,7 +80,7 @@ class RuntimeBoundaryContracts(unittest.TestCase):
         return set(self.services[service]["networks"])
 
     def test_nginx_can_resolve_every_configured_upstream(self):
-        # Grafana is resolved at nginx config load, not only when a user visits it.
+        # Every intended upstream needs a network edge, including request-time DNS.
         for service in ("api", "web", "grafana"):
             with self.subTest(service=service):
                 self.assertTrue(
@@ -96,8 +110,39 @@ class RuntimeBoundaryContracts(unittest.TestCase):
         self.assertEqual(members, {"nginx", "grafana"})
         self.assertNotIn("external", self.networks("grafana"))
 
-    def test_grafana_is_started_before_nginx(self):
-        self.assertIn("grafana", self.services["nginx"]["depends_on"])
+    def test_nginx_startup_is_independent_of_monitoring(self):
+        self.assertNotIn("grafana", self.services["nginx"]["depends_on"])
+
+    def test_grafana_data_network_contains_only_grafana_and_prometheus(self):
+        shared = self.networks("grafana") & self.networks("prometheus")
+        self.assertEqual(len(shared), 1)
+        network = shared.pop()
+        self.assertIs(self.config["networks"][network].get("internal", False), True)
+        self.assertEqual(
+            {n for n in self.services if network in self.networks(n)},
+            {"grafana", "prometheus"},
+        )
+        for service in (
+            "postgres",
+            "redis",
+            "api",
+            "web",
+            "alertmanager",
+            "postgres-exporter",
+            "redis-exporter",
+        ):
+            self.assertFalse(self.networks("grafana") & self.networks(service), service)
+
+    def test_grafana_preflight_is_in_normal_recipe(self):
+        self.assertEqual(self.services["grafana"].get("tmpfs"), ["/tmp:mode=1777"])
+        self.assertEqual(
+            self.services["grafana"].get("entrypoint"),
+            ["/bin/sh", "/etc/grafana/start-grafana.sh"],
+        )
+        self.assertEqual(
+            self.services["grafana"]["environment"]["GF_SERVER_ROOT_URL"],
+            "https://nginx/grafana/",
+        )
 
     def test_only_nginx_publishes_host_ports(self):
         for name, service in self.services.items():
@@ -110,8 +155,10 @@ class RuntimeBoundaryContracts(unittest.TestCase):
     def test_grafana_requires_authentication(self):
         env = self.services["grafana"]["environment"]
         self.assertEqual(env["GF_AUTH_ANONYMOUS_ENABLED"], "false")
+        self.assertEqual(env["GF_SECURITY_COOKIE_SECURE"], "true")
         self.assertEqual(
-            env["GF_SECURITY_ADMIN_PASSWORD"], SYNTHETIC["GRAFANA_PASSWORD"]
+            env["GF_SECURITY_ADMIN_PASSWORD"],
+            SYNTHETIC["GRAFANA_PASSWORD"].replace("$", "$$"),
         )
 
     def test_monitoring_edges_remain_available(self):
@@ -140,6 +187,52 @@ class RuntimeBoundaryContracts(unittest.TestCase):
                         continue
                     self.assertNotIn(sentinel, result.stderr)
                 self.assertEqual(result.stdout, "")
+
+
+class CleanupFailureContracts(unittest.TestCase):
+    def exercise_failure(self, mode):
+        from runtime_probe import cleanup_owned
+
+        calls = []
+
+        def fake(*args, **kwargs):
+            calls.append(args)
+            if args[:2] == ("container", "inspect"):
+                label = "someone-else" if mode == "unowned" else "test-run"
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    json.dumps([{"Config": {"Labels": {"cashguard.run": label}}}]),
+                    "",
+                )
+            if args[:2] == ("rm", "-f") and args[-1] == "second":
+                if mode == "timeout":
+                    raise subprocess.TimeoutExpired(args, 1)
+                return subprocess.CompletedProcess(
+                    args, 1, "", "simulated removal failure"
+                )
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with patch("runtime_probe.docker", side_effect=fake):
+            with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
+                cleanup_owned(["first", "second"], [], "test-run")
+        if mode == "unowned":
+            self.assertFalse(any(c[:2] == ("rm", "-f") for c in calls))
+        else:
+            self.assertIn(
+                ("rm", "-f", "first"),
+                calls,
+                "One failure prevented later resource cleanup",
+            )
+
+    def test_cleanup_failure_is_reported_and_other_resources_are_attempted(self):
+        self.exercise_failure("failed")
+
+    def test_cleanup_timeout_is_reported_and_other_resources_are_attempted(self):
+        self.exercise_failure("timeout")
+
+    def test_cleanup_refuses_resources_without_this_run_label(self):
+        self.exercise_failure("unowned")
 
 
 if __name__ == "__main__":
