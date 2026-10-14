@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -39,7 +40,7 @@ from tests.integration.scheduled_reconciliation_cases import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
 POSTGRES_TEST_DATABASE_URL = os.getenv("POSTGRES_TEST_DATABASE_URL")
 
@@ -110,6 +111,10 @@ class CancellingBroker:
         self.entered.set()
         await self.release.wait()
 
+    async def get_order_by_id(self, broker_order_id: str) -> dict[str, Any]:
+        # Read after the cancel request: the broker's record of the cancelled order.
+        return {"id": broker_order_id, "status": "CANCELLED", "filledQuantity": 0}
+
 
 class World:
     """One test's rows: two identified accounts, so unscoped rows are never in play."""
@@ -179,6 +184,13 @@ class World:
 
 @pytest_asyncio.fixture
 async def world(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[World, None]:
+    async with a_world(monkeypatch) as made:
+        yield made
+
+
+@asynccontextmanager
+async def a_world(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[World]:
+    """One test's world, for this module's fixture and for other modules' own."""
     assert POSTGRES_TEST_DATABASE_URL is not None
     engine = create_async_engine(POSTGRES_TEST_DATABASE_URL, poolclass=NullPool)
     sessions = async_sessionmaker(engine, expire_on_commit=False)

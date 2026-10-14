@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import api from "@/services/api";
 import type {
+  CancelAllResult,
+  CancelOrderResult,
   CreatePaperOrderPayload,
   CreateStrategyPayload,
   CreateStrategyPresetPayload,
@@ -413,12 +415,36 @@ export const useCancelOrder = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.cancelOrder(id),
-    onSuccess: () => {
+    onSuccess: (d: CancelOrderResult | undefined) => {
       qc.invalidateQueries({ queryKey: ["orders"] });
+      // A request the broker took is not a cancellation until it says what became of
+      // the order; until then the order is still open.
+      if (d?.awaiting_confirmation) {
+        toast.error(
+          "Cancellation requested; the broker has not confirmed it yet. The order stays open until it does.",
+        );
+        return;
+      }
+      if (d && d.cancelled === false) {
+        toast.error(`Order not cancelled (${d.status ?? "unknown status"})`);
+        return;
+      }
+      if (d?.filled_quantity && Number(d.filled_quantity) > 0) {
+        toast.success(`Order cancelled after ${d.filled_quantity} filled`);
+        return;
+      }
       toast.success("Order cancelled");
     },
     onError: (error: any) => {
-      if (error?.response?.data?.requires_reconciliation) {
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      const data = error?.response?.data;
+      if (error?.response?.status === 409 && data?.status) {
+        toast.error(
+          `Order not cancelled: it had already ended (${data.status}, ${data.filled_quantity ?? "0"} filled)`,
+        );
+        return;
+      }
+      if (data?.requires_reconciliation) {
         toast.error("Cancellation failed; order requires reconciliation");
         return;
       }
@@ -431,15 +457,41 @@ export const useCancelAllPending = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.cancelAllPending.bind(api),
-    onSuccess: (d: { cancelled: number; failed: number }) => {
+    onSuccess: (d: CancelAllResult) => {
       qc.invalidateQueries({ queryKey: ["orders"] });
+      const awaiting = d.awaiting_confirmation ?? 0;
+      const partial = d.cancelled_after_partial_fill ?? [];
+      const finished = d.already_finished_orders ?? [];
+      // A fill the cancellation did not prevent is exposure: never a plain success.
+      const filledFirst = finished.filter((o) => Number(o.filled_quantity ?? 0) > 0);
+      const parts = [`Cancelled ${d.cancelled} orders`];
       if (d.failed > 0) {
-        toast.error(
-          `Cancelled ${d.cancelled} orders; ${d.failed} cancellation${d.failed === 1 ? "" : "s"} requires reconciliation`,
+        parts.push(
+          `${d.failed} cancellation${d.failed === 1 ? "" : "s"} requires reconciliation`,
         );
+      }
+      if (awaiting > 0) {
+        parts.push(`${awaiting} awaiting broker confirmation (still open)`);
+      }
+      if (partial.length > 0) {
+        parts.push(
+          `${partial.length} after a partial fill (${partial
+            .map((o) => `${o.ticker} ${o.filled_quantity} of ${o.quantity}`)
+            .join(", ")})`,
+        );
+      }
+      if (finished.length > 0) {
+        parts.push(
+          `${finished.length} had already ended (${finished
+            .map((o) => `${o.ticker} ${o.status}`)
+            .join(", ")})`,
+        );
+      }
+      if (d.failed > 0 || awaiting > 0 || partial.length > 0 || filledFirst.length > 0) {
+        toast.error(parts.join("; "));
         return;
       }
-      toast.success(`Cancelled ${d.cancelled} orders`);
+      toast.success(parts.join("; "));
     },
   });
 };

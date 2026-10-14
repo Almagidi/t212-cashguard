@@ -654,12 +654,8 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
         from app.core.security import CredentialDecryptionError, decrypt_field
         from app.db.models import BrokerConnection, Order
         from app.db.session import AsyncSessionLocal
-        from app.execution.engine import ExecutionEngine, OrderCancellationFailed
-        from app.execution.state_machine import (
-            ACTIVE_ORDER_STATUSES,
-            InvalidOrderTransition,
-            require_already_finished,
-        )
+        from app.execution.engine import ExecutionEngine, plain_amount
+        from app.execution.state_machine import ACTIVE_ORDER_STATUSES
         from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
 
         ORDER_TIMEOUT_MINUTES = 60  # Cancel working orders after 1 hour
@@ -755,46 +751,54 @@ def cancel_timed_out_orders(self: Any) -> dict[str, Any]:
                     )
 
                 async with provider_broker as broker:
-                    engine = ExecutionEngine(db, broker)
-                    failed = 0
-                    already_finished = 0
-                    for order in timed_out:
-                        try:
-                            await engine.cancel_order(order)
-                        except OrderCancellationFailed:
-                            failed += 1
-                            log.error(
-                                "tasks.order_timeout_cancel_failed",
-                                order_id=str(order.id),
-                                ticker=order.ticker,
-                                requires_reconciliation=True,
-                            )
-                            continue
-                        except InvalidOrderTransition:
-                            # It ended (a fill was recorded, say) after this run listed
-                            # it. Nothing to cancel; the rest of the list still is.
-                            require_already_finished(order)
-                            already_finished += 1
-                            log.info(
-                                "tasks.order_timeout_already_finished",
-                                order_id=str(order.id),
-                                ticker=order.ticker,
-                                status=order.status,
-                            )
-                            continue
-                        log.warning(
-                            "tasks.order_timeout_cancel",
-                            order_id=str(order.id),
-                            ticker=order.ticker,
-                            age_mins=ORDER_TIMEOUT_MINUTES,
-                        )
-                        count += 1
+                    # Every cancel request goes out before any order is read back, so a rate
+                    # limit met while reading cannot hold up a cancellation (see cancel_many).
+                    batch = await ExecutionEngine(db, broker).cancel_many(list(timed_out))
+                count = len(batch.cancelled)
+                failed = len(batch.failed)
+                already_finished = len(batch.finished)
+                awaiting_confirmation = len(batch.unconfirmed)
+                for order in batch.failed:
+                    log.error(
+                        "tasks.order_timeout_cancel_failed",
+                        order_id=str(order.id),
+                        ticker=order.ticker,
+                        requires_reconciliation=True,
+                    )
+                for order, reason in batch.unconfirmed:
+                    # The broker took the request and has not said what became of the
+                    # order. It stays open, for reconciliation to settle.
+                    log.warning(
+                        "tasks.order_timeout_cancel_unconfirmed",
+                        order_id=str(order.id),
+                        ticker=order.ticker,
+                        reason=reason,
+                        requires_reconciliation=True,
+                    )
+                for order in batch.finished:
+                    # It ended (filled, say) before the cancellation could take effect.
+                    log.info(
+                        "tasks.order_timeout_already_finished",
+                        order_id=str(order.id),
+                        ticker=order.ticker,
+                        status=order.status,
+                    )
+                for order in batch.cancelled:
+                    log.warning(
+                        "tasks.order_timeout_cancel",
+                        order_id=str(order.id),
+                        ticker=order.ticker,
+                        age_mins=ORDER_TIMEOUT_MINUTES,
+                        filled_quantity=plain_amount(order.filled_quantity),
+                    )
 
                 summary = {"cancelled": count}
                 if failed:
                     summary["failed"] = failed
                 if already_finished:
                     summary["already_finished"] = already_finished
+                if awaiting_confirmation:
+                    summary["awaiting_confirmation"] = awaiting_confirmation
                 return await _complete_task(db, "cancel_timed_out_orders", summary)
 
     return run_monitored_task("cancel_timed_out_orders", _run)

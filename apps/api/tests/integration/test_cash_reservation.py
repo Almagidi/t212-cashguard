@@ -565,11 +565,14 @@ async def test_a_partly_filled_then_cancelled_order_counts_in_full_until_a_later
     with pytest.raises(CashReservationRefused):
         await world.admit(account, "BBB", 6)
 
+    # The broker's record once the cancellation took effect: two of six had filled.
+    account.by_id["B-AAA"] = {"status": "CANCELLED", "filledQuantity": "2", "filledPrice": "100"}
     async with world.sessions() as session:
         order = (await session.execute(select(Order).where(Order.ticker == "AAA"))).scalar_one()
         await ExecutionEngine(session, account).cancel_order(order)
         await session.commit()
     assert (await world.order("AAA")).status == "cancelled"
+    assert (await world.order("AAA")).filled_quantity == Decimal("2")
     with pytest.raises(CashReservationRefused):
         await world.admit(account, "BBB", 6, cash_read_at=read_before)
 

@@ -6,6 +6,7 @@ import asyncio
 import os
 import uuid
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from sqlalchemy import delete, func, select
@@ -162,6 +163,9 @@ async def test_postgres_concurrent_cancel_calls_broker_exactly_once() -> None:
         async def cancel_order(self, _broker_order_id: str) -> None:
             self.cancel_calls += 1
 
+        async def get_order_by_id(self, broker_order_id: str) -> dict[str, Any]:
+            return {"id": broker_order_id, "status": "CANCELLED", "filledQuantity": 0}
+
     engine = create_async_engine(POSTGRES_TEST_DATABASE_URL, poolclass=NullPool)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     order_id = uuid.uuid4()
@@ -201,12 +205,16 @@ async def test_postgres_concurrent_cancel_calls_broker_exactly_once() -> None:
         assert sorted(await asyncio.gather(attempt(), attempt())) == ["committed", "committed"]
         assert broker.cancel_calls == 1
         async with sessions() as verify:
-            event_count = await verify.scalar(
-                select(func.count())
-                .select_from(OrderEvent)
-                .where(OrderEvent.order_id == order_id, OrderEvent.event_type == "cancelled")
-            )
-            assert event_count == 1
+            # One accepted request, and one transition, written from the broker's record.
+            for event_type in ("cancel_request_accepted", "reconciled_status"):
+                event_count = await verify.scalar(
+                    select(func.count())
+                    .select_from(OrderEvent)
+                    .where(OrderEvent.order_id == order_id, OrderEvent.event_type == event_type)
+                )
+                assert event_count == 1, event_type
+            stored = await verify.get(Order, order_id)
+            assert stored is not None and stored.status == "cancelled"
     finally:
         async with sessions() as cleanup:
             await cleanup.execute(delete(AuditLog).where(AuditLog.entity_id == str(order_id)))

@@ -24,7 +24,7 @@ from app.core.config import settings
 from app.core.security import CredentialDecryptionError, decrypt_field
 from app.db.models import AppSettings, AuditLog, BrokerConnection, Order, OrderEvent
 from app.db.repositories import OrderRepository
-from app.execution.engine import ExecutionEngine, OrderCancellationFailed
+from app.execution.engine import ExecutionEngine, plain_amount
 from app.execution.state_machine import InvalidOrderTransition, require_already_finished
 from app.risk.engine import activate_kill_switch
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
@@ -56,15 +56,42 @@ class CancellationSummary:
     # order that had ended. A fill among them is exposure the cancel did not prevent.
     failed_orders: tuple[str, ...] = ()
     finished_orders: tuple[str, ...] = ()
+    # Cancel requests the broker took without yet saying what became of the order: those
+    # orders are still open here, with their cash reserved, until a final record is read.
+    awaiting_confirmation: int = 0
+    unconfirmed_orders: tuple[str, ...] = ()
+    # "TICKER filled of quantity" for each cancellation that came after part of a fill.
+    partly_filled_orders: tuple[str, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        """Every order listed was either cancelled or had already ended."""
+        return self.failed == 0 and self.awaiting_confirmation == 0
 
     @property
     def message(self) -> str:
-        if self.cancelled == 0 and self.failed == 0 and self.already_finished == 0:
+        if (
+            self.cancelled == 0
+            and self.failed == 0
+            and self.already_finished == 0
+            and self.awaiting_confirmation == 0
+        ):
             return "No pending orders to cancel."
         finished = ""
         if self.already_finished:
             finished = f" {self.already_finished} had already finished" + (
                 f" ({', '.join(self.finished_orders)})." if self.finished_orders else "."
+            )
+        if self.partly_filled_orders:
+            finished += (
+                f" {len(self.partly_filled_orders)} cancelled after a partial fill"
+                f" ({', '.join(self.partly_filled_orders)})."
+            )
+        if self.awaiting_confirmation:
+            finished += (
+                f" {self.awaiting_confirmation} cancellation request(s) accepted by the broker"
+                f" and awaiting confirmation ({', '.join(self.unconfirmed_orders)}):"
+                " those orders remain OPEN until their outcome is read."
             )
         if self.failed:
             still_open = f" ({', '.join(self.failed_orders)})" if self.failed_orders else ""
@@ -289,21 +316,22 @@ class SystemControlService:
                     already_finished += 1
                     finished_orders.append(order)
 
+        unconfirmed: list[tuple[Order, str]] = []
+        partly_filled_orders: list[Order] = []
         if external_orders:
             broker = await self._get_broker("operator_system_control_emergency")
             async with broker as active_broker:
-                engine = ExecutionEngine(self.db, active_broker)
-                for order in external_orders:
-                    try:
-                        await engine.cancel_order(order)
-                        cancelled += 1
-                    except OrderCancellationFailed:
-                        failed += 1
-                        failed_orders.append(order)
-                    except InvalidOrderTransition:
-                        require_already_finished(order)
-                        already_finished += 1
-                        finished_orders.append(order)
+                # Every cancel request goes out before any order is read back, so a rate
+                # limit met while reading cannot hold up a cancellation (see cancel_many).
+                batch = await ExecutionEngine(self.db, active_broker).cancel_many(external_orders)
+            cancelled += len(batch.cancelled)
+            failed += len(batch.failed)
+            failed_orders.extend(batch.failed)
+            already_finished += len(batch.finished)
+            finished_orders.extend(batch.finished)
+            unconfirmed = batch.unconfirmed
+            partly_filled_orders = batch.partly_filled
+        unconfirmed_orders = [order for order, _reason in unconfirmed]
 
         audit_payload: dict[str, Any] = {
             "source": "system_control",
@@ -320,11 +348,33 @@ class SystemControlService:
                 {"order_id": str(order.id), "ticker": order.ticker, "status": order.status}
                 for order in finished_orders
             ]
-        if failed or already_finished:
+        if unconfirmed_orders:
+            audit_payload["awaiting_confirmation_count"] = len(unconfirmed_orders)
+            audit_payload["awaiting_confirmation_orders"] = [
+                {
+                    "order_id": str(order.id),
+                    "ticker": order.ticker,
+                    "status": order.status,
+                    "reason": reason,
+                }
+                for order, reason in unconfirmed
+            ]
+        if partly_filled_orders:
+            audit_payload["cancelled_after_partial_fill"] = [
+                {
+                    "order_id": str(order.id),
+                    "ticker": order.ticker,
+                    "filled_quantity": plain_amount(order.filled_quantity),
+                    "quantity": plain_amount(order.quantity),
+                }
+                for order in partly_filled_orders
+            ]
+        if failed or already_finished or unconfirmed_orders:
             log.warning(
                 "system_control.cancel_all_needs_attention",
                 failed=[str(order.id) for order in failed_orders],
                 already_finished={str(order.id): order.status for order in finished_orders},
+                awaiting_confirmation=[str(order.id) for order in unconfirmed_orders],
             )
         self.db.add(
             AuditLog(
@@ -340,6 +390,13 @@ class SystemControlService:
             already_finished=already_finished,
             failed_orders=tuple(order.ticker for order in failed_orders),
             finished_orders=tuple(f"{order.ticker} {order.status}" for order in finished_orders),
+            awaiting_confirmation=len(unconfirmed_orders),
+            unconfirmed_orders=tuple(order.ticker for order in unconfirmed_orders),
+            partly_filled_orders=tuple(
+                f"{order.ticker} {plain_amount(order.filled_quantity)}"
+                f" of {plain_amount(order.quantity)}"
+                for order in partly_filled_orders
+            ),
         )
 
     async def flatten_all(self, actor: str) -> str:

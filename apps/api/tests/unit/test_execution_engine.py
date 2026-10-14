@@ -77,6 +77,21 @@ class WorkingBroker:
         pass
 
 
+class CancelConfirmedBroker(WorkingBroker):
+    """Once a cancel has been asked for, reports the order cancelled with nothing filled."""
+
+    def __init__(self):
+        self.cancelled: set[str] = set()
+
+    async def cancel_order(self, broker_order_id):
+        self.cancelled.add(broker_order_id)
+
+    async def get_order_by_id(self, broker_order_id):
+        if broker_order_id in self.cancelled:
+            return {"id": broker_order_id, "status": "CANCELLED", "filledQuantity": 0}
+        return await super().get_order_by_id(broker_order_id)
+
+
 class CancelErrorBroker(WorkingBroker):
     async def cancel_order(self, broker_order_id):
         raise RuntimeError("Authorization: Bearer super-secret-token")
@@ -845,7 +860,7 @@ async def test_an_order_quantity_finer_than_the_stored_scale_still_matches_its_e
 
 @pytest.mark.asyncio
 async def test_cancel_order_sets_cancelled_status(db):
-    engine = ExecutionEngine(db, WorkingBroker())
+    engine = ExecutionEngine(db, CancelConfirmedBroker())
     order = await engine.create_order_intent(
         ticker="SPY",
         side="buy",

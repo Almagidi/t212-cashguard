@@ -1,6 +1,8 @@
 import axios, { AxiosError, type AxiosInstance } from "axios";
 import type {
   AccountSummary,
+  CancelAllResult,
+  CancelOrderResult,
   Alert,
   AppSettings,
   AuditLogList,
@@ -438,11 +440,11 @@ class ApiClient {
       await this.client.get<PaperExecutionAudit>(`/orders/paper/${id}/audit`)
     ).data;
   }
-  async cancelOrder(id: string): Promise<void> {
-    await this.client.post(`/orders/${id}/cancel`);
+  async cancelOrder(id: string): Promise<CancelOrderResult> {
+    return (await this.client.post<CancelOrderResult>(`/orders/${id}/cancel`)).data;
   }
-  async cancelAllPending(): Promise<{ cancelled: number; failed: number }> {
-    return (await this.client.post("/orders/cancel-all-pending")).data;
+  async cancelAllPending(): Promise<CancelAllResult> {
+    return (await this.client.post<CancelAllResult>("/orders/cancel-all-pending")).data;
   }
 
   // ── Positions ───────────────────────────────────────────────────────────────
