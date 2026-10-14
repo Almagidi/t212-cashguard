@@ -79,7 +79,7 @@ async def emergency_cancel_all(
         current_user.email
     )
     return EmergencyActionResult(
-        success=summary.failed == 0,
+        success=summary.complete,
         action="cancel_all",
         message=summary.message,
         timestamp=datetime.now(UTC),

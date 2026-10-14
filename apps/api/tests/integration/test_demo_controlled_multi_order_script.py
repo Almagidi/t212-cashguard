@@ -17,7 +17,7 @@ def _safe_env(**overrides: str) -> dict[str, str]:
         "T212_DEMO_MULTI_ORDER_ENABLED": "true",
         "T212_DEMO_MULTI_ORDER_CONFIRM": "PLACE_MULTI_DEMO_ORDERS",
         "DEMO_RECONCILIATION_SCHEDULER_ENABLED": "false",
-        "T212_DEMO_MULTI_ORDER_PLAN": "AAPL_US_EQ:0.01,MSFT_US_EQ:0.01",
+        "T212_DEMO_MULTI_ORDER_PLAN": "AAPL_US_EQ:0.01@100,MSFT_US_EQ:0.01@100",
         "T212_DEMO_API_KEY": "demo-key",
         "T212_DEMO_API_SECRET": "demo-secret",
         "T212_API_KEY": "generic-key",
@@ -30,12 +30,21 @@ def _safe_env(**overrides: str) -> dict[str, str]:
 
 
 def test_order_plan_parser_accepts_valid_plan() -> None:
-    plan = smoke.parse_order_plan("AAPL_US_EQ:0.01,MSFT_US_EQ:0.02")
+    plan = smoke.parse_order_plan("AAPL_US_EQ:0.01@250,MSFT_US_EQ:0.02@500")
 
-    assert [(item.ticker, item.quantity) for item in plan] == [
-        ("AAPL_US_EQ", Decimal("0.01")),
-        ("MSFT_US_EQ", Decimal("0.02")),
+    assert [(item.ticker, item.quantity, item.limit_price) for item in plan] == [
+        ("AAPL_US_EQ", Decimal("0.01"), Decimal("250")),
+        ("MSFT_US_EQ", Decimal("0.02"), Decimal("500")),
     ]
+
+
+@pytest.mark.parametrize(
+    "raw", ["AAPL_US_EQ:0.01", "AAPL_US_EQ:0.01@", "AAPL_US_EQ:0.01@0", "AAPL_US_EQ:0.01@x"]
+)
+def test_order_plan_parser_requires_a_positive_limit_price(raw: str) -> None:
+    # The API refuses a market buy, so every item states its limit.
+    with pytest.raises(smoke.PlanValidationError):
+        smoke.parse_order_plan(raw)
 
 
 @pytest.mark.parametrize(
@@ -59,22 +68,22 @@ def test_order_plan_parser_rejects_malformed_item(raw: str) -> None:
 @pytest.mark.parametrize("quantity", ["0", "-0.01"])
 def test_order_plan_parser_rejects_zero_or_negative_quantity(quantity: str) -> None:
     with pytest.raises(smoke.PlanValidationError, match="positive"):
-        smoke.parse_order_plan(f"AAPL_US_EQ:{quantity}")
+        smoke.parse_order_plan(f"AAPL_US_EQ:{quantity}@100")
 
 
 def test_order_plan_parser_rejects_duplicate_tickers() -> None:
     with pytest.raises(smoke.PlanValidationError, match="Duplicate"):
-        smoke.parse_order_plan("AAPL_US_EQ:0.01,AAPL_US_EQ:0.01")
+        smoke.parse_order_plan("AAPL_US_EQ:0.01@100,AAPL_US_EQ:0.01@100")
 
 
 def test_order_plan_parser_enforces_default_max_order_cap() -> None:
     with pytest.raises(smoke.PlanValidationError, match="at most 2"):
-        smoke.parse_order_plan("AAPL_US_EQ:0.01,MSFT_US_EQ:0.01,NVDA_US_EQ:0.01")
+        smoke.parse_order_plan("AAPL_US_EQ:0.01@1,MSFT_US_EQ:0.01@1,NVDA_US_EQ:0.01@1")
 
 
 def test_order_plan_parser_allows_explicit_hard_cap_of_three() -> None:
     plan = smoke.parse_order_plan(
-        "AAPL_US_EQ:0.01,MSFT_US_EQ:0.01,NVDA_US_EQ:0.01",
+        "AAPL_US_EQ:0.01@1,MSFT_US_EQ:0.01@1,NVDA_US_EQ:0.01@1",
         max_orders=3,
     )
 
@@ -84,7 +93,7 @@ def test_order_plan_parser_allows_explicit_hard_cap_of_three() -> None:
 def test_order_plan_parser_refuses_above_hard_cap() -> None:
     with pytest.raises(smoke.PlanValidationError, match="hard cap"):
         smoke.parse_order_plan(
-            "AAPL_US_EQ:0.01,MSFT_US_EQ:0.01,NVDA_US_EQ:0.01,GOOG_US_EQ:0.01",
+            "AAPL_US_EQ:0.01@1,MSFT_US_EQ:0.01@1,NVDA_US_EQ:0.01@1,GOOG_US_EQ:0.01@1",
             max_orders=4,
         )
 
@@ -190,6 +199,7 @@ def test_placement_loop_records_accepted_broker_order_ids() -> None:
         if path == "/v1/broker/trading212/connect":
             return 200, {"environment": "demo", "credential_state": "configured"}
         if path == "/v1/orders":
+            assert (payload["order_type"], payload["limit_price"]) == ("limit", "100")
             ticker = str(payload["ticker"])
             calls.append(ticker)
             return 201, {

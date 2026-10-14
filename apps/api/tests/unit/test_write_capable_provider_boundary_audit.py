@@ -130,7 +130,8 @@ def test_cancel_timed_out_orders_is_provider_backed_and_cancellation_capable() -
     assert "BrokerProviderCredentials" in ast.unparse(cancel_node)
     assert "worker_cancel_timed_out_orders" in ast.unparse(cancel_node)
     assert "ExecutionEngine" in ast.unparse(cancel_node)
-    assert "cancel_order" in _call_names(cancel_node)
+    # Cancels in a batch: every request first, then the reads (ExecutionEngine.cancel_many).
+    assert "cancel_many" in _call_names(cancel_node)
 
 
 def test_workers_tasks_direct_inventory_and_provider_call_sites_are_locked() -> None:
@@ -302,6 +303,8 @@ def test_system_control_is_mixed_write_capable_for_emergency_cancel_and_flatten(
     assert "ExecutionEngine" not in ast.unparse(get_snapshot)
     assert "ExecutionEngine" not in ast.unparse(get_positions_summary)
     assert "cancel_order" in _call_names(cancel_all_pending)
+    # Broker orders go through the batch: every request first, then the reads.
+    assert "cancel_many" in _call_names(cancel_all_pending)
     assert {"create_order_intent", "submit_order"} <= _call_names(flatten_all)
     assert "ExecutionEngine" in ast.unparse(cancel_all_pending)
     assert "ExecutionEngine" in ast.unparse(flatten_all)

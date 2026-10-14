@@ -55,6 +55,9 @@ class BrokerApiError(RuntimeError):
 class OrderPlanItem:
     ticker: str
     quantity: Decimal
+    # A buy is sent as a limit order: the API refuses a market buy, which has no price to
+    # check against cash and risk limits.
+    limit_price: Decimal
 
 
 @dataclass(frozen=True)
@@ -171,6 +174,16 @@ def _parse_quantity(raw: str) -> Decimal:
     return quantity
 
 
+def _parse_limit_price(raw: str) -> Decimal:
+    try:
+        price = Decimal(raw)
+    except InvalidOperation as exc:
+        raise PlanValidationError(f"Malformed limit price: {raw!r}") from exc
+    if not price.is_finite() or price <= 0:
+        raise PlanValidationError(f"Limit price must be a positive number: {raw!r}")
+    return price
+
+
 def parse_order_plan(raw: str, *, max_orders: int = DEFAULT_MAX_ORDERS) -> list[OrderPlanItem]:
     if max_orders > HARD_MAX_ORDERS:
         raise PlanValidationError(
@@ -188,8 +201,16 @@ def parse_order_plan(raw: str, *, max_orders: int = DEFAULT_MAX_ORDERS) -> list[
     for part in parts:
         if ":" not in part:
             raise PlanValidationError(f"Malformed order plan item: {part!r}")
-        ticker_raw, quantity_raw = [item.strip() for item in part.split(":", 1)]
-        if not ticker_raw or not quantity_raw:
+        ticker_raw, rest = [item.strip() for item in part.split(":", 1)]
+        if not ticker_raw or not rest:
+            raise PlanValidationError(f"Malformed order plan item: {part!r}")
+        if "@" not in rest:
+            raise PlanValidationError(
+                f"Order plan item needs a limit price, TICKER:QUANTITY@LIMIT: {part!r} "
+                "(a market buy is refused)"
+            )
+        quantity_raw, limit_raw = [item.strip() for item in rest.split("@", 1)]
+        if not quantity_raw or not limit_raw:
             raise PlanValidationError(f"Malformed order plan item: {part!r}")
 
         ticker = ticker_raw.upper()
@@ -198,7 +219,13 @@ def parse_order_plan(raw: str, *, max_orders: int = DEFAULT_MAX_ORDERS) -> list[
         if ticker in seen:
             raise PlanValidationError(f"Duplicate ticker in order plan: {ticker}")
         seen.add(ticker)
-        plan.append(OrderPlanItem(ticker=ticker, quantity=_parse_quantity(quantity_raw)))
+        plan.append(
+            OrderPlanItem(
+                ticker=ticker,
+                quantity=_parse_quantity(quantity_raw),
+                limit_price=_parse_limit_price(limit_raw),
+            )
+        )
 
     return plan
 
@@ -342,7 +369,8 @@ def _place_order(
         payload={
             "ticker": item.ticker,
             "side": "buy",
-            "order_type": "market",
+            "order_type": "limit",
+            "limit_price": str(item.limit_price),
             "quantity": str(item.quantity),
             "time_validity": "DAY",
         },
@@ -486,7 +514,10 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--plan",
-        help="Order plan such as AAPL_US_EQ:0.01,MSFT_US_EQ:0.01. Overrides env plan.",
+        help=(
+            "Order plan such as AAPL_US_EQ:0.01@250,MSFT_US_EQ:0.01@500 (TICKER:QUANTITY@LIMIT). "
+            "Overrides env plan."
+        ),
     )
     return parser.parse_args()
 

@@ -38,7 +38,7 @@ from decimal import ROUND_DOWN, Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import structlog
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
 
 from app.backtest.portfolio_strategies import is_portfolio_strategy_type
@@ -50,13 +50,14 @@ from app.broker.provider import (
     create_trading212_provider_adapter,
 )
 from app.core.config import settings
-from app.db.models import AppSettings, AuditLog, BrokerConnection, Signal, Strategy, Trade
+from app.db.models import AppSettings, AuditLog, BrokerConnection, Signal, Strategy
 from app.db.repositories.venue_config_repo import VenueConfigRepository
 from app.execution.engine import ExecutionEngine
 from app.execution.paper_engine import PaperExecutionError
 from app.execution.state_machine import ACTIVE_ORDER_STATUSES
 from app.market_data.exchange_calendar import calendar_for_venue
 from app.risk.engine import RiskEngine, RiskViolation
+from app.risk.realized_pnl import realized_pnl_today
 from app.services.alert_service import (
     alert_daily_summary,
     alert_order_failed,
@@ -218,20 +219,7 @@ class StrategyRunner:
             return order
 
     async def _get_realized_pnl_today(self) -> Decimal:
-        today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        tomorrow_start = today_start + timedelta(days=1)
-        result = await self.db.execute(
-            select(func.sum(Trade.realized_pnl)).where(
-                Trade.closed_at >= today_start,
-                Trade.closed_at < tomorrow_start,
-                Trade.is_dry_run == False,  # noqa: E712
-                Trade.realized_pnl.isnot(None),
-            )
-        )
-        realized = result.scalar_one()
-        if realized is None:
-            return Decimal("0")
-        return Decimal(str(realized))
+        return await realized_pnl_today(self.db)
 
     async def _get_broker(self) -> Any | None:
         if settings.APP_MODE == "mock":

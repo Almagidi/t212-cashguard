@@ -71,6 +71,7 @@ class FakeTrading212Adapter:
         self.api_key = api_key
         self.api_secret = api_secret
         self.environment = environment
+        self.cancelled: set[str] = set()
 
     async def __aenter__(self):
         return self
@@ -125,9 +126,13 @@ class FakeTrading212Adapter:
         return await self.place_market_order(ticker, quantity, time_validity)
 
     async def cancel_order(self, order_id):
+        self.cancelled.add(order_id)
         return {"id": order_id, "status": "CANCELLED"}
 
     async def get_order_by_id(self, order_id):
+        if order_id in self.cancelled:
+            # What the broker records once a cancel request has taken effect.
+            return {"id": order_id, "status": "CANCELLED", "filledQuantity": 0}
         return {
             "id": order_id,
             "status": "FILLED",
@@ -1999,6 +2004,7 @@ class TestEmergencyFlow:
             async def cancel_all_pending_summary(self, _actor):
                 return SimpleNamespace(
                     failed=1,
+                    complete=False,
                     message=(
                         "Cancelled 1 pending orders; 1 cancellation attempts require "
                         "reconciliation."
@@ -2326,8 +2332,9 @@ class TestLiveModeSafetyFlow:
             json={
                 "ticker": "MSFT",
                 "side": "buy",
-                "order_type": "market",
+                "order_type": "limit",
                 "quantity": "1",
+                "limit_price": "101.25",
             },
         )
 
@@ -2763,8 +2770,9 @@ class TestBrokerExecutionFlow:
             json={
                 "ticker": "AAPL",
                 "side": "buy",
-                "order_type": "market",
+                "order_type": "limit",
                 "quantity": "1",
+                "limit_price": "101.25",
             },
         )
         assert order_resp.status_code == 201, order_resp.text
@@ -2841,8 +2849,11 @@ class TestBrokerExecutionFlow:
             json={
                 "ticker": "MSFT",
                 "side": "buy",
-                "order_type": "market",
+                "order_type": "limit",
                 "quantity": "1",
+                # The fake broker fills at 101.25: 1.25% above this limit is the abnormal
+                # slippage whose alert this test follows to Telegram.
+                "limit_price": "100",
             },
         )
         assert order_resp.status_code == 201, order_resp.text
