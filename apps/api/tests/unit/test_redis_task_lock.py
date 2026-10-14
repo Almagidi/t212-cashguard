@@ -110,3 +110,62 @@ async def test_redis_acquisition_failure_does_not_authorize_or_release(
         assert acquired is False
 
     assert client.release_attempted is False
+
+
+# ── exclusive_task_lock: the same lock, for callers that must tell refusals apart ──
+
+
+@pytest.mark.asyncio
+async def test_exclusive_lock_and_task_lock_exclude_each_other(fake_redis: FakeRedis) -> None:
+    async with (
+        redis_module.task_lock("shared", ttl_seconds=30) as scheduled,
+        redis_module.exclusive_task_lock("shared", ttl_seconds=30) as other,
+    ):
+        assert (scheduled, other) == (True, False)
+
+    async with (
+        redis_module.exclusive_task_lock("shared", ttl_seconds=30) as owner,
+        redis_module.task_lock("shared", ttl_seconds=30) as scheduled,
+    ):
+        assert (owner, scheduled) == (True, False)
+
+    assert fake_redis.values == {}
+
+
+@pytest.mark.asyncio
+async def test_exclusive_lock_is_released_when_its_holder_fails(fake_redis: FakeRedis) -> None:
+    with pytest.raises(RuntimeError, match="boom"):
+        async with redis_module.exclusive_task_lock("failing", ttl_seconds=30) as acquired:
+            assert acquired is True
+            raise RuntimeError("boom")
+
+    assert fake_redis.values == {}
+
+
+@pytest.mark.asyncio
+async def test_expired_exclusive_owner_cannot_delete_its_replacement(
+    fake_redis: FakeRedis,
+) -> None:
+    key = "celery:task_lock:expiring"
+    async with redis_module.exclusive_task_lock("expiring", ttl_seconds=1) as acquired:
+        assert acquired is True
+        fake_redis.values[key] = "replacement-owner-token"
+
+    assert fake_redis.values[key] == "replacement-owner-token"
+
+
+@pytest.mark.asyncio
+async def test_exclusive_lock_reports_an_outage_instead_of_a_held_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = UnavailableRedis()
+    monkeypatch.setattr(redis_module, "_get_pool", lambda: object())
+    monkeypatch.setattr(redis_module.aioredis, "Redis", lambda **_kwargs: client)
+    entered = False
+
+    with pytest.raises(redis_module.TaskLockUnavailable, match="Redis is unavailable"):
+        async with redis_module.exclusive_task_lock("redis-unavailable", ttl_seconds=30):
+            entered = True
+
+    assert entered is False
+    assert client.release_attempted is False
