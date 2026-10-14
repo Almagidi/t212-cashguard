@@ -71,6 +71,7 @@ class FakeTrading212Adapter:
         self.api_key = api_key
         self.api_secret = api_secret
         self.environment = environment
+        self.cancelled: set[str] = set()
 
     async def __aenter__(self):
         return self
@@ -125,9 +126,13 @@ class FakeTrading212Adapter:
         return await self.place_market_order(ticker, quantity, time_validity)
 
     async def cancel_order(self, order_id):
+        self.cancelled.add(order_id)
         return {"id": order_id, "status": "CANCELLED"}
 
     async def get_order_by_id(self, order_id):
+        if order_id in self.cancelled:
+            # What the broker records once a cancel request has taken effect.
+            return {"id": order_id, "status": "CANCELLED", "filledQuantity": 0}
         return {
             "id": order_id,
             "status": "FILLED",
@@ -1999,6 +2004,7 @@ class TestEmergencyFlow:
             async def cancel_all_pending_summary(self, _actor):
                 return SimpleNamespace(
                     failed=1,
+                    complete=False,
                     message=(
                         "Cancelled 1 pending orders; 1 cancellation attempts require "
                         "reconciliation."

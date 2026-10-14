@@ -30,6 +30,10 @@ def _order(**overrides: Any) -> Order:
     return Order(**values)
 
 
+class UnexpectedRead(BaseException):
+    """A read of an order this broker was never asked to cancel: the test must fail."""
+
+
 class EmergencyBroker:
     environment = "demo"
 
@@ -58,6 +62,13 @@ class EmergencyBroker:
     async def cancel_order(self, broker_order_id: str) -> dict[str, str]:
         self.cancelled_order_ids.append(broker_order_id)
         return {"id": broker_order_id, "status": "CANCELLED"}
+
+    async def get_order_by_id(self, broker_order_id: str) -> dict[str, Any]:
+        # Read after a cancel request: the broker's record of the cancelled order.
+        if broker_order_id not in self.cancelled_order_ids:
+            # Not an Exception: the engine treats any Exception from a read as a failed read.
+            raise UnexpectedRead(broker_order_id)
+        return {"id": broker_order_id, "status": "CANCELLED", "filledQuantity": 0}
 
     async def place_market_order(
         self,
@@ -155,17 +166,20 @@ async def test_cancel_all_pending_cancels_real_pending_orders_and_audits(db, mon
         "KEEP_FILLED": "filled",
     }
 
+    # A broker order's transition is written from the broker's record of the cancellation,
+    # read after the request; an intent that was never sent is cancelled here.
     cancelled_events = (
         (
             await db.execute(
                 select(OrderEvent)
-                .where(OrderEvent.event_type == "cancelled")
+                .where(OrderEvent.to_status == "cancelled")
                 .order_by(OrderEvent.occurred_at)
             )
         )
         .scalars()
         .all()
     )
+    assert len(cancelled_events) == 3
     assert {event.order_id for event in cancelled_events} == {
         pending_intent.id,
         submitted.id,
