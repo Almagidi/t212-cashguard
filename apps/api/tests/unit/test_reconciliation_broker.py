@@ -113,6 +113,83 @@ async def test_a_failed_read_is_remembered_and_still_raised() -> None:
     assert broker.reads == 0
 
 
+async def test_no_such_open_order_is_an_answer_not_a_failed_read() -> None:
+    adapter = Adapter()
+    adapter.answer = T212APIError(404, "not found")
+    broker = ReadOnlyBroker(adapter, account_scope="scope")
+
+    with pytest.raises(T212APIError):
+        await broker.get_order_by_id("B-1")
+
+    assert broker.failure is None
+    assert broker.reads == 1
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        T212APIError(400, "bad"),
+        T212APIError(500, "down"),
+        T212AuthError(401, "no"),
+        KeyError("B-1"),
+    ],
+)
+async def test_any_other_refusal_of_the_open_orders_read_is_remembered(failure: Exception) -> None:
+    adapter = Adapter()
+    adapter.answer = failure
+    broker = ReadOnlyBroker(adapter, account_scope="scope")
+
+    with pytest.raises(type(failure)):
+        await broker.get_order_by_id("B-1")
+
+    assert broker.failure is failure
+
+
+async def test_a_history_read_that_finds_nothing_at_that_address_is_a_failed_read() -> None:
+    adapter = Adapter()
+    adapter.answer = T212APIError(404, "not found")
+    broker = ReadOnlyBroker(adapter, account_scope="scope")
+
+    with pytest.raises(T212APIError):
+        await broker.get_historical_orders(limit=50)
+
+    assert broker.failure is adapter.answer
+
+
+async def test_a_history_page_is_read_from_the_broker_once_and_then_kept() -> None:
+    adapter = Adapter()
+    adapter.answer = {"items": [{"id": "B-1"}]}
+    broker = ReadOnlyBroker(adapter, account_scope="scope")
+
+    first = await broker.get_historical_orders(limit=50)
+    broker.begin_order()
+    adapter.answer = {"items": []}
+    again = await broker.get_historical_orders(limit=50)
+    other = await broker.get_historical_orders(ticker="AAPL_US_EQ", limit=50)
+
+    assert first == again == {"items": [{"id": "B-1"}]}
+    assert other == {"items": []}
+    assert [call for call in adapter.calls if call[0] == "get_historical_orders"] == [
+        ("get_historical_orders", {"limit": 50}),
+        ("get_historical_orders", {"ticker": "AAPL_US_EQ", "limit": 50}),
+    ]
+    # A kept page still counts as a look at the broker for the order being handled.
+    assert broker.reads == 2
+
+
+async def test_a_history_read_that_failed_is_not_kept() -> None:
+    adapter = Adapter()
+    adapter.answer = T212RateLimitError(5)
+    broker = ReadOnlyBroker(adapter, account_scope="scope")
+
+    with pytest.raises(T212RateLimitError):
+        await broker.get_historical_orders(limit=50)
+    adapter.answer = {"items": []}
+
+    assert await broker.get_historical_orders(limit=50) == {"items": []}
+    assert len(adapter.calls) == 2
+
+
 async def test_a_read_that_does_not_answer_in_time_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(reconciliation_broker, "BROKER_READ_TIMEOUT_SECONDS", 0.05)
     adapter = Adapter()
@@ -125,6 +202,45 @@ async def test_a_read_that_does_not_answer_in_time_fails(monkeypatch: pytest.Mon
             await broker.get_order_by_id("b-1")
 
     assert isinstance(broker.failure, TimeoutError), "the read's own time limit did not fire"
+
+
+async def test_the_reads_for_one_order_share_one_time_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reconciliation_broker, "BROKER_READ_TIMEOUT_SECONDS", 1.0)
+
+    class SlowAdapter(Adapter):
+        async def _reply(self) -> Any:
+            await asyncio.sleep(0.6)
+            return self.answer
+
+    broker = ReadOnlyBroker(SlowAdapter(), account_scope="scope")
+    broker.begin_order()
+
+    await broker.get_order_by_id("b-1")
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(5):
+            await broker.get_historical_orders(limit=50)
+
+    assert isinstance(broker.failure, TimeoutError), "the second read had a limit of its own"
+
+    # The next order starts with the whole limit again.
+    broker.begin_order()
+    assert await broker.get_order_by_id("b-2") == {"status": "WORKING"}
+    assert broker.failure is None
+
+
+async def test_the_time_limit_starts_at_the_first_read_not_at_the_start_of_the_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reconciliation_broker, "BROKER_READ_TIMEOUT_SECONDS", 0.5)
+    broker = ReadOnlyBroker(Adapter(), account_scope="scope")
+    broker.begin_order()
+    # Work before the broker is asked (an alarm being raised, say) takes its own time.
+    await asyncio.sleep(0.6)
+
+    assert await broker.get_order_by_id("b-1") == {"status": "WORKING"}
+    assert broker.failure is None
 
 
 async def test_a_cancelled_read_is_not_recorded_as_a_broker_failure() -> None:

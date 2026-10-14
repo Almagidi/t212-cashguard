@@ -46,7 +46,7 @@ class Acknowledgement:
     fill_price: Decimal | None = None
 
 
-def _usable_order_id(raw: Any) -> str | None:
+def usable_order_id(raw: Any) -> str | None:
     if isinstance(raw, bool):
         return None
     if isinstance(raw, int):
@@ -58,7 +58,7 @@ def _usable_order_id(raw: Any) -> str | None:
     return None
 
 
-def _finite_number(raw: Any) -> Decimal | None:
+def finite_number(raw: Any) -> Decimal | None:
     """The value as a finite decimal, or None when it is not a number at all."""
     if not isinstance(raw, int | float | str | Decimal):
         return None
@@ -77,7 +77,7 @@ def _reported_fill(response: dict[str, Any], *, side: str, broker_order_id: str)
     raw = response.get("filledQuantity")
     if raw is None:
         return None
-    signed = _finite_number(raw)
+    signed = finite_number(raw)
     if signed is None:
         raise UntrustedAcknowledgement(
             "filled_quantity_not_a_number", broker_order_id=broker_order_id
@@ -94,7 +94,7 @@ def _fill_price(response: dict[str, Any], *, broker_order_id: str) -> Decimal:
     raw = response.get("filledPrice")
     if raw is None:
         raise UntrustedAcknowledgement("fill_price_missing", broker_order_id=broker_order_id)
-    price = _finite_number(raw)
+    price = finite_number(raw)
     if price is None:
         raise UntrustedAcknowledgement("fill_price_not_a_number", broker_order_id=broker_order_id)
     if price < SMALLEST_STORED_PRICE:
@@ -109,7 +109,7 @@ def interpret_acknowledgement(response: Any, *, side: str, quantity: Decimal) ->
     """
     if not isinstance(response, dict):
         raise UntrustedAcknowledgement("not_an_object")
-    broker_order_id = _usable_order_id(response.get("id"))
+    broker_order_id = usable_order_id(response.get("id"))
     if broker_order_id is None:
         raise UntrustedAcknowledgement("order_id_not_usable")
     raw_status = response.get("status")

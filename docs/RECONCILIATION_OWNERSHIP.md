@@ -60,8 +60,9 @@ Connections are the active `trading212` connections for `APP_MODE`, in creation 
 credentials are decrypted when no order is waiting.
 
 Two kinds of order are read. An active order with a broker order id is looked up by that
-id. An order whose submission outcome is unknown and that has no broker order id is looked
-up in broker history; it is never sent again. A legacy order stuck in `submitted` with no
+id (see "Settling an order from the broker's record" below). An order whose submission
+outcome is unknown and that has no broker order id is looked up in broker history; it is
+never sent again. A legacy order stuck in `submitted` with no
 broker order id cannot be looked up at all: it is logged on every run
 (`execution.orphaned_submitted_order`) and counted as `orphaned_submitted`.
 
@@ -74,13 +75,75 @@ one account is refused when the adapter is bound to a different one. When the ad
 carries no account identity (the terminal scripts build one directly) they behave as
 before; they match by exact broker order id in the demo account's history.
 
+## Settling an order from the broker's record
+
+The broker is asked about an order by its exact id, in two places.
+
+1. **The open orders** (`GET /equity/orders/{id}`). If the order is listed there and not
+   final, it stays as it is (only this read can say an order is still open). If the
+   answer is final and complete, the order is settled from it.
+2. **The order history** (`GET /equity/history/orders`), when the broker answers "no such
+   order" (HTTP 404: an order that has ended is no longer among the open orders), or when
+   the open-orders answer is final but leaves out a number. The newest page of the whole
+   account is read first; one page serves every order of the run (and the unknown
+   submissions of an instrument share theirs) and is read from the broker once per run.
+   The instrument's own history is read as well only when older records exist beyond that
+   page: when the broker gives a `nextPagePath`, or, if it gives none, when the page is
+   full (50 records). A record counts if its id, with surrounding space removed, is the
+   order's id; a whole-number id is read as its digits.
+
+A final state is written only from a record that passes every one of these checks
+(`app/execution/broker_record.py`):
+
+- it is about this order: the id, and whatever it states about instrument, side, order
+  type and ordered quantity, agree with the order. What it does not state is not held
+  against it; an order type this code does not know is not compared;
+- it does not contradict itself: a fact written in two places (nested and flat) is the
+  same in both;
+- it states how much filled, even when that is nothing. A fill on its own (`fill.quantity`)
+  is never taken for the total. Only the field names above are read; a record that uses
+  others is refused, not guessed at;
+- every number is finite. Amounts are compared at the stored scale of 8 decimal places,
+  so float noise such as `0.30000000000000004` is the `0.3` that was sent. A sell may be
+  written with negative quantities; the amount is kept. A negative amount for a buy is
+  refused;
+- the filled amount is not more than was ordered. `FILLED` needs the whole quantity and a
+  price; a cancelled or rejected order with a fill needs that fill's price;
+- every price of a fill is at least 0.00000001 and fits `orders.avg_fill_price`;
+- several history records for one id are accepted only as the order's separate fills,
+  and only when they add up to the total the broker states. The price kept is their
+  average; all the records are kept as the evidence;
+- a history record has a final status (`FILLED`, `CANCELLED`, `REJECTED`). Any other
+  status, or none, is refused;
+- when the history was read to complete an open-orders answer, it says the same status
+  and, where the answer gave one, the same filled amount (`reads_disagree` otherwise).
+
+A record that fails a check settles nothing. The order keeps its state, its cash stays
+reserved, the reason is written to the `reconciliation_backoff` event (`reason`), and the
+order waits as below. A record that contradicts the order is never looked past. The
+broker's time of the fill is kept when it lies between the time the order was sent and
+now; a cancellation or rejection takes the time of the read. A latency longer than its
+32-bit column holds (24.8 days) is recorded at that ceiling, so an old order can still be
+settled.
+
+The same checks apply when an unknown submission is matched to a history record. A record
+that, read in full, is about another order is not adopted. Otherwise the match gives the
+order its broker id, and the order is settled only if the record passes the checks; if it
+does not, the event `unknown_submission_identified` says why (`not_settled_because`). The
+same fill-time, read-time and latency rules apply as above.
+
+The broker's immediate answer to an order request has to agree with the order in the same
+way. One that says it is about another instrument, side, type or quantity leaves the order
+`submission_unknown` without a broker id; the id it named is kept in the attempt's
+evidence only (`named_broker_order_id`), so nothing can later settle or cancel by it.
+
 ## The order of work
 
 Each account has its own queue. Within it, orders that are due are taken longest-waiting
 first: orders never looked at, oldest first, then orders by the time they were last looked
 at, with creation time and id as tie-breakers. The accounts take turns, one order each. One
-run handles at most 50 orders in all and starts no new order after 30 seconds; one broker
-read may take 10 seconds. What a run could not take is reported as `left_for_next_run`.
+run handles at most 50 orders in all and starts no new order after 30 seconds; the broker
+reads for one order may together take 10 seconds. What a run could not take is reported as `left_for_next_run`.
 
 An order the broker was asked about moves to the back of its queue once the result is saved,
 whatever the answer, so a backlog is worked through in turn. An order that was selected but not asked about stays
@@ -107,16 +170,25 @@ take a place.
 | Unknown submission dispatched under 90 seconds ago | None; not counted as an attempt | — |
 | Broker rate limit (429) | Stepped up until the wait covers a usable `Retry-After` | That account is left alone for the rest of the run |
 | Broker refused the credentials (401/403) | One step up | That account is left alone for the rest of the run. The connection is not switched off |
-| Broker answered that it will not serve this request (another 4xx, for example "no such order") | One step up | — |
+| Broker answered that it will not serve this request (another 4xx) | One step up | — |
+| Broker has no record: not among the open orders (404) and not in the history read (`no_broker_record`) | One step up | Counted as `no_broker_record`, not as `failed` |
 | No usable answer: a 5xx, a 408 or 425, a network error, no answer in 10 seconds | One step up | After three in a row, that account is left alone for the rest of the run |
-| Broker answered with data the engine refused to act on | One step up | — |
-| The order's own save failed | Rolled back whole, then one step up in a transaction of its own | The run stops if that cannot be saved either |
+| Broker answered with a record that failed a check above (`broker_answer_refused`, with the `reason`) | One step up | — |
+| The order's own save failed (`local_error`) | Rolled back whole, then one step up in a transaction of its own | The run stops if that cannot be saved either |
 | Run cancelled or killed mid-order | Nothing recorded | Run ends; the row lock is released |
 
 A `Retry-After` counts only if it is a finite number above zero, and never more than 900
 seconds. A last attempt dated more than 60 seconds ahead of the worker's clock is
 disregarded, so a wrong timestamp cannot hold an order back. Each step up writes one `reconciliation_backoff` order event with the outcome, the
 error type, the count and the wait. No broker payload is stored in it.
+
+An order that is at the longest wait and still does not settle for a reason of its own
+(its record is missing or refused, an unknown submission still has no single matching
+record, the broker refuses the read of it, or its settlement cannot be saved; not because
+the broker cannot be reached) is raised as a critical risk
+event, `order_not_settling`, with the outcome and reason. How the wait got to the longest
+step does not matter. Reconciliation goes on asking every 15 minutes; the event is raised
+again only if the order is still not settled a day later.
 
 The broker's wait is applied to the order that received it. There is no place to store a
 wait for the whole account without a schema change, so the next run may send one more
@@ -169,12 +241,31 @@ waits for an order row, so no lock cycle is known.
   whole demo run fail and roll back rather than overwrite.
 - The scheduled task and the demo worker still reconcile differently (lookup by id versus
   history) and can transition an order differently.
-- An active order the broker no longer returns by id stays active locally and now waits up
-  to 15 minutes between attempts. Whether the broker keeps returning filled orders by id
-  has not been checked against the broker.
+- Nothing here has been checked against the broker itself: whether an ended order is
+  answered with 404 by id, how soon it appears in the history, the history's exact field
+  names, and the sign of a sell's quantities. Both layouts the repository has seen are
+  read, and anything else is refused rather than guessed.
+- An order found neither among the open orders nor in the history stays active locally,
+  waits up to 15 minutes between attempts, and is raised (`order_not_settling`) at most
+  once a day. No operator action exists yet to close such an order by hand.
+- The open-orders read counts any status other than `FILLED`, `CANCELLED` or `REJECTED`
+  as still open, and only `WORKING` or `PENDING` move an unknown submission to
+  `accepted`. Which status names the broker really uses has not been checked.
+- A history page on which a record of the order fails a check ends the search; the
+  instrument's own page is not read then.
+- Only one page of history is read per search. An order that ended more than 50 orders of
+  its own instrument ago is not found.
+- A partial fill of an order that is still open is not recorded until the order ends.
+- The history page of a run can be as old as the run (about 40 seconds). It can lack a record that has
+  just appeared; that order is asked about again on a later run.
+- The risk event is not sent as an alert. A fill settled from the history can send the
+  abnormal-slippage alert inside the order's transaction, as a fill settled by the
+  open-orders read already could.
 - A rate limit is remembered per order, not per account (see above).
-- The lock is held across one broker read, at most 10 seconds, plus the database work.
-  A cancellation of that order waits that long. One path is longer: the first time an
+- The lock is held across the order's broker reads, at most 10 seconds together, plus the
+  database work.
+  A cancellation of that order waits that long. Two paths are longer: a fill whose
+  slippage alert is sent (above), and the first time an
   unknown submission is looked at with no alarm yet raised, the engine raises it and sends
   the alert inside the same transaction (as it did before this change). Alert delivery is
   not covered by the 10 second limit: its web channels allow 10 seconds each and its e-mail
