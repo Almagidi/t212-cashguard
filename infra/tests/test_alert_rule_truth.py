@@ -43,8 +43,8 @@ def fixture_tests() -> dict:
             "actor": "infra_fixture",
         },
         "exp_annotations": {
-            "summary": "Recent kill-switch activation observed",
-            "description": "The scraped activation counter increased in the last five minutes. This historical event does not establish current trading state. Actor: infra_fixture. Check the operator view.",
+            "summary": "Kill-switch activation evidence observed",
+            "description": "A counter increment or newly observed positive activation count was seen. First observations may reflect older events. This historical observation expires after five minutes without new evidence; expiry does not mean trading resumed. Actor: infra_fixture. Check the operator view.",
         },
     }
 
@@ -92,11 +92,11 @@ def fixture_tests() -> dict:
                 [("1m", [event_alert]), ("7m", [])],
             ),
             case(
-                "static lifetime event is not recent",
+                "positive first observation expires even without increments",
                 counter,
                 "5 5 5 5 5 5 5 5",
                 "KillSwitchActivated",
-                [("2m", []), ("7m", [])],
+                [("2m", [event_alert]), ("5m", []), ("7m", [])],
             ),
             case(
                 "counter reset alone is not activation",
@@ -108,20 +108,89 @@ def fixture_tests() -> dict:
             case(
                 "increment after reset",
                 counter,
-                "5 5 0 1 1",
+                "5 5 5 5 5 5 0 1 1 1 1 1 1",
                 "KillSwitchActivated",
-                [("3m", [event_alert])],
+                [
+                    ("6m", []),
+                    ("7m", [event_alert]),
+                    ("10m", [event_alert]),
+                    ("12m", []),
+                ],
             ),
             case(
-                "first sample cannot establish increment",
+                "established zero series increments after offset baseline exists",
                 counter,
-                "1 1 1 1",
+                "0 0 0 0 0 0 0 1 1 1 1 1 1",
                 "KillSwitchActivated",
-                [("2m", [])],
+                [
+                    ("6m", []),
+                    ("7m", [event_alert]),
+                    ("10m", [event_alert]),
+                    ("12m", []),
+                ],
+            ),
+            case(
+                "first positive actor observation is historical evidence",
+                counter,
+                "1 1 1 1 1 1 1",
+                "KillSwitchActivated",
+                [("0m", [event_alert]), ("2m", [event_alert]), ("5m", [])],
+            ),
+            case(
+                "actor first created after successful scrapes",
+                counter,
+                "_ _ 1 1 1 1 1 1 1",
+                "KillSwitchActivated",
+                [("1m", []), ("2m", [event_alert]), ("6m", [event_alert]), ("7m", [])],
+            ),
+            case(
+                "positive series reappears after stale gap; timing unknown",
+                counter,
+                "1 stale _ _ _ _ _ _ _ _ _ _ 1 1",
+                "KillSwitchActivated",
+                [("2m", []), ("12m", [event_alert])],
             ),
             case(
                 "zero traffic", counter, "0 0 0 0", "KillSwitchActivated", [("2m", [])]
             ),
+            {
+                "name": "each actor birth is evaluated independently",
+                "interval": "1m",
+                "input_series": [
+                    {"series": counter, "values": "0 0 1 1 1 1 1 1"},
+                    {
+                        "series": counter.replace("infra_fixture", "second_fixture"),
+                        "values": "_ _ _ 1 1 1 1 1",
+                    },
+                ],
+                "alert_rule_test": [
+                    {
+                        "eval_time": "1m",
+                        "alertname": "KillSwitchActivated",
+                        "exp_alerts": [],
+                    },
+                    {
+                        "eval_time": "3m",
+                        "alertname": "KillSwitchActivated",
+                        "exp_alerts": [
+                            event_alert,
+                            {
+                                "exp_labels": dict(
+                                    event_alert["exp_labels"], actor="second_fixture"
+                                ),
+                                "exp_annotations": {
+                                    key: value.replace(
+                                        "infra_fixture", "second_fixture"
+                                    )
+                                    for key, value in event_alert[
+                                        "exp_annotations"
+                                    ].items()
+                                },
+                            },
+                        ],
+                    },
+                ],
+            },
             {
                 "name": "absent telemetry is not a current-state assertion",
                 "interval": "1m",
@@ -160,6 +229,19 @@ class AlertRuleTruth(unittest.TestCase):
         self.assertNotIn("cashguard_account_open_positions", samples)
         self.assertEqual(samples["cashguard_kill_switch_activations_total"], 1)
         self.assertEqual(samples["cashguard_kill_switch_active"], 0)
+        rules_text = RULES.read_text()
+        for alert_name, metric_name in [
+            ("HighOpenPositions", "cashguard_open_positions_count"),
+            ("KillSwitchActivated", "cashguard_kill_switch_activations_total"),
+        ]:
+            expression = re.search(
+                rf"- alert: {alert_name}\n\s+expr: ([^\n]+)", rules_text
+            )
+            self.assertIsNotNone(expression)
+            assert expression is not None
+            names = set(re.findall(r"cashguard_[a-z_]+", expression.group(1)))
+            self.assertEqual(names, {metric_name})
+            self.assertTrue(names.issubset(samples))
         print(
             json.dumps(
                 {
