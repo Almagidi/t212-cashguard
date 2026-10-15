@@ -49,6 +49,19 @@ if [ "${ALERTMANAGER_CHECK_CONFIG:-}" = "1" ]; then
     exec /bin/amtool check-config "$rendered_config"
 fi
 
+# Refuse configuration errors without letting parser diagnostics echo settings.
+if ! /bin/amtool check-config "$rendered_config" >/dev/null 2>&1; then
+    echo "Alertmanager startup refuses invalid or unreadable configuration" >&2
+    exit 1
+fi
+# Alertmanager may serve readiness even when its notification/silence storage is
+# unwritable. Prove startup write access without modifying existing state.
+if ! storage_probe=$(mktemp /alertmanager/.cashguard-writecheck.XXXXXX 2>/dev/null); then
+    echo "Alertmanager startup requires writable persistent storage" >&2
+    exit 1
+fi
+rm -f "$storage_probe"
+
 exec /bin/alertmanager \
   --config.file="$rendered_config" \
   --storage.path=/alertmanager \
