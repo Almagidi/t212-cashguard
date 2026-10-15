@@ -301,14 +301,7 @@ def run_recovery() -> dict[str, Any]:
                 smoke.CONTAINER_READY_TIMEOUT,
                 lambda: (
                     subprocess.run(
-                        [
-                            "docker",
-                            "exec",
-                            resources.postgres_container,
-                            "pg_isready",
-                            "-U",
-                            "cashguard",
-                        ],
+                        smoke.postgres_ready_command(resources.postgres_container),
                         capture_output=True,
                     ).returncode
                     == 0
