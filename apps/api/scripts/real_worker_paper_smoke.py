@@ -146,6 +146,16 @@ def _run(args: list[str], *, env: dict[str, str] | None = None) -> str:
     ).stdout
 
 
+def postgres_ready_command(container: str) -> list[str]:
+    """Ask the container's PostgreSQL whether it takes TCP connections, as the harness does.
+
+    Without ``-h`` pg_isready uses the Unix socket, and on a first start the image runs a
+    temporary server that listens on that socket only, then restarts. Ready on the socket is
+    then not ready for the TCP login that ``alembic upgrade head`` makes next.
+    """
+    return ["docker", "exec", container, "pg_isready", "-h", "127.0.0.1", "-U", "cashguard"]
+
+
 def alembic_command(*args: str) -> list[str]:
     """Alembic through the interpreter running the harness, wherever it is installed."""
     return [sys.executable, "-m", "alembic", *args]
@@ -401,14 +411,7 @@ def run_smoke() -> dict[str, Any]:
                 CONTAINER_READY_TIMEOUT,
                 lambda: (
                     subprocess.run(
-                        [
-                            "docker",
-                            "exec",
-                            resources.postgres_container,
-                            "pg_isready",
-                            "-U",
-                            "cashguard",
-                        ],
+                        postgres_ready_command(resources.postgres_container),
                         capture_output=True,
                     ).returncode
                     == 0
