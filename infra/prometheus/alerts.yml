@@ -4,14 +4,14 @@ groups:
     interval: 15s
     rules:
       - alert: KillSwitchActivated
-        expr: cashguard_kill_switch_activations_total > 0
+        expr: increase(cashguard_kill_switch_activations_total[5m]) > 0 or ((cashguard_kill_switch_activations_total > 0) unless cashguard_kill_switch_activations_total offset 5m)
         for: 0m
         labels:
           severity: critical
           team: trading
         annotations:
-          summary: "Kill switch activated"
-          description: "A kill switch activation was recorded. All trading is halted. Actor: {{ $labels.actor }}. Investigate immediately."
+          summary: "Kill-switch activation evidence observed"
+          description: "A counter increment or newly observed positive activation count was seen. First observations may reflect older events. This historical observation expires after five minutes without new evidence; expiry does not mean trading resumed. Actor: {{ $labels.actor }}. Check the operator view."
 
       - alert: CircuitBreakerOpen
         expr: cashguard_circuit_breaker_open == 1
@@ -68,14 +68,14 @@ groups:
           description: "Available cash is below £100 (current: {{ $value | humanize }}). New orders may be blocked."
 
       - alert: HighOpenPositions
-        expr: cashguard_account_open_positions > 8
+        expr: cashguard_open_positions_count > 8
         for: 2m
         labels:
           severity: warning
           team: trading
         annotations:
-          summary: "Unusually high number of open positions"
-          description: "{{ $value }} open positions detected, which is above the expected threshold."
+          summary: "Reported open-position count is high"
+          description: "The scraped process reports {{ $value }} open positions, above the threshold of 8. Verify current positions in the operator view."
 
   # ── Worker Reliability ───────────────────────────────────────────────────
   - name: worker_reliability
