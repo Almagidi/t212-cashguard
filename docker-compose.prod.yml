@@ -192,9 +192,12 @@ services:
     image: prom/alertmanager:v0.27.0
     container_name: cg_alertmanager
     restart: unless-stopped
+    # The image entrypoint is the daemon; explicitly invoke the private renderer.
+    entrypoint: ["/bin/sh"]
     command:
-      - sh
       - /etc/alertmanager/render-alertmanager.sh
+    # Rendered SMTP credentials disappear with the container's temporary storage.
+    tmpfs: ["/tmp:mode=1777"]
     environment:
       SMTP_HOST: ${SMTP_HOST:-localhost}
       SMTP_PORT: ${SMTP_PORT:-587}
@@ -207,6 +210,12 @@ services:
       - ./infra/prometheus/render-alertmanager.sh:/etc/alertmanager/render-alertmanager.sh:ro
       - alertmanager_data:/alertmanager
     expose: ["9093"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9093/-/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     networks: [internal]
 
   postgres-exporter:
