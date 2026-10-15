@@ -172,3 +172,24 @@ def test_cleanup_fails_when_an_owned_container_remains(
 
     with pytest.raises(smoke.EvidenceFailure, match="owned-pg"):
         smoke._remove_owned_containers(("owned-pg",))
+
+
+def test_postgres_is_ready_only_when_it_takes_tcp_connections() -> None:
+    # On a first start the image's temporary server listens on the Unix socket only; the
+    # harness's next step (alembic) logs in over TCP. Ready must mean ready for that.
+    command = smoke.postgres_ready_command("pg-container")
+
+    assert command[:4] == ["docker", "exec", "pg-container", "pg_isready"]
+    assert command[command.index("-h") + 1] == "127.0.0.1"
+
+
+def test_no_harness_asks_postgres_for_readiness_over_the_socket() -> None:
+    scripts = Path(smoke.__file__).parent
+    offenders = [
+        path.name
+        for path in sorted(scripts.glob("real_worker_*.py"))
+        if '"pg_isready"' in path.read_text() and path.name != "real_worker_paper_smoke.py"
+    ]
+
+    assert offenders == [], "use smoke.postgres_ready_command (TCP), not a bare pg_isready"
+    assert Path(smoke.__file__).read_text().count('"pg_isready"') == 1

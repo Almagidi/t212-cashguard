@@ -171,7 +171,7 @@ def _wait_postgres(container: str) -> None:
         smoke.CONTAINER_READY_TIMEOUT,
         lambda: (
             subprocess.run(
-                ["docker", "exec", container, "pg_isready", "-U", "cashguard"],
+                smoke.postgres_ready_command(container),
                 capture_output=True,
             ).returncode
             == 0
