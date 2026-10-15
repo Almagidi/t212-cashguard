@@ -164,7 +164,8 @@ services:
     depends_on:
       - api
       - web
-    networks: [external]
+    # Resolve Grafana without joining the database/monitoring backend network.
+    networks: [external, monitoring_ingress]
 
   # ── Monitoring ────────────────────────────────────────────────────────────
   prometheus:
@@ -185,7 +186,7 @@ services:
       - alertmanager
       - postgres-exporter
       - redis-exporter
-    networks: [internal]
+    networks: [internal, monitoring_data]
 
   alertmanager:
     image: prom/alertmanager:v0.27.0
@@ -237,20 +238,25 @@ services:
     image: grafana/grafana:11.4.0
     container_name: cg_grafana
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "/etc/grafana/start-grafana.sh"]
+    tmpfs: ["/tmp:mode=1777"]
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?required}
       GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s/grafana"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_SECURITY_COOKIE_SECURE: "true"
+      GF_SERVER_ROOT_URL: "${PUBLIC_ORIGIN:-}/grafana/"
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
     volumes:
+      - ./infra/grafana/start-grafana.sh:/etc/grafana/start-grafana.sh:ro
       - grafana_data:/var/lib/grafana
       - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
     expose: ["3000"]
     depends_on:
       - prometheus
-    networks: [internal]
+    networks: [monitoring_data, monitoring_ingress]
 
 volumes:
   postgres_data:
@@ -266,3 +272,10 @@ networks:
     internal: true
   external:
     driver: bridge
+  # Private ingress-to-Grafana link; no datastores or other monitoring services.
+  monitoring_data:
+    driver: bridge
+    internal: true
+  monitoring_ingress:
+    driver: bridge
+    internal: true
