@@ -25,7 +25,7 @@ pytest==9.1.1
 pytest-asyncio==1.4.0
 pytest-cov==7.1.0
 anyio==4.14.2
-faker==40.41.0
+faker==40.43.0
 hypothesis==6.169.0
 sentry-sdk[fastapi]==2.71.0
 ruff==0.15.22
