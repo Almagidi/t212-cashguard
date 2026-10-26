@@ -9,9 +9,10 @@ type ControlSnapshot = Pick<WsSnapshot, 'ts' | 'system'>
 // make an old control snapshot current.
 const MAX_SNAPSHOT_AGE_MS = 10_000
 
-export function AutomationStatus({ snapshot, status }: {
+export function AutomationStatus({ snapshot, status, lastFrameAt }: {
   snapshot: ControlSnapshot | null
   status: WsStatus
+  lastFrameAt: Date | null
 }) {
   const [now, setNow] = useState(() => Date.now())
   const [connection, setConnection] = useState({
@@ -32,7 +33,9 @@ export function AutomationStatus({ snapshot, status }: {
     return () => clearInterval(timer)
   }, [])
 
-  const age = now - Date.parse(snapshot?.ts ?? '')
+  // A newly received frame can be newer than the last expiration timer tick.
+  const observedNow = Math.max(now, lastFrameAt?.getTime() ?? now)
+  const age = observedNow - Date.parse(snapshot?.ts ?? '')
   const current = status === 'connected'
     && snapshot !== null
     && snapshot !== connection.disconnectedSnapshot

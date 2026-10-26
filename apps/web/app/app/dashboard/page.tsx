@@ -99,7 +99,7 @@ export default function DashboardPage() {
   const token = useSyncExternalStore(subscribeToTokenChanges, () => api.getToken(), () => null)
 
   // Live WebSocket feed
-  const { snapshot, status: wsStatus } = useWebSocket({ token, enabled: !!token })
+  const { snapshot, status: wsStatus, lastPing: lastFrameAt } = useWebSocket({ token, enabled: !!token })
 
   const signalDetailsById = useMemo(
     () => new Map(signals.map((signal) => [signal.id, signal])),
@@ -338,7 +338,7 @@ export default function DashboardPage() {
             {/* System status mini card */}
             <Card>
               <CardContent className="p-4 space-y-3">
-                <AutomationStatus snapshot={snapshot} status={wsStatus} />
+                <AutomationStatus snapshot={snapshot} status={wsStatus} lastFrameAt={lastFrameAt} />
                 <StatusRow
                   label="Kill Switch"
                   active={!!killSwitchActive}
