@@ -84,12 +84,16 @@ heading "Starting infrastructure (PostgreSQL + Redis)..."
 docker compose up -d postgres redis
 
 echo "Waiting for services to be healthy..."
+postgres_ready=false
 for i in $(seq 1 30); do
-    if docker compose exec -T postgres pg_isready -U cashguard >/dev/null 2>&1; then
+    # The image's temporary initialization server accepts only Unix sockets.
+    if docker compose exec -T postgres pg_isready -h 127.0.0.1 -U cashguard -t 1 >/dev/null 2>&1; then
+        postgres_ready=true
         break
     fi
     sleep 1
 done
+[ "$postgres_ready" = true ] || error "PostgreSQL did not accept TCP connections after 30 readiness attempts. Check: docker compose logs postgres"
 info "PostgreSQL ready"
 
 # ── Install backend deps ──────────────────────────────────────────────────────
