@@ -18,6 +18,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useWebSocket } from '@/hooks/use-websocket'
 import { EquityCurve, Sparkline, type EquityPoint } from '@/components/charts/equity-curve'
 import { RegimeBadge } from '@/components/dashboard/regime-badge'
+import { AutomationStatus } from '@/components/dashboard/automation-status'
 import api, { API_URL } from '@/services/api'
 import { StrategyPresetGrid } from '@/components/strategies/strategy-preset-grid'
 import type { AllocatorDecision } from '@/types'
@@ -206,7 +207,6 @@ export default function DashboardPage() {
   )
 
   const killSwitchActive = liveSystem?.kill_switch_active ?? settings?.kill_switch_active
-  const autoTradingEnabled = liveSystem?.auto_trading_enabled ?? settings?.auto_trading_enabled
   const degradedSymbols = marketDataHealth?.symbols.filter((symbol) => !['ok', 'fallback'].includes(symbol.status)) ?? []
 
   const refresh = () => {
@@ -338,14 +338,7 @@ export default function DashboardPage() {
             {/* System status mini card */}
             <Card>
               <CardContent className="p-4 space-y-3">
-                <StatusRow
-                  label="Auto Trading"
-                  active={!!autoTradingEnabled}
-                  activeText="Enabled"
-                  inactiveText="Disabled"
-                  activeClass="text-emerald-400"
-                  inactiveClass="text-muted-foreground"
-                />
+                <AutomationStatus snapshot={snapshot} status={wsStatus} />
                 <StatusRow
                   label="Kill Switch"
                   active={!!killSwitchActive}
