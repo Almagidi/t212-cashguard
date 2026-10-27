@@ -50,7 +50,7 @@ The Trading 212 adapter handles `429 Too Many Requests` responses by reading the
 
 ## Local-Only
 
-By design, CashGuard runs locally. There is no cloud component, no third-party analytics, no telemetry, and no data leaving your machine unless you are actively calling the Trading 212 API.
+CashGuard runs locally by default. Optional Sentry diagnostics are disabled when their DSNs are empty. If the backend SDK is explicitly configured, outbound error and transaction envelopes are restricted to structured diagnostic metadata; request input, credentials, user context, free-form messages and local variables are withheld. Unqualified envelope types, including profiles and attachments, are not forwarded. This does not enable telemetry or certify the separate optional frontend SDK. Configured broker, market-data and notification integrations also make their documented external calls.
 
 ## Security Checklist Before Live Trading
 

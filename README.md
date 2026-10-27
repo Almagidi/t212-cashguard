@@ -343,6 +343,8 @@ Prometheus loads `infra/prometheus/prometheus.yml` plus `infra/prometheus/alerts
 
 Sentry is optional. Leave `SENTRY_DSN` and `NEXT_PUBLIC_SENTRY_DSN` empty to run with no Sentry initialization or webpack wrapping. When enabling it, set backend and frontend DSNs explicitly and confirm no auth headers or cookies appear in captured events.
 
+The backend retains only structured diagnostic metadata: error types, source-validated application code locations, timing, status and trace identifiers. Request bodies, headers, cookies, query strings, user context, free-form exception/log text, local variables and breadcrumb data are withheld. A final envelope filter permits only sanitized error and transaction items; profiles, attachments and other telemetry types are withheld. Backend profiling stays disabled even when `SENTRY_PROFILES_SAMPLE_RATE` is set, until that payload is independently qualified. These backend guarantees do not certify the separate optional frontend SDK.
+
 ---
 
 ## Portfolio Research Pack

@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.core.logging import configure_logging, set_trace_id
+from app.core.telemetry_privacy import sanitize_event
 from app.services.demo_reconciliation_scheduler import (
     start_global_demo_reconciliation_scheduler,
     stop_global_demo_reconciliation_scheduler,
@@ -34,12 +35,19 @@ try:
     from sentry_sdk.integrations.celery import CeleryIntegration
     from sentry_sdk.integrations.fastapi import FastApiIntegration
     from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+    from app.core.sentry_transport import ConfidentialTransport
 except ImportError:  # pragma: no cover - optional dependency
     sentry_sdk = None
-    CeleryIntegration = FastApiIntegration = SqlalchemyIntegration = None
+    CeleryIntegration = FastApiIntegration = SqlalchemyIntegration = ConfidentialTransport = None
 
 configure_logging()
 log = structlog.get_logger()
+
+
+def _scrub_sentry_event(event: dict, _hint: dict | None = None) -> dict | None:
+    """Apply the same confidentiality boundary to errors and transactions."""
+    return sanitize_event(event)
+
 
 # ── Sentry (optional — no-op when SENTRY_DSN is empty or package missing) ────
 if settings.SENTRY_DSN and sentry_sdk is not None:
@@ -53,25 +61,25 @@ if settings.SENTRY_DSN and sentry_sdk is not None:
             CeleryIntegration(),
         ],
         traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
-        profiles_sample_rate=settings.SENTRY_PROFILES_SAMPLE_RATE,
+        # Withhold unqualified telemetry channels and arbitrary input content.
+        profiles_sample_rate=0.0,
+        profile_session_sample_rate=0.0,
+        auto_session_tracking=False,
+        send_client_reports=False,
+        include_local_variables=False,
+        max_request_body_size="never",
+        enable_logs=False,
+        spotlight=False,
+        trace_lifecycle="static",
+        transport=ConfidentialTransport,
         # Never send PII: user emails, passwords, or raw request bodies
         send_default_pii=False,
-        # Strip auth headers before sending to Sentry
-        before_send=lambda event, _hint: _scrub_sentry_event(event),
+        before_send=_scrub_sentry_event,
+        before_send_transaction=_scrub_sentry_event,
     )
     log.info("sentry.initialised", environment=settings.APP_MODE)
 elif settings.SENTRY_DSN:
     log.warning("sentry.unavailable", detail="SENTRY_DSN is set but sentry_sdk is not installed")
-
-
-def _scrub_sentry_event(event: dict) -> dict:
-    """Remove sensitive headers and cookies from Sentry events."""
-    request = event.get("request", {})
-    headers = request.get("headers", {})
-    for sensitive in ("authorization", "cookie", "x-api-key"):
-        if sensitive in headers:
-            headers[sensitive] = "[Filtered]"
-    return event
 
 
 @asynccontextmanager
