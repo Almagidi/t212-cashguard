@@ -42,6 +42,30 @@ jobs:
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
           GITLEAKS_ENABLE_SUMMARY: "false"
 
+  monitoring-contract:
+    name: Monitoring Contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/api/requirements.txt
+      - name: Install test dependencies
+        run: pip install -r apps/api/requirements.txt
+      - name: Fetch official source-pinned Promtool image
+        run: docker pull prom/prometheus:v3.1.0
+      - name: Lint monitoring contract tests
+        run: |
+          python -m ruff check infra/tests/test_alert_rule_truth.py
+          python -m ruff format --check infra/tests/test_alert_rule_truth.py
+      - name: Validate safety exposition, Grafana and real alert evaluations
+        run: python -m unittest discover -s infra/tests -p test_alert_rule_truth.py -v
+
   backend:
     name: Backend
     runs-on: ubuntu-latest
