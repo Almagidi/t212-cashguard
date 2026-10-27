@@ -69,7 +69,7 @@ jobs:
   backend:
     name: Backend
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     services:
       postgres:
@@ -194,6 +194,7 @@ jobs:
         run: python -m alembic upgrade head
 
       - name: Run backend validation baseline
+        timeout-minutes: 15
         run: python -m pytest -q
 
       - name: Upload coverage
@@ -216,15 +217,19 @@ jobs:
       # The scripts use the same image tags as this job's services, so nothing is
       # pulled again. tests/unit/test_ci_real_worker_proof_static.py guards these steps.
       - name: Real-worker proof - scheduled paper fill and duplicate dispatch
+        timeout-minutes: 5
         run: python scripts/real_worker_paper_smoke.py
 
       - name: Real-worker proof - kill switch, repeated decisions and cleanup failure
+        timeout-minutes: 5
         run: python scripts/real_worker_paper_chaos.py
 
       - name: Real-worker proof - two-worker exclusion and lock recovery
+        timeout-minutes: 5
         run: python scripts/real_worker_lock_recovery.py
 
       - name: Real-worker proof - Redis, PostgreSQL and worker interruption recovery
+        timeout-minutes: 5
         run: python scripts/real_worker_interruption_recovery.py
 
   frontend:

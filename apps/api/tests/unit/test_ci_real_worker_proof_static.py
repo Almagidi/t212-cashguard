@@ -21,7 +21,8 @@ REQUIRED_PROOFS = (
     "scripts/real_worker_lock_recovery.py",
     "scripts/real_worker_interruption_recovery.py",
 )
-ALLOWED_STEP_KEYS = {"name", "run"}
+ALLOWED_STEP_KEYS = {"name", "run", "timeout-minutes"}
+PROOF_STEP_TIMEOUT_MINUTES = 5
 FORBIDDEN_JOB_KEYS = {"if", "continue-on-error", "needs", "strategy"}
 MINIMUM_JOB_TIMEOUT_MINUTES = 10
 HARNESS_IMAGE = re.compile(r'"((?:postgres|redis):[\w.-]+)"')
@@ -74,6 +75,9 @@ def proof_violations(workflow: dict[str, Any]) -> list[str]:
             violations.append(f"{script} runs in {len(matching)} steps")
             continue
         step = matching[0]
+        step_timeout = step.get("timeout-minutes")
+        if type(step_timeout) is not int or step_timeout != PROOF_STEP_TIMEOUT_MINUTES:
+            violations.append(f"{script} timeout-minutes is {step_timeout!r}")
         extra_keys = sorted(set(step) - ALLOWED_STEP_KEYS)
         if extra_keys:
             violations.append(f"{script} step sets {', '.join(map(str, extra_keys))}")
@@ -113,7 +117,11 @@ def _valid_workflow() -> dict[str, Any]:
                 "timeout-minutes": 15,
                 "defaults": {"run": {"working-directory": "apps/api"}},
                 "steps": [
-                    {"name": f"Proof {index}", "run": f"python {script}"}
+                    {
+                        "name": f"Proof {index}",
+                        "run": f"python {script}",
+                        "timeout-minutes": 5,
+                    }
                     for index, script in enumerate(REQUIRED_PROOFS)
                 ],
             }
@@ -214,7 +222,11 @@ def test_checker_reads_job_keys_wherever_they_are_written() -> None:
             *[
                 line
                 for script in REQUIRED_PROOFS
-                for line in ("      - name: Proof", f"        run: python {script}")
+                for line in (
+                    "      - name: Proof",
+                    "        timeout-minutes: 5",
+                    f"        run: python {script}",
+                )
             ],
             "    if: false",
         ]
@@ -225,3 +237,18 @@ def test_checker_reads_job_keys_wherever_they_are_written() -> None:
 
     assert proof_violations(yaml.safe_load(text)) == ["job sets if"]
     assert any("step sets if" in item for item in proof_violations(yaml.safe_load(first_key_if)))
+
+
+@pytest.mark.parametrize("timeout", [None, False, True, 0, -1, 1, 4, 1.5, "5", "${{ 5 }}", 6])
+def test_checker_rejects_unbounded_or_unreviewed_proof_timeout(timeout: Any) -> None:
+    workflow = _valid_workflow()
+    _first_proof_step(workflow)["timeout-minutes"] = timeout
+
+    assert proof_violations(workflow)
+
+
+def test_checker_requires_an_explicit_proof_step_timeout() -> None:
+    workflow = _valid_workflow()
+    _first_proof_step(workflow).pop("timeout-minutes")
+
+    assert proof_violations(workflow)
