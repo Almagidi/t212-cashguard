@@ -29,9 +29,10 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `npx next dev -p ${webPort}`,
+    command: `node node_modules/next/dist/bin/next dev --hostname 127.0.0.1 -p ${webPort}`,
     url: webReadyUrl,
-    reuseExistingServer: true,
+    reuseExistingServer: false,
+    gracefulShutdown: { signal: 'SIGTERM', timeout: 5_000 },
     timeout: 120_000,
     env: {
       NEXT_PUBLIC_API_URL: apiUrl,

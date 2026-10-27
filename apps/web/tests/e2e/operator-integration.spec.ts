@@ -1,8 +1,8 @@
 /**
  * T-OPS-009 — Operator dashboard real-backend integration E2E.
  *
- * Connects to a live FastAPI server (port 8001, APP_MODE=mock, SQLite DB)
- * seeded by apps/api/scripts/init_integration_db.py.  No route mocks are
+ * Connects to a live FastAPI server (port 8001, APP_MODE=mock, migrated PostgreSQL DB)
+ * created and seeded by apps/api/scripts/run_operator_integration.py.  No route mocks are
  * used for API calls — all responses come from the real backend.
  *
  * Invariants verified:
