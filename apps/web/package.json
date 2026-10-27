@@ -63,7 +63,7 @@
     "@types/react": "18.3.17",
     "@types/react-dom": "18.3.5",
     "eslint-plugin-react": "7.37.5",
-    "jest": "30.4.2",
+    "jest": "30.5.2",
     "jest-environment-jsdom": "30.5.2",
     "oxlint": "1.87.0",
     "postcss": "8.5.26",
