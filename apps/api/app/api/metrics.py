@@ -2,30 +2,36 @@
 Prometheus metrics for CashGuard Trader.
 Exposes /metrics endpoint for scraping by Prometheus.
 
-Key metrics:
-- orders_placed_total        - trading activity
-- cash_guard_blocks_total    - safety signal
-- risk_violations_total      - risk engine health
-- broker_request_duration    - latency
-- kill_switch_activations    - critical safety event
-- circuit_breaker_state      - broker connectivity
+The kill switches and auto-trading switches are read from the database at every scrape
+(``app.api.metrics_state``), so they show what is saved, whichever process saved it, and
+"unknown" when it cannot be read. The counters and histograms below belong to this process
+only: they start at zero on every restart, other API replicas and the Celery workers keep
+their own, and most have no producer yet. Account cash, account value and open positions
+are not exported: no producer here can name the account and the age of those figures.
 """
+
 from __future__ import annotations
 
 try:
     from prometheus_client import (
+        CONTENT_TYPE_LATEST,
         Counter,
         Gauge,
         Histogram,
         Info,
         generate_latest,
-        CONTENT_TYPE_LATEST,
     )
+
     PROMETHEUS_AVAILABLE = True
 except ImportError:
     PROMETHEUS_AVAILABLE = False
 
-from fastapi import APIRouter, Response
+from typing import TYPE_CHECKING
+
+from fastapi import APIRouter, Depends, Response
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 router = APIRouter(tags=["metrics"])
 
@@ -54,6 +60,8 @@ if PROMETHEUS_AVAILABLE:
         ["violation_type"],
     )
 
+    # No producer. Activations are recorded in risk_events by whichever process makes them;
+    # cashguard_kill_switch_last_activation_timestamp_seconds exports the newest of them.
     kill_switch_activations = Counter(
         "cashguard_kill_switch_activations_total",
         "Kill switch activation events",
@@ -86,38 +94,12 @@ if PROMETHEUS_AVAILABLE:
         ["name"],
     )
 
-    # ── Account ───────────────────────────────────────────────────────────────
-    account_cash = Gauge(
-        "cashguard_account_cash_available",
-        "Available cash balance for trading",
-    )
-
-    account_total_value = Gauge(
-        "cashguard_account_total_value",
-        "Total account value",
-    )
-
-    open_positions_count = Gauge(
-        "cashguard_open_positions_count",
-        "Number of currently open positions",
-    )
-
     # ── App health ────────────────────────────────────────────────────────────
     app_info = Info(
         "cashguard_app",
         "Application info",
     )
     app_info.info({"version": "1.0.0", "mode": "unknown"})
-
-    auto_trading_enabled = Gauge(
-        "cashguard_auto_trading_enabled",
-        "Whether auto trading is enabled (1=yes, 0=no)",
-    )
-
-    kill_switch_active = Gauge(
-        "cashguard_kill_switch_active",
-        "Whether kill switch is active (1=active, 0=inactive)",
-    )
 
     # ── Worker health ─────────────────────────────────────────────────────────
     task_failures = Counter(
@@ -127,21 +109,34 @@ if PROMETHEUS_AVAILABLE:
     )
 
 
+def get_metrics_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Sessions for the scrape-time state read (overridden in tests)."""
+    from app.db.session import AsyncSessionLocal
+
+    return AsyncSessionLocal
+
+
 @router.get("/metrics")
-async def metrics():
+async def metrics(
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_metrics_session_factory),
+) -> Response:
     """Prometheus metrics endpoint."""
     if not PROMETHEUS_AVAILABLE:
         return Response(
             content="# prometheus_client not installed\n",
             media_type="text/plain",
         )
+    from app.api.metrics_state import render_safety_state, scrape_safety_state
+
+    state = await scrape_safety_state(session_factory)
     return Response(
-        content=generate_latest(),
+        content=generate_latest() + render_safety_state(state),
         media_type=CONTENT_TYPE_LATEST,
     )
 
 
 # ── Helper functions called from other modules ────────────────────────────────
+
 
 def record_order_placed(
     side: str,
@@ -165,17 +160,6 @@ def record_risk_violation(violation_type: str) -> None:
             cash_guard_blocks.inc()
 
 
-def record_kill_switch(actor: str) -> None:
-    if PROMETHEUS_AVAILABLE:
-        kill_switch_activations.labels(actor=actor).inc()
-        kill_switch_active.set(1)
-
-
-def record_kill_switch_deactivated() -> None:
-    if PROMETHEUS_AVAILABLE:
-        kill_switch_active.set(0)
-
-
 def record_signal(strategy_type: str, side: str, is_live: bool) -> None:
     if PROMETHEUS_AVAILABLE:
         signals_generated.labels(
@@ -183,13 +167,6 @@ def record_signal(strategy_type: str, side: str, is_live: bool) -> None:
             side=side,
             is_live=str(is_live),
         ).inc()
-
-
-def update_account_metrics(cash: float, total: float, positions: int) -> None:
-    if PROMETHEUS_AVAILABLE:
-        account_cash.set(cash)
-        account_total_value.set(total)
-        open_positions_count.set(positions)
 
 
 def record_task_failure(task_name: str) -> None:
