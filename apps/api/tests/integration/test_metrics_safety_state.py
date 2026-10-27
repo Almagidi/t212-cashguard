@@ -35,9 +35,12 @@ from app.db.models import AppSettings, User, VenueConfig
 from app.db.session import Base, get_db
 from app.main import app
 from app.risk.engine import activate_kill_switch
+from tests.admitted_runtime import admitted_runtime
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+original_app = app
 
 POSTGRES_TEST_DATABASE_URL = os.getenv("POSTGRES_TEST_DATABASE_URL")
 ADMIN_EMAIL = "metrics-admin@example.test"
@@ -54,6 +57,23 @@ pytestmark = [
 ]
 
 Samples = dict[tuple[str, tuple[tuple[str, str], ...]], float]
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _model_admitted_metrics_runtime() -> AsyncGenerator[None, None]:
+    """Scrape tests exercise post-startup DB faults, not application admission.
+
+    Keep the real routes/assertions; scope the explicit runtime model ONLY to
+    this module. Startup/lifespan tests use the unwrapped app independently.
+    """
+    global app
+    original = app
+    async with admitted_runtime() as admitted:
+        app = admitted
+        try:
+            yield
+        finally:
+            app = original
 
 
 @pytest_asyncio.fixture
@@ -108,10 +128,10 @@ def _serve(state_factory: Any, request_factory: Any) -> None:
                 await session.rollback()
                 raise
 
-    app.dependency_overrides[get_db] = request_db
+    original_app.dependency_overrides[get_db] = request_db
     provider = getattr(metrics_module, "get_metrics_session_factory", None)
     if provider is not None:
-        app.dependency_overrides[provider] = lambda: state_factory
+        original_app.dependency_overrides[provider] = lambda: state_factory
 
 
 @pytest_asyncio.fixture
@@ -119,7 +139,7 @@ async def client(pg: dict[str, Any]) -> AsyncGenerator[AsyncClient, None]:
     _serve(pg["factory"], pg["factory"])
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
-    app.dependency_overrides.clear()
+    original_app.dependency_overrides.clear()
 
 
 def _admin_headers(pg: dict[str, Any]) -> dict[str, str]:
@@ -348,7 +368,7 @@ async def test_unreachable_database_is_reported_as_unknown_within_the_budget(
             elapsed = time.monotonic() - started
         recovered = await _both_slots_free_within(pg, SCRAPE_DEADLINE_SECONDS)
     finally:
-        app.dependency_overrides.clear()
+        original_app.dependency_overrides.clear()
         for writer in silent:
             writer.close()
         server.close()
@@ -413,7 +433,7 @@ async def partitioned(pg: dict[str, Any]) -> AsyncGenerator[Partition, None]:
             cuts,
         )
     finally:
-        app.dependency_overrides.clear()
+        original_app.dependency_overrides.clear()
         for writer in held:
             writer.close()
         proxy.close()

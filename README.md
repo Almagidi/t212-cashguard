@@ -34,6 +34,10 @@ A **cash-only, local-first** intraday trading automation platform for [Trading 2
 
 ## Quick Start
 
+For a fresh, isolated Python environment and a website/API bound explicitly to
+loopback, use the [local mock/paper installation](docs/local-install.md).
+It includes the configuration-preservation and backup/restore boundaries.
+
 ### Requirements
 
 - Docker + Docker Compose

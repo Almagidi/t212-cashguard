@@ -72,13 +72,13 @@ NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
 
 Trading 212 demo credentials must be configured locally:
 
-TRADING212_DEMO_API_KEY=REDACTED_DEMO_KEY
-TRADING212_DEMO_API_SECRET=REDACTED_DEMO_SECRET
+T212_DEMO_API_KEY=REDACTED_DEMO_KEY
+T212_DEMO_API_SECRET=REDACTED_DEMO_SECRET
 
 Trading 212 live credentials should remain unset:
 
-TRADING212_LIVE_API_KEY unset
-TRADING212_LIVE_API_SECRET unset
+T212_LIVE_API_KEY unset
+T212_LIVE_API_SECRET unset
 
 Important:
 
@@ -147,7 +147,7 @@ From the repo root:
 
 cd apps/api
 
-APP_MODE=demo LIVE_TRADING_ENABLED=false MARKET_DATA_PROVIDER=mock TRADING212_DEMO_API_KEY="$TRADING212_DEMO_API_KEY" TRADING212_DEMO_API_SECRET="$TRADING212_DEMO_API_SECRET" python3.12 -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+APP_MODE=demo LIVE_TRADING_ENABLED=false MARKET_DATA_PROVIDER=mock T212_DEMO_API_KEY="$T212_DEMO_API_KEY" T212_DEMO_API_SECRET="$T212_DEMO_API_SECRET" python3.12 -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 Expected safe startup state:
 
@@ -286,10 +286,10 @@ Stop backend/frontend with CTRL+C.
 
 Unset credentials from the current shell:
 
-unset TRADING212_DEMO_API_KEY
-unset TRADING212_DEMO_API_SECRET
-unset TRADING212_LIVE_API_KEY
-unset TRADING212_LIVE_API_SECRET
+unset T212_DEMO_API_KEY
+unset T212_DEMO_API_SECRET
+unset T212_LIVE_API_KEY
+unset T212_LIVE_API_SECRET
 
 Return to mock mode:
 
