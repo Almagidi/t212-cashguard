@@ -1,8 +1,8 @@
 /**
  * T-OPS-009 — Operator dashboard real-backend integration E2E.
  *
- * Connects to a live FastAPI server (port 8001, APP_MODE=mock, SQLite DB)
- * seeded by apps/api/scripts/init_integration_db.py.  No route mocks are
+ * Connects to a live FastAPI server (port 8001, APP_MODE=mock, migrated PostgreSQL DB)
+ * created and seeded by apps/api/scripts/run_operator_integration.py.  No route mocks are
  * used for API calls — all responses come from the real backend.
  *
  * Invariants verified:
@@ -30,7 +30,8 @@ async function realLogin(request: import('@playwright/test').APIRequestContext):
   const res = await request.post(`${API_URL}/v1/auth/login`, {
     data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
   })
-  expect(res.ok(), `Real login failed — status ${res.status()}: ${await res.text()}`).toBe(true)
+  // Assertion messages are persisted in reports, including successful steps.
+  expect(res.ok(), `Authentication response HTTP ${res.status()}`).toBe(true)
   const { access_token } = await res.json() as { access_token: string }
   expect(access_token, 'access_token missing from login response').toBeTruthy()
   return access_token
@@ -53,7 +54,7 @@ test.describe('Operator dashboard — real-backend integration (T-OPS-009)', () 
       const res = await request.get(`${API_URL}${endpoint}`, { headers })
       expect(
         res.status(),
-        `${endpoint} returned ${res.status()} — body: ${await res.text()}`,
+        `${endpoint} returned HTTP ${res.status()}`,
       ).toBe(200)
     }
   })

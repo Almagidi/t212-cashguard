@@ -195,6 +195,11 @@ def run() -> None:
         import app.main as main
         from app.core.config import settings
 
+        # Envelope policy test invokes the production post-admission initializer.
+        # Separate startup regressions prove it is never called before admission.
+        assert not init_calls
+        main._init_sentry()
+
         assert settings.APP_MODE == "mock" and settings.LIVE_TRADING_ENABLED is False
         assert os.environ["CASHGUARD_ENV_FILE"] == ""
         report["runtime"] = {
@@ -314,10 +319,15 @@ def run() -> None:
 
         async def requests():
             nonlocal case
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
-                base_url="http://synthetic.invalid",
-            ) as http:
+            from tests.admitted_runtime import admitted_runtime
+
+            async with (
+                admitted_runtime() as admitted,
+                httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=admitted, raise_app_exceptions=False),
+                    base_url="http://synthetic.invalid",
+                ) as http,
+            ):
                 for name, payload in [
                     (
                         "asgi-object",

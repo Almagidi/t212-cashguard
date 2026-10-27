@@ -169,74 +169,8 @@ real-worker-paper-chaos: ## Prove new decisions, partial/cancel, kill switch, cl
 real-worker-paper-soak: ## Run 30-dispatch exact-SHA real Celery mock-paper soak (Docker)
 	cd apps/api && .venv/bin/python scripts/real_worker_paper_soak.py
 
-e2e-operator-integration: ## Run real-backend integration e2e for operator dashboard (SQLite, APP_MODE=mock, ports 8001/3001)
-	@if lsof -tiTCP:8001 -sTCP:LISTEN >/dev/null 2>&1; then \
-		echo "$(RED)Integration API port 8001 is already in use.$(RESET)"; \
-		lsof -nP -iTCP:8001 -sTCP:LISTEN 2>/dev/null | sed 's/^/  /'; \
-		echo "Run make manual-status to inspect, or make stop-manual-ports if it is stale and project-owned."; \
-		exit 1; \
-	fi
-	@if lsof -tiTCP:3001 -sTCP:LISTEN >/dev/null 2>&1; then \
-		echo "$(RED)Integration web port 3001 is already in use.$(RESET)"; \
-		lsof -nP -iTCP:3001 -sTCP:LISTEN 2>/dev/null | sed 's/^/  /'; \
-		echo "Run make manual-status to inspect, or make stop-manual-ports if it is stale and project-owned."; \
-		exit 1; \
-	fi
-	@echo "$(YELLOW)→ Initialising SQLite integration DB...$(RESET)"
-	@cd apps/api && \
-		INTEGRATION_DB_PATH=/tmp/t212_integration_test.db \
-		DATABASE_URL="sqlite+aiosqlite:////tmp/t212_integration_test.db" \
-		REDIS_URL=redis://localhost:6379/15 \
-		SECRET_KEY=integration-test-secret-key-32-chars-x \
-		MASTER_KEY=integration-test-master-key-32-chars-x \
-		APP_MODE=mock \
-		ADMIN_EMAIL=admin@localhost \
-		ADMIN_PASSWORD=change-me \
-		PYTHONPATH=. python3.12 scripts/init_integration_db.py
-	@echo "$(YELLOW)→ Starting API on :8001 (background)...$(RESET)"
-	@set -e; \
-	cd apps/api; \
-	DATABASE_URL="sqlite+aiosqlite:////tmp/t212_integration_test.db" \
-		REDIS_URL=redis://localhost:6379/15 \
-		SECRET_KEY=integration-test-secret-key-32-chars-x \
-		MASTER_KEY=integration-test-master-key-32-chars-x \
-		APP_MODE=mock \
-		ADMIN_EMAIL=admin@localhost \
-		ADMIN_PASSWORD=change-me \
-		CORS_ORIGINS="http://localhost:3001,http://127.0.0.1:3001" \
-		PYTHONPATH=. \
-		uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log & \
-	API_PID=$$!; \
-	cleanup() { kill $$API_PID 2>/dev/null || true; wait $$API_PID 2>/dev/null || true; }; \
-	trap cleanup EXIT INT TERM; \
-	echo "$(YELLOW)  → Waiting for API to be ready...$(RESET)"; \
-	API_READY=0; \
-	for i in $$(seq 1 20); do \
-		if ! kill -0 $$API_PID 2>/dev/null; then \
-			echo "$(RED)Integration API exited before readiness.$(RESET)"; \
-			exit 1; \
-		fi; \
-		if curl -sf http://127.0.0.1:8001/v1/health/live >/dev/null 2>&1; then \
-			API_READY=1; \
-			break; \
-		fi; \
-		sleep 1; \
-	done; \
-	if [ "$$API_READY" != "1" ]; then \
-		echo "$(RED)Integration API did not become ready on port 8001.$(RESET)"; \
-		exit 1; \
-	fi; \
-	echo "$(YELLOW)  → Running Playwright integration tests...$(RESET)"; \
-	cd $(CURDIR)/apps/web && \
-		NEXT_PUBLIC_API_URL=http://127.0.0.1:8001 \
-		NEXT_PUBLIC_APP_MODE=mock \
-		BASE_URL=http://localhost:3001 \
-		ADMIN_EMAIL=admin@localhost \
-		ADMIN_PASSWORD=change-me \
-		INTEGRATION_API_PORT=8001 \
-		INTEGRATION_WEB_PORT=3001 \
-		npx playwright test --config=playwright.integration.config.ts; \
-	echo "$(GREEN)✓ Operator integration e2e complete$(RESET)"
+e2e-operator-integration: ## Real operator E2E; explicit local PostgreSQL/Redis, new disposable DB (requires CREATEDB)
+	cd apps/api && PYTHONPATH=. python3.12 scripts/run_operator_integration.py
 
 readiness-full: smoke e2e-operator e2e-operator-integration ## Full readiness: smoke + mock e2e + integration e2e
 

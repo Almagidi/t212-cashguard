@@ -40,6 +40,7 @@ os.environ["TELEGRAM_WEBHOOK_SECRET"] = "test-telegram-secret"
 
 from app.db.session import Base, get_db  # noqa: E402 - after the guard and settings above
 from app.main import _login_attempts, _login_lockouts, app  # noqa: E402
+from tests.admitted_runtime import admitted_runtime  # noqa: E402
 
 # ─── Test DB ─────────────────────────────────────────────────────────────────
 
@@ -106,7 +107,12 @@ async def client(db: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     app.dependency_overrides[get_db] = override_get_db
     _login_attempts.clear()
     _login_lockouts.clear()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    # Endpoint-only SQLite fixture models an admitted runtime explicitly. Dedicated
+    # startup tests use the unwrapped production app/lifespan and cannot inherit this.
+    async with (
+        admitted_runtime() as admitted,
+        AsyncClient(transport=ASGITransport(app=admitted), base_url="http://test") as c,
+    ):
         yield c
     _login_attempts.clear()
     _login_lockouts.clear()

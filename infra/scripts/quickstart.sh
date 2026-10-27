@@ -42,34 +42,11 @@ info "Working directory: $REPO_ROOT"
 # ── .env setup ────────────────────────────────────────────────────────────────
 heading "Configuring environment..."
 
-if [ ! -f .env ]; then
-    cp .env.example .env
-    info "Created .env from .env.example"
-
-    # Auto-generate secure keys
-    if command -v openssl >/dev/null 2>&1; then
-        SECRET_KEY=$(openssl rand -hex 32)
-        MASTER_KEY=$(openssl rand -hex 32)
-        sed -i.bak "s/change-me-generate-with-openssl-rand-hex-32/$SECRET_KEY/" .env 2>/dev/null || \
-            sed -i "" "s/change-me-generate-with-openssl-rand-hex-32/$SECRET_KEY/" .env  # macOS
-        # Replace second occurrence for MASTER_KEY
-        python3 -c "
-content = open('.env').read()
-parts = content.split('$SECRET_KEY')
-if len(parts) > 1:
-    pass  # already replaced, now fix MASTER_KEY
-import re
-content2 = open('.env').read()
-# Replace first remaining placeholder
-content2 = content2.replace('change-me-generate-with-openssl-rand-hex-32', '$MASTER_KEY', 1)
-open('.env', 'w').write(content2)
-"
-        info "Generated secure SECRET_KEY and MASTER_KEY"
-    else
-        warn "openssl not found — please manually set SECRET_KEY and MASTER_KEY in .env"
-    fi
+if [ -e .env ] || [ -L .env ]; then
+    [ -f .env ] && [ ! -L .env ] || error ".env must be a regular file; nothing was changed"
+    info ".env already exists; preserving all existing values"
 else
-    info ".env already exists"
+    python3 "$SCRIPT_DIR/create_env.py" || error "Could not create a private .env; existing configuration was not replaced"
 fi
 
 # Check if keys have been set
