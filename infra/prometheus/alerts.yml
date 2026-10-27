@@ -3,15 +3,55 @@ groups:
   - name: trading_safety
     interval: 15s
     rules:
-      - alert: KillSwitchActivated
-        expr: cashguard_kill_switch_activations_total > 0
+      - alert: KillSwitchActive
+        expr: (cashguard_kill_switch_active{job="cashguard_api"} == 1) and on(job,instance) (cashguard_safety_state_read_ok{job="cashguard_api"} == 1)
         for: 0m
         labels:
           severity: critical
           team: trading
         annotations:
-          summary: "Kill switch activated"
-          description: "A kill switch activation was recorded. All trading is halted. Actor: {{ $labels.actor }}. Investigate immediately."
+          summary: "Saved global kill switch is active"
+          description: "The saved global kill switch is active. Check the operator view; this does not confirm positions are flat or cancellations complete."
+
+      - alert: VenueKillSwitchActive
+        expr: (cashguard_venue_kill_switch_active{job="cashguard_api"} == 1) and on(job,instance) (cashguard_safety_state_read_ok{job="cashguard_api"} == 1)
+        for: 0m
+        labels:
+          severity: critical
+          team: trading
+        annotations:
+          summary: "Saved venue kill switch is active"
+          description: "The saved {{ $labels.venue }} kill switch is active. This is venue state, not the global switch or proof that positions are flat."
+
+      - alert: KillSwitchActivated
+        expr: (cashguard_kill_switch_last_activation_timestamp_seconds{job="cashguard_api"} > time() - 300) and (cashguard_kill_switch_last_activation_timestamp_seconds{job="cashguard_api"} <= time()) and on(job,instance) (cashguard_safety_state_read_ok{job="cashguard_api"} == 1)
+        for: 0m
+        labels:
+          severity: critical
+          team: trading
+        annotations:
+          summary: "Recent recorded global kill-switch activation"
+          description: "The most recent retained global activation occurred within five minutes. This is historical evidence, not current halt state or an activation count. Resolution does not mean trading resumed."
+
+      - alert: SafetyStateReadUnavailable
+        expr: (up{job="cashguard_api"} == 1) unless on(job,instance) (cashguard_safety_state_read_ok{job="cashguard_api"} == 1)
+        for: 1m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Saved safety state is unavailable"
+          description: "The API scrape succeeded but the saved safety-state read failed or its readiness marker is missing. Inspect database access and read limits. Unknown does not mean safe or enabled."
+
+      - alert: SafetyControlUnknown
+        expr: (cashguard_safety_state_known{job="cashguard_api"} == 0) and on(job,instance) (cashguard_safety_state_read_ok{job="cashguard_api"} == 1) and on(job,instance) (up{job="cashguard_api"} == 1)
+        for: 1m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Saved safety control is unknown"
+          description: "Saved {{ $labels.control }} for {{ $labels.scope }} is unavailable. A venue may be intentionally unconfigured; check the deployment runbook. Do not enable a venue or change defaults to clear this warning."
 
       - alert: CircuitBreakerOpen
         expr: cashguard_circuit_breaker_open == 1
@@ -24,7 +64,7 @@ groups:
           description: "The broker circuit breaker has opened after repeated failures. Orders cannot be placed. Broker: {{ $labels.broker }}."
 
       - alert: AutoTradingDisabled
-        expr: cashguard_auto_trading_enabled == 0
+        expr: (cashguard_auto_trading_enabled{job="cashguard_api"} == 0) and on(job,instance) (cashguard_safety_state_known{job="cashguard_api",control="auto_trading",scope="global"} == 1) and on(job,instance) (cashguard_safety_state_read_ok{job="cashguard_api"} == 1)
         for: 5m
         labels:
           severity: warning
@@ -53,29 +93,9 @@ groups:
           summary: "Cash guard blocking orders frequently"
           description: "Cash guard is blocking orders at >0.2/second. Available cash may be critically low."
 
-  # ── Account Health ───────────────────────────────────────────────────────────
-  - name: account_health
-    interval: 30s
-    rules:
-      - alert: LowAvailableCash
-        expr: cashguard_account_cash_available < 100
-        for: 5m
-        labels:
-          severity: warning
-          team: trading
-        annotations:
-          summary: "Available cash critically low"
-          description: "Available cash is below £100 (current: {{ $value | humanize }}). New orders may be blocked."
-
-      - alert: HighOpenPositions
-        expr: cashguard_account_open_positions > 8
-        for: 2m
-        labels:
-          severity: warning
-          team: trading
-        annotations:
-          summary: "Unusually high number of open positions"
-          description: "{{ $value }} open positions detected, which is above the expected threshold."
+  # Account cash/value/position metrics have no authoritative producer.
+  # LowAvailableCash (<100) and HighOpenPositions (>8) are not active coverage;
+  # see docs/operations/monitoring-alert-truth.md before restoring those rules.
 
   # ── Worker Reliability ───────────────────────────────────────────────────
   - name: worker_reliability

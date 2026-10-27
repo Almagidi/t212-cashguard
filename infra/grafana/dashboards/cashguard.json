@@ -8,54 +8,61 @@
     {
       "id": 1,
       "title": "Kill Switch Status",
+      "description": "Saved global control. Missing data is UNKNOWN; check safety read/unknown controls below. This does not prove positions are flat.",
       "type": "stat",
       "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
       "fieldConfig": {
         "defaults": {
+          "noValue": "UNKNOWN",
           "mappings": [
-            { "type": "value", "options": { "0": { "text": "INACTIVE", "color": "green" }, "1": { "text": "ACTIVE", "color": "red" } } }
+            { "type": "value", "options": { "0": { "text": "INACTIVE", "color": "green" }, "1": { "text": "ACTIVE", "color": "red" } } },
+            { "type": "special", "options": { "match": "null+nan", "result": { "text": "UNKNOWN", "color": "gray" } } }
           ],
-          "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "red", "value": 1 }] }
+          "thresholds": { "steps": [{ "color": "gray", "value": null }, { "color": "green", "value": 0 }, { "color": "red", "value": 1 }] }
         }
       },
-      "targets": [{ "expr": "cashguard_kill_switch_active", "legendFormat": "Kill Switch" }]
+      "options": { "reduceOptions": { "calcs": ["last"], "fields": "", "values": false }, "colorMode": "value" },
+      "targets": [{ "expr": "cashguard_kill_switch_active{job=\"cashguard_api\"}", "legendFormat": "{{instance}}", "instant": true, "range": false }]
     },
     {
       "id": 2,
       "title": "Available Cash",
-      "type": "stat",
+      "type": "text",
       "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
-      "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
-      "targets": [{ "expr": "cashguard_account_cash_available", "legendFormat": "Cash" }]
+      "options": { "mode": "markdown", "content": "**UNAVAILABLE**\n\nAccount cash is not exported: no authoritative account/freshness producer is wired. Use the [operator view](/app/operator)." }
     },
     {
       "id": 3,
       "title": "Account Total Value",
-      "type": "stat",
+      "type": "text",
       "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
-      "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
-      "targets": [{ "expr": "cashguard_account_total_value", "legendFormat": "Total Value" }]
+      "options": { "mode": "markdown", "content": "**UNAVAILABLE**\n\nAccount value is not exported. No account-wide value or currency is inferred from missing telemetry. Use the [operator view](/app/operator)." }
     },
     {
       "id": 4,
       "title": "Open Positions",
-      "type": "stat",
+      "type": "text",
       "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
-      "targets": [{ "expr": "cashguard_open_positions_count", "legendFormat": "Positions" }]
+      "options": { "mode": "markdown", "content": "**UNAVAILABLE**\n\nOpen-position counts are not exported. Missing data does not mean zero positions. Use the [operator view](/app/operator)." }
     },
     {
       "id": 5,
       "title": "Auto Trading Enabled",
+      "description": "Saved global setting; disabled may be intentional. Missing data is UNKNOWN, never permission to trade.",
       "type": "stat",
       "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
       "fieldConfig": {
         "defaults": {
+          "noValue": "UNKNOWN",
           "mappings": [
-            { "type": "value", "options": { "0": { "text": "DISABLED", "color": "orange" }, "1": { "text": "ENABLED", "color": "green" } } }
-          ]
+            { "type": "value", "options": { "0": { "text": "DISABLED", "color": "orange" }, "1": { "text": "ENABLED", "color": "green" } } },
+            { "type": "special", "options": { "match": "null+nan", "result": { "text": "UNKNOWN", "color": "gray" } } }
+          ],
+          "thresholds": { "steps": [{ "color": "gray", "value": null }] }
         }
       },
-      "targets": [{ "expr": "cashguard_auto_trading_enabled", "legendFormat": "" }]
+      "options": { "reduceOptions": { "calcs": ["last"], "fields": "", "values": false }, "colorMode": "value" },
+      "targets": [{ "expr": "cashguard_auto_trading_enabled{job=\"cashguard_api\"}", "legendFormat": "{{instance}}", "instant": true, "range": false }]
     },
     {
       "id": 6,
@@ -86,11 +93,13 @@
     },
     {
       "id": 9,
-      "title": "Kill Switch Activations (cumulative)",
+      "title": "Latest recorded global activation",
+      "description": "Retained global event time, not an activation count or current halt. No value can mean no retained event or an unreadable state; check safety read/unknown controls. Resolution never means trading resumed.",
       "type": "stat",
       "gridPos": { "x": 6, "y": 12, "w": 6, "h": 4 },
-      "fieldConfig": { "defaults": { "color": { "fixedColor": "red" } } },
-      "targets": [{ "expr": "cashguard_kill_switch_activations_total", "legendFormat": "Activations" }]
+      "fieldConfig": { "defaults": { "unit": "dateTimeAsIso", "noValue": "NO RETAINED EVENT OR UNKNOWN" } },
+      "options": { "reduceOptions": { "calcs": ["last"], "fields": "", "values": false }, "colorMode": "none" },
+      "targets": [{ "expr": "cashguard_kill_switch_last_activation_timestamp_seconds{job=\"cashguard_api\"} * 1000", "legendFormat": "{{instance}}", "instant": true, "range": false }]
     },
     {
       "id": 10,
@@ -127,6 +136,25 @@
         }
       },
       "targets": [{ "expr": "cashguard_circuit_breaker_open", "legendFormat": "{{name}}" }]
+    },
+    {
+      "id": 13,
+      "title": "Safety state read",
+      "description": "READ OK only describes the database read. Individual controls may still be unknown; see the adjacent table. NO DATA is unavailable, not healthy.",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 24, "w": 6, "h": 4 },
+      "fieldConfig": { "defaults": { "noValue": "UNKNOWN", "mappings": [{ "type": "value", "options": { "0": { "text": "UNREADABLE", "color": "red" }, "1": { "text": "READ OK", "color": "blue" } } }], "thresholds": { "steps": [{ "color": "gray", "value": null }] } } },
+      "options": { "reduceOptions": { "calcs": ["last"], "fields": "", "values": false }, "colorMode": "value" },
+      "targets": [{ "expr": "cashguard_safety_state_read_ok{job=\"cashguard_api\"}", "legendFormat": "{{instance}}", "instant": true, "range": false }]
+    },
+    {
+      "id": 14,
+      "title": "Unknown saved controls",
+      "description": "Present rows identify controls whose saved values are unknown. An unused venue may intentionally be unconfigured; do not enable it to clear this view. An empty table alone is not proof of healthy telemetry; inspect Safety state read and target availability.",
+      "type": "table",
+      "gridPos": { "x": 6, "y": 24, "w": 18, "h": 4 },
+      "fieldConfig": { "defaults": { "noValue": "UNKNOWN" } },
+      "targets": [{ "expr": "cashguard_safety_state_known{job=\"cashguard_api\"} == 0", "format": "table", "instant": true, "range": false }]
     }
   ]
 }
