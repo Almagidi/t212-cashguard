@@ -42,10 +42,34 @@ jobs:
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
           GITLEAKS_ENABLE_SUMMARY: "false"
 
+  monitoring-contract:
+    name: Monitoring Contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/api/requirements.txt
+      - name: Install test dependencies
+        run: pip install -r apps/api/requirements.txt
+      - name: Fetch official source-pinned Promtool image
+        run: docker pull prom/prometheus:v3.1.0
+      - name: Lint monitoring contract tests
+        run: |
+          python -m ruff check infra/tests/test_alert_rule_truth.py
+          python -m ruff format --check infra/tests/test_alert_rule_truth.py
+      - name: Validate safety exposition, Grafana and real alert evaluations
+        run: python -m unittest discover -s infra/tests -p test_alert_rule_truth.py -v
+
   backend:
     name: Backend
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     services:
       postgres:
@@ -170,6 +194,7 @@ jobs:
         run: python -m alembic upgrade head
 
       - name: Run backend validation baseline
+        timeout-minutes: 15
         run: python -m pytest -q
 
       - name: Upload coverage
@@ -192,15 +217,19 @@ jobs:
       # The scripts use the same image tags as this job's services, so nothing is
       # pulled again. tests/unit/test_ci_real_worker_proof_static.py guards these steps.
       - name: Real-worker proof - scheduled paper fill and duplicate dispatch
+        timeout-minutes: 5
         run: python scripts/real_worker_paper_smoke.py
 
       - name: Real-worker proof - kill switch, repeated decisions and cleanup failure
+        timeout-minutes: 5
         run: python scripts/real_worker_paper_chaos.py
 
       - name: Real-worker proof - two-worker exclusion and lock recovery
+        timeout-minutes: 5
         run: python scripts/real_worker_lock_recovery.py
 
       - name: Real-worker proof - Redis, PostgreSQL and worker interruption recovery
+        timeout-minutes: 5
         run: python scripts/real_worker_interruption_recovery.py
 
   frontend:
