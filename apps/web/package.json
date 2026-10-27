@@ -67,7 +67,7 @@
     "jest-environment-jsdom": "30.5.2",
     "oxlint": "1.87.0",
     "postcss": "8.5.26",
-    "prettier": "3.9.9",
+    "prettier": "3.9.10",
     "prettier-plugin-tailwindcss": "0.8.1",
     "tailwindcss": "4.3.3"
   },
