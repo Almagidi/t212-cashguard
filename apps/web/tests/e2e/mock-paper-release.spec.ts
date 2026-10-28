@@ -244,11 +244,26 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
     // Submit a paper order
     await page.getByLabel('Ticker').fill(`MOCK${Date.now().toString().slice(-5)}`)
     await page.getByLabel('Quantity').fill('1')
+    const filledResponsePromise = page.waitForResponse(response => (
+      response.url() === `${API_URL}/v1/orders/paper` && response.request().method() === 'POST'
+    ))
     await page.getByTestId('paper-order-submit-button').click()
+    const filledResponse = await filledResponsePromise
+    expect(filledResponse.status()).toBe(201)
+    const filledReceipt = await filledResponse.json() as { id: string; operation_id: string }
+    expect(filledReceipt).toMatchObject({
+      id: expect.any(String), operation_id: expect.any(String), operation_state: 'recorded',
+      outcome: 'order_recorded', original_http_status: 201, replayed: false, status: 'filled',
+      execution_environment: 'paper_mock', is_dry_run: true, broker_order_id: null,
+    })
+    expect(filledReceipt.operation_id).toBe(filledResponse.request().postDataJSON().operation_id)
 
     // Verify paper order was successful
-    await expect(page.getByTestId('paper-order-status-message')).toBeVisible({ timeout: 10_000 })
-    await expect(page.getByTestId('paper-order-status-message').getByText(/filled|paper order/i)).toBeVisible()
+    const paperStatus = page.getByTestId('paper-order-status-message')
+    await expect(paperStatus).toBeVisible({ timeout: 10_000 })
+    await expect(paperStatus.getByText('Paper order filled', { exact: true })).toBeVisible()
+    await expect(paperStatus.getByText('Recorded status: filled. No broker order sent.', { exact: true })).toBeVisible()
+    await expect(paperStatus.getByText(`Order ${filledReceipt.id}`, { exact: true })).toBeVisible()
     await expect(page.getByTestId('paper-order-history')).toBeVisible()
     await expect(page.getByTestId('paper-order-history')).not.toBeEmpty({ timeout: 10_000 })
     await expect(page.getByTestId('paper-order-history').getByText(/No broker order sent/i).first()).toBeVisible({
@@ -263,7 +278,20 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
     await page.getByRole('button', { name: 'New Paper Order', exact: true }).click()
     await page.getByLabel('Ticker').fill(`BLOCK${Date.now().toString().slice(-5)}`)
     await page.getByLabel('Quantity').fill('1')
+    const blockedResponsePromise = page.waitForResponse(response => (
+      response.url() === `${API_URL}/v1/orders/paper` && response.request().method() === 'POST'
+    ))
     await page.getByTestId('paper-order-submit-button').click()
+    const blockedResponse = await blockedResponsePromise
+    expect(blockedResponse.status()).toBe(422)
+    const blockedReceipt = await blockedResponse.json() as { operation_id: string }
+    expect(blockedReceipt).toMatchObject({
+      operation_id: expect.any(String), operation_state: 'recorded', outcome: 'blocked',
+      original_http_status: 422, replayed: false, decision_code: 'kill_switch_block',
+    })
+    expect(blockedReceipt.operation_id).toBe(blockedResponse.request().postDataJSON().operation_id)
+    expect(blockedReceipt.operation_id).not.toBe(filledReceipt.operation_id)
+    expect(blockedReceipt).not.toHaveProperty('id')
 
     // Verify paper order was blocked
     await expect(page.getByTestId('paper-order-status-message').getByText(/Paper order blocked by safety controls/i)).toBeVisible({
