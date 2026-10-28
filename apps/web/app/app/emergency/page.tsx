@@ -117,8 +117,8 @@ export default function EmergencyPage() {
             <AlertOctagon className="w-4 h-4 text-red-400" />
           </div>
           <div>
-            <p className="text-sm font-semibold text-red-300">Immediate and irreversible</p>
-            <p className="text-xs text-red-300/70 mt-1 leading-relaxed">
+            <p className="text-sm font-semibold text-red-800 dark:text-red-300">Immediate and irreversible</p>
+            <p className="text-xs text-red-800 dark:text-red-300/70 mt-1 leading-relaxed">
               These actions execute immediately and most cannot be undone. {isMockRuntime ? 'In mock mode they affect local simulated state only: no real broker order is placed and no real funds are moved.' : 'In demo/live modes broker-backed actions may contact the configured broker.'} All actions are logged to the audit trail.
             </p>
           </div>
@@ -211,7 +211,7 @@ export default function EmergencyPage() {
             <div className={cn(
               'w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 border',
               killSwitchActive
-                ? 'bg-blue-500/10 border-blue-500/25 text-blue-300'
+                ? 'bg-blue-500/10 border-blue-500/25 text-blue-800 dark:text-blue-300'
                 : 'bg-red-500/10 border-red-500/25 text-red-400',
             )}>
               {killSwitchActive ? <ShieldCheck className="w-4 h-4" /> : <AlertOctagon className="w-4 h-4" />}
@@ -224,7 +224,7 @@ export default function EmergencyPage() {
                   : 'Immediately halt ALL automated trading. No new orders will be placed. Existing positions are kept.'}
               </p>
               {isMockRuntime && (
-                <p className="mt-2 text-xs text-blue-200/80">
+                <p className="mt-2 text-xs text-blue-900 dark:text-blue-200/80">
                   Mock mode: this changes local simulated state only. No real broker order is placed and no real funds are moved.
                 </p>
               )}
@@ -233,7 +233,7 @@ export default function EmergencyPage() {
           <Button
             variant={killSwitchActive ? 'outline' : 'danger'}
             size="sm"
-            className={cn('flex-shrink-0', killSwitchActive && 'border-blue-500/35 text-blue-200 hover:bg-blue-500/10')}
+            className={cn('flex-shrink-0', killSwitchActive && 'border-blue-500/35 text-blue-800 dark:text-blue-200 hover:bg-blue-500/10')}
             onClick={() => setPending(killSwitchActive ? 'disable_kill_switch' : 'kill_switch')}
             disabled={isBusy}
             loading={killSwitchActive ? disableKillSwitch.isPending : killSwitch.isPending}
@@ -246,7 +246,7 @@ export default function EmergencyPage() {
 
       <Card className="border-amber-500/20 bg-amber-500/[0.03]">
         <CardContent className="p-4">
-          <p className="text-sm font-semibold text-amber-200">Operator recovery sequence</p>
+          <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">Operator recovery sequence</p>
           <ol className="mt-3 space-y-2 text-xs leading-relaxed text-muted-foreground">
             <li>1. Disable kill switch.</li>
             <li>2. Confirm mock/broker status.</li>

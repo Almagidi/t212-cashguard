@@ -101,8 +101,8 @@ make dev
 - **API Docs**: http://localhost:8000/docs
 
 **Default login**: `admin@localhost` / the `ADMIN_PASSWORD` value in `.env`.
-The checked-in example uses `change-me-on-first-run`; the manual QA launcher
-uses `change-me`.
+The checked-in example uses `change-me-on-first-run`; choose a unique password
+for a new installation as described in [local installation](docs/local-install.md).
 
 ### Local launcher parity
 
@@ -115,28 +115,21 @@ launcher/2. Start CashGuard.command
 This starts the normal app on `http://localhost:3000` with API
 `http://localhost:8000`, using `APP_MODE` from root `.env`.
 
-Safe manual operator QA is separate:
+For supervised local mock/paper use, follow [the PostgreSQL installation path](docs/local-install.md),
+then open `http://127.0.0.1:3000/app/operator` with the administrator password
+chosen for that installation. Confirm Paper-only, Mock execution, No broker order
+sent and Live disabled. The supported recipe binds API/site to loopback and does
+not start workers or beat.
 
-```bash
-make demo-mock
-```
-
-That path runs `APP_MODE=mock` on web `3002` and API `8002`, uses seeded local data, and
-does not require Trading 212 or Kraken credentials. Stop normal launch with
-`launcher/3. Stop CashGuard.command`; stop mock demo QA with `make demo-mock-stop`.
-Use `make launcher-check` to inspect both flows without stopping anything.
-
-For a demo-ready mock/paper walkthrough, prefer:
-
-```bash
-make demo-mock
-```
-
-Open `http://localhost:3002/app/operator`, sign in with
-`admin@localhost` / `change-me`, and confirm the page shows Paper-only, Mock
-execution, No broker order sent, and Live disabled. This flow is separate from
-an explicitly configured demo connection. Live Trading 212 setup is not
-supported during the safety-remediation programme.
+The legacy `make operator-manual` / `make demo-mock` shortcuts initialize SQLite
+on ports8002/3002. Current HTTP/WebSocket startup admission requires PostgreSQL,
+so these shortcuts are unsupported until repaired. Do not run them as a workaround,
+reset a database, reseed restored data or replace existing keys to force startup.
+Their files, data and Git history remain intact; see the
+[manual QA notes](docs/operator-manual-qa.md). The normal macOS launcher has
+different bindings and starts workers; it is not equivalent to the supported
+manual installation. `make launcher-check` inspects both flows without stopping
+anything. Live Trading212 setup remains outside this mock/paper qualification.
 
 ---
 

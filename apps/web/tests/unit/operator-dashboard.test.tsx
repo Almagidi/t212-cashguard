@@ -1115,6 +1115,13 @@ describe("CashGuardCard", () => {
     setCashGuard({});
   });
 
+  it("labels the mock adapter cash separately from the paper ledger with readable copy", () => {
+    render(<OperatorDashboard status={operatorStatus()} />);
+    expect(screen.getByTestId("operator-cashguard-card")).toHaveTextContent(
+      "Mock adapter cash example; separate from the paper execution ledger. This panel is read-only",
+    );
+  });
+
   it("renders loading skeleton while cash data is fetching", () => {
     setCashGuard({ data: undefined, isLoading: true, isError: false });
 

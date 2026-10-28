@@ -19,6 +19,7 @@ import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
+from app.broker.mock_adapter import MOCK_ACCOUNT_CURRENCY
 from app.core.config import settings
 from app.core.security import TokenDecodeError, decode_access_token
 from app.db.models import (
@@ -236,12 +237,13 @@ async def _mock_payload(system: dict) -> dict:
 
     return {
         "type": "snapshot",
+        "data_source": "mock_market_animation",
         "ts": datetime.now(UTC).isoformat(),
         "account": {
             "total_value": total_value,
             "free_cash": 8_234.80,
             "invested": round(total_value - 8_234.80, 2),
-            "currency": "GBP",
+            "currency": MOCK_ACCOUNT_CURRENCY,
             "unrealized_pnl": unrealized,
         },
         "positions": [

@@ -126,7 +126,7 @@ function visibilityMessage({
     return "Manual QA mock mode should show read-only Kraken/DCA data and requires no broker credentials.";
   }
   if (profile === "Normal launcher" && frontendMode === "demo") {
-    return "Normal launcher is in demo mode; Kraken/DCA cards may not be seeded unless configured. Use make operator-manual for mock Kraken/DCA QA.";
+    return "Normal launcher is in demo mode; Kraken/DCA cards may not be seeded unless configured. Follow docs/local-install.md for the supported PostgreSQL mock/paper setup.";
   }
   return "Kraken/DCA visibility depends on the current mode, auth token, and registered backend routes.";
 }
@@ -155,10 +155,10 @@ function nextAction({
     return "Check API logs for the failing read-only endpoint.";
   }
   if (profile === "Normal launcher" && (backendMode ?? frontendMode) === "demo") {
-    return "Use make operator-manual for mock Kraken/DCA QA.";
+    return "Follow docs/local-install.md for the supported PostgreSQL mock/paper setup.";
   }
   if (profile === "Manual QA") {
-    return "Manual QA is the expected read-only path for Kraken/DCA visibility checks.";
+    return "This legacy Manual QA profile used SQLite and is incompatible with current startup admission. Follow docs/local-install.md for supported PostgreSQL setup.";
   }
   return "Use the port/profile rows below to confirm this is the runtime you intended.";
 }

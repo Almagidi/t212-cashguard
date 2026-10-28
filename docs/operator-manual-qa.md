@@ -1,5 +1,32 @@
 # Operator Dashboard — Local Manual QA Gate
 
+Use [the supported local PostgreSQL installation](local-install.md) for supervised
+mock/paper QA. It uses the pinned runtime, preserves existing configuration, binds
+the API/site to loopback and leaves workers/beat stopped. Open the operator page at
+`http://127.0.0.1:3000/app/operator`, using the password selected for that installation.
+Keep broker credentials and telemetry empty; verify mock mode, live disabled,
+read-only operator controls and separately labelled paper execution history.
+
+The old `make operator-manual` / `make demo-mock` commands below initialize SQLite.
+Current startup admission requires PostgreSQL, so those shortcuts cannot start a
+normally admitted API. They are unsupported; do not reset/reseed data, change keys
+or relax admission to make them pass. Their files and data are preserved. The
+Trading212 demo shortcuts also use SQLite and are not qualified by this guide.
+
+For engineering automation only, `make e2e-operator-integration` requires an
+explicit loopback PostgreSQL test cluster/role with CREATEDB and local Redis.
+It creates its own disposable migrated database and verifies mock readiness;
+it is not a persistent personal-use launcher. Follow
+[backup and restore](operations/local-backup-restore.md) before retaining important
+history, and preserve the armed-restart refusal and explicit recovery workflow.
+
+<details>
+<summary>Historical SQLite launcher instructions — unsupported; do not execute</summary>
+
+The following checklist records the earlier QA design. Its ports, passwords,
+machine assumptions and successful-run claims are historical, not current
+acceptance evidence or supported startup instructions.
+
 ## Purpose
 
 t-ops-010-local-operator-manual-qa
@@ -9,8 +36,7 @@ calls, and must stay read-only.
 
 Post-maintenance baseline:
 
-- active repo: `/Users/Ameer/Desktop/t212-cashguard-codex`
-- git host repo for linked worktrees: `/Users/Ameer/Desktop/t212-cashguard`
+- workstation-specific checkout paths are historical and not portable instructions
 - audited main SHA: `0c429cb9237d5d3c223aee0418aa92116f73526f`
 - maintenance/security queue clear at audit time
 - Dependabot alert #58 for dev-only `js-yaml` fixed
@@ -601,5 +627,7 @@ You do not need:
 - A Kraken API key or secret
 - Any `.env` file beyond the defaults already baked into the Makefile target
 
-The SQLite database at `/tmp/t212_manual_qa.db` is ephemeral and re-created fresh every
+The SQLite database at `/tmp/t212_manual_qa.db` was ephemeral and re-created fresh every
 time you run `make operator-manual`.
+
+</details>

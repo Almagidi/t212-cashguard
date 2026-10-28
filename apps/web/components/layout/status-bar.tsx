@@ -20,18 +20,19 @@ export function StatusBar() {
 
   return (
     <div
+      data-testid="runtime-status-bar"
       className={cn(
         'fixed bottom-0 right-0 z-20 hidden h-7 items-center gap-5 px-6 md:flex',
-        'text-[11px] font-medium border-t backdrop-blur-xl transition-colors tabular-nums',
+        'text-[11px] font-medium border-t transition-colors tabular-nums',
         sidebarCollapsed ? 'left-16' : 'left-56',
         settings?.kill_switch_active
-          ? 'bg-red-950/85 border-red-900/60 text-red-200'
-          : 'bg-card/80 border-border text-muted-foreground'
+          ? 'bg-red-50 border-red-900/60 text-red-900 dark:bg-red-950 dark:text-red-200'
+          : 'bg-card border-border text-muted-foreground'
       )}
     >
       {/* Kill switch warning */}
       {settings?.kill_switch_active && (
-        <span className="flex items-center gap-1.5 text-red-300 font-semibold">
+        <span className="flex items-center gap-1.5 text-red-800 dark:text-red-300 font-semibold">
           <AlertOctagon className="w-3 h-3 animate-pulse-slow" />
           KILL SWITCH ACTIVE
         </span>
@@ -41,7 +42,7 @@ export function StatusBar() {
       <span
         className={cn(
           'flex items-center gap-1.5',
-          settings?.auto_trading_enabled ? 'text-emerald-400' : 'text-muted-foreground/80'
+          settings?.auto_trading_enabled ? 'text-emerald-400' : 'text-slate-600 dark:text-slate-300'
         )}
       >
         <span
@@ -71,10 +72,10 @@ export function StatusBar() {
 
       {/* Cash available */}
       {account && (
-        <span className="flex items-center gap-1.5 text-foreground/90">
+        <span className="flex items-center gap-1.5 text-foreground/90" data-testid={account.mode === 'mock' ? 'adapter-cash-example' : undefined}>
           <TrendingUp className="w-3 h-3 text-emerald-400" />
           {formatReportedAmount(account.free_funds, account.currency)}
-          <span className="text-muted-foreground/70">available</span>
+          <span className="text-slate-600 dark:text-slate-300">{account.mode === 'mock' ? 'adapter example' : 'available'}</span>
         </span>
       )}
 
@@ -82,7 +83,7 @@ export function StatusBar() {
       <span className="flex-1" />
 
       {/* Market data provider */}
-      <span className="text-muted-foreground/80">
+      <span className="text-slate-600 dark:text-slate-300">
         {!deps ? 'Data provider unknown' : deps.market_data === 'polygon' ? 'Polygon.io' : deps.market_data === 'mock' ? 'Mock data' : deps.market_data}
       </span>
 
@@ -98,7 +99,7 @@ export function StatusBar() {
       </span>
 
       {/* Time */}
-      <span className="flex items-center gap-1.5 text-muted-foreground/80">
+      <span className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300">
         <Clock className="w-3 h-3" />
         <ClientTime />
       </span>
