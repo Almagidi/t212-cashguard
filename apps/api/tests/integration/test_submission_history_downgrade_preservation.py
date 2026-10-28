@@ -113,7 +113,7 @@ async def test_empty_submission_history_can_round_trip(migrated_db):
     assert code == 0, output
     state = await _snapshot(engine)
     assert state["order_submission_attempts"] == []
-    assert state["alembic_version"] == [{"version_num": "0021_order_submission_attempts"}]
+    assert state["alembic_version"] == [{"version_num": "0022_paper_operation_receipts"}]
 
 
 @pytest.mark.asyncio

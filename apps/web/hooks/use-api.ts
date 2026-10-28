@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import api from "@/services/api";
+import { recordedPaperResult } from "@/lib/paper-operation-intent";
 import type {
   CancelAllResult,
   CancelOrderResult,
@@ -398,17 +399,24 @@ export const usePaperOrderAudit = (
 export const usePlacePaperOrder = () => {
   const qc = useQueryClient();
   return useMutation({
+    retry: false,
+    // No offline queue may dispatch later under another authenticated account.
+    networkMode: "always",
     mutationFn: (p: CreatePaperOrderPayload) => api.placePaperOrder(p),
-    onSuccess: async () => {
+    onSuccess: async (result, payload) => {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["orders"] }),
         qc.invalidateQueries({ queryKey: ["positions"] }),
         qc.invalidateQueries({ queryKey: ["orders", "paper"] }),
       ]);
-      toast.success("Paper order recorded");
+      if (!payload.operation_id || recordedPaperResult(result, payload.operation_id)) {
+        toast.success(result.replayed ? "Paper order already recorded" : "Paper order recorded");
+      } else toast.error("Paper result unconfirmed; check the existing operation");
     },
-    onError: (e: any) =>
-      toast.error(extractErrorMessage(e, "Paper order blocked")),
+    onError: (e: any, payload) => {
+      const known = payload.operation_id && recordedPaperResult(e?.response?.data, payload.operation_id);
+      toast.error(known ? known.detail! : "Paper result unconfirmed; check or retry the same operation");
+    },
   });
 };
 

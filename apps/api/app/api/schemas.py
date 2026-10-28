@@ -1126,6 +1126,7 @@ class OrderCreate(BaseModel):
 class PaperOrderCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    operation_id: uuid.UUID | None = None
     ticker: str = Field(min_length=1, max_length=50)
     side: Literal["buy", "sell"]
     quantity: Decimal | None = Field(default=None, gt=0, max_digits=20, decimal_places=8)
@@ -1626,3 +1627,22 @@ class EmergencyActionResult(BaseModel):
     action: str
     message: str
     timestamp: datetime
+
+
+class PaperOperationMetadata(BaseModel):
+    operation_id: uuid.UUID
+    operation_state: Literal["recorded"]
+    outcome: Literal["order_recorded", "blocked"]
+    recorded_at: datetime
+    original_http_status: int
+    replayed: bool
+    decision_code: str | None
+    detail: str | None
+
+
+class IdentifiedPaperOrderOut(OrderOut, PaperOperationMetadata):
+    pass
+
+
+class PaperOperationReceiptView(PaperOperationMetadata):
+    order: OrderOut | None

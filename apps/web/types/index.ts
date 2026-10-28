@@ -665,6 +665,10 @@ export interface CreateOrderPayload {
   signal_id?: string;
 }
 export interface CreatePaperOrderPayload {
+  /** Equality precondition only, transmitted as a header; never selects an account. */
+  expected_owner_id?: string;
+  /** Optional only for legacy callers; supported UI always persists and sends it. */
+  operation_id?: string;
   ticker: string;
   side: OrderSide;
   quantity?: string;
@@ -675,6 +679,21 @@ export interface CreatePaperOrderPayload {
   source?: string;
   venue?: "paper" | "mock";
   paper_only: true;
+}
+
+export interface PaperOperationMetadata {
+  operation_id: string;
+  operation_state: 'recorded';
+  outcome: 'order_recorded' | 'blocked';
+  recorded_at: string;
+  original_http_status: number;
+  replayed: boolean;
+  decision_code: string | null;
+  detail: string | null;
+}
+export type IdentifiedPaperOrder = Order & PaperOperationMetadata;
+export interface PaperOperationReceipt extends PaperOperationMetadata {
+  order: Order | null;
 }
 
 // ── Positions ─────────────────────────────────────────────────────────────────

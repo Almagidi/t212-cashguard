@@ -18,6 +18,8 @@ import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { OrderDetailDialog } from '@/components/orders/order-detail-dialog'
 import { CANCELLABLE_ORDER_STATUSES, OPEN_ORDER_STATUSES, executionQualityBadge, formatCurrency, formatDate, orderStatusBg, cn } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
+import { usePaperIntent } from '@/hooks/use-paper-intent'
+import { useAuthStore } from '@/stores/auth'
 import type { OrderSide } from '@/types'
 
 const TABS = ['all', 'pending', 'filled', 'cancelled'] as const
@@ -31,23 +33,6 @@ function statusMatchesTab(status: string, tab: Tab): boolean {
   return true
 }
 
-function extractMutationMessage(error: unknown, fallback: string): string {
-  const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
-  if (typeof detail === 'string' && detail.trim()) return detail
-  if (
-    detail &&
-    typeof detail === 'object' &&
-    typeof (detail as { message?: unknown }).message === 'string'
-  ) {
-    return (detail as { message: string }).message
-  }
-  return fallback
-}
-
-function hasBackendResponse(error: unknown): boolean {
-  return Boolean((error as { response?: unknown })?.response)
-}
-
 export default function OrdersPage() {
   const qc = useQueryClient()
   const [tab, setTab] = useState<Tab>('all')
@@ -58,17 +43,16 @@ export default function OrdersPage() {
   const [paperSide, setPaperSide] = useState<OrderSide>('buy')
   const [paperQuantity, setPaperQuantity] = useState('1')
   const [paperVenue, setPaperVenue] = useState<'paper' | 'mock'>('paper')
-  const [paperResult, setPaperResult] = useState<{
-    tone: 'success' | 'blocked'
-    title: string
-    detail: string
-    orderId?: string
-  } | null>(null)
   const { data: allOrders = [], isLoading, isError, error, refetch } = useOrders({ limit: 200 })
   const { data: selectedOrder, isLoading: loadingSelectedOrder } = useOrder(selectedOrderId, { enabled: Boolean(selectedOrderId) })
   const { data: settings } = useSettings()
   const { data: paperHistory, isLoading: loadingPaperHistory } = usePaperExecutionHistory({ limit: 8 })
   const placePaperOrder = usePlacePaperOrder()
+  const owner = useAuthStore(state => state.user?.id)
+  const paperIntent = usePaperIntent(owner, placePaperOrder.mutateAsync)
+  const paperResult = paperIntent.result
+  const paperLocked = !paperIntent.ready || paperIntent.busy || paperIntent.intent !== null
+  const savedPaper = paperIntent.intent?.payload
   const killSwitch = useKillSwitch()
   const cancelOne = useCancelOrder()
   const cancelAll = useCancelAllPending()
@@ -81,10 +65,7 @@ export default function OrdersPage() {
 
   const submitPaperOrder = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    setPaperResult(null)
-
-    try {
-      const order = await placePaperOrder.mutateAsync({
+    await paperIntent.submit({
         ticker: paperTicker.trim().toUpperCase(),
         side: paperSide,
         quantity: paperQuantity,
@@ -93,25 +74,7 @@ export default function OrdersPage() {
         source: 'manual_demo_ui',
         venue: paperVenue,
         paper_only: true,
-      })
-      setPaperResult({
-        tone: 'success',
-        title: 'Paper order filled',
-        detail: `${order.side.toUpperCase()} ${order.quantity} ${order.ticker} was simulated locally. No broker order sent.`,
-        orderId: order.id,
-      })
-    } catch (err) {
-      const backendResponded = hasBackendResponse(err)
-      setPaperResult({
-        tone: 'blocked',
-        title: backendResponded
-          ? 'Paper order blocked by safety controls'
-          : 'Paper order could not reach mock backend',
-        detail: backendResponded
-          ? `${extractMutationMessage(err, 'Safety controls blocked this paper order.')} No broker order was sent.`
-          : 'The mock backend did not respond to this paper request. No broker order was sent.',
-      })
-    }
+    })
   }
 
   const enableKillSwitch = async () => {
@@ -198,7 +161,8 @@ export default function OrdersPage() {
                   <Label htmlFor="paper-ticker">Ticker</Label>
                   <Input
                     id="paper-ticker"
-                    value={paperTicker}
+                    disabled={paperLocked}
+                    value={savedPaper?.ticker ?? paperTicker}
                     onChange={(event) => setPaperTicker(event.target.value)}
                     required
                     autoCapitalize="characters"
@@ -209,7 +173,8 @@ export default function OrdersPage() {
                   <Label htmlFor="paper-side">Side</Label>
                   <select
                     id="paper-side"
-                    value={paperSide}
+                    disabled={paperLocked}
+                    value={savedPaper?.side ?? paperSide}
                     onChange={(event) => setPaperSide(event.target.value as OrderSide)}
                     className="flex h-9 w-full rounded-lg border border-input bg-background/60 px-3 py-1 text-sm focus-visible:outline-none focus-visible:border-primary/70 focus-visible:ring-2 focus-visible:ring-primary/20"
                   >
@@ -221,10 +186,11 @@ export default function OrdersPage() {
                   <Label htmlFor="paper-quantity">Quantity</Label>
                   <Input
                     id="paper-quantity"
+                    disabled={paperLocked}
                     type="number"
                     min="0.000001"
                     step="0.000001"
-                    value={paperQuantity}
+                    value={savedPaper?.quantity ?? paperQuantity}
                     onChange={(event) => setPaperQuantity(event.target.value)}
                     required
                   />
@@ -233,7 +199,8 @@ export default function OrdersPage() {
                   <Label htmlFor="paper-venue">Venue</Label>
                   <select
                     id="paper-venue"
-                    value={paperVenue}
+                    disabled={paperLocked}
+                    value={savedPaper?.venue ?? paperVenue}
                     onChange={(event) => setPaperVenue(event.target.value as 'paper' | 'mock')}
                     className="flex h-9 w-full rounded-lg border border-input bg-background/60 px-3 py-1 text-sm focus-visible:outline-none focus-visible:border-primary/70 focus-visible:ring-2 focus-visible:ring-primary/20"
                   >
@@ -241,11 +208,17 @@ export default function OrdersPage() {
                     <option value="mock">mock</option>
                   </select>
                 </div>
-                <Button type="submit" size="sm" loading={placePaperOrder.isPending} className="sm:col-span-2 2xl:col-span-1" data-testid="paper-order-submit-button">
+                <Button type="submit" size="sm" loading={paperIntent.busy} disabled={!paperIntent.ready || paperIntent.busy || (paperIntent.intent !== null && paperIntent.intent.state !== 'pending')} className="sm:col-span-2 2xl:col-span-1" data-testid="paper-order-submit-button">
                   <Send className="h-3.5 w-3.5" />
-                  Submit Paper Order
+                  {paperIntent.intent?.state === 'pending' ? 'Retry Same Operation' : 'Submit Paper Order'}
                 </Button>
               </form>
+
+              {paperIntent.intent && <div className="flex flex-wrap items-center gap-3 text-xs" aria-live="polite">
+                <span className="break-all">Operation {paperIntent.intent.operationId}</span>
+                <Button type="button" size="sm" variant="outline" disabled={paperIntent.busy} onClick={() => void paperIntent.check()}>Check Result</Button>
+                {paperIntent.intent.state === 'recorded' && <Button type="button" size="sm" variant="outline" onClick={paperIntent.startNew}>New Paper Order</Button>}
+              </div>}
 
               {paperResult && (
                 <div className={cn(
@@ -253,7 +226,7 @@ export default function OrdersPage() {
                   paperResult.tone === 'success'
                     ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
                     : 'border-amber-500/30 bg-amber-500/10 text-amber-200',
-                )} data-testid="paper-order-status-message">
+                )} data-testid="paper-order-status-message" role="status" aria-live="polite">
                   <p className="font-semibold">{paperResult.title}</p>
                   <p className="mt-0.5 text-xs opacity-85" data-testid={paperResult.tone === 'blocked' ? 'order-blocked-reason' : undefined}>{paperResult.detail}</p>
                   {paperResult.orderId && (

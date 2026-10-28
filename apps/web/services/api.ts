@@ -1,4 +1,6 @@
 import axios, { AxiosError, type AxiosInstance } from "axios";
+import { scrubPaperIntentPayloads } from "@/lib/paper-operation-intent";
+import { useAuthStore } from "@/stores/auth";
 import type {
   AccountSummary,
   CancelAllResult,
@@ -15,6 +17,8 @@ import type {
   CashGuardStatus,
   CreateOrderPayload,
   CreatePaperOrderPayload,
+  PaperOperationMetadata,
+  PaperOperationReceipt,
   CreateStrategyPayload,
   CreateStrategyPresetPayload,
   DepsHealth,
@@ -152,7 +156,10 @@ class ApiClient {
     if (typeof window !== "undefined") localStorage.setItem("cg_token", token);
   }
   clearToken(): void {
-    if (typeof window !== "undefined") localStorage.removeItem("cg_token");
+    if (typeof window !== "undefined") {
+      try { scrubPaperIntentPayloads(sessionStorage); } catch { /* storage unavailable */ }
+      localStorage.removeItem("cg_token");
+    }
   }
   isAuthenticated(): boolean {
     return !!this.getToken();
@@ -422,8 +429,24 @@ class ApiClient {
   async placeOrder(payload: CreateOrderPayload): Promise<Order> {
     return (await this.client.post<Order>("/orders", payload)).data;
   }
-  async placePaperOrder(payload: CreatePaperOrderPayload): Promise<Order> {
-    return (await this.client.post<Order>("/orders/paper", payload)).data;
+  async placePaperOrder(payload: CreatePaperOrderPayload): Promise<Order & Partial<PaperOperationMetadata>> {
+    const { expected_owner_id, ...body } = payload;
+    if (body.operation_id && (!expected_owner_id || useAuthStore.getState().user?.id !== expected_owner_id)) {
+      throw new Error("Authenticated paper owner changed; no command sent");
+    }
+    return (await this.client.post<Order>("/orders/paper", body, {
+      headers: expected_owner_id ? { "X-Paper-Expected-Owner": expected_owner_id } : undefined,
+    })).data;
+  }
+
+  async getPaperOperation(operationId: string, expectedOwnerId: string): Promise<PaperOperationReceipt> {
+    if (!expectedOwnerId || useAuthStore.getState().user?.id !== expectedOwnerId) {
+      throw new Error("Authenticated paper owner changed; no receipt requested");
+    }
+    const { data } = await this.client.get(`/orders/paper/operations/${encodeURIComponent(operationId)}`, {
+      headers: { "X-Paper-Expected-Owner": expectedOwnerId },
+    });
+    return data;
   }
   async getOrder(id: string): Promise<OrderDetail> {
     return (await this.client.get<OrderDetail>(`/orders/${id}`)).data;

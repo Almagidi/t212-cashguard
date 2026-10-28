@@ -8,13 +8,14 @@ from decimal import Decimal
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from app.api.deps import get_broker, get_current_admin, get_current_user
 from app.api.schemas import (
+    IdentifiedPaperOrderOut,
     OrderCreate,
     OrderDetail,
     OrderOut,
@@ -22,6 +23,7 @@ from app.api.schemas import (
     PaperExecutionAuditList,
     PaperExecutionHistoryItem,
     PaperExecutionHistoryList,
+    PaperOperationReceiptView,
     PaperOrderCreate,
 )
 from app.api.v1.routes._broker_errors import broker_http_exception
@@ -42,6 +44,7 @@ from app.execution.paper_engine import (
     PaperExecutionEngine,
     PaperExecutionError,
 )
+from app.execution.paper_operations import PaperOperationService
 from app.execution.state_machine import InvalidOrderTransition, require_already_finished
 from app.risk.engine import RiskEngine, RiskViolation
 from app.risk.realized_pnl import realized_pnl_today
@@ -492,11 +495,12 @@ async def place_order(
     return hydrated or order
 
 
-@router.post("/paper", response_model=OrderOut, status_code=201)
+@router.post("/paper", response_model=IdentifiedPaperOrderOut | OrderOut, status_code=201)
 async def place_paper_order(
     body: PaperOrderCreate,
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
+    expected_owner: uuid.UUID | None = Header(default=None, alias="X-Paper-Expected-Owner"),
 ) -> Any:
     """
     Create and fill a local paper-only order.
@@ -504,6 +508,21 @@ async def place_paper_order(
     This route is intentionally separate from broker-backed order placement and
     does not depend on get_broker. It is available only in APP_MODE=mock.
     """
+    if body.operation_id is not None:
+        # Non-authoritative precondition: never use this header as an owner selector.
+        if expected_owner != current_user.id:
+            return JSONResponse(
+                {
+                    "detail": "Authenticated paper owner changed or was not confirmed. No command was admitted; retain the original operation identity."
+                },
+                status_code=403,
+                headers={"Cache-Control": "no-store"},
+            )
+        result = await PaperOperationService(db).submit(body, user=current_user)
+        return JSONResponse(
+            result.payload, status_code=result.status_code, headers={"Cache-Control": "no-store"}
+        )
+    # Compatibility only: no operation ID means a new request, not safe replay.
     repo = OrderRepository(db)
     engine = PaperExecutionEngine(db)
     try:
@@ -517,6 +536,27 @@ async def place_paper_order(
 
     hydrated = await repo.get_by_id(order.id)
     return hydrated or order
+
+
+@router.get("/paper/operations/{operation_id}", response_model=PaperOperationReceiptView)
+async def get_paper_operation(
+    operation_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    expected_owner: uuid.UUID | None = Header(default=None, alias="X-Paper-Expected-Owner"),
+) -> Any:
+    if expected_owner != current_user.id:
+        return JSONResponse(
+            {
+                "detail": "Authenticated paper owner changed or was not confirmed. No receipt disclosed."
+            },
+            status_code=403,
+            headers={"Cache-Control": "no-store"},
+        )
+    result = await PaperOperationService(db).lookup(current_user.id, operation_id)
+    return JSONResponse(
+        result.payload, status_code=result.status_code, headers={"Cache-Control": "no-store"}
+    )
 
 
 @router.get("/paper", response_model=PaperExecutionHistoryList)

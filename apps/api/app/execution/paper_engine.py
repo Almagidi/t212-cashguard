@@ -71,6 +71,14 @@ class PaperExecutionError(Exception):
         super().__init__(reason)
 
 
+class PaperBusinessRefusal(PaperExecutionError):
+    """A known refusal before an Order/economic effect has been staged."""
+
+    def __init__(self, reason: str, decision_code: str):
+        self.decision_code = decision_code
+        super().__init__(reason)
+
+
 class PaperExecutionEngine:
     """Local-only paper execution service."""
 
@@ -168,7 +176,11 @@ class PaperExecutionEngine:
         # The User row exists before any paper ledger state and is therefore
         # the stable first-use mutex. Recheck after acquiring it so every
         # create-if-missing path (including portfolio reads) uses one order.
-        await self.db.execute(select(User.id).where(User.id == user.id).with_for_update())
+        # Same first-use exclusion, compatible with user FK KEY SHARE checks.
+        # Never upgrade to FOR UPDATE after an operation/audit FK is acquired.
+        await self.db.execute(
+            select(User.id).where(User.id == user.id).with_for_update(key_share=True)
+        )
         result = await self.db.execute(
             select(BrokerConnection).where(
                 BrokerConnection.user_id == user.id,
@@ -319,7 +331,7 @@ class PaperExecutionEngine:
                     "decision_code": exc.event_type,
                 },
             )
-            raise PaperExecutionError(exc.reason) from exc
+            raise PaperBusinessRefusal(exc.reason, exc.event_type) from exc
 
         await self._audit(
             "paper_risk_check_result",
@@ -386,7 +398,7 @@ class PaperExecutionEngine:
                 "no_broker_order_sent": True,
             },
         )
-        raise PaperExecutionError(reason)
+        raise PaperBusinessRefusal(reason, "paper_oversell_block")
 
     async def _apply_fill_effects(
         self,
@@ -622,7 +634,9 @@ class PaperExecutionEngine:
             quantity = body.notional / body.estimated_price
         quantity = quantity.quantize(PAPER_CASH_QUANTUM, rounding=ROUND_DOWN)
         if quantity <= 0 or quantity > PAPER_MAX_QUANTITY:
-            raise PaperExecutionError("Paper quantity is outside persistence range.")
+            raise PaperBusinessRefusal(
+                "Paper quantity is outside persistence range.", "paper_quantity_range"
+            )
         await self._check_sell_quantity_available(body, quantity, actor=actor, user=user)
         decision = evaluate_paper_fill(
             side=body.side,
