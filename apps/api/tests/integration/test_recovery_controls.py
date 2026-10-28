@@ -291,6 +291,214 @@ async def test_wrong_and_missing_keys_never_prevent_committed_block_or_mutate_cr
     assert is_blocked(await snapshot(recovery_db))
 
 
+async def _credential_snapshot(engine):
+    async with engine.connect() as connection:
+        return {
+            table: [
+                dict(row)
+                for row in (
+                    await connection.execute(text(f"SELECT * FROM {table} ORDER BY {order}"))
+                ).mappings()
+            ]
+            for table, order in (
+                ("broker_connections", "id"),
+                ("app_settings", "id"),
+                ("venue_configs", "venue"),
+                ("audit_logs", "id"),
+            )
+        }
+
+
+async def _genuine_paper_connection(engine, active=True):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.db.models import User
+    from app.execution.paper_engine import PaperExecutionEngine
+
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as db:
+        user = User(
+            id=uuid.uuid4(),
+            email=f"paper-{uuid.uuid4()}@test.invalid",
+            hashed_password="not-a-login",
+            is_active=True,
+            is_admin=True,
+        )
+        db.add(user)
+        await db.flush()
+        paper = await PaperExecutionEngine(db)._paper_connection(user)
+        assert paper.broker == "paper" and paper.environment == "mock"
+        assert (
+            paper.api_key_encrypted
+            == paper.api_secret_encrypted
+            == ("paper-only-no-real-credential")
+        )
+        paper.is_active = active
+        await db.commit()
+        return paper.id
+
+
+async def _encrypted_connection(engine, broker, environment, key, secret, active=False):
+    async with engine.begin() as connection:
+        owner, identity = uuid.uuid4(), uuid.uuid4()
+        await connection.execute(
+            text(
+                "INSERT INTO users (id, email, hashed_password, is_active, is_admin) "
+                "VALUES (:id, :email, 'not-a-login', true, true)"
+            ),
+            {"id": owner, "email": f"credential-{owner}@test.invalid"},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO broker_connections "
+                "(id, user_id, broker, environment, api_key_encrypted, api_secret_encrypted, "
+                "is_active) VALUES (:id, :owner, :broker, :environment, :key, :secret, :active)"
+            ),
+            {
+                "id": identity,
+                "owner": owner,
+                "broker": broker,
+                "environment": environment,
+                "key": key,
+                "secret": secret,
+                "active": active,
+            },
+        )
+        return identity
+
+
+@pytest.mark.parametrize("paper_active", [True, False])
+async def test_genuine_paper_and_inactive_real_credentials_verify_without_mutation(
+    recovery_db, paper_active
+):
+    from cryptography.fernet import Fernet
+
+    master = "synthetic-restored-key-" + "x" * 40
+    cipher = Fernet(
+        recovery.base64.urlsafe_b64encode(recovery.hashlib.sha256(master.encode()).digest())
+    )
+    token = cipher.encrypt(b"synthetic-broker-placeholder").decode()
+    paper = await _genuine_paper_connection(recovery_db, paper_active)
+    real = await _encrypted_connection(recovery_db, "trading212", "demo", token, token)
+    before = await _credential_snapshot(recovery_db)
+    async with recovery_db.connect() as connection:
+        valid = await recovery.verify_credentials(connection, master)
+        assert valid["status"] == "PASS"
+        assert {row["id"]: row["status"] for row in valid["credentials"]} == {
+            str(paper): "not_required",
+            str(real): "readable",
+        }
+        wrong = await recovery.verify_credentials(connection, "synthetic-wrong-key-" + "y" * 40)
+        assert wrong["status"] == "FAIL"
+        assert {row["id"]: row["status"] for row in wrong["credentials"]} == {
+            str(paper): "not_required",
+            str(real): "unreadable",
+        }
+    assert await _credential_snapshot(recovery_db) == before
+    for result in (valid, wrong):
+        rendered = json.dumps(result)
+        assert master not in rendered and token not in rendered
+        assert "synthetic-broker-placeholder" not in rendered
+
+
+@pytest.mark.parametrize("missing", [None, ""])
+async def test_paper_only_still_requires_an_explicit_master_key(recovery_db, missing):
+    await _genuine_paper_connection(recovery_db)
+    before = await _credential_snapshot(recovery_db)
+    async with recovery_db.connect() as connection:
+        result = await recovery.verify_credentials(connection, missing)
+    assert result["status"] == "FAIL" and result["credentials"] == []
+    assert await _credential_snapshot(recovery_db) == before
+
+
+async def test_paper_classification_is_not_a_decryption_or_key_correctness_proof(recovery_db):
+    identity = await _genuine_paper_connection(recovery_db)
+    before = await _credential_snapshot(recovery_db)
+    async with recovery_db.connect() as connection:
+        result = await recovery.verify_credentials(connection, "unproven-supplied-key-" + "z" * 40)
+    assert result["status"] == "PASS"
+    assert result["credentials"] == [
+        {"id": str(identity), "active": True, "status": "not_required"}
+    ]
+    assert await _credential_snapshot(recovery_db) == before
+
+
+@pytest.mark.parametrize(
+    ("broker", "environment", "key", "secret"),
+    [
+        ("Paper", "mock", "paper-only-no-real-credential", "paper-only-no-real-credential"),
+        ("paper", "MOCK", "paper-only-no-real-credential", "paper-only-no-real-credential"),
+        ("paper", "demo", "paper-only-no-real-credential", "paper-only-no-real-credential"),
+        ("trading212", "mock", "paper-only-no-real-credential", "paper-only-no-real-credential"),
+        ("trading212", "demo", "paper-only-no-real-credential", "paper-only-no-real-credential"),
+        ("paper", "mock", "paper-only-no-real-credential ", "paper-only-no-real-credential"),
+        ("paper", "mock", "paper-only-no-real-credential", " paper-only-no-real-credential"),
+        ("paper", "mock", "paper-only-no-real-credential-extra", "paper-only-no-real-credential"),
+        ("paper", "mock", "paper-only-no-real-credential", "paper-only-no-real-credential-extra"),
+        ("paper", "mock", "PAPER-ONLY-NO-REAL-CREDENTIAL", "paper-only-no-real-credential"),
+        ("paper", "mock", "", "paper-only-no-real-credential"),
+        ("paper", "mock", "paper-only-no-real-credential", ""),
+        ("paper", "mock", "", ""),
+    ],
+)
+async def test_near_match_or_real_broker_placeholders_never_receive_paper_classification(
+    recovery_db, broker, environment, key, secret
+):
+    identity = await _encrypted_connection(recovery_db, broker, environment, key, secret)
+    before = await _credential_snapshot(recovery_db)
+    async with recovery_db.connect() as connection:
+        result = await recovery.verify_credentials(connection, "synthetic-master-" + "x" * 40)
+    assert result["status"] == "FAIL"
+    assert result["credentials"] == [{"id": str(identity), "active": False, "status": "unreadable"}]
+    assert await _credential_snapshot(recovery_db) == before
+
+
+async def test_encrypted_paper_fields_keep_normal_decrypt_or_fail_behavior(recovery_db):
+    from cryptography.fernet import Fernet
+
+    master = "synthetic-original-key-" + "x" * 40
+    cipher = Fernet(
+        recovery.base64.urlsafe_b64encode(recovery.hashlib.sha256(master.encode()).digest())
+    )
+    token = cipher.encrypt(b"synthetic-encrypted-paper-value").decode()
+    identity = await _encrypted_connection(recovery_db, "paper", "mock", token, token)
+    before = await _credential_snapshot(recovery_db)
+    async with recovery_db.connect() as connection:
+        correct = await recovery.verify_credentials(connection, master)
+        assert correct["status"] == "PASS"
+        assert correct["credentials"] == [
+            {"id": str(identity), "active": False, "status": "readable"}
+        ]
+        wrong = await recovery.verify_credentials(connection, "synthetic-wrong-key-" + "z" * 40)
+        assert wrong["status"] == "FAIL" and wrong["credentials"][0]["status"] == "unreadable"
+    assert await _credential_snapshot(recovery_db) == before
+
+
+@pytest.mark.parametrize("field", ["api_key_encrypted", "api_secret_encrypted"])
+async def test_corrupt_inactive_real_ciphertext_is_never_accepted(recovery_db, field):
+    from cryptography.fernet import Fernet
+
+    master = "synthetic-original-key-" + "x" * 40
+    cipher = Fernet(
+        recovery.base64.urlsafe_b64encode(recovery.hashlib.sha256(master.encode()).digest())
+    )
+    token = cipher.encrypt(b"synthetic-real-broker-value").decode()
+    identity = await _encrypted_connection(recovery_db, "trading212", "demo", token, token)
+    corrupted = token[:40] + ("A" if token[40] != "A" else "B") + token[41:]
+    async with recovery_db.begin() as connection:
+        await connection.execute(
+            text(f"UPDATE broker_connections SET {field} = :token WHERE id = :id"),
+            {"token": corrupted, "id": identity},
+        )
+    before = await _credential_snapshot(recovery_db)
+    async with recovery_db.connect() as connection:
+        result = await recovery.verify_credentials(connection, master)
+    assert result["status"] == "FAIL"
+    assert result["credentials"] == [{"id": str(identity), "active": False, "status": "unreadable"}]
+    assert await _credential_snapshot(recovery_db) == before
+    assert token not in json.dumps(result) and corrupted not in json.dumps(result)
+
+
 async def test_unconfirmed_status_is_read_only_and_prior_commit_remains_visible(recovery_db):
     operation_id = uuid.uuid4()
     async with recovery_db.connect() as connection:

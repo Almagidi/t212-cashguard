@@ -182,7 +182,7 @@ export function BrokerStatusPanel({
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <div className="rounded-xl border border-border dark:border-slate-800 bg-muted dark:bg-slate-900/50 p-4">
           <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
             Account metadata

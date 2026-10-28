@@ -1,6 +1,7 @@
 'use client'
 
 import * as React from 'react'
+import * as Dialog from '@radix-ui/react-dialog'
 import { AlertTriangle, CheckSquare, ChevronDown, ChevronRight, Clock3, Pin, Square, X } from 'lucide-react'
 
 import type { OrderDetail } from '@/types'
@@ -207,13 +208,8 @@ export function OrderDetailDialog({ open, onClose, order, loading = false }: Ord
   const [baselineTargetId, setBaselineTargetId] = React.useState<string | null>(null)
   const [compareTargetId, setCompareTargetId] = React.useState<string | null>(null)
 
-  React.useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && open) onClose()
-    }
-    document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [open, onClose])
+  const titleRef = React.useRef<HTMLParagraphElement>(null)
+  const openerRef = React.useRef<HTMLElement | null>(null)
 
   React.useEffect(() => {
     React.startTransition(() => {
@@ -368,12 +364,16 @@ export function OrderDetailDialog({ open, onClose, order, loading = false }: Ord
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <Card className="relative z-10 flex h-full w-full max-w-2xl flex-col rounded-none border-l border-border animate-slide-up">
+    <Dialog.Root open={open} onOpenChange={value => { if (!value) onClose() }}>
+      <Dialog.Portal>
+      <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
+      <Dialog.Content asChild aria-modal="true" aria-describedby={undefined}
+        onOpenAutoFocus={event => { event.preventDefault(); openerRef.current = document.activeElement as HTMLElement; titleRef.current?.focus() }}
+        onCloseAutoFocus={event => { event.preventDefault(); const opener = openerRef.current; (opener?.isConnected && !opener.hasAttribute('disabled') && opener.getClientRects().length ? opener : document.querySelector<HTMLElement>('main'))?.focus() }}>
+      <Card className="fixed right-0 top-0 z-50 flex h-dvh w-full max-w-2xl flex-col rounded-none border-l border-border animate-slide-up">
         <div className="flex items-start justify-between gap-4 border-b border-border/60 px-5 py-4">
           <div>
-            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Order Inspector</p>
+            <Dialog.Title asChild><p ref={titleRef} tabIndex={-1} className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Order Inspector</p></Dialog.Title>
             <h2 className="mt-1 text-lg font-semibold text-foreground">
               {order?.ticker ?? 'Loading order'}
               {order?.strategy_name ? ` · ${order.strategy_name}` : ''}
@@ -382,9 +382,9 @@ export function OrderDetailDialog({ open, onClose, order, loading = false }: Ord
               Inspect broker payloads, signal context, and reconciliation history without leaving the orders page.
             </p>
           </div>
-          <Button variant="ghost" size="icon-sm" onClick={onClose}>
+          <Dialog.Close asChild><Button variant="ghost" size="icon-sm" aria-label="Close order inspector">
             <X className="h-4 w-4" />
-          </Button>
+          </Button></Dialog.Close>
         </div>
 
         <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
@@ -710,6 +710,8 @@ export function OrderDetailDialog({ open, onClose, order, loading = false }: Ord
           )}
         </div>
       </Card>
-    </div>
+      </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   )
 }

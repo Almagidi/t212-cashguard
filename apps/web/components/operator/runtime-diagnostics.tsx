@@ -10,13 +10,6 @@ import { Badge, Card, CardContent, CardHeader, CardTitle } from "@/components/ui
 import { cn } from "@/lib/utils";
 import { hasCurrentQueryData } from "@/lib/query-observation";
 
-type RuntimeProfile =
-  | "Normal launcher"
-  | "Manual QA"
-  | "Integration"
-  | "Mock E2E"
-  | "Custom runtime";
-
 type ProbeState = {
   label: string;
   status: number | "loading" | "network" | "idle" | "unknown";
@@ -64,14 +57,6 @@ function probeState(
   return { label, status: "idle", ok: false, detail: "Not checked" };
 }
 
-function profileFromPorts(webPort: string, apiPort: string): RuntimeProfile {
-  if (webPort === "3000" && apiPort === "8000") return "Normal launcher";
-  if (webPort === "3002" && apiPort === "8002") return "Manual QA";
-  if (webPort === "3001" && apiPort === "8001") return "Integration";
-  if (webPort === "3100") return "Mock E2E";
-  return "Custom runtime";
-}
-
 function statusTone(status: ProbeState["status"]) {
   if (status === 200) return "success";
   if (status === "loading" || status === "idle") return "outline";
@@ -102,12 +87,10 @@ function endpointExplanation(state: ProbeState): string {
 function visibilityMessage({
   frontendMode,
   backendMode,
-  profile,
   dcaStates,
 }: {
   frontendMode: string;
   backendMode: string | null;
-  profile: RuntimeProfile;
   dcaStates: ProbeState[];
 }): string {
   const firstFailure = dcaStates.find((state) => !state.ok && state.status !== "loading");
@@ -122,24 +105,16 @@ function visibilityMessage({
   if (typeof firstFailure?.status === "number" && firstFailure.status >= 500) {
     return "Backend route is registered but failing. Check API logs.";
   }
-  if (profile === "Manual QA" && frontendMode === "mock") {
-    return "Manual QA mock mode should show read-only Kraken/DCA data and requires no broker credentials.";
-  }
-  if (profile === "Normal launcher" && frontendMode === "demo") {
-    return "Normal launcher is in demo mode; Kraken/DCA cards may not be seeded unless configured. Follow docs/local-install.md for the supported PostgreSQL mock/paper setup.";
-  }
   return "Kraken/DCA visibility depends on the current mode, auth token, and registered backend routes.";
 }
 
 function nextAction({
   frontendMode,
   backendMode,
-  profile,
   states,
 }: {
   frontendMode: string;
   backendMode: string | null;
-  profile: RuntimeProfile;
   states: ProbeState[];
 }): string {
   if (states.some((state) => state.status === "network")) {
@@ -154,21 +129,18 @@ function nextAction({
   if (states.some((state) => typeof state.status === "number" && state.status >= 500)) {
     return "Check API logs for the failing read-only endpoint.";
   }
-  if (profile === "Normal launcher" && (backendMode ?? frontendMode) === "demo") {
+  if ((backendMode ?? frontendMode) === "demo") {
     return "Follow docs/local-install.md for the supported PostgreSQL mock/paper setup.";
   }
-  if (profile === "Manual QA") {
-    return "This legacy Manual QA profile used SQLite and is incompatible with current startup admission. Follow docs/local-install.md for supported PostgreSQL setup.";
-  }
-  return "Use the port/profile rows below to confirm this is the runtime you intended.";
+  return "Follow docs/local-install.md for supported PostgreSQL setup and confirm the runtime configuration separately.";
 }
 
 function DiagnosticRow({ state }: { state: ProbeState }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-background/35 px-3 py-2">
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 bg-background/35 px-3 py-2">
       <div className="flex min-w-0 items-center gap-2">
         {statusIcon(state)}
-        <span className="truncate text-xs font-medium text-foreground">{state.label}</span>
+        <span className="break-all text-xs font-medium text-foreground">{state.label}</span>
       </div>
       <Badge variant={statusTone(state.status)}>{state.detail}</Badge>
     </div>
@@ -222,9 +194,9 @@ export function RuntimeDiagnostics({ compact = false }: { compact?: boolean }) {
     refetchInterval: 30_000,
   });
 
-  const { webPort, apiPort, profile } = useMemo(() => {
+  const { webPort, apiPort } = useMemo(() => {
     if (typeof window === "undefined") {
-      return { webPort: "", apiPort: "", profile: "Custom runtime" as RuntimeProfile };
+      return { webPort: "", apiPort: "" };
     }
     const currentWebPort =
       window.location.port || (window.location.protocol === "https:" ? "443" : "80");
@@ -238,7 +210,6 @@ export function RuntimeDiagnostics({ compact = false }: { compact?: boolean }) {
     return {
       webPort: currentWebPort,
       apiPort: currentApiPort,
-      profile: profileFromPorts(currentWebPort, currentApiPort),
     };
   }, []);
 
@@ -255,8 +226,8 @@ export function RuntimeDiagnostics({ compact = false }: { compact?: boolean }) {
     probeState("DCA /v1/kraken/dca/configs", dcaConfigs),
   ] satisfies ProbeState[];
   const dcaStates = states.slice(3);
-  const message = visibilityMessage({ frontendMode, backendMode, profile, dcaStates });
-  const action = nextAction({ frontendMode, backendMode, profile, states });
+  const message = visibilityMessage({ frontendMode, backendMode, dcaStates });
+  const action = nextAction({ frontendMode, backendMode, states });
 
   return (
     <Card
@@ -271,7 +242,7 @@ export function RuntimeDiagnostics({ compact = false }: { compact?: boolean }) {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <CardTitle>Runtime Diagnostics</CardTitle>
           <div className="flex flex-wrap gap-1.5">
-            <Badge variant="info">{profile}</Badge>
+            <Badge variant="outline">Launcher unknown</Badge>
             <Badge variant={frontendMode === backendMode ? "success" : "warning"} data-testid="safety-policy-status">
               Frontend {frontendMode}
             </Badge>
@@ -306,9 +277,10 @@ export function RuntimeDiagnostics({ compact = false }: { compact?: boolean }) {
             <p className="mt-1 font-mono text-foreground">:{apiPort || "unknown"}</p>
           </div>
         </div>
+        <p className="text-xs text-muted-foreground">Port pattern only; launcher and database type are not verified by these diagnostics.</p>
 
         {!compact && (
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-[minmax(0,1fr)] gap-2 md:grid-cols-2 xl:grid-cols-3">
             {states.map((state) => (
               <DiagnosticRow key={state.label} state={state} />
             ))}
