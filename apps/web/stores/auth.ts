@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { User } from '@/types'
+import { scrubPaperIntentPayloads } from '@/lib/paper-operation-intent'
 
 interface AuthState {
   user: User | null
@@ -16,6 +17,9 @@ export const useAuthStore = create<AuthState>()(
       isAuthenticated: false,
       setUser: (user) => set({ user, isAuthenticated: !!user }),
       logout: () => {
+        if (typeof window !== 'undefined') {
+          try { scrubPaperIntentPayloads(sessionStorage) } catch { /* storage can be unavailable */ }
+        }
         set({ user: null, isAuthenticated: false })
         if (typeof window !== 'undefined') localStorage.removeItem('cg_token')
       },

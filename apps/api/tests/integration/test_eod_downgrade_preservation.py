@@ -181,7 +181,7 @@ async def test_empty_database_can_round_trip(migrated_db):
         code, output = await _migration(url, direction, target)
         assert code == 0, output
     state = await _snapshot(engine)
-    assert state["alembic_version"] == [{"version_num": "0021_order_submission_attempts"}]
+    assert state["alembic_version"] == [{"version_num": "0022_paper_operation_receipts"}]
     assert state["orders"] == state["eod_flatten_operations"] == []
 
 
@@ -216,7 +216,7 @@ async def test_downgrade_observes_in_flight_eod_record_before_dropping(migrated_
             assert "Refusing to downgrade" in output, output
             state = await _snapshot(engine)
             assert state["eod_flatten_operations"][0]["status"] == "submission_pending"
-            assert state["alembic_version"] == [{"version_num": "0021_order_submission_attempts"}]
+            assert state["alembic_version"] == [{"version_num": "0022_paper_operation_receipts"}]
         finally:
             if transaction.is_active:
                 await transaction.rollback()

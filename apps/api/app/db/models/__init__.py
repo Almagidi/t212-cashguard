@@ -13,6 +13,7 @@ from typing import Any, cast
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -37,6 +38,47 @@ def utcnow() -> datetime:
 
 
 JSONType = JSON().with_variant(JSONB, "postgresql")
+
+
+class PaperOperationReceipt(Base):
+    """Terminal DB-only paper evidence; retained with its owner and ledger."""
+
+    __tablename__ = "paper_operation_receipts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    operation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    account_domain: Mapped[str] = mapped_column(String(160), nullable=False)
+    request_version: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    canonical_request: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(30), nullable=False)
+    http_status: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    decision_code: Mapped[str | None] = mapped_column(String(100))
+    detail: Mapped[str | None] = mapped_column(Text)
+    order_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orders.id", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "operation_id", name="uq_paper_operation_owner_identity"),
+        CheckConstraint("request_version = 1", name="ck_paper_operation_version"),
+        CheckConstraint(
+            "(outcome = 'order_recorded' AND order_id IS NOT NULL AND http_status = 201) OR "
+            "(outcome = 'blocked' AND order_id IS NULL AND http_status BETWEEN 400 AND 499 "
+            "AND decision_code IS NOT NULL AND length(decision_code) > 0 "
+            "AND detail IS NOT NULL AND length(detail) > 0)",
+            name="ck_paper_operation_terminal_result",
+        ),
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────

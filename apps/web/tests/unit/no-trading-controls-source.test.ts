@@ -1,3 +1,4 @@
+/** @jest-environment node */
 /**
  * Static safety audit — no unauthorized order-placement call sites in UI source.
  *
@@ -79,9 +80,19 @@ describe('no order-placement call sites in UI source', () => {
     expect(offenders).toEqual([])
   })
 
-  test('the paper order client method targets only the paper endpoint', () => {
+  test('the paper order client method targets only the paper endpoint', async () => {
     const apiSource = fs.readFileSync(path.join(WEB_ROOT, 'services', 'api.ts'), 'utf8')
-    const paperMethod = apiSource.match(/async placePaperOrder[\s\S]{0,300}?\n  \}/)?.[0]
+    // Use the installed Next compiler; TypeScript 7 has no JS compiler AST API.
+    await loadBindings()
+    const parsed = await parse(apiSource, { filename: 'api.ts' }) as {
+      body: { type: string; identifier?: { value: string }; body?: {
+        type: string; key?: { value: string }; span: { start: number; end: number }
+      }[] }[]
+    }
+    const apiClass = parsed.body.find(node => node.type === 'ClassDeclaration' && node.identifier?.value === 'ApiClient')
+    const method = apiClass?.body?.find(node => node.type === 'ClassMethod' && node.key?.value === 'placePaperOrder')
+    // SWC spans are one-based UTF8 bytes, including preceding Unicode.
+    const paperMethod = method ? Buffer.from(apiSource).subarray(method.span.start - 1, method.span.end - 1).toString('utf8') : undefined
     expect(paperMethod).toBeDefined()
     expect(paperMethod).toContain('"/orders/paper"')
     expect(paperMethod).not.toMatch(/["'`]\/orders["'`]/)
@@ -173,3 +184,4 @@ describe('no order-placement call sites in UI source', () => {
     expect(offenders).toEqual([])
   })
 })
+import { loadBindings, parse } from 'next/dist/build/swc'

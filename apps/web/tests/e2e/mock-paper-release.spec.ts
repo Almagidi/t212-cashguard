@@ -260,6 +260,7 @@ test.describe('Mock/Paper Release Candidate Smoke', () => {
     await expect(page.getByTestId('paper-kill-switch-active-badge')).toBeVisible({ timeout: 10_000 })
 
     // Attempt to submit another paper order (should be blocked)
+    await page.getByRole('button', { name: 'New Paper Order', exact: true }).click()
     await page.getByLabel('Ticker').fill(`BLOCK${Date.now().toString().slice(-5)}`)
     await page.getByLabel('Quantity').fill('1')
     await page.getByTestId('paper-order-submit-button').click()
