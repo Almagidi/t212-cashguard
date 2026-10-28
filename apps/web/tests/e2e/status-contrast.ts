@@ -1,11 +1,62 @@
 import type { Page } from './test'
 
+/** Wait for natural finite animation completion and consecutive stable paint frames.
+ * Visibility alone includes opacity-zero elements; do not force animation.finish().
+ */
+export async function waitForStablePaint(page: Page, selector = 'main') {
+  await page.evaluate(async selector => {
+    const deadline = performance.now() + 5_000
+    let previous = '', stable = 0
+    await new Promise<void>((resolve, reject) => {
+      const sample = () => {
+        const roots = [...document.querySelectorAll(selector)]
+        const relevant = (element: Element) => roots.some(root => root.contains(element) || element.contains(root))
+        const unfinished = document.getAnimations().some(animation => {
+          const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null
+          return target instanceof Element && relevant(target)
+            && animation.effect?.getTiming().iterations !== Infinity
+            && (animation.pending || !['finished', 'idle'].includes(animation.playState))
+        })
+        // Decorative pulse/spinner descendants can run forever. Measure only
+        // rendered text and its paint ancestors; pulsing text remains a failure.
+        const measured = new Set<Element>()
+        for (const root of roots) {
+          const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+          while (walker.nextNode()) {
+            const element = walker.currentNode.parentElement
+            if (!walker.currentNode.textContent?.trim() || !element || ['SCRIPT', 'STYLE'].includes(element.tagName)
+              || !element.getClientRects().length || getComputedStyle(element).visibility !== 'visible') continue
+            const closed = element.closest('details:not([open])')
+            if (closed && !closed.querySelector(':scope > summary')?.contains(element)) continue
+            for (let ancestor: Element | null = element; ancestor; ancestor = ancestor.parentElement) measured.add(ancestor)
+          }
+        }
+        const paint = [...measured].map(element => {
+          const style = getComputedStyle(element), rect = element.getBoundingClientRect()
+          return [style.color, style.backgroundColor, style.opacity, style.transform, style.boxShadow,
+            rect.x, rect.y, rect.width, rect.height]
+        })
+        const signature = JSON.stringify(paint)
+        stable = roots.length && !unfinished && signature === previous ? stable + 1 : 0
+        previous = signature
+        if (stable >= 2) return resolve()
+        if (performance.now() >= deadline) return reject(new Error('Relevant paint did not naturally settle within 5 seconds'))
+        requestAnimationFrame(sample)
+      }
+      requestAnimationFrame(sample)
+    })
+  }, selector)
+}
+
+export async function selectTheme(page: Page, theme: 'light' | 'dark') {
+  const current = await page.locator('html').evaluate(element => element.classList.contains('dark') ? 'dark' : element.classList.contains('light') ? 'light' : null)
+  if (!current) throw new Error('Resolved application theme is unknown')
+  if (current !== theme) await page.getByRole('button', { name: 'Toggle theme', exact: true }).click()
+  await page.waitForFunction(theme => document.documentElement.classList.contains(theme), theme)
+}
+
 export async function textContrast(page: Page, selector = 'main') {
-  await page.evaluate(() => {
-    for (const animation of document.getAnimations()) {
-      if (animation.effect?.getTiming().iterations !== Infinity) animation.finish()
-    }
-  })
+  await waitForStablePaint(page, selector)
   return page.locator(selector).evaluateAll(roots => {
     const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true })!
     const rgba = (css: string) => { ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = css; ctx.fillRect(0, 0, 1, 1); return [...ctx.getImageData(0, 0, 1, 1).data].map((n, i) => i === 3 ? n / 255 : n) }

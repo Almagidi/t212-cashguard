@@ -1362,3 +1362,9 @@ describe("operator API client", () => {
     expect(mockDelete).not.toHaveBeenCalled();
   });
 });
+
+it("labels enabled live flags truthfully without claiming dispatch readiness", () => {
+  render(<OperatorDashboard status={operatorStatus({ live_trading_enabled_anywhere: true, live_trading_possible: false })} />);
+  expect(within(screen.getByTestId("live-readiness-status")).getByText("Live flags enabled")).toBeVisible();
+  expect(within(screen.getByTestId("live-readiness-status")).queryByText("Live disabled")).not.toBeInTheDocument();
+});

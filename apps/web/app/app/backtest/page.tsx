@@ -1,4 +1,5 @@
 'use client'
+import { captureOwnerScope, isCurrentOwnerScope } from '@/lib/owner-scope'
 
 import { useEffect, useState } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
@@ -451,6 +452,7 @@ function PortfolioEquityCurveCard({ result }: { result: PortfolioBacktestResult 
 }
 
 export default function BacktestPage() {
+  const [ownerScope] = useState(captureOwnerScope)
   const [status, setStatus] = useState<JobStatus>('idle')
   const [jobId, setJobId] = useState<string | null>(null)
   const [job, setJob] = useState<BacktestJob | null>(null)
@@ -487,37 +489,42 @@ export default function BacktestPage() {
   const selectedStrategy = strategies.find((strategy) => strategy.type === selectedStrategyType)
 
   useEffect(() => {
+    if (!isCurrentOwnerScope(ownerScope)) return
     let active = true
 
     void api.listBacktestStrategies()
       .then((data) => {
-        if (active) setStrategies(data)
+        if (active && isCurrentOwnerScope(ownerScope)) setStrategies(data)
       })
       .catch(() => {
+        if (!active || !isCurrentOwnerScope(ownerScope)) return
         toast.error('Unable to load backtest strategies.')
       })
 
     void api.listPortfolioBacktestStrategies()
       .then((data) => {
-        if (active) setPortfolioStrategies(data)
+        if (active && isCurrentOwnerScope(ownerScope)) setPortfolioStrategies(data)
       })
       .catch(() => {
+        if (!active || !isCurrentOwnerScope(ownerScope)) return
         toast.error('Unable to load portfolio research strategies.')
       })
 
     return () => {
       active = false
     }
-  }, [])
+  }, [ownerScope])
 
   useEffect(() => {
     if (!jobId || status !== 'running') return
 
+    if (!isCurrentOwnerScope(ownerScope)) return
     let active = true
     const interval = window.setInterval(() => {
+      if (!active || !isCurrentOwnerScope(ownerScope)) return
       void api.getBacktestResult(jobId)
         .then((data) => {
-          if (!active) return
+          if (!active || !isCurrentOwnerScope(ownerScope)) return
           if (data.status === 'complete') {
             setJob(data)
             setStatus('complete')
@@ -531,7 +538,7 @@ export default function BacktestPage() {
           }
         })
         .catch(() => {
-          if (!active) return
+          if (!active || !isCurrentOwnerScope(ownerScope)) return
         })
     }, 2000)
 
@@ -539,16 +546,18 @@ export default function BacktestPage() {
       active = false
       window.clearInterval(interval)
     }
-  }, [jobId, status])
+  }, [jobId, status, ownerScope])
 
   useEffect(() => {
     if (!portfolioJobId || portfolioStatus !== 'running') return
 
+    if (!isCurrentOwnerScope(ownerScope)) return
     let active = true
     const interval = window.setInterval(() => {
+      if (!active || !isCurrentOwnerScope(ownerScope)) return
       void api.getPortfolioBacktestResult(portfolioJobId)
         .then((data) => {
-          if (!active) return
+          if (!active || !isCurrentOwnerScope(ownerScope)) return
           if (data.status === 'complete') {
             setPortfolioJob(data)
             setPortfolioStatus('complete')
@@ -566,7 +575,7 @@ export default function BacktestPage() {
           }
         })
         .catch(() => {
-          if (!active) return
+          if (!active || !isCurrentOwnerScope(ownerScope)) return
         })
     }, 2000)
 
@@ -574,9 +583,10 @@ export default function BacktestPage() {
       active = false
       window.clearInterval(interval)
     }
-  }, [portfolioJobId, portfolioStatus])
+  }, [portfolioJobId, portfolioStatus, ownerScope])
 
   const onSubmit = async (values: BacktestFormValues) => {
+    if (!isCurrentOwnerScope(ownerScope)) return
     setStatus('running')
     setJob(null)
 
@@ -589,9 +599,11 @@ export default function BacktestPage() {
         initial_capital: Number(values.initial_capital),
         run_walk_forward: values.run_walk_forward,
       })
+      if (!isCurrentOwnerScope(ownerScope)) return
       setJobId(response.job_id)
       toast.success('Backtest started. Polling for results.')
     } catch (error) {
+      if (!isCurrentOwnerScope(ownerScope)) return
       const message = error instanceof Error ? error.message : 'Backtest failed.'
       setStatus('error')
       setJob({ status: 'error', error: message })
@@ -600,6 +612,7 @@ export default function BacktestPage() {
   }
 
   const onSubmitPortfolio = async () => {
+    if (!isCurrentOwnerScope(ownerScope)) return
     setPortfolioStatus('running')
     setPortfolioJob(null)
 
@@ -614,9 +627,11 @@ export default function BacktestPage() {
         to_date: portfolioForm.to_date,
         initial_capital: Number(portfolioForm.initial_capital),
       })
+      if (!isCurrentOwnerScope(ownerScope)) return
       setPortfolioJobId(response.job_id)
       toast.success('Portfolio backtest started.')
     } catch (error) {
+      if (!isCurrentOwnerScope(ownerScope)) return
       const message = error instanceof Error ? error.message : 'Portfolio backtest failed.'
       setPortfolioStatus('error')
       setPortfolioJob({ status: 'error', error: message })

@@ -6,6 +6,7 @@ import { useTheme } from 'next-themes'
 import { useLiveReadiness, useSettings, useTelegramStatus, useTelegramTestAlert, useUpdateLiveReadiness, useUpdateSettings } from '@/hooks/use-api'
 import { Button, Card, CardHeader, CardTitle, CardContent, Input, Label, Spinner } from '@/components/ui'
 import { cn } from '@/lib/utils'
+import { hasCurrentQueryData } from '@/lib/query-observation'
 import type { LiveReadinessAction } from '@/types'
 
 type PreferencesForm = {
@@ -24,11 +25,15 @@ function formatVerifiedAt(value: string | null | undefined) {
 
 export default function SettingsPage() {
   const { data: settings, isLoading } = useSettings()
-  const { data: liveReadiness, isLoading: readinessLoading } = useLiveReadiness()
+  const readinessQuery = useLiveReadiness()
+  const { data: liveReadiness } = readinessQuery
   const { data: telegramStatus, isLoading: telegramLoading } = useTelegramStatus()
   const telegramTestAlert = useTelegramTestAlert()
   const updateSettings = useUpdateSettings()
   const updateLiveReadiness = useUpdateLiveReadiness()
+  const lockLiveReadiness = useUpdateLiveReadiness()
+  const readinessCurrent = hasCurrentQueryData(readinessQuery) && !readinessQuery.isInvalidated
+    && !updateLiveReadiness.isPending && !lockLiveReadiness.isPending
   const [pendingAction, setPendingAction] = useState<LiveReadinessAction | null>(null)
   const { theme, setTheme } = useTheme()
 
@@ -45,6 +50,12 @@ export default function SettingsPage() {
   const onSubmit = (data: PreferencesForm) => updateSettings.mutate(data)
 
   const runReadinessAction = (action: LiveReadinessAction) => {
+    if (action === 'lock_live') {
+      if (!lockLiveReadiness.isPending) lockLiveReadiness.mutate({ action })
+      return
+    }
+    if (!readinessCurrent) return
+    if (updateLiveReadiness.isPending) return
     setPendingAction(action)
     updateLiveReadiness.mutate(
       { action },
@@ -52,11 +63,6 @@ export default function SettingsPage() {
     )
   }
 
-  if (isLoading) return (
-    <div className="flex items-center gap-2 text-muted-foreground text-sm">
-      <Spinner className="w-4 h-4" /> Loading…
-    </div>
-  )
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -139,7 +145,9 @@ export default function SettingsPage() {
       <Card>
         <CardHeader><CardTitle>Preferences</CardTitle></CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+          {isLoading || !settings ? (
+            <p className="text-sm text-muted-foreground">Preferences are unavailable until settings load.</p>
+          ) : <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
             {/* Theme */}
             <div className="space-y-2">
               <Label>Theme</Label>
@@ -177,19 +185,20 @@ export default function SettingsPage() {
               <Save className="w-3.5 h-3.5" />
               Save Settings
             </Button>
-          </form>
+          </form>}
         </CardContent>
       </Card>
 
       <Card className="border-border/80">
         <CardHeader><CardTitle>Live Readiness</CardTitle></CardHeader>
         <CardContent className="space-y-5">
-          {readinessLoading ? (
-            <div className="flex items-center gap-2 text-muted-foreground text-sm">
-              <Spinner className="w-4 h-4" />
-              Evaluating live readiness...
-            </div>
-          ) : liveReadiness ? (
+          {!readinessCurrent || !liveReadiness ? (
+            <p role="status" className="text-sm text-muted-foreground">
+              {readinessQuery.isFetching || updateLiveReadiness.isPending
+                ? 'Checking live readiness. Status is unknown until the latest observation succeeds.'
+                : 'Live readiness status is unavailable. Current authorization is unknown.'}
+            </p>
+          ) : (
             <>
               <div className="grid gap-3 sm:grid-cols-3">
                 <div className="rounded-lg border border-border bg-secondary/20 p-3">
@@ -257,6 +266,7 @@ export default function SettingsPage() {
                     size="sm"
                     variant="secondary"
                     loading={pendingAction === 'record_demo_validation'}
+                    disabled={updateLiveReadiness.isPending}
                     onClick={() => runReadinessAction('record_demo_validation')}
                   >
                     Record Demo Review
@@ -266,7 +276,7 @@ export default function SettingsPage() {
                     size="sm"
                     variant="secondary"
                     loading={pendingAction === 'record_broker_test'}
-                    disabled={liveReadiness.checks.find((check) => check.key === 'live_broker_test_recent')?.status !== 'pass'}
+                    disabled={updateLiveReadiness.isPending || liveReadiness.checks.find((check) => check.key === 'live_broker_test_recent')?.status !== 'pass'}
                     onClick={() => runReadinessAction('record_broker_test')}
                   >
                     Record Broker Review
@@ -276,7 +286,7 @@ export default function SettingsPage() {
                     size="sm"
                     variant="secondary"
                     loading={pendingAction === 'record_telegram_test'}
-                    disabled={liveReadiness.checks.find((check) => check.key === 'telegram_ready')?.status !== 'pass'}
+                    disabled={updateLiveReadiness.isPending || liveReadiness.checks.find((check) => check.key === 'telegram_ready')?.status !== 'pass'}
                     onClick={() => runReadinessAction('record_telegram_test')}
                   >
                     Record Telegram Review
@@ -286,31 +296,21 @@ export default function SettingsPage() {
                     size="sm"
                     variant="secondary"
                     loading={pendingAction === 'record_kill_switch_test'}
+                    disabled={updateLiveReadiness.isPending}
                     onClick={() => runReadinessAction('record_kill_switch_test')}
                   >
                     Record Kill Switch Drill
                   </Button>
-                  {liveReadiness.live_trading_unlocked ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      loading={pendingAction === 'lock_live'}
-                      onClick={() => runReadinessAction('lock_live')}
-                    >
-                      <Lock className="h-3.5 w-3.5" />
-                      Relock Live Trading
-                    </Button>
-                  ) : (
+                  {!liveReadiness.ready_for_live && (
                     <Button
                       type="button"
                       size="sm"
                       loading={pendingAction === 'unlock_live'}
-                      disabled={!liveReadiness.eligible_for_unlock}
+                      disabled={updateLiveReadiness.isPending || !liveReadiness.eligible_for_unlock}
                       onClick={() => runReadinessAction('unlock_live')}
                     >
                       <Unlock className="h-3.5 w-3.5" />
-                      Unlock Live Trading
+                      {liveReadiness.live_trading_unlocked ? 'Acknowledge Updated Live Review' : 'Unlock Live Trading'}
                     </Button>
                   )}
                 </div>
@@ -319,9 +319,18 @@ export default function SettingsPage() {
                 </p>
               </div>
             </>
-          ) : (
-            <p className="text-sm text-muted-foreground">Live readiness status is unavailable.</p>
           )}
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            loading={lockLiveReadiness.isPending}
+            disabled={lockLiveReadiness.isPending}
+            onClick={() => runReadinessAction('lock_live')}
+          >
+            <Lock className="h-3.5 w-3.5" />
+            Lock Live Trading
+          </Button>
         </CardContent>
       </Card>
 

@@ -8,6 +8,7 @@ const push = jest.fn()
 const mockSearchParams = new URLSearchParams()
 const login = jest.fn<(payload: any) => Promise<any>>()
 const getMe = jest.fn<() => Promise<any>>()
+let mockSessionRevision = 0
 const setUser = jest.fn<(user: any) => void>()
 const toastError = jest.fn<(message: string) => void>()
 
@@ -19,13 +20,19 @@ jest.mock('next/navigation', () => ({
 jest.mock('@/services/api', () => ({
   __esModule: true,
   default: {
-    login,
+    login: async (payload: unknown) => {
+      const response = await login(payload)
+      localStorage.setItem('cg_token', response.access_token)
+      mockSessionRevision += 1
+      return response
+    },
     getMe,
+    getToken: () => localStorage.getItem('cg_token'),
   },
 }))
 
 jest.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({ setUser }),
+  useAuthStore: Object.assign(() => ({ setUser }), { getState: () => ({ user: null, sessionRevision: mockSessionRevision, verifiedToken: null }) }),
 }))
 
 jest.mock('react-hot-toast', () => ({
@@ -40,6 +47,8 @@ const LoginPage = require('@/app/auth/login/page').default
 describe('LoginPage', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    mockSessionRevision = 0
+    localStorage.removeItem('cg_token')
     mockSearchParams.delete('next')
   })
 

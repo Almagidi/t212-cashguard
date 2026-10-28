@@ -830,6 +830,8 @@ def test_provider_function_is_only_referenced_from_approved_runtime_call_sites()
             matches[str(path.relative_to(APP_ROOT.parent))] = used
 
     assert matches == {
+        # Account guards construct only an immutable scope request, never a transport.
+        "app/services/live_account.py": {"BrokerProviderRequest"},
         "app/api/deps.py": {
             "BrokerProviderCredentials",
             "BrokerProviderRequest",

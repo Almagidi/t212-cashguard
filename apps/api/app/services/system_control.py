@@ -250,7 +250,7 @@ class SystemControlService:
         if app_settings.kill_switch_active:
             raise SystemControlError("Cannot enable auto-trading while the kill switch is active.")
         if settings.APP_MODE == "live":
-            readiness = await LiveReadinessService(self.db).evaluate()
+            readiness = await LiveReadinessService(self.db, owner_id=self.broker_user_id).evaluate()
             if not readiness["ready_for_live"]:
                 blocker = (
                     readiness["blockers"][0]

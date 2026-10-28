@@ -17,11 +17,14 @@ test.describe('Settings', () => {
   })
 
   test('shows no deposit or bank options', async ({ page }) => {
-    const pageText = await page.locator('body').textContent()
-    expect(pageText?.toLowerCase()).not.toContain('deposit')
-    expect(pageText?.toLowerCase()).not.toContain('bank account')
-    expect(pageText?.toLowerCase()).not.toContain('open banking')
-    expect(pageText?.toLowerCase()).not.toContain('debit card')
+    // Inspect the loaded controls, not the initial loading screen or the
+    // safety notice that explicitly says no funding integration exists.
+    await expect(page.getByRole('button', { name: 'Save Settings', exact: true })).toBeVisible()
+    await expect(page.getByText('No deposit, withdrawal, or bank integration code exists in this application', { exact: true })).toBeVisible()
+    const funding = /deposit|withdraw|bank account|open banking|debit card|top.?up/i
+    for (const role of ['button', 'link', 'textbox', 'combobox', 'checkbox', 'radio', 'switch', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option'] as const) {
+      await expect(page.getByRole(role, { name: funding })).toHaveCount(0)
+    }
   })
 
   test('theme toggle works', async ({ page }) => {

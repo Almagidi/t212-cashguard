@@ -337,13 +337,14 @@ async def _count_orders(
 async def _resolve_credential_source(
     db: AsyncSession,
     app_mode: str,
+    owner: User,
 ) -> Literal["stored_connection", "environment_fallback", "mock", "none"]:
     """Safe, read-only summary of which broker-credential source the runtime
     would use for the active ``APP_MODE``.
 
     Returns a coarse enum only — never a key, secret, encrypted blob, or
     decrypted value. The resolution order mirrors ``app.api.deps.get_broker``
-    (mock → stored active connection → environment fallback → none) without
+    (mock → owner's active Trading212 connection → demo environment fallback → none) without
     performing any broker call or credential read, so this stays purely
     informational and changes no trading, provider, or auth behaviour.
     """
@@ -352,6 +353,8 @@ async def _resolve_credential_source(
     stored_connection_id = (
         await db.execute(
             select(BrokerConnection.id)
+            .where(BrokerConnection.user_id == owner.id)
+            .where(BrokerConnection.broker == "trading212")
             .where(BrokerConnection.is_active.is_(True))
             .where(BrokerConnection.environment == app_mode)
             .limit(1)
@@ -361,15 +364,13 @@ async def _resolve_credential_source(
         return "stored_connection"
     if app_mode == "demo" and settings.T212_DEMO_API_KEY and settings.T212_DEMO_API_SECRET:
         return "environment_fallback"
-    if app_mode == "live" and settings.T212_LIVE_API_KEY and settings.T212_LIVE_API_SECRET:
-        return "environment_fallback"
     return "none"
 
 
 @router.get("/status", response_model=OperatorStatusOut)
 async def operator_status(
     audit_limit: int = Query(20, ge=1, le=100),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> OperatorStatusOut:
     now = datetime.now(UTC)
@@ -392,7 +393,7 @@ async def operator_status(
     ).scalar_one_or_none()
 
     try:
-        live_readiness_payload = await LiveReadinessService(db).evaluate()
+        live_readiness_payload = await LiveReadinessService(db, owner_id=current_user.id).evaluate()
         live_readiness_status = LiveReadinessStatus(**live_readiness_payload)
     except LiveReadinessError:
         live_readiness_status = None
@@ -510,14 +511,18 @@ async def operator_status(
     any_venue_degraded = any(status.degraded_mode_active is True for status in venue_statuses)
     missing_expected_venue_configs = any(not status.present for status in venue_statuses)
     worker_health_known = worker_health == "healthy"
-    credential_source = await _resolve_credential_source(db, settings.APP_MODE)
+    credential_source = await _resolve_credential_source(db, settings.APP_MODE, current_user)
     kraken_live_enabled = False
     dca_runnable = KrakenDCAPlanner.RUNNABLE is True
     dca_live_enabled = False
     live_trading_possible = bool(
         settings.CASH_ONLY_MODE
+        and settings.APP_MODE == "live"
         and settings.LIVE_TRADING_ENABLED
         and app_live_trading_unlocked
+        and global_kill_switch_active is False
+        and live_readiness_status is not None
+        and live_readiness_status.ready_for_live
         and not any_venue_kill_switch_active
         and not missing_expected_venue_configs
     )

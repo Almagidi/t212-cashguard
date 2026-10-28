@@ -12,7 +12,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <Sidebar />
         <TopBar />
         <MainContent>
-          <div className="p-5 md:p-7 max-w-[1600px] mx-auto animate-fade-in">
+          <div className="p-5 md:p-7 max-w-[1600px] mx-auto">
             <ErrorBoundary label="Page">
               {children}
             </ErrorBoundary>

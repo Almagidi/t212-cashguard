@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import secrets
+
 import pytest
 
 SAFE_SECRET = "safe-secret-value-long-enough-for-startup-tests"
@@ -20,6 +22,12 @@ def _set_safe_startup_settings(monkeypatch: pytest.MonkeyPatch, app_mode: str) -
     monkeypatch.setattr(settings, "T212_DEMO_API_SECRET", "configured")
     monkeypatch.setattr(settings, "T212_LIVE_API_KEY", "configured" if app_mode == "live" else "")
     monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", "auto")
+    monkeypatch.setattr(
+        settings, "ALPACA_API_KEY", secrets.token_urlsafe(24) if app_mode == "live" else ""
+    )
+    monkeypatch.setattr(
+        settings, "ALPACA_API_SECRET", secrets.token_urlsafe(24) if app_mode == "live" else ""
+    )
 
 
 def test_build_startup_report_is_clean_in_mock_mode() -> None:

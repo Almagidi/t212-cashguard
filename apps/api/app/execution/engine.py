@@ -262,6 +262,16 @@ class ExecutionEngine:
         ``cash_read_at`` is when the figure was read from the broker. Raises
         ``CashReservationRefused`` otherwise; nothing is created then.
         """
+        live_context = None
+        if settings.APP_MODE == "live" and not is_dry_run:
+            from app.services.live_dispatch import LiveDispatchError, capture_intent_context
+
+            try:
+                live_context = await capture_intent_context(self.db, self.broker, side=side)
+            except LiveDispatchError as exc:
+                raise SafetyPolicyViolation(
+                    str(exc), decision_code="live_account_binding_block"
+                ) from exc
         salt = str(uuid.uuid4())[:8]  # Small salt for non-signal orders
         client_key = self._make_client_order_key(
             ticker,
@@ -376,6 +386,9 @@ class ExecutionEngine:
                 "is_dry_run": is_dry_run,
             },
         )
+        if live_context is not None:
+            await self._log_order_event(order.id, "live_account_bound", payload=live_context)
+            await self.db.flush()
         return order
 
     async def _close_blocked_buy(self, order: Order, exc: SafetyPolicyViolation) -> None:
@@ -555,10 +568,11 @@ class ExecutionEngine:
 
         broker_environment = getattr(self.broker, "environment", None)
         try:
-            await require_order_submission_allowed(
+            authorization = await require_order_submission_allowed(
                 self.db,
                 order=order,
                 broker_environment=broker_environment,
+                broker=self.broker,
             )
         except SafetyPolicyViolation as exc:
             if order.side == "buy" and not order.is_dry_run:
@@ -643,6 +657,7 @@ class ExecutionEngine:
                 "submitted_at": dispatched_at.isoformat(),
                 "attempt_id": str(attempt.id),
                 "request_fingerprint": attempt.request_fingerprint,
+                **({"live_authorization": authorization} if authorization is not None else {}),
             },
         )
         order.submitted_at = dispatched_at
@@ -658,8 +673,43 @@ class ExecutionEngine:
         await self.db.commit()
 
         # Network I/O happens outside any transaction; no row lock is held across it.
+        async def last_mile() -> None:
+            from sqlalchemy.ext.asyncio import async_sessionmaker
+
+            from app.services.live_dispatch import authorize_dispatch
+
+            try:
+                async with async_sessionmaker(self.db.bind, expire_on_commit=False)() as check:
+                    await authorize_dispatch(
+                        check, self.broker, order, lock=False, expected=authorization
+                    )
+            except Exception as exc:
+                raise BrokerSubmissionNotTransmitted(error_type="LiveAuthorizationRevoked") from exc
+
         try:
-            response = await self._send_to_broker(order, submit_qty)
+            if authorization is not None:
+                # Actual T212 transport runs this again after its rate-limit await.
+                from app.broker.live_guard import LiveSubmissionPermit, live_submission_guard
+
+                await last_mile()
+                path = f"/api/v0/equity/orders/{order.order_type}"
+                transport_payload = dict(request_payload)
+                if order.order_type == "market":
+                    transport_payload.pop("timeValidity", None)
+                permit = live_submission_guard.set(
+                    LiveSubmissionPermit(
+                        self.broker,
+                        path,
+                        transport_payload,
+                        last_mile,
+                    )
+                )
+                try:
+                    response = await self._send_to_broker(order, submit_qty)
+                finally:
+                    live_submission_guard.reset(permit)
+            else:
+                response = await self._send_to_broker(order, submit_qty)
         except BrokerSubmissionNotTransmitted as exc:
             await self._record_not_transmitted(order, attempt, exc, broker_environment)
         except BrokerSubmissionRejected as exc:

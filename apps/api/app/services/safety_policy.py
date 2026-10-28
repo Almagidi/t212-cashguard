@@ -179,7 +179,8 @@ async def require_order_submission_allowed(
     order: Order,
     broker_environment: str | None,
     actor: str = "execution_engine",
-) -> None:
+    broker: Any = None,
+) -> dict[str, Any] | None:
     """Final gate immediately before any simulated or broker-backed submit."""
     app_settings = await _get_app_settings(db)
     if app_settings is None:
@@ -205,7 +206,7 @@ async def require_order_submission_allowed(
         raise SafetyPolicyViolation(reason, decision_code="kill_switch_block")
 
     if order.is_dry_run:
-        return
+        return None
 
     try:
         require_broker_environment(broker_environment, action="order submission")
@@ -222,12 +223,12 @@ async def require_order_submission_allowed(
         raise
 
     if current_runtime_mode() == "live":
-        from app.services.live_readiness import LiveReadinessService
+        from app.services.live_dispatch import LiveDispatchError, authorize_dispatch
 
-        readiness = await LiveReadinessService(db).evaluate()
-        if not readiness["ready_for_live"]:
-            blockers = readiness.get("blockers") or ["Live readiness checklist is incomplete."]
-            reason = f"Live readiness incomplete. Order submission blocked: {blockers[0]}"
+        try:
+            return await authorize_dispatch(db, broker, order)
+        except LiveDispatchError as exc:
+            reason = str(exc)
             await audit_safety_decision(
                 db,
                 action="live_readiness_check_failed",
@@ -235,9 +236,9 @@ async def require_order_submission_allowed(
                 decision="blocked",
                 reason=reason,
                 order=order,
-                metadata={"blockers": blockers},
             )
-            raise SafetyPolicyViolation(reason, decision_code="live_readiness_block")
+            raise SafetyPolicyViolation(reason, decision_code="live_readiness_block") from exc
+    return None
 
 
 async def audit_broker_request_attempt(

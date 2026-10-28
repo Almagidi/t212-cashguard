@@ -1,4 +1,5 @@
 'use client'
+import { captureOwnerScope, isCurrentOwnerScope } from '@/lib/owner-scope'
 import { useState } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -99,6 +100,7 @@ function BrokerDiagnosticsPanel({ diagnostics }: { diagnostics: BrokerDiagnostic
 }
 
 export default function BrokerPage() {
+  const [ownerScope] = useState(captureOwnerScope)
   const qc = useQueryClient()
   const { data: status, isLoading } = useBrokerStatus()
   const { data: account } = useAccount()
@@ -119,6 +121,7 @@ export default function BrokerPage() {
   const isMockRuntime = (process.env.NEXT_PUBLIC_APP_MODE || 'mock') === 'mock' || status?.environment === 'mock'
 
   const onSubmit = async (data: FormData) => {
+    if (!isCurrentOwnerScope(ownerScope)) return
     const sanitized = {
       ...data,
       api_key: data.api_key.trim(),
@@ -129,10 +132,12 @@ export default function BrokerPage() {
     setConnecting(true)
     try {
       await api.connectBroker(sanitized)
+      if (!isCurrentOwnerScope(ownerScope)) return
       setConnectDiagnostics(null)
       qc.invalidateQueries({ queryKey: ['broker'] })
       toast.success('Broker connected')
     } catch (e: any) {
+      if (!isCurrentOwnerScope(ownerScope)) return
       const errorState = extractBrokerError(e)
       setConnectDiagnostics(errorState.diagnostics)
       toast.error(errorState.message)

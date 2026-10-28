@@ -90,11 +90,16 @@ class Trading212Adapter:
         self.api_secret = api_secret
         self.environment = environment
         self.account_scope: str | None = None
+        self.provider_request: Any = None
+        self._transport_credentials: tuple[str, str] | None = None
+        self._transport_environment: str | None = None
         self.base_url = broker_base_url_for(environment)
         self._client: httpx.AsyncClient | None = None
         self._rate_limit_reset_at: float = 0.0
 
     async def __aenter__(self) -> Trading212Adapter:
+        self._transport_credentials = (self.api_key, self.api_secret)
+        self._transport_environment = self.environment
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             auth=(self.api_key, self.api_secret),
@@ -213,6 +218,13 @@ class Trading212Adapter:
         """
         try:
             await self._check_rate_limit()
+            if self.environment == "live" or self._transport_environment == "live":
+                from app.broker.live_guard import live_submission_guard
+
+                guard = live_submission_guard.get()
+                if guard is None:
+                    raise RuntimeError("Live submission requires bound dispatch authorization.")
+                await guard.consume(self, path, payload)
             client = self.client
             request = client.build_request("POST", path, json=payload)
         except Exception as exc:

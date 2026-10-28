@@ -1,8 +1,9 @@
 'use client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from 'next-themes'
-import { Toaster } from 'react-hot-toast'
-import { useState, useEffect } from 'react'
+import toast, { Toaster } from 'react-hot-toast'
+import { useState, useEffect, useRef, useLayoutEffect } from 'react'
+import { useAuthStore } from '@/stores/auth'
 
 const PWA_CACHE_PREFIX = 'cashguard-'
 
@@ -37,6 +38,16 @@ async function unregisterCashGuardServiceWorkers() {
 }
 
 export function Providers({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    const synchronizeToken = (event: StorageEvent) => {
+      if (event.storageArea === localStorage && (event.key === null || (event.key === 'cg_token' && event.oldValue !== event.newValue))) {
+        useAuthStore.getState().advanceSession()
+      }
+    }
+    window.addEventListener('storage', synchronizeToken)
+    return () => window.removeEventListener('storage', synchronizeToken)
+  }, [])
+
   // Register service worker for PWA support
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return
@@ -58,6 +69,35 @@ export function Providers({ children }: { children: React.ReactNode }) {
     void configureServiceWorker()
   }, [])
 
+  const owner = useAuthStore((state) => state.user?.id ?? 'anonymous')
+  const revision = useAuthStore((state) => state.sessionRevision)
+  useLayoutEffect(() => () => {
+    // Remove the old session's global notices during cleanup, before paint and
+    // before the new session's layout effects can emit its own notices.
+    toast.remove()
+  }, [owner, revision])
+
+  return (
+    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
+        <OwnerQueries key={`${owner}:${revision}`}>{children}</OwnerQueries>
+        <Toaster
+          position="top-right"
+          toastOptions={{
+            style: {
+              background: 'hsl(var(--card))',
+              color: 'hsl(var(--foreground))',
+              border: '1px solid hsl(var(--border))',
+              borderRadius: '10px',
+              fontSize: '13px',
+              boxShadow: 'var(--elev-2)',
+            },
+          }}
+        />
+    </ThemeProvider>
+  )
+}
+
+function OwnerQueries({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => new QueryClient({
     defaultOptions: {
       queries: {
@@ -87,24 +127,19 @@ export function Providers({ children }: { children: React.ReactNode }) {
     },
   }))
 
-  return (
-    <QueryClientProvider client={queryClient}>
-      <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
-        {children}
-        <Toaster
-          position="top-right"
-          toastOptions={{
-            style: {
-              background: 'hsl(var(--card))',
-              color: 'hsl(var(--foreground))',
-              border: '1px solid hsl(var(--border))',
-              borderRadius: '10px',
-              fontSize: '13px',
-              boxShadow: 'var(--elev-2)',
-            },
-          }}
-        />
-      </ThemeProvider>
-    </QueryClientProvider>
-  )
+  const lease = useRef({ generation: 0 })
+  useEffect(() => {
+    const lifecycle = lease.current
+    const currentLease = ++lifecycle.generation
+    return () => {
+      // StrictMode immediately replays this effect; do not clear a remounted
+      // client's active queries during that development-only lifecycle probe.
+      queueMicrotask(() => {
+        if (lifecycle.generation !== currentLease) return
+        void queryClient.cancelQueries()
+        queryClient.clear()
+      })
+    }
+  }, [queryClient])
+  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
 }

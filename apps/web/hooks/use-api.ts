@@ -1,5 +1,7 @@
 import { getDcaActivity } from "@/services/api";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useOwnerMutation as useMutation } from "@/hooks/use-owner-mutation";
+import { captureOwnerScope, isCurrentOwnerScope } from "@/lib/owner-scope";
 import type { QueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import api from "@/services/api";
@@ -404,11 +406,13 @@ export const usePlacePaperOrder = () => {
     networkMode: "always",
     mutationFn: (p: CreatePaperOrderPayload) => api.placePaperOrder(p),
     onSuccess: async (result, payload) => {
+      const ownerScope = captureOwnerScope();
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["orders"] }),
         qc.invalidateQueries({ queryKey: ["positions"] }),
         qc.invalidateQueries({ queryKey: ["orders", "paper"] }),
       ]);
+      if (!isCurrentOwnerScope(ownerScope)) return;
       if (!payload.operation_id || recordedPaperResult(result, payload.operation_id)) {
         toast.success(result.replayed ? "Paper order already recorded" : "Paper order recorded");
       } else toast.error("Paper result unconfirmed; check the existing operation");
@@ -550,7 +554,9 @@ export const useKillSwitch = () => {
     mutationFn: ({ active }: { active: boolean }) =>
       active ? api.enableKillSwitch() : api.disableKillSwitch(),
     onSuccess: async (_d, v) => {
+      const ownerScope = captureOwnerScope();
       await qc.invalidateQueries({ queryKey: QK.settings });
+      if (!isCurrentOwnerScope(ownerScope)) return;
       toast.success(
         v.active ? "⛔ Kill switch activated" : "✅ Kill switch deactivated",
       );
@@ -585,16 +591,24 @@ export const useUpdateSettings = () => {
   });
 };
 
-export const useLiveReadiness = () =>
-  useQuery({
+export const useLiveReadiness = () => {
+  const qc = useQueryClient();
+  const query = useQuery({
     queryKey: QK.liveReadiness,
     queryFn: api.getLiveReadiness.bind(api),
     refetchInterval: 60_000,
   });
+  return { ...query, isInvalidated: qc.getQueryState(QK.liveReadiness)?.isInvalidated ?? true };
+};
 
 export const useUpdateLiveReadiness = () => {
   const qc = useQueryClient();
   return useMutation({
+    retry: false,
+    networkMode: "always",
+    onMutate: async () => {
+      await qc.cancelQueries({ queryKey: QK.liveReadiness });
+    },
     mutationFn: ({
       action,
       notes,
@@ -602,9 +616,7 @@ export const useUpdateLiveReadiness = () => {
       action: Parameters<typeof api.updateLiveReadiness>[0];
       notes?: string;
     }) => api.updateLiveReadiness(action, notes),
-    onSuccess: (data, variables) => {
-      qc.setQueryData(QK.liveReadiness, data);
-      qc.invalidateQueries({ queryKey: QK.settings });
+    onSuccess: (_data, variables) => {
       const label =
         variables.action === "unlock_live"
           ? "Live trading unlocked"
@@ -612,6 +624,14 @@ export const useUpdateLiveReadiness = () => {
             ? "Live trading locked"
             : "Readiness checkpoint recorded";
       toast.success(label);
+    },
+    onSettled: async () => {
+      // Discard any observation started while the write was outstanding, then
+      // keep the mutation pending until a fresh authoritative read settles.
+      await qc.cancelQueries({ queryKey: QK.liveReadiness });
+      // The settings prefix includes readiness; invalidate it once so a second
+      // overlapping invalidation cannot cancel the post-write observation.
+      await qc.invalidateQueries({ queryKey: QK.settings });
     },
     onError: (e: any) =>
       toast.error(extractErrorMessage(e, "Live readiness update failed")),
@@ -647,7 +667,9 @@ export const useEmergencyKillSwitch = () => {
   return useMutation({
     mutationFn: api.emergencyKillSwitch.bind(api),
     onSuccess: async () => {
+      const ownerScope = captureOwnerScope();
       await refreshEmergencySettings(qc);
+      if (!isCurrentOwnerScope(ownerScope)) return;
       toast.error("⛔ KILL SWITCH ACTIVATED");
     },
   });
@@ -657,7 +679,9 @@ export const useEmergencyDisableKillSwitch = () => {
   return useMutation({
     mutationFn: api.disableKillSwitch.bind(api),
     onSuccess: async () => {
+      const ownerScope = captureOwnerScope();
       await refreshEmergencySettings(qc);
+      if (!isCurrentOwnerScope(ownerScope)) return;
       toast.success(
         "Kill switch disabled. Auto-trading remains OFF until manually re-enabled.",
       );
@@ -671,7 +695,9 @@ export const useEmergencyAutoTradingOff = () => {
   return useMutation({
     mutationFn: api.emergencyAutoTradingOff.bind(api),
     onSuccess: async () => {
+      const ownerScope = captureOwnerScope();
       await refreshEmergencySettings(qc);
+      if (!isCurrentOwnerScope(ownerScope)) return;
       toast.success("Auto-trading disabled");
     },
   });
