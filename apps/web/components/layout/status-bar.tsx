@@ -1,17 +1,35 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { AlertOctagon, TrendingUp, Wifi, WifiOff, Activity, Clock } from 'lucide-react'
-import { useSettings, useAccount, useDepsHealth } from '@/hooks/use-api'
+import { QK, useSettings, useAccount, useDepsHealth } from '@/hooks/use-api'
 import { formatReportedAmount, cn } from '@/lib/utils'
 import { hasCurrentQueryData } from '@/lib/query-observation'
 import { useUIStore } from '@/stores/ui-store'
 
 export function StatusBar() {
+  const queryClient = useQueryClient()
   const settingsQuery = useSettings()
-  const settings = hasCurrentQueryData(settingsQuery) ? settingsQuery.data : undefined
   const { data: account } = useAccount()
   const depsQuery = useDepsHealth()
   const deps = hasCurrentQueryData(depsQuery) ? depsQuery.data : undefined
+  // Keep failed authority in the existing cache across remounts. Invalidation
+  // adds no immediate request; a normal successful settings read clears it.
+  const connectionFailed = depsQuery.isError || depsQuery.failureCount > 0
+    || Boolean(depsQuery.failureReason) || depsQuery.fetchStatus === 'paused'
+    || (deps !== undefined && deps.database !== 'ok')
+  const settingsObservedAt = settingsQuery.dataUpdatedAt
+  useEffect(() => {
+    if (connectionFailed) {
+      void queryClient.invalidateQueries({ queryKey: QK.settings, exact: true, refetchType: 'none' })
+    }
+  }, [queryClient, connectionFailed, depsQuery.isError, depsQuery.failureCount, depsQuery.failureReason, depsQuery.fetchStatus, depsQuery.errorUpdatedAt, depsQuery.dataUpdatedAt])
+  // Query retains its last error timestamp across success and component remounts.
+  const settingsCurrent = hasCurrentQueryData(settingsQuery) && deps?.database === 'ok'
+    && queryClient.getQueryState(QK.settings)?.isInvalidated !== true
+    && settingsObservedAt > (depsQuery.errorUpdatedAt ?? 0)
+  const settings = settingsCurrent ? settingsQuery.data : undefined
+  const reportedKillActive = settingsQuery.data?.kill_switch_active === true
   const automationKnown = typeof settings?.auto_trading_enabled === 'boolean'
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
 
@@ -25,16 +43,16 @@ export function StatusBar() {
         'fixed bottom-0 right-0 z-20 hidden h-7 items-center gap-5 px-6 md:flex',
         'text-[11px] font-medium border-t transition-colors tabular-nums',
         sidebarCollapsed ? 'left-16' : 'left-56',
-        settings?.kill_switch_active
+        reportedKillActive
           ? 'bg-red-50 border-red-900/60 text-red-900 dark:bg-red-950 dark:text-red-200'
           : 'bg-card border-border text-muted-foreground'
       )}
     >
       {/* Kill switch warning */}
-      {settings?.kill_switch_active && (
+      {reportedKillActive && (
         <span className="flex items-center gap-1.5 text-red-800 dark:text-red-300 font-semibold">
           <AlertOctagon className="w-3 h-3 animate-pulse-slow" />
-          KILL SWITCH ACTIVE
+          {settingsCurrent ? 'KILL SWITCH ACTIVE' : 'Last reported: kill switch active'}
         </span>
       )}
 
