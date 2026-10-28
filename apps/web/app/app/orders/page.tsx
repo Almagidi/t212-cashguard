@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import type { FormEvent } from 'react'
 import { AlertTriangle, Eye, RefreshCw, X, ClipboardList, Send, ShieldCheck } from 'lucide-react'
 import {
@@ -11,6 +11,8 @@ import {
   usePaperExecutionHistory,
   usePlacePaperOrder,
   useSettings,
+  useDepsHealth,
+  QK,
 } from '@/hooks/use-api'
 import { Button, Card, CardContent, Badge, Spinner, EmptyState, PageHeader, Input, Label } from '@/components/ui'
 import { QueryError } from '@/components/shared/query-error'
@@ -20,6 +22,7 @@ import { CANCELLABLE_ORDER_STATUSES, OPEN_ORDER_STATUSES, executionQualityBadge,
 import { useQueryClient } from '@tanstack/react-query'
 import { usePaperIntent } from '@/hooks/use-paper-intent'
 import { useAuthStore } from '@/stores/auth'
+import { hasCurrentQueryData } from '@/lib/query-observation'
 import type { OrderSide } from '@/types'
 
 const TABS = ['all', 'pending', 'filled', 'cancelled'] as const
@@ -45,7 +48,19 @@ export default function OrdersPage() {
   const [paperVenue, setPaperVenue] = useState<'paper' | 'mock'>('paper')
   const { data: allOrders = [], isLoading, isError, error, refetch } = useOrders({ limit: 200 })
   const { data: selectedOrder, isLoading: loadingSelectedOrder } = useOrder(selectedOrderId, { enabled: Boolean(selectedOrderId) })
-  const { data: settings } = useSettings()
+  const settingsQuery = useSettings()
+  const depsQuery = useDepsHealth()
+  const settings = settingsQuery.data
+  const settingsInvalidated = useSyncExternalStore(
+    callback => qc.getQueryCache().subscribe(callback),
+    () => qc.getQueryState(QK.settings)?.isInvalidated === true,
+    () => true,
+  )
+  const killKnown = hasCurrentQueryData(settingsQuery) && hasCurrentQueryData(depsQuery)
+    && depsQuery.data?.database === 'ok' && !settingsInvalidated
+    && settingsQuery.dataUpdatedAt > (depsQuery.errorUpdatedAt ?? 0)
+    && typeof settings?.kill_switch_active === 'boolean'
+  const lastReportedKillActive = settings?.kill_switch_active === true
   const { data: paperHistory, isLoading: loadingPaperHistory } = usePaperExecutionHistory({ limit: 8 })
   const placePaperOrder = usePlacePaperOrder()
   const owner = useAuthStore(state => state.user?.id)
@@ -139,7 +154,7 @@ export default function OrdersPage() {
                 <Badge variant={isMockMode ? 'success' : 'warning'}>{isMockMode ? 'Mock mode only' : `${appMode} mode`}</Badge>
                 <Badge variant="success" data-testid="broker-execution-status">Broker execution disabled</Badge>
                 {appMode !== 'live' && <Badge variant="success">Live trading disabled</Badge>}
-                {settings?.kill_switch_active && <Badge variant="destructive" data-testid="paper-kill-switch-active-badge">Kill switch is active</Badge>}
+                {lastReportedKillActive && <Badge variant="destructive" data-testid="paper-kill-switch-active-badge">{killKnown ? 'Kill switch is active' : 'Kill switch last reported active'}</Badge>}
               </div>
               <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
                 <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/40 px-3 py-2">
@@ -156,7 +171,11 @@ export default function OrdersPage() {
                 </div>
               </div>
 
-              <form onSubmit={submitPaperOrder} className="grid gap-3 sm:grid-cols-2 sm:items-end 2xl:grid-cols-[minmax(0,1fr)_repeat(3,130px)_auto]">
+              {paperIntent.intent && !savedPaper ? (
+                <p className="text-sm text-muted-foreground" data-testid="paper-operation-inputs-unavailable">
+                  Operation inputs are no longer stored in this browser. Check its receipt and paper history to review the operation; no default inputs are implied.
+                </p>
+              ) : <form onSubmit={submitPaperOrder} className="grid gap-3 sm:grid-cols-2 sm:items-end 2xl:grid-cols-[minmax(0,1fr)_repeat(3,130px)_auto]">
                 <div className="space-y-1.5">
                   <Label htmlFor="paper-ticker">Ticker</Label>
                   <Input
@@ -212,7 +231,7 @@ export default function OrdersPage() {
                   <Send className="h-3.5 w-3.5" />
                   {paperIntent.intent?.state === 'pending' ? 'Retry Same Operation' : 'Submit Paper Order'}
                 </Button>
-              </form>
+              </form>}
 
               {paperIntent.intent && <div className="flex flex-wrap items-center gap-3 text-xs" aria-live="polite">
                 <span className="break-all">Operation {paperIntent.intent.operationId}</span>
@@ -224,13 +243,13 @@ export default function OrdersPage() {
                 <div className={cn(
                   'rounded-lg border px-3 py-2 text-sm',
                   paperResult.tone === 'success'
-                    ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
-                    : 'border-amber-500/30 bg-amber-500/10 text-amber-200',
+                    ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200'
+                    : 'border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200',
                 )} data-testid="paper-order-status-message" role="status" aria-live="polite">
                   <p className="font-semibold">{paperResult.title}</p>
                   <p className="mt-0.5 text-xs opacity-85" data-testid={paperResult.tone === 'blocked' ? 'order-blocked-reason' : undefined}>{paperResult.detail}</p>
                   {paperResult.orderId && (
-                    <p className="mt-1 text-[10px] uppercase tracking-wider opacity-70">Order {paperResult.orderId}</p>
+                    <p className="mt-1 break-all text-[11px] uppercase tracking-wider opacity-90">Order {paperResult.orderId}</p>
                   )}
                 </div>
               )}
@@ -243,9 +262,11 @@ export default function OrdersPage() {
                     <p className="text-xs font-semibold">Kill Switch</p>
                     <p className={cn(
                       'mt-1 text-xs',
-                      settings?.kill_switch_active ? 'text-red-300' : 'text-muted-foreground',
+                      lastReportedKillActive ? 'text-red-700 dark:text-red-300' : 'text-muted-foreground',
                     )}>
-                      {settings?.kill_switch_active
+                      {!killKnown
+                        ? `Kill switch status unknown. ${lastReportedKillActive ? 'Last reported active. ' : ''}Current settings are unavailable or being checked.`
+                        : settings?.kill_switch_active
                         ? 'Kill switch is active. Paper orders will be blocked by safety controls.'
                         : 'Activate it to demonstrate a blocked paper order.'}
                     </p>

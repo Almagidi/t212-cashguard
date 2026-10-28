@@ -582,9 +582,9 @@ function DcaSummary({ status }: { status: OperatorStatus }) {
     .slice(0, 4);
 
   return (
-    <Card>
+    <Card className="min-w-0">
       <CardHeader>
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <CardTitle>DCA Summary</CardTitle>
           <div className="flex flex-wrap justify-end gap-1.5">
             <TextBadge tone={status.dca.paper_only ? "success" : "warning"}>
@@ -723,10 +723,10 @@ function SchedulerWorkerHealth({ status }: { status: OperatorStatus }) {
     !strategySignalsObserved;
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <CardTitle>Scheduler / Worker Health</CardTitle>
             <Badge variant={healthBadgeVariant(status.schedulers.worker_health)}>
               Worker heartbeat {status.schedulers.worker_health}
@@ -1069,7 +1069,7 @@ function ActivitySummary({
   return (
     <div
       className={cn(
-        "rounded-lg border border-border/60 bg-secondary/20 p-3",
+        "min-w-0 rounded-lg border border-border/60 bg-secondary/20 p-3 [overflow-wrap:anywhere]",
         compact && "p-2",
       )}
     >
@@ -1808,7 +1808,7 @@ export function OperatorDashboard({
         <KrakenSummary status={status} />
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+      <section className="grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
         <DcaSummary status={status} />
         <SchedulerWorkerHealth status={status} />
       </section>
