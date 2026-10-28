@@ -35,6 +35,8 @@ EXPECTED_CREDENTIAL_READERS = {
     "apps/api/app/services/safety_policy.py",
     "apps/api/app/services/startup_validation.py",
     "apps/api/scripts/real_worker_paper_smoke.py",
+    # Reviewed fixture sanitizer: explicitly clears these names; never passes credentials.
+    "apps/api/scripts/run_operator_integration.py",
     "apps/api/scripts/t212_demo_controlled_multi_order.py",
     "apps/api/scripts/t212_demo_controlled_order.py",
     "apps/api/scripts/t212_demo_multi_order_reconciliation_smoke.py",

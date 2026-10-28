@@ -34,6 +34,10 @@ A **cash-only, local-first** intraday trading automation platform for [Trading 2
 
 ## Quick Start
 
+For a fresh, isolated Python environment and a website/API bound explicitly to
+loopback, use the [local mock/paper installation](docs/local-install.md).
+It includes the configuration-preservation and backup/restore boundaries.
+
 ### Requirements
 
 - Docker + Docker Compose
@@ -491,3 +495,11 @@ See [`docs/security.md`](docs/security.md) for full details.
 - Rotate `SECRET_KEY` and `MASTER_KEY` if compromised (requires re-encrypting stored credentials)
 - The application stores NO bank credentials, card details, or Open Banking tokens — ever
 - Credentials are encrypted before DB storage and decrypted only for API calls
+
+### Local operator integration
+
+`make e2e-operator-integration` requires exported `DATABASE_URL`
+(`postgresql+asyncpg` on loopback, a disposable test cluster/role with `CREATEDB`)
+and loopback `REDIS_URL`. It creates, migrates and removes a new random database;
+it does not reset the supplied database. Run from a clean web checkout without
+runtime `.env*` files. Ports 8001/3001 must be free.

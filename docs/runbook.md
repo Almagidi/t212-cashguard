@@ -117,13 +117,13 @@ The risk engine automatically blocks new orders when daily loss exceeds `max_dai
 
 ## Database Backup
 
-```bash
-# Backup
-docker-compose exec postgres pg_dump -U cashguard cashguard > backup_$(date +%Y%m%d).sql
-
-# Restore
-docker-compose exec -T postgres psql -U cashguard cashguard < backup_20240101.sql
-```
+Use the controlled [local backup and restore procedure](./operations/local-backup-restore.md):
+stop execution writers, privately back up the explicitly selected source, restore
+into a **new** destination, verify its identity, explicitly block controls with the
+offline recovery tool, and verify keys/schema/financial history before reuse.
+Do not restore over a running/source database. Raw dumps retain saved armed flags;
+an armed API restart is refused until explicit offline review/unarming. Startup
+readiness alone does not certify recovery or authorize workers, live unlock or rearm.
 
 ---
 

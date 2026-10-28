@@ -29,6 +29,13 @@ from app.services.demo_reconciliation_scheduler import (
     stop_global_demo_reconciliation_scheduler,
 )
 from app.services.startup_validation import assert_startup_safe
+from app.services.recovery_controls import RecoveryRefusal, assert_saved_permissions_unarmed
+from app.services.startup_admission import (
+    ADMISSION_KEY,
+    StartupAdmission,
+    StartupAdmissionMiddleware,
+)
+from app.db.session import engine
 
 try:
     import sentry_sdk
@@ -49,53 +56,95 @@ def _scrub_sentry_event(event: dict, _hint: dict | None = None) -> dict | None:
     return sanitize_event(event)
 
 
-# ── Sentry (optional — no-op when SENTRY_DSN is empty or package missing) ────
-if settings.SENTRY_DSN and sentry_sdk is not None:
-    sentry_sdk.init(
-        dsn=settings.SENTRY_DSN,
-        environment=settings.APP_MODE,
-        release="cashguard@1.0.0",
-        integrations=[
-            FastApiIntegration(),
-            SqlalchemyIntegration(),
-            CeleryIntegration(),
-        ],
-        traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
-        # Withhold unqualified telemetry channels and arbitrary input content.
-        profiles_sample_rate=0.0,
-        profile_session_sample_rate=0.0,
-        auto_session_tracking=False,
-        send_client_reports=False,
-        include_local_variables=False,
-        max_request_body_size="never",
-        enable_logs=False,
-        spotlight=False,
-        trace_lifecycle="static",
-        transport=ConfidentialTransport,
-        # Never send PII: user emails, passwords, or raw request bodies
-        send_default_pii=False,
-        before_send=_scrub_sentry_event,
-        before_send_transaction=_scrub_sentry_event,
-    )
-    log.info("sentry.initialised", environment=settings.APP_MODE)
-elif settings.SENTRY_DSN:
-    log.warning("sentry.unavailable", detail="SENTRY_DSN is set but sentry_sdk is not installed")
+def _init_sentry():
+    """Only called after saved permissions/configuration are validated."""
+    if settings.SENTRY_DSN and sentry_sdk is not None:
+        sentry_sdk.init(
+            dsn=settings.SENTRY_DSN,
+            environment=settings.APP_MODE,
+            release="cashguard@1.0.0",
+            integrations=[
+                FastApiIntegration(),
+                SqlalchemyIntegration(),
+                CeleryIntegration(),
+            ],
+            traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
+            # Withhold unqualified telemetry channels and arbitrary input content.
+            profiles_sample_rate=0.0,
+            profile_session_sample_rate=0.0,
+            auto_session_tracking=False,
+            send_client_reports=False,
+            include_local_variables=False,
+            max_request_body_size="never",
+            enable_logs=False,
+            spotlight=False,
+            trace_lifecycle="static",
+            transport=ConfidentialTransport,
+            # Never send PII: user emails, passwords, or raw request bodies
+            send_default_pii=False,
+            before_send=_scrub_sentry_event,
+            before_send_transaction=_scrub_sentry_event,
+        )
+        log.info("sentry.initialised", environment=settings.APP_MODE)
+        # init installs the app-owned client on the GLOBAL scope. get_client()
+        # may resolve an unrelated current/isolation client, which we must not close.
+        return sentry_sdk.get_global_scope().client
+    elif settings.SENTRY_DSN:
+        log.warning(
+            "sentry.unavailable", detail="SENTRY_DSN is set but sentry_sdk is not installed"
+        )
+    return None
+
+
+admission = StartupAdmission()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    startup_report = assert_startup_safe()
-    log.info(
-        "app.startup.validation",
-        status=startup_report["status"],
-        failures=startup_report["failures"],
-        warnings=startup_report["warnings"],
-    )
-    log.info("app.startup", mode=settings.APP_MODE, version="1.0.0")
-    await start_global_demo_reconciliation_scheduler()
-    yield
-    await stop_global_demo_reconciliation_scheduler()
-    log.info("app.shutdown")
+    lease = admission.begin()
+    scheduler_started = False
+    owned_client = None
+    previous_client = sentry_sdk.get_global_scope().client if sentry_sdk is not None else None
+    try:
+        try:
+            async with asyncio.timeout(10):
+                await assert_saved_permissions_unarmed(engine)
+        except RecoveryRefusal as exc:
+            lease.state, lease.detail = "STARTUP_BLOCKED", str(exc)
+        except Exception:
+            lease.state = "STARTUP_BLOCKED"
+            lease.detail = (
+                "Saved controls could not be validated. Review the selected database offline."
+            )
+        if lease.state == "STARTUP_BLOCKED":
+            log.warning("app.startup.blocked", reason=lease.detail)
+            yield {ADMISSION_KEY: lease}
+            return
+        startup_report = assert_startup_safe()
+        log.info(
+            "app.startup.validation",
+            status=startup_report["status"],
+            failures=startup_report["failures"],
+            warnings=startup_report["warnings"],
+        )
+        owned_client = _init_sentry()
+        scheduler_started = True
+        await start_global_demo_reconciliation_scheduler()
+        admission.publish(lease)
+        log.info("app.startup", mode=settings.APP_MODE, version="1.0.0")
+        yield {ADMISSION_KEY: lease}
+    finally:
+        # Revoke before any await/cleanup; failed or interrupted cleanup never admits requests.
+        admission.close(lease)
+        try:
+            if scheduler_started:
+                await stop_global_demo_reconciliation_scheduler()
+        finally:
+            if owned_client is not None:
+                if sentry_sdk.get_global_scope().client is owned_client:
+                    sentry_sdk.get_global_scope().set_client(previous_client)
+                owned_client.close()
+        log.info("app.shutdown")
 
 
 app = FastAPI(
@@ -103,6 +152,7 @@ app = FastAPI(
     description="Cash-only intraday trading automation for Trading 212.",
     version="1.0.0",
     lifespan=lifespan,
+    telemetry={"auto_configure": False},
 )
 
 # ── Security headers ──────────────────────────────────────────────────────────
@@ -260,6 +310,8 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Trace-Id"],
 )
+
+app.add_middleware(StartupAdmissionMiddleware, admission=admission)
 
 # ── Routes — all clean focused modules ───────────────────────────────────────
 PREFIX = "/v1"
