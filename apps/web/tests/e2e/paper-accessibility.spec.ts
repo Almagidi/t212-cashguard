@@ -94,7 +94,7 @@ test('order inspector repeatedly contains focus and returns to its named opener'
   }
 })
 
-test('operator reflows at 400 percent equivalent without inferring database type from ports', async ({ page }) => {
+test('operator reflows at 400 percent equivalent without inferring database type from ports', async ({ page }, testInfo) => {
   await prepare(page)
   const actor = `synthetic-operator-${'a'.repeat(64)}@example.invalid`
   const workerTask = 'app.workers.tasks.run_strategy_signals'
@@ -129,16 +129,66 @@ test('operator reflows at 400 percent equivalent without inferring database type
       .filter(rect => rect.left < bounds.left - 1 || rect.right > bounds.right + 1 || rect.top < bounds.top - 1 || rect.bottom > bounds.bottom + 1)
       .map(({ left, right, top, bottom }) => ({ left, right, top, bottom }))
   })).toEqual([])
-  const reflow = await page.evaluate(() => {
-    const text: unknown[] = [], walker = document.createTreeWalker(document.querySelector('main')!, NodeFilter.SHOW_TEXT)
-    while (walker.nextNode()) {
-      const node = walker.currentNode, parent = node.parentElement!
-      if (!node.textContent?.trim() || parent.closest('table')) continue
-      const range = document.createRange(); range.selectNodeContents(node)
-      for (const rect of range.getClientRects()) if (rect.right > innerWidth + 1) text.push({ text: node.textContent, right: rect.right, wrap: getComputedStyle(parent).overflowWrap, classes: parent.className })
+  for (const font of ['default', 'DejaVu Sans']) {
+    // Exercise a common wider system fallback as well as the platform default.
+    // The geometry contract is identical; no product font or clipping is changed.
+    const override = font === 'default' ? null : await page.addStyleTag({ content: 'body { font-family: \"DejaVu Sans\", sans-serif; }' })
+    await page.evaluate(() => document.fonts.ready)
+    const reflow = await page.evaluate(() => {
+      const text: unknown[] = [], walker = document.createTreeWalker(document.querySelector('main')!, NodeFilter.SHOW_TEXT)
+      while (walker.nextNode()) {
+        const node = walker.currentNode, parent = node.parentElement!
+        if (!node.textContent?.trim() || parent.closest('table')) continue
+        const range = document.createRange(); range.selectNodeContents(node)
+        for (const rect of range.getClientRects()) if (rect.right > innerWidth + 1) text.push({ text: node.textContent, right: rect.right, wrap: getComputedStyle(parent).overflowWrap, classes: parent.className })
+      }
+      const box = (element: Element) => {
+        const bounds = element.getBoundingClientRect(), style = getComputedStyle(element)
+        return { tag: element.tagName, classes: typeof element.className === 'string' ? element.className : '',
+          left: bounds.left, right: bounds.right, width: bounds.width,
+          clientWidth: element.clientWidth, scrollWidth: element.scrollWidth,
+          cssWidth: style.width, minWidth: style.minWidth, boxSizing: style.boxSizing,
+          overflowX: style.overflowX, position: style.position, transform: style.transform }
+      }
+      const boxes: ReturnType<typeof box>[] = []
+      const visit = (root: Document | ShadowRoot) => {
+        for (const element of root.querySelectorAll('*')) {
+          const bounds = element.getBoundingClientRect()
+          if (bounds.width && (bounds.right > innerWidth || bounds.left < 0 || element.scrollWidth > element.clientWidth + 1)) boxes.push(box(element))
+          if (element.shadowRoot) visit(element.shadowRoot)
+        }
+      }
+      visit(document)
+      return { width: document.documentElement.scrollWidth, text, boxes, root: box(document.documentElement), body: box(document.body),
+      viewport: { innerWidth, clientWidth: document.documentElement.clientWidth, devicePixelRatio, scale: visualViewport?.scale,
+        fontFamily: getComputedStyle(document.body).fontFamily, fontSize: getComputedStyle(document.body).fontSize },
+        animations: document.getAnimations().map(animation => ({ state: animation.playState, currentTime: animation.currentTime, target: (animation.effect as KeyframeEffect | null)?.target?.className })) }
+    })
+    await testInfo.attach(`operator-reflow-${font}`, { body: JSON.stringify(reflow), contentType: 'application/json' })
+    expect(reflow.width, JSON.stringify({ font, ...reflow })).toBeLessThanOrEqual(320)
+    expect(reflow.text).toEqual([])
+    // The whole card, including padding and borders, must fit even when all
+    // individual text ranges happen to end before the viewport edge.
+    for (const title of ['Trading212 Summary', 'Kraken Summary', 'Account metadata', 'Safety boundary']) {
+      const bounds = await page.getByRole('heading', { name: title, exact: true }).evaluate(heading => {
+        const card = heading.parentElement!.classList.contains('flex-col') ? heading.parentElement!.parentElement! : heading.parentElement!
+        const bounds = card.getBoundingClientRect()
+        return { left: bounds.left, right: bounds.right }
+      })
+      expect(bounds.left, `${font}: ${title} left edge`).toBeGreaterThanOrEqual(0)
+      expect(bounds.right, `${font}: ${title} right edge`).toBeLessThanOrEqual(320)
     }
-    return { width: document.documentElement.scrollWidth, text }
-  })
-  expect(reflow.width, JSON.stringify(reflow.text)).toBeLessThanOrEqual(320)
-  expect(reflow.text).toEqual([])
+    await override?.evaluate(element => (element as HTMLStyleElement).remove())
+  }
+  // Preserve the existing responsive two-column layouts at their own breakpoints.
+  for (const width of [1024, 1440]) {
+    await page.setViewportSize({ width, height: 800 })
+    const columns = await page.evaluate(() => {
+      const heading = (title: string) => [...document.querySelectorAll('h3')].find(element => element.textContent === title)!
+      const summaryGrid = heading('Trading212 Summary').parentElement!.parentElement!.parentElement!
+      const metadataGrid = heading('Account metadata').parentElement!.parentElement!
+      return [summaryGrid, metadataGrid].map(grid => getComputedStyle(grid).gridTemplateColumns.split(' ').length)
+    })
+    expect(columns).toEqual(width === 1024 ? [1, 2] : [2, 2])
+  }
 })

@@ -1803,7 +1803,7 @@ export function OperatorDashboard({
         ))}
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-2">
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <Trading212Summary status={status} />
         <KrakenSummary status={status} />
       </section>
