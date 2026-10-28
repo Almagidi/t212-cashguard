@@ -2,7 +2,7 @@
 import { useExecutionQualityReport, usePerformanceReport, useTradesReport } from '@/hooks/use-api'
 import { Card, CardHeader, CardTitle, CardContent, TerminalCard, StatCard, Spinner, EmptyState, Button, Badge, PageHeader } from '@/components/ui'
 import { QueryError } from '@/components/shared/query-error'
-import { executionQualityClass, formatCurrency, formatDate, orderStatusBg, pnlClass, cn } from '@/lib/utils'
+import { executionQualityClass, formatReportedAmount, formatDate, orderStatusBg, pnlClass, cn } from '@/lib/utils'
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
 import { AlertTriangle, BarChart2, Download, Gauge, TimerReset, TrendingUp, TrendingDown } from 'lucide-react'
 
@@ -73,7 +73,7 @@ export default function ReportsPage() {
             />
             <TerminalCard
               label="Total P&L"
-              value={`${perf.total_pnl >= 0 ? '+' : ''}${formatCurrency(perf.total_pnl)}`}
+              value={`${perf.total_pnl >= 0 ? '+' : ''}${formatReportedAmount(perf.total_pnl)}`}
               variant={perf.total_pnl > 0 ? 'teal' : perf.total_pnl < 0 ? 'red' : 'cyan'}
             />
             <TerminalCard
@@ -85,9 +85,9 @@ export default function ReportsPage() {
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <TerminalCard label="Avg Win" value={formatCurrency(perf.avg_win)} variant="teal" />
-            <TerminalCard label="Avg Loss" value={formatCurrency(perf.avg_loss)} variant="red" />
-            <TerminalCard label="Max Drawdown" value={formatCurrency(perf.max_drawdown)} variant="red" />
+            <TerminalCard label="Avg Win" value={formatReportedAmount(perf.avg_win)} variant="teal" />
+            <TerminalCard label="Avg Loss" value={formatReportedAmount(perf.avg_loss)} variant="red" />
+            <TerminalCard label="Max Drawdown" value={formatReportedAmount(perf.max_drawdown)} variant="red" />
             <TerminalCard
               label="Sharpe Ratio"
               value={perf.sharpe_ratio !== null ? perf.sharpe_ratio.toFixed(2) : '—'}
@@ -120,7 +120,7 @@ export default function ReportsPage() {
                 <StatCard
                   label="Adverse Slippage"
                   value={<span className={execQuality.summary.avg_slippage_pct && execQuality.summary.avg_slippage_pct > 0.5 ? 'text-red-400' : 'text-muted-foreground'}>{execQuality.summary.avg_slippage_pct !== null ? `${execQuality.summary.avg_slippage_pct.toFixed(3)}%` : '—'}</span>}
-                  sub={`${formatCurrency(execQuality.summary.total_slippage_value)} total cost`}
+                  sub={`${formatReportedAmount(execQuality.summary.total_slippage_value)} total cost`}
                 />
                 <StatCard
                   label="First Ack"
@@ -237,7 +237,7 @@ export default function ReportsPage() {
                               <tr key={order.id}>
                                 <td className="font-semibold">{order.ticker}</td>
                                 <td className="tnum text-right text-red-400">{order.slippage_pct !== null ? `${order.slippage_pct.toFixed(3)}%` : '—'}</td>
-                                <td className="tnum text-right">{formatCurrency(order.slippage_value)}</td>
+                                <td className="tnum text-right">{formatReportedAmount(order.slippage_value)}</td>
                                 <td className={cn('tnum text-right font-medium', executionQualityClass(order.grade))}>{order.score !== null ? order.score.toFixed(0) : '—'}</td>
                                 <td className="whitespace-nowrap text-xs text-muted-foreground">{formatDate(order.created_at)}</td>
                               </tr>
@@ -267,10 +267,10 @@ export default function ReportsPage() {
                       </defs>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                       <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} tickFormatter={d => d.slice(5)} />
-                      <YAxis tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} tickFormatter={v => `$${v}`} />
+                      <YAxis tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
                       <ReferenceLine y={0} stroke="hsl(var(--border))" strokeDasharray="4 4" />
                       <Tooltip contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 8, fontSize: 12 }}
-                        formatter={(v: number) => [formatCurrency(v), 'P&L']} />
+                        formatter={(v: number) => [formatReportedAmount(v), 'P&L']} />
                       <Area type="monotone" dataKey="pnl"
                         stroke={perf.total_pnl >= 0 ? 'hsl(142 71% 45%)' : 'hsl(0 84% 60%)'}
                         fill="url(#pnlG)" strokeWidth={1.5} />
@@ -303,11 +303,11 @@ export default function ReportsPage() {
                     </ResponsiveContainer>
                     <div className="grid grid-cols-2 gap-3 text-center">
                       <div className="p-2 bg-emerald-500/10 rounded-md">
-                        <p className="text-emerald-400 font-semibold">{formatCurrency(perf.avg_win)}</p>
+                        <p className="text-emerald-400 font-semibold">{formatReportedAmount(perf.avg_win)}</p>
                         <p className="text-xs text-muted-foreground mt-0.5">Avg win</p>
                       </div>
                       <div className="p-2 bg-red-500/10 rounded-md">
-                        <p className="text-red-400 font-semibold">{formatCurrency(Math.abs(perf.avg_loss))}</p>
+                        <p className="text-red-400 font-semibold">{formatReportedAmount(Math.abs(perf.avg_loss))}</p>
                         <p className="text-xs text-muted-foreground mt-0.5">Avg loss</p>
                       </div>
                     </div>
@@ -370,8 +370,8 @@ export default function ReportsPage() {
                       </td>
                       <td className="text-muted-foreground capitalize text-xs">{t.order_type}</td>
                       <td className="tnum text-right">{Number(t.quantity).toFixed(4)}</td>
-                      <td className="tnum text-right">{t.avg_fill_price ? formatCurrency(Number(t.avg_fill_price)) : <span className="text-muted-foreground/50">—</span>}</td>
-                      <td className="tnum text-right text-muted-foreground">{t.cash_used ? formatCurrency(Number(t.cash_used)) : <span className="text-muted-foreground/50">—</span>}</td>
+                      <td className="tnum text-right">{t.avg_fill_price ? formatReportedAmount(Number(t.avg_fill_price)) : <span className="text-muted-foreground/50">—</span>}</td>
+                      <td className="tnum text-right text-muted-foreground">{t.cash_used ? formatReportedAmount(Number(t.cash_used)) : <span className="text-muted-foreground/50">—</span>}</td>
                       <td>
                         <span className={cn('inline-flex items-center text-[10px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider', orderStatusBg(t.status))}>
                           {t.status.replace('_', ' ')}

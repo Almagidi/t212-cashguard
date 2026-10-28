@@ -21,6 +21,19 @@ export function formatCurrency(value: number | string | null | undefined, curren
   }).format(n)
 }
 
+/** Display the reported unit explicitly. Missing metadata never implies USD or conversion. */
+export function formatReportedAmount(value: number | string | null | undefined, currency?: string | null): string {
+  const n = toFiniteNumber(value)
+  if (n === null) return '—'
+  if (!currency || !/^[A-Z]{3}$/.test(currency)) return `${formatNumber(n)} (currency unavailable)`
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency, currencyDisplay: 'code', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
+}
+
+export function formatReportedPnL(value: number | string | null | undefined, currency?: string | null): string {
+  const n = toFiniteNumber(value)
+  return n === null ? '—' : `${n >= 0 ? '+' : ''}${formatReportedAmount(n, currency)}`
+}
+
 export function formatNumber(value: number | string | null | undefined, decimals = 2): string {
   const n = toFiniteNumber(value)
   if (n === null) return '—'

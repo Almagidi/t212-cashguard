@@ -3,6 +3,7 @@ import { AlertOctagon, Wifi, WifiOff, Sun, Moon } from 'lucide-react'
 import { usePathname } from 'next/navigation'
 import { useTheme } from 'next-themes'
 import { cn } from '@/lib/utils'
+import { hasCurrentQueryData } from '@/lib/query-observation'
 import { useSettings, useHealth } from '@/hooks/use-api'
 import { useUIStore } from '@/stores/ui-store'
 import { MobileMenuButton, MobileDrawer } from './sidebar'
@@ -61,8 +62,10 @@ function UtcClock() {
 
 export function TopBar() {
   const pathname = usePathname()
-  const { data: settings } = useSettings()
-  const { data: health }   = useHealth()
+  const settingsQuery = useSettings()
+  const healthQuery = useHealth()
+  const settings = hasCurrentQueryData(settingsQuery) ? settingsQuery.data : undefined
+  const health = hasCurrentQueryData(healthQuery) ? healthQuery.data : undefined
   const { resolvedTheme, setTheme } = useTheme()
   const sidebarCollapsed   = useUIStore((s) => s.sidebarCollapsed)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -72,7 +75,7 @@ export function TopBar() {
   const meta = Object.entries(PAGE_META).find(([p]) => pathname.startsWith(p))?.[1] ?? { title: 'CashGuard' }
   const connectionLabel = health?.status === 'ok'
     ? isMockMode ? 'Mock API' : 'Connected'
-    : 'Offline'
+    : healthQuery.isError || healthQuery.failureCount ? 'Unavailable' : 'Checking'
 
   return (
     <>
@@ -114,14 +117,14 @@ export function TopBar() {
             </span>
           )}
 
-          {mode !== 'live' && (
-            <span className="hidden sm:inline-flex items-center text-[10px] font-semibold px-2 py-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 text-emerald-300 uppercase tracking-[0.08em]" data-testid="live-trading-disabled-badge">
+          {health && mode !== 'live' && (
+            <span className="hidden sm:inline-flex items-center text-[10px] font-semibold px-2 py-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 uppercase tracking-[0.08em]" data-testid="live-trading-disabled-badge">
               Live disabled
             </span>
           )}
 
           <span className={cn(modeBadgeClass(mode), 'hidden sm:inline-flex')} data-testid="runtime-mode-badge">
-            <span data-testid={mode === 'demo' ? 'demo-mode-badge' : undefined}>{mode}</span>
+            <span data-testid={health && mode === 'demo' ? 'demo-mode-badge' : undefined}>{health ? mode : `Frontend ${mode}`}</span>
           </span>
 
           {/* Theme toggle */}
@@ -145,6 +148,8 @@ export function TopBar() {
                 : 'text-red-400 border-red-500/20 bg-red-500/5',
             )}
             data-testid="api-connection-status"
+            role="status"
+            aria-label={`API ${connectionLabel}`}
           >
             {health?.status === 'ok'
               ? <Wifi    className="w-3 h-3" />

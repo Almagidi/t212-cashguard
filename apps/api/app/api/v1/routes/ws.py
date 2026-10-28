@@ -141,8 +141,21 @@ async def _authenticate(token: str | None, db: AsyncSession) -> User | None:
 async def _build_payload(db: AsyncSession) -> dict:
     """Assemble the live snapshot from the database (or mock data)."""
 
+    settings_result = await db.execute(select(AppSettings).where(AppSettings.id == 1))
+    app_settings = settings_result.scalar_one_or_none()
+
+    risk_result = await db.execute(select(RiskProfile).where(RiskProfile.is_default).limit(1))
+    risk = risk_result.scalar_one_or_none()
+
+    # Market fixtures do not own the application's execution-control state.
+    system = {
+        "auto_trading_enabled": app_settings.auto_trading_enabled if app_settings else False,
+        "kill_switch_active": app_settings.kill_switch_active if app_settings else False,
+        "max_daily_loss_pct": float(risk.max_daily_loss_pct) if risk else 2.0,
+    }
+
     if settings.APP_MODE == "mock":
-        return await _mock_payload()
+        return await _mock_payload(system)
 
     # Real DB queries
     snap_result = await db.execute(
@@ -158,12 +171,6 @@ async def _build_payload(db: AsyncSession) -> dict:
 
     orders_result = await db.execute(select(Order).order_by(Order.created_at.desc()).limit(8))
     orders = orders_result.scalars().all()
-
-    settings_result = await db.execute(select(AppSettings).limit(1))
-    app_settings = settings_result.scalar_one_or_none()
-
-    risk_result = await db.execute(select(RiskProfile).where(RiskProfile.is_default).limit(1))
-    risk = risk_result.scalar_one_or_none()
 
     unrealized = sum(float(p.unrealized_pnl or 0) for p in positions)
 
@@ -212,17 +219,13 @@ async def _build_payload(db: AsyncSession) -> dict:
             }
             for o in orders
         ],
-        "system": {
-            "auto_trading_enabled": app_settings.auto_trading_enabled if app_settings else False,
-            "kill_switch_active": app_settings.kill_switch_active if app_settings else False,
-            "max_daily_loss_pct": float(risk.max_daily_loss_pct) if risk else 2.0,
-        },
+        "system": system,
         "regime": await MarketRegimeService().evaluate(),
     }
 
 
-async def _mock_payload() -> dict:
-    """Realistic mock data for demo mode."""
+async def _mock_payload(system: dict) -> dict:
+    """Synthetic market data with persisted application control state."""
     import math
     import time
 
@@ -307,11 +310,7 @@ async def _mock_payload() -> dict:
                 "created_at": datetime.now(UTC).isoformat(),
             },
         ],
-        "system": {
-            "auto_trading_enabled": True,
-            "kill_switch_active": False,
-            "max_daily_loss_pct": 2.0,
-        },
+        "system": system,
         "regime": await MarketRegimeService().evaluate(),
     }
 

@@ -503,3 +503,11 @@ See [`docs/security.md`](docs/security.md) for full details.
 and loopback `REDIS_URL`. It creates, migrates and removes a new random database;
 it does not reset the supplied database. Run from a clean web checkout without
 runtime `.env*` files. Ports 8001/3001 must be free.
+
+Both supported browser configurations disable raw Playwright traces and do not
+record HAR files: those artifacts retain authentication arguments, headers and
+response bodies, including synthetic fixture passwords and bearer tokens.
+Failure screenshots, the normal suite's failure video, HTML errors and safe HTTP
+status diagnostics remain available. Test assertions, retries and security scans
+are unchanged. Manual trace/HAR overrides are outside this confidentiality
+boundary; do not upload such artifacts. Scan generated artifacts before sharing.

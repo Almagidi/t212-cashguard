@@ -14,6 +14,9 @@ import { useUIStore } from '@/stores/ui-store'
 import { ShieldLogo } from './shield-logo'
 import api from '@/services/api'
 import { useEffect } from 'react'
+import { useRef } from 'react'
+import * as Dialog from '@radix-ui/react-dialog'
+import { hasCurrentQueryData } from '@/lib/query-observation'
 
 // ── Nav groups ────────────────────────────────────────────────────────────────
 
@@ -85,9 +88,11 @@ function NavLink({
       href={href}
       onClick={onClick}
       title={collapsed ? label : undefined}
+      aria-label={label}
+      aria-current={active ? 'page' : undefined}
       className={cn(
         'nav-link',
-        danger && !active && 'text-red-400/80 hover:!text-red-300',
+        danger && !active && 'text-red-700 dark:text-red-400 hover:!text-red-800 dark:hover:!text-red-300',
         danger && active  && 'text-red-400 !bg-red-500/10',
         !danger && active && 'nav-link-active text-primary',
         collapsed && 'justify-center px-0',
@@ -124,7 +129,8 @@ function SidebarContent({ onNavigate, forceExpanded = false }: { onNavigate?: ()
   const pathname   = usePathname()
   const router     = useRouter()
   const { logout } = useAuthStore()
-  const { data: settings } = useSettings()
+  const settingsQuery = useSettings()
+  const settings = hasCurrentQueryData(settingsQuery) ? settingsQuery.data : undefined
   const { sidebarCollapsed: storeCollapsed, toggleSidebar } = useUIStore()
   const sidebarCollapsed = forceExpanded ? false : storeCollapsed
   const badges     = useNavBadges()
@@ -168,7 +174,7 @@ function SidebarContent({ onNavigate, forceExpanded = false }: { onNavigate?: ()
       )}
 
       {/* ── Nav groups ───────────────────────────────────────────────────── */}
-      <nav className="flex-1 overflow-y-auto min-h-0 scrollbar-none space-y-4"
+      <nav aria-label="Main navigation" className="flex-1 overflow-y-auto min-h-0 scrollbar-none space-y-4"
            style={{ padding: sidebarCollapsed ? '12px 8px' : '12px' }}>
         {NAV_GROUPS.map((group) => (
           <div key={group.label}>
@@ -266,6 +272,8 @@ export function MobileMenuButton({ open, onToggle }: { open: boolean; onToggle: 
       onClick={onToggle}
       className="md:hidden flex items-center justify-center w-9 h-9 rounded-lg hover:bg-accent transition-colors"
       aria-label="Toggle menu"
+      aria-expanded={open}
+      aria-controls="mobile-navigation"
     >
       {open ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
     </button>
@@ -275,25 +283,31 @@ export function MobileMenuButton({ open, onToggle }: { open: boolean; onToggle: 
 // ── Mobile drawer ─────────────────────────────────────────────────────────────
 
 export function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const openerRef = useRef<HTMLElement | null>(null)
   useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', handleKey)
-    return () => document.removeEventListener('keydown', handleKey)
-  }, [onClose])
-
-  useEffect(() => {
-    document.body.style.overflow = open ? 'hidden' : ''
-    return () => { document.body.style.overflow = '' }
-  }, [open])
+    if (!open) return
+    const query = window.matchMedia('(min-width: 768px)')
+    const resize = () => { if (query.matches) onClose() }
+    resize(); query.addEventListener('change', resize)
+    return () => query.removeEventListener('change', resize)
+  }, [open, onClose])
 
   if (!open) return null
 
   return (
-    <>
-      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden" onClick={onClose} />
-      <aside className="fixed left-0 top-0 h-full w-64 bg-card border-r border-border flex flex-col z-50 md:hidden animate-slide-in">
+    <Dialog.Root open={open} onOpenChange={value => { if (!value) onClose() }}>
+      <Dialog.Portal>
+      <Dialog.Overlay className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden" />
+      <Dialog.Content asChild aria-describedby={undefined}
+        onOpenAutoFocus={() => { openerRef.current = document.activeElement as HTMLElement }}
+        onCloseAutoFocus={event => { event.preventDefault(); const opener = openerRef.current; (opener?.isConnected && opener.getClientRects().length ? opener : document.querySelector<HTMLElement>('main'))?.focus() }}>
+      <aside id="mobile-navigation" className="fixed left-0 top-0 h-full w-64 bg-card border-r border-border flex flex-col z-50 md:hidden animate-slide-in">
+        <Dialog.Title className="sr-only">Navigation menu</Dialog.Title>
+        <Dialog.Close className="absolute right-2 top-2 p-2 rounded-lg bg-card" aria-label="Close menu"><X className="h-4 w-4" /></Dialog.Close>
         <SidebarContent onNavigate={onClose} forceExpanded />
       </aside>
-    </>
+      </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   )
 }

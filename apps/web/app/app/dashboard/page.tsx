@@ -13,11 +13,12 @@ import {
   Card, CardHeader, CardTitle, CardContent,
   Badge, Button, Spinner, EmptyState, TerminalCard,
 } from '@/components/ui'
-import { OPEN_ORDER_STATUSES, formatCurrency, formatPnL, pnlClass, formatDateShort, orderStatusBg, cn } from '@/lib/utils'
+import { OPEN_ORDER_STATUSES, formatReportedAmount, formatReportedPnL, pnlClass, formatDateShort, orderStatusBg, cn } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import { useWebSocket } from '@/hooks/use-websocket'
 import { EquityCurve, Sparkline, type EquityPoint } from '@/components/charts/equity-curve'
 import { RegimeBadge } from '@/components/dashboard/regime-badge'
+import { AutomationStatus, KillSwitchStatus } from '@/components/dashboard/automation-status'
 import api, { API_URL } from '@/services/api'
 import { StrategyPresetGrid } from '@/components/strategies/strategy-preset-grid'
 import type { AllocatorDecision } from '@/types'
@@ -98,7 +99,7 @@ export default function DashboardPage() {
   const token = useSyncExternalStore(subscribeToTokenChanges, () => api.getToken(), () => null)
 
   // Live WebSocket feed
-  const { snapshot, status: wsStatus } = useWebSocket({ token, enabled: !!token })
+  const { snapshot, status: wsStatus, lastPing: lastFrameAt } = useWebSocket({ token, enabled: !!token })
 
   const signalDetailsById = useMemo(
     () => new Map(signals.map((signal) => [signal.id, signal])),
@@ -182,6 +183,11 @@ export default function DashboardPage() {
     [signals],
   )
 
+  const totalCurrency = liveAccount?.total_value != null ? liveAccount.currency : account?.currency
+  const cashCurrency = liveAccount?.free_cash != null ? liveAccount.currency : cash?.currency
+  const investedCurrency = liveAccount?.invested != null ? liveAccount.currency : account?.currency
+  const pnlCurrency = liveAccount?.unrealized_pnl != null ? liveAccount.currency : undefined
+
   const totalValue   = liveAccount?.total_value ?? account?.total_value ?? 0
   const freeCash     = liveAccount?.free_cash    ?? cash?.available_to_trade ?? 0
   const invested     = liveAccount?.invested      ?? account?.invested ?? 0
@@ -206,7 +212,6 @@ export default function DashboardPage() {
   )
 
   const killSwitchActive = liveSystem?.kill_switch_active ?? settings?.kill_switch_active
-  const autoTradingEnabled = liveSystem?.auto_trading_enabled ?? settings?.auto_trading_enabled
   const degradedSymbols = marketDataHealth?.symbols.filter((symbol) => !['ok', 'fallback'].includes(symbol.status)) ?? []
 
   const refresh = () => {
@@ -229,29 +234,29 @@ export default function DashboardPage() {
           <div data-testid="account-stats" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <TerminalCard
               label="Total Value"
-              value={formatCurrency(totalValue)}
-              sub={liveAccount?.currency ?? account?.currency ?? 'GBP'}
+              value={formatReportedAmount(totalValue, totalCurrency)}
+              sub={totalCurrency ?? 'Currency unavailable'}
               variant="cyan"
               icon={<Wallet className="w-5 h-5" />}
               live={wsStatus === 'connected'}
             />
             <TerminalCard
               label="Available to Trade"
-              value={formatCurrency(freeCash)}
+              value={formatReportedAmount(freeCash, cashCurrency)}
               sub="Cash-only · no leverage"
               variant="cyan"
               icon={<ShieldCheck className="w-5 h-5" />}
             />
             <TerminalCard
               label="Invested"
-              value={formatCurrency(invested)}
+              value={formatReportedAmount(invested, investedCurrency)}
               sub={`${livePositions.length} position${livePositions.length !== 1 ? 's' : ''}`}
               variant="cyan"
               icon={<BarChart2 className="w-5 h-5" />}
             />
             <TerminalCard
               label="Unrealized P&L"
-              value={<span className={pnlClass(unrealizedPnl)}>{formatPnL(unrealizedPnl)}</span>}
+              value={<span className={pnlClass(unrealizedPnl)}>{formatReportedPnL(unrealizedPnl, pnlCurrency)}</span>}
               sub={unrealizedPnl > 0 ? 'Profitable' : unrealizedPnl < 0 ? 'In drawdown' : 'Flat'}
               variant={unrealizedPnl >= 0 ? 'teal' : 'red'}
               icon={unrealizedPnl >= 0 ? <TrendingUp className="w-5 h-5" /> : <ArrowDownRight className="w-5 h-5" />}
@@ -288,7 +293,7 @@ export default function DashboardPage() {
                 </div>
                 <div className="text-right">
                   <p className={cn('text-lg font-bold tabular-nums', pnlClass(perfReport?.total_pnl ?? 0))}>
-                    {formatPnL(perfReport?.total_pnl ?? 0)}
+                    {formatReportedPnL(perfReport?.total_pnl ?? 0)}
                   </p>
                   <p className="text-[10px] text-muted-foreground">
                     {perfReport?.total_trades ?? 0} trades · {Math.round((perfReport?.win_rate ?? 0) * 100)}% win
@@ -338,22 +343,8 @@ export default function DashboardPage() {
             {/* System status mini card */}
             <Card>
               <CardContent className="p-4 space-y-3">
-                <StatusRow
-                  label="Auto Trading"
-                  active={!!autoTradingEnabled}
-                  activeText="Enabled"
-                  inactiveText="Disabled"
-                  activeClass="text-emerald-400"
-                  inactiveClass="text-muted-foreground"
-                />
-                <StatusRow
-                  label="Kill Switch"
-                  active={!!killSwitchActive}
-                  activeText="ACTIVE"
-                  inactiveText="Inactive"
-                  activeClass="text-red-400 animate-pulse"
-                  inactiveClass="text-emerald-400"
-                />
+                <AutomationStatus snapshot={snapshot} status={wsStatus} lastFrameAt={lastFrameAt} />
+                <KillSwitchStatus snapshot={snapshot} status={wsStatus} lastFrameAt={lastFrameAt} />
                 <StatusRow
                   label="Pending Orders"
                   active={pendingOrders.length > 0}
@@ -491,9 +482,9 @@ export default function DashboardPage() {
                         </div>
                       </div>
                       <div className="text-right">
-                        <p className="text-sm font-medium">{formatCurrency(pos.current_price)}</p>
+                        <p className="text-sm font-medium">{formatReportedAmount(pos.current_price)}</p>
                         <p className={cn('text-xs font-medium', pnlClass(pos.unrealized_pnl))}>
-                          {formatPnL(pos.unrealized_pnl)}
+                          {formatReportedPnL(pos.unrealized_pnl)}
                         </p>
                       </div>
                     </div>
@@ -701,10 +692,10 @@ export default function DashboardPage() {
                           <div>
                             <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Sleeve P&amp;L</p>
                             <p className={cn('mt-1 text-base font-semibold', pnlClass(portfolioAttributionById[strategy.strategy_id].total_pnl))}>
-                              {formatPnL(portfolioAttributionById[strategy.strategy_id].total_pnl)}
+                              {formatReportedPnL(portfolioAttributionById[strategy.strategy_id].total_pnl)}
                             </p>
                             <p className="mt-1 text-[11px] text-muted-foreground">
-                              Realized {formatPnL(portfolioAttributionById[strategy.strategy_id].realized_pnl)} · Unrealized {formatPnL(portfolioAttributionById[strategy.strategy_id].unrealized_pnl)}
+                              Realized {formatReportedPnL(portfolioAttributionById[strategy.strategy_id].realized_pnl)} · Unrealized {formatReportedPnL(portfolioAttributionById[strategy.strategy_id].unrealized_pnl)}
                             </p>
                           </div>
                           <Sparkline
@@ -717,11 +708,11 @@ export default function DashboardPage() {
                         <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                           <div className="rounded-lg border border-border/40 px-3 py-2">
                             <p className="text-muted-foreground">Market value</p>
-                            <p className="mt-1 font-medium">{formatCurrency(portfolioAttributionById[strategy.strategy_id].current_market_value)}</p>
+                            <p className="mt-1 font-medium">{formatReportedAmount(portfolioAttributionById[strategy.strategy_id].current_market_value)}</p>
                           </div>
                           <div className="rounded-lg border border-border/40 px-3 py-2">
                             <p className="text-muted-foreground">Turnover</p>
-                            <p className="mt-1 font-medium">{formatCurrency(portfolioAttributionById[strategy.strategy_id].turnover_notional)}</p>
+                            <p className="mt-1 font-medium">{formatReportedAmount(portfolioAttributionById[strategy.strategy_id].turnover_notional)}</p>
                           </div>
                         </div>
                         <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
@@ -824,8 +815,8 @@ export default function DashboardPage() {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <MiniStat label="Win Rate" value={`${Math.round(perfReport.win_rate * 100)}%`} positive={perfReport.win_rate >= 0.5} />
             <MiniStat label="Profit Factor" value={perfReport.profit_factor.toFixed(2)} positive={perfReport.profit_factor >= 1} />
-            <MiniStat label="Avg Win" value={formatCurrency(perfReport.avg_win)} positive={true} />
-            <MiniStat label="Max Drawdown" value={formatCurrency(perfReport.max_drawdown)} positive={false} />
+            <MiniStat label="Avg Win" value={formatReportedAmount(perfReport.avg_win)} positive={true} />
+            <MiniStat label="Max Drawdown" value={formatReportedAmount(perfReport.max_drawdown)} positive={false} />
           </div>
         )}
       </>
@@ -847,8 +838,8 @@ export default function DashboardPage() {
               <AlertOctagon className="w-4 h-4 animate-pulse-slow" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold">Kill Switch is active</p>
-              <p className="text-xs text-red-300/70">All automated trading is halted</p>
+              <p className="text-sm font-semibold">Last reported: kill switch active</p>
+              <p className="text-xs text-foreground">Verify current control status before acting.</p>
             </div>
             <Link
               href="/app/emergency"

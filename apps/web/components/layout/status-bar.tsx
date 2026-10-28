@@ -2,13 +2,17 @@
 import { useEffect, useState } from 'react'
 import { AlertOctagon, TrendingUp, Wifi, WifiOff, Activity, Clock } from 'lucide-react'
 import { useSettings, useAccount, useDepsHealth } from '@/hooks/use-api'
-import { formatCurrency, cn } from '@/lib/utils'
+import { formatReportedAmount, cn } from '@/lib/utils'
+import { hasCurrentQueryData } from '@/lib/query-observation'
 import { useUIStore } from '@/stores/ui-store'
 
 export function StatusBar() {
-  const { data: settings } = useSettings()
+  const settingsQuery = useSettings()
+  const settings = hasCurrentQueryData(settingsQuery) ? settingsQuery.data : undefined
   const { data: account } = useAccount()
-  const { data: deps } = useDepsHealth()
+  const depsQuery = useDepsHealth()
+  const deps = hasCurrentQueryData(depsQuery) ? depsQuery.data : undefined
+  const automationKnown = typeof settings?.auto_trading_enabled === 'boolean'
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
 
   const isHealthy = deps?.database === 'ok' && deps?.redis === 'ok'
@@ -46,7 +50,7 @@ export function StatusBar() {
             settings?.auto_trading_enabled ? 'bg-emerald-400 animate-pulse-slow' : 'bg-muted-foreground/40'
           )}
         />
-        {settings?.auto_trading_enabled ? 'Automation ready' : 'Automation off'}
+        {!automationKnown ? 'Automation unknown' : settings?.auto_trading_enabled ? 'Automation enabled' : 'Automation off'}
       </span>
 
       {/* Mode badge */}
@@ -69,7 +73,7 @@ export function StatusBar() {
       {account && (
         <span className="flex items-center gap-1.5 text-foreground/90">
           <TrendingUp className="w-3 h-3 text-emerald-400" />
-          {formatCurrency(account.free_funds, account.currency)}
+          {formatReportedAmount(account.free_funds, account.currency)}
           <span className="text-muted-foreground/70">available</span>
         </span>
       )}
@@ -79,7 +83,7 @@ export function StatusBar() {
 
       {/* Market data provider */}
       <span className="text-muted-foreground/80">
-        {deps?.market_data === 'polygon' ? 'Polygon.io' : 'Mock data'}
+        {!deps ? 'Data provider unknown' : deps.market_data === 'polygon' ? 'Polygon.io' : deps.market_data === 'mock' ? 'Mock data' : deps.market_data}
       </span>
 
       {/* Connectivity */}
@@ -90,7 +94,7 @@ export function StatusBar() {
         )}
       >
         {isHealthy ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
-        {isHealthy ? 'Connected' : 'Degraded'}
+        {!deps ? 'Connectivity unknown' : isHealthy ? 'Connected' : 'Degraded'}
       </span>
 
       {/* Time */}

@@ -459,7 +459,7 @@ test.describe('Operator dashboard readiness', () => {
 
     await expect(page.locator('.badge-mock').first()).toBeVisible({ timeout: 10_000 })
     await expect(page.getByRole('heading', { name: 'Runtime Diagnostics' })).toBeVisible()
-    await expect(page.getByText('Frontend mock')).toBeVisible()
+    await expect(page.getByTestId('safety-policy-status')).toHaveText('Frontend mock')
     await expect(page.getByText('Backend mock')).toBeVisible()
     await expect(page.getByText('API URL')).toBeVisible()
     await expect(page.getByText('Operator /v1/operator/status')).toBeVisible()

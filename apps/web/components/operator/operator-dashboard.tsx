@@ -23,7 +23,7 @@ import {
   Skeleton,
   StatCard,
 } from "@/components/ui";
-import { cn, formatCurrency, formatDate } from "@/lib/utils";
+import { cn, formatCurrency, formatReportedAmount, formatDate } from "@/lib/utils";
 import { BrokerStatusPanel } from "./broker-status-panel";
 import {
   useBrokerStatus,
@@ -1627,16 +1627,16 @@ function CashGuardCard({ status }: { status: OperatorStatus }) {
               <>
                 <InfoRow
                   label="Available to trade"
-                  value={formatCurrency(cashGuardQuery.data.available_to_trade)}
+                  value={formatReportedAmount(cashGuardQuery.data.available_to_trade, cashGuardQuery.data.currency)}
                   valueClassName="text-emerald-400"
                 />
                 <InfoRow
                   label="Reserved"
-                  value={formatCurrency(cashGuardQuery.data.reserved)}
+                  value={formatReportedAmount(cashGuardQuery.data.reserved, cashGuardQuery.data.currency)}
                 />
                 <InfoRow
                   label="Total cash"
-                  value={formatCurrency(cashGuardQuery.data.total_cash)}
+                  value={formatReportedAmount(cashGuardQuery.data.total_cash, cashGuardQuery.data.currency)}
                 />
                 <InfoRow
                   label="Currency"

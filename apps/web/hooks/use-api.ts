@@ -1,5 +1,6 @@
 import { getDcaActivity } from "@/services/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import api from "@/services/api";
 import type {
@@ -626,12 +627,19 @@ export const useTelegramTestAlert = () => {
 };
 
 // ── Emergency ─────────────────────────────────────────────────────────────────
+async function refreshEmergencySettings(qc: QueryClient) {
+  // Invalidation alone reuses an initial read without cached data. Discard any
+  // pre-action response before requesting the post-action control state.
+  await qc.cancelQueries({ queryKey: QK.settings });
+  await qc.invalidateQueries({ queryKey: QK.settings });
+}
+
 export const useEmergencyKillSwitch = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.emergencyKillSwitch.bind(api),
     onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: QK.settings });
+      await refreshEmergencySettings(qc);
       toast.error("⛔ KILL SWITCH ACTIVATED");
     },
   });
@@ -641,7 +649,7 @@ export const useEmergencyDisableKillSwitch = () => {
   return useMutation({
     mutationFn: api.disableKillSwitch.bind(api),
     onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: QK.settings });
+      await refreshEmergencySettings(qc);
       toast.success(
         "Kill switch disabled. Auto-trading remains OFF until manually re-enabled.",
       );
@@ -654,8 +662,8 @@ export const useEmergencyAutoTradingOff = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.emergencyAutoTradingOff.bind(api),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["settings"] });
+    onSuccess: async () => {
+      await refreshEmergencySettings(qc);
       toast.success("Auto-trading disabled");
     },
   });
@@ -664,8 +672,8 @@ export const useEmergencyAutoTradingOn = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.emergencyAutoTradingOn.bind(api),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["settings"] });
+    onSuccess: async () => {
+      await refreshEmergencySettings(qc);
     },
     onError: (e: any) => toast.error(extractErrorMessage(e, "Cannot enable")),
   });
