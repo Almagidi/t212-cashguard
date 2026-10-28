@@ -228,4 +228,5 @@ def create_trading212_provider_adapter(
         validated_request.environment,
     )
     adapter.account_scope = trading212_account_scope(validated_request)
+    adapter.provider_request = validated_request
     return adapter

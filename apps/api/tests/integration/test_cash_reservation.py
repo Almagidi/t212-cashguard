@@ -146,13 +146,19 @@ async def test_a_caller_without_an_account_counts_every_order(world: World) -> N
 
 
 async def test_orders_of_another_environment_or_venue_do_not_count(
-    world: World, monkeypatch: pytest.MonkeyPatch
+    world: World,
 ) -> None:
+    from sqlalchemy import update
+
     account = Account("one")
     await world.admit(account, "AAA", 6, venue="kraken")
-    monkeypatch.setattr("app.core.config.settings.APP_MODE", "live")
     await world.admit(account, "BBB", 6, send=False)
-    monkeypatch.setattr("app.core.config.settings.APP_MODE", "demo")
+    # Seed a stored foreign-environment reservation; do not authorize an unbound live transport.
+    async with world.sessions() as fixture:
+        await fixture.execute(
+            update(Order).where(Order.ticker == "BBB").values(execution_environment="live")
+        )
+        await fixture.commit()
 
     await world.admit(account, "CCC", 6)
 

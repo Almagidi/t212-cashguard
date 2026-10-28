@@ -92,6 +92,7 @@ async def get_broker(
         select(BrokerConnection)
         .where(BrokerConnection.is_active.is_(True))
         .where(BrokerConnection.user_id == current_user.id)
+        .where(BrokerConnection.broker == "trading212")
         .where(BrokerConnection.environment == settings.APP_MODE)
         .limit(1)
     )

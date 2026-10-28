@@ -155,14 +155,71 @@ def _demo_missing_credentials_status() -> BrokerStatusOut:
 
 
 def _broker_account_id(value: object) -> str | None:
-    """Normalise broker account identifiers for API schemas and DB storage.
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return None
 
-    Trading 212 may return account identifiers as integers, while our API schema
-    and broker_connections.account_id column expect strings.
-    """
-    if value is None:
+
+def _connection_revision(conn: BrokerConnection | None) -> tuple[object, ...] | None:
+    if conn is None:
         return None
-    return str(value)
+    return (
+        conn.id,
+        conn.user_id,
+        conn.broker,
+        conn.environment,
+        conn.is_active,
+        conn.account_id,
+        conn.api_key_encrypted,
+        conn.api_secret_encrypted,
+    )
+
+
+async def _selected_connection(
+    db: AsyncSession, owner: uuid.UUID, environment: str, *, lock: bool = False
+) -> BrokerConnection | None:
+    if lock:
+        from app.services.live_account import bound_lock_wait
+
+        await bound_lock_wait(db)
+        user = (
+            await db.execute(
+                select(User)
+                .where(User.id == owner)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if user is None or not user.is_active or not user.is_admin:
+            raise HTTPException(
+                status_code=403, detail="Broker test owner is no longer authorized."
+            )
+    query = (
+        select(BrokerConnection)
+        .where(
+            BrokerConnection.user_id == owner,
+            BrokerConnection.broker == "trading212",
+            BrokerConnection.environment == environment,
+        )
+        .execution_options(populate_existing=True)
+    )
+    if lock:
+        query = query.with_for_update()
+    return (await db.execute(query)).scalar_one_or_none()
+
+
+async def _unchanged_after_test(
+    db: AsyncSession, owner: uuid.UUID, environment: str, expected: tuple[object, ...] | None
+) -> BrokerConnection | None:
+    conn = await _selected_connection(db, owner, environment, lock=True)
+    if _connection_revision(conn) != expected:
+        raise HTTPException(
+            status_code=409,
+            detail="Broker connection changed during the test; its result was not applied.",
+        )
+    return conn
 
 
 @router.post("/connect", response_model=BrokerStatusOut)
@@ -189,6 +246,12 @@ async def connect_broker(
         require_broker_environment(body.environment, action="broker credential test")
     except SafetyPolicyViolation as exc:
         raise HTTPException(status_code=400, detail=exc.reason) from exc
+
+    expected_connection = None
+    if body.environment == "live":
+        expected_connection = _connection_revision(
+            await _selected_connection(db, current_user.id, body.environment)
+        )
 
     # Test the submitted credentials before replacing a working connection.
     from app.broker.provider import (
@@ -217,7 +280,7 @@ async def connect_broker(
     async with trading212_adapter as broker:
         test = await broker.test_connection()
 
-    if not test["is_ok"]:
+    if test.get("is_ok") is not True:
         detail = test["error"] or "Broker connection test failed"
         diagnostics = test.get("diagnostics")
         raise HTTPException(
@@ -225,14 +288,26 @@ async def connect_broker(
             detail={"message": detail, "diagnostics": diagnostics} if diagnostics else detail,
         )
 
-    # Upsert: deactivate existing connection for this env
+    observed_account = _broker_account_id(test.get("account_id"))
+    if body.environment == "live" and observed_account is None:
+        raise HTTPException(
+            status_code=400, detail="Broker test returned no verified live account identity."
+        )
+    live_existing = None
+    if body.environment == "live":
+        live_existing = await _unchanged_after_test(
+            db, current_user.id, body.environment, expected_connection
+        )
+
+    # Upsert the exact Trading 212 connection for this owner/environment.
     result = await db.execute(
         select(BrokerConnection).where(
             BrokerConnection.user_id == current_user.id,
+            BrokerConnection.broker == "trading212",
             BrokerConnection.environment == body.environment,
         )
     )
-    existing = result.scalar_one_or_none()
+    existing = live_existing if body.environment == "live" else result.scalar_one_or_none()
     if existing:
         existing.api_key_encrypted = encrypt_field(body.api_key)
         existing.api_secret_encrypted = encrypt_field(body.api_secret)
@@ -252,10 +327,15 @@ async def connect_broker(
 
     await db.flush()
 
-    conn.last_test_at = datetime.now(UTC)
-    conn.last_test_ok = test["is_ok"]
-    conn.account_id = _broker_account_id(test.get("account_id"))
+    conn.account_id = observed_account
     conn.account_currency = test.get("currency")
+    if conn.environment == "live":
+        from app.services.live_evidence import record_broker_test
+
+        await record_broker_test(db, conn, success=test["is_ok"] is True, actor=current_user.email)
+    else:
+        conn.last_test_at = datetime.now(UTC)
+        conn.last_test_ok = test["is_ok"]
 
     await _audit(
         db,
@@ -284,6 +364,7 @@ async def test_connection(
         select(BrokerConnection)
         .where(
             BrokerConnection.user_id == current_user.id,
+            BrokerConnection.broker == "trading212",
             BrokerConnection.is_active.is_(True),
             BrokerConnection.environment == settings.APP_MODE,
         )
@@ -338,11 +419,30 @@ async def test_connection(
     except BrokerProviderValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    expected_revision = _connection_revision(conn)
     async with trading212_adapter as broker:
         test = await broker.test_connection()
 
-    conn.last_test_at = datetime.now(UTC)
-    conn.last_test_ok = test["is_ok"]
+    observed_account = _broker_account_id(test.get("account_id"))
+    if conn.environment == "live":
+        from app.services.live_evidence import record_broker_test
+
+        current = await _unchanged_after_test(db, current_user.id, "live", expected_revision)
+        if current is None:
+            raise HTTPException(status_code=409, detail="Selected live connection disappeared.")
+        if test.get("is_ok") is True and observed_account != current.account_id:
+            test = {
+                **test,
+                "is_ok": False,
+                "account_id": None,
+                "error": "Broker account identity is missing or changed; reconnect explicitly.",
+            }
+        await record_broker_test(
+            db, current, success=test.get("is_ok") is True, actor=current_user.email
+        )
+    else:
+        conn.last_test_at = datetime.now(UTC)
+        conn.last_test_ok = test["is_ok"]
     test["account_id"] = _broker_account_id(test.get("account_id"))
     return BrokerTestResult(**test)
 

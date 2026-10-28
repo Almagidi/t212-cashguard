@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import threading
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -2135,7 +2136,7 @@ class TestSettingsFlow:
             json={"action": "unlock_live"},
         )
         assert resp.status_code == 400
-        assert "cannot be unlocked" in resp.json()["detail"].lower()
+        assert "authorized live trading 212 account" in resp.json()["detail"].lower()
 
     async def test_can_unlock_live_after_all_checks(
         self,
@@ -2152,23 +2153,29 @@ class TestSettingsFlow:
         monkeypatch.setattr(settings, "APP_MODE", "live")
         monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", True)
         monkeypatch.setattr(settings, "TELEGRAM_CHAT_ID", "12345")
+        monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", "alpaca")
+        monkeypatch.setattr(settings, "ALPACA_API_KEY", secrets.token_urlsafe(24))
+        monkeypatch.setattr(settings, "ALPACA_API_SECRET", secrets.token_urlsafe(24))
 
         user = (await db.execute(select(User).where(User.email == "admin@test.com"))).scalar_one()
-        db.add(
-            BrokerConnection(
-                id=uuid.uuid4(),
-                user_id=user.id,
-                broker="trading212",
-                environment="live",
-                api_key_encrypted="enc-key",
-                api_secret_encrypted="enc-secret",
-                is_active=True,
-                last_test_at=datetime.now(UTC),
-                last_test_ok=True,
-                account_id="LIVE-123",
-                account_currency="USD",
-            )
+        connection = BrokerConnection(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            broker="trading212",
+            environment="live",
+            api_key_encrypted="enc-key",
+            api_secret_encrypted="enc-secret",
+            is_active=True,
+            last_test_at=datetime.now(UTC),
+            last_test_ok=True,
+            account_id="LIVE-123",
+            account_currency="USD",
         )
+        db.add(connection)
+        await db.flush()
+        from app.services.live_evidence import record_broker_test
+
+        await record_broker_test(db, connection, success=True, actor=user.email)
         await db.commit()
 
         for action in (
@@ -2795,14 +2802,20 @@ class TestBrokerExecutionFlow:
         monkeypatch.setattr(settings, "T212_ENVIRONMENT", "live")
         monkeypatch.setattr(settings, "T212_LIVE_API_KEY", "configured-live-key")
         monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", "polygon")
+        monkeypatch.setattr(settings, "POLYGON_API_KEY", secrets.token_urlsafe(24))
         monkeypatch.setattr(settings, "TELEGRAM_CHAT_ID", "12345")
 
         def fake_provider(request, credentials, *, app_mode, live_trading_enabled):
-            return FakeTrading212Adapter(
+            adapter = FakeTrading212Adapter(
                 credentials.api_key,
                 credentials.api_secret,
                 request.environment,
             )
+            from app.broker.provider import trading212_account_scope
+
+            adapter.provider_request = request
+            adapter.account_scope = trading212_account_scope(request)
+            return adapter
 
         monkeypatch.setattr("app.broker.provider.create_trading212_provider_adapter", fake_provider)
         monkeypatch.setattr(

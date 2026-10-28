@@ -257,7 +257,7 @@ function TopSafetySummary({ status }: { status: OperatorStatus }) {
                 !status.live_trading_enabled_anywhere ? "success" : "warning"
               }
             >
-              Live disabled
+              {status.live_trading_enabled_anywhere ? "Live flags enabled" : "Live disabled"}
             </TextBadge>
             <TextBadge tone="info">Read-only</TextBadge>
             {generatedMissing && (

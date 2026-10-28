@@ -9,6 +9,7 @@ import toast from 'react-hot-toast'
 import { Button, Card, Input, Label } from '@/components/ui'
 import { useAuthStore } from '@/stores/auth'
 import api from '@/services/api'
+import { captureOwnerScope, isCurrentOwnerScope, OwnerScopeChangedError } from '@/lib/owner-scope'
 
 const schema = z.object({
   email: z.string().min(1, 'Email required'),
@@ -22,6 +23,7 @@ function LoginPageContent() {
   const { setUser } = useAuthStore()
   const [showPass, setShowPass] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [formScope] = useState(captureOwnerScope)
 
   const { register, handleSubmit, formState: { errors } } = useForm<FormData>({
     resolver: zodResolver(schema),
@@ -29,15 +31,25 @@ function LoginPageContent() {
   })
 
   const onSubmit = async (data: FormData) => {
+    if (!isCurrentOwnerScope(formScope)) return
+    let attemptScope = formScope
     setLoading(true)
     try {
-      await api.login(data)
+      const login = await api.login(data)
+      const token = login.access_token
+      const scope = captureOwnerScope()
+      // ApiClient.login advances this exact session once. A later login or
+      // verification must not be adopted by this form's pending continuation.
+      if (api.getToken() !== token || scope.token !== token || scope.owner !== formScope.owner || scope.revision !== formScope.revision + 1 || scope.verifiedToken !== null) throw new OwnerScopeChangedError()
+      attemptScope = scope
       const me = await api.getMe()
+      if (api.getToken() !== token || !isCurrentOwnerScope(scope)) throw new OwnerScopeChangedError()
       setUser(me)
       const nextPath = searchParams.get('next')
       const safePath = nextPath?.startsWith('/app/') ? nextPath : '/app/dashboard'
       router.push(safePath)
     } catch (e: any) {
+      if (e instanceof OwnerScopeChangedError || !isCurrentOwnerScope(attemptScope)) return
       const detail = e?.response?.data?.detail
       let msg = 'Login failed'
       if (typeof detail === 'string') msg = detail

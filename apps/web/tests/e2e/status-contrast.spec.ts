@@ -1,6 +1,6 @@
 import { test, expect } from './test'
 import { ensureAppPage } from './helpers'
-import { textContrast } from './status-contrast'
+import { selectTheme, textContrast, waitForStablePaint } from './status-contrast'
 import { waitForBrowserApiSlot } from './rate-limit-guard'
 type Route = import('@playwright/test').Route
 type PaperExecutionHistory = import('@/types').PaperExecutionHistory
@@ -18,7 +18,7 @@ const syntheticHistory: PaperExecutionHistory = {
 
 const unavailable = (route: Route) => route.fulfill({ status: route.request().method() === 'OPTIONS' ? 204 : 503, headers: { 'access-control-allow-origin': route.request().headers().origin || '*', 'access-control-allow-credentials': 'true', 'access-control-allow-headers': 'authorization,content-type', 'access-control-allow-methods': 'GET,OPTIONS' }, contentType: 'application/json', body: route.request().method() === 'OPTIONS' ? '' : JSON.stringify({ detail: 'Synthetic unavailable observation' }) })
 
-for (const theme of ['light', 'dark']) {
+for (const theme of ['light', 'dark'] as const) {
   test(`operator and emergency status text contrast ${theme}`, async ({ page }, testInfo) => {
     test.setTimeout(180_000)
     await page.setViewportSize({ width: 1440, height: 1000 })
@@ -33,7 +33,7 @@ for (const theme of ['light', 'dark']) {
     })
     const results: unknown[] = []
     const check = async (name: string, required: string[]) => {
-      await page.evaluate(theme => { document.documentElement.classList.remove('light', 'dark'); document.documentElement.classList.add(theme) }, theme)
+      await selectTheme(page, theme)
       const rows = await textContrast(page, 'main, [data-testid="runtime-status-bar"]')
       for (const text of required) expect(rows.map(row => row.text), `${name} must actually measure ${text}`).toContain(text)
       const active = rows.filter(row => !row.disabled)
@@ -86,7 +86,7 @@ for (const theme of ['light', 'dark']) {
     await expect(recovery).toBeFocused()
     expect(await recovery.evaluate(element => element.matches(':focus-visible'))).toBe(true)
     // Measure rendered focus styling after the finite CSS transition, not its target variables mid-transition.
-    await page.evaluate(() => { for (const animation of document.getAnimations()) if (animation.effect?.getTiming().iterations !== Infinity) animation.finish() })
+    await waitForStablePaint(page)
     const focus = await recovery.evaluate(element => {
       const style = getComputedStyle(element), canvas = document.createElement('canvas'), ctx = canvas.getContext('2d')!
       const rgb = (color: string) => {
@@ -108,7 +108,7 @@ for (const theme of ['light', 'dark']) {
     expect(focus.ratio).toBeGreaterThanOrEqual(3)
     results.push({ name: 'recovery-focus-indicator', ...focus })
     await check('emergency-keyboard-focus', ['Disable Kill Switch'])
-    await recovery.hover(); await page.waitForTimeout(200); await check('emergency-hover', ['Disable Kill Switch'])
+    await recovery.hover(); await check('emergency-hover', ['Disable Kill Switch'])
     await page.setViewportSize({ width: 390, height: 844 }); await check('emergency-mobile', ['Operator recovery sequence'])
     await page.route('**/v1/settings', unavailable); await page.reload()
     await expect(page.getByTestId('kill-switch-status')).toContainText('Unknown', { timeout: 30_000 })

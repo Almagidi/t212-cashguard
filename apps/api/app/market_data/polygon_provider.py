@@ -9,13 +9,14 @@ Paid tier: real-time data, unlimited calls
 
 Set POLYGON_API_KEY in your .env to enable.
 """
+
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -63,13 +64,12 @@ class PolygonMarketDataProvider:
         self._api_key = api_key or settings.POLYGON_API_KEY
         if not self._api_key:
             raise ValueError(
-                "POLYGON_API_KEY not set. "
-                "Get a free key at https://polygon.io and add it to .env"
+                "POLYGON_API_KEY not set. Get a free key at https://polygon.io and add it to .env"
             )
         self._client: httpx.AsyncClient | None = None
         self._cache: dict[str, tuple[float, Any]] = {}
 
-    async def __aenter__(self) -> "PolygonMarketDataProvider":
+    async def __aenter__(self) -> PolygonMarketDataProvider:
         self._client = httpx.AsyncClient(
             base_url=self.BASE_URL,
             headers={"Authorization": f"Bearer {self._api_key}"},
@@ -128,7 +128,7 @@ class PolygonMarketDataProvider:
         cache_key = f"bars:{ticker}:{multiplier}:{timespan}"
         cached = self._cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("list[Bar]", cached)
 
         today = date.today()
         to_dt = to_date or today
@@ -142,17 +142,17 @@ class PolygonMarketDataProvider:
 
         bars: list[Bar] = []
         for result in data.get("results", []):
-            bars.append(Bar(
-                timestamp=datetime.fromtimestamp(
-                    result["t"] / 1000, tz=timezone.utc
-                ),
-                open=Decimal(str(result["o"])),
-                high=Decimal(str(result["h"])),
-                low=Decimal(str(result["l"])),
-                close=Decimal(str(result["c"])),
-                volume=int(result.get("v", 0)),
-                vwap=Decimal(str(result["vw"])) if "vw" in result else None,
-            ))
+            bars.append(
+                Bar(
+                    timestamp=datetime.fromtimestamp(result["t"] / 1000, tz=UTC),
+                    open=Decimal(str(result["o"])),
+                    high=Decimal(str(result["h"])),
+                    low=Decimal(str(result["l"])),
+                    close=Decimal(str(result["c"])),
+                    volume=int(result.get("v", 0)),
+                    vwap=Decimal(str(result["vw"])) if "vw" in result else None,
+                )
+            )
 
         self._cache_set(cache_key, bars)
         return bars
@@ -176,10 +176,9 @@ class PolygonMarketDataProvider:
             to_date=target_date,
             limit=orb_minutes + 5,
         )
-        # Filter to market open window (14:30–14:45 UTC = 09:30–09:45 ET)
+        # Filter to market open window (14:30-14:45 UTC = 09:30-09:45 ET)
         session_open_utc = datetime(
-            target_date.year, target_date.month, target_date.day,
-            14, 30, tzinfo=timezone.utc
+            target_date.year, target_date.month, target_date.day, 14, 30, tzinfo=UTC
         )
         cutoff = session_open_utc + timedelta(minutes=orb_minutes)
         return [b for b in bars if session_open_utc <= b.timestamp < cutoff]
@@ -194,12 +193,10 @@ class PolygonMarketDataProvider:
         cache_key = f"quote:{ticker}"
         cached = self._cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("Quote", cached)
 
         # Previous close + snapshot for current price
-        data = await self._get(
-            f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}"
-        )
+        data = await self._get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
         ticker_data = data.get("ticker", {})
         last_trade = ticker_data.get("lastTrade", {})
         last_quote = ticker_data.get("lastQuote", {})
@@ -211,8 +208,11 @@ class PolygonMarketDataProvider:
 
         # Updated timestamp
         updated_ms = ticker_data.get("updated", 0)
-        ts = datetime.fromtimestamp(updated_ms / 1_000_000_000, tz=timezone.utc) \
-            if updated_ms else datetime.now(timezone.utc)
+        ts = (
+            datetime.fromtimestamp(updated_ms / 1_000_000_000, tz=UTC)
+            if updated_ms
+            else datetime.now(UTC)
+        )
 
         quote = Quote(
             ticker=ticker,
@@ -233,14 +233,14 @@ class PolygonMarketDataProvider:
         cache_key = "market_status"
         cached = self._cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("bool", cached)
 
         try:
             data = await self._get("/v1/marketstatus/now")
             is_open = data.get("market") == "open"
         except Exception:
             # Fallback: check UTC time window
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             is_open = (
                 now.weekday() < 5
                 and 14 <= now.hour < 21
@@ -248,11 +248,11 @@ class PolygonMarketDataProvider:
             )
 
         self._cache_set(cache_key, is_open)
-        return is_open
+        return cast("bool", is_open)
 
     def validate_staleness(self, quote: Quote, max_age_seconds: int = 300) -> bool:
         """Return True if quote is fresh enough to trade on."""
-        age = (datetime.now(timezone.utc) - quote.timestamp).total_seconds()
+        age = (datetime.now(UTC) - quote.timestamp).total_seconds()
         return age <= max_age_seconds
 
 
@@ -260,14 +260,20 @@ class MarketDataProviderFactory:
     """Returns the configured market data provider."""
 
     @staticmethod
-    def create() -> "PolygonMarketDataProvider | MockMarketDataFallback":
+    def create() -> Any:
+        if settings.APP_MODE == "live":
+            from app.market_data import get_live_provider
+
+            return get_live_provider()
         key = getattr(settings, "POLYGON_API_KEY", "")
         if key:
             return PolygonMarketDataProvider(key)
         from app.market_data.mock_provider import MockMarketDataProvider
-        return MockMarketDataProvider()  # type: ignore[return-value]
+
+        return MockMarketDataProvider()
 
 
 class MockMarketDataFallback:
     """Thin wrapper so Polygon and Mock share the same interface."""
+
     pass

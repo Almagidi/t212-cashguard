@@ -951,6 +951,7 @@ def purge_old_records(self: Any) -> dict[str, Any]:
         from app.core.config import settings as app_settings
         from app.db.models import AuditLog, RiskEvent
         from app.db.session import AsyncSessionLocal
+        from app.services.live_evidence import unanchored_audit_condition
 
         audit_days: int = app_settings.AUDIT_LOG_RETENTION_DAYS
         risk_days: int = app_settings.RISK_EVENT_RETENTION_DAYS
@@ -969,7 +970,9 @@ def purge_old_records(self: Any) -> dict[str, Any]:
                     (
                         await db.execute(
                             select(AuditLog.id)
-                            .where(AuditLog.occurred_at < audit_cutoff)
+                            .where(
+                                AuditLog.occurred_at < audit_cutoff, unanchored_audit_condition()
+                            )
                             .limit(chunk)
                         )
                     )
@@ -978,7 +981,9 @@ def purge_old_records(self: Any) -> dict[str, Any]:
                 )
                 if not id_rows:
                     break
-                result = await db.execute(delete(AuditLog).where(AuditLog.id.in_(id_rows)))
+                result = await db.execute(
+                    delete(AuditLog).where(AuditLog.id.in_(id_rows), unanchored_audit_condition())
+                )
                 audit_deleted += int(getattr(result, "rowcount", 0))
                 await db.flush()
 

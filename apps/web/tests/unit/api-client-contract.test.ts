@@ -20,7 +20,7 @@ function okAdapter(seen: InternalAxiosRequestConfig[]): AxiosAdapter {
 
 // services/api.ts builds its axios instance at import time, and isolateModules gives it a fresh
 // axios module, so the adapter must be installed on that isolated instance before the import.
-function loadApi(adapter: AxiosAdapter): ApiModule {
+function loadApi(adapter: AxiosAdapter, verifiedOwner = false): ApiModule {
   let loaded: ApiModule | undefined
   jest.isolateModules(() => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -28,6 +28,10 @@ function loadApi(adapter: AxiosAdapter): ApiModule {
     isolatedAxios.defaults.adapter = adapter
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     loaded = require('@/services/api') as ApiModule
+    if (verifiedOwner) {
+      const { useAuthStore } = require('@/stores/auth') as typeof import('@/stores/auth')
+      useAuthStore.getState().setUser({ id: '11111111-1111-4111-8111-111111111111', email: 'synthetic@example.invalid', is_active: true, is_admin: true, created_at: '2026-10-28T00:00:00Z' })
+    }
   })
   if (!loaded) throw new Error('services/api failed to load')
   return loaded
@@ -77,15 +81,23 @@ describe('API client contract with axios', () => {
   })
 
   describe('request interceptor', () => {
-    it('attaches the stored bearer token to outgoing requests', async () => {
+    it('attaches the verified session bearer token to outgoing requests', async () => {
       localStorage.setItem('cg_token', 'test-token')
       const seen: InternalAxiosRequestConfig[] = []
-      const { api } = loadApi(okAdapter(seen))
+      const { api } = loadApi(okAdapter(seen), true)
 
       await api.getBackendHealth()
 
       expect(seen).toHaveLength(1)
       expect(seen[0].headers.get('Authorization')).toBe('Bearer test-token')
+    })
+
+    it('does not dispatch a stored token before its owner is verified', async () => {
+      localStorage.setItem('cg_token', 'test-token')
+      const seen: InternalAxiosRequestConfig[] = []
+      const { api } = loadApi(okAdapter(seen))
+      await expect(api.getBackendHealth()).rejects.toMatchObject({ name: 'OwnerScopeChangedError' })
+      expect(seen).toHaveLength(0)
     })
 
     it('sends no Authorization header when no token is stored', async () => {

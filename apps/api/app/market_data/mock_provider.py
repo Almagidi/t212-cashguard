@@ -13,6 +13,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+from app.core.config import settings
 from app.market_data.exchange_calendar import calendar_for_venue
 
 if TYPE_CHECKING:
@@ -53,6 +54,13 @@ _DAILY_INTERVAL_MINUTES = 24 * 60
 _ORB_DAILY_SOURCE_INTERVAL_MINUTES = 5
 _ORB_PRIOR_CLOSE_FACTOR = 0.999
 _ORB_DAILY_VOLUME = 1_500_000
+
+
+def _require_synthetic_runtime() -> None:
+    if settings.APP_MODE == "live":
+        from app.market_data.live_source import LiveMarketSourceError
+
+        raise LiveMarketSourceError("Synthetic market data is forbidden in a live runtime.")
 
 
 class MockMarketDataProvider:
@@ -247,6 +255,7 @@ class MockMarketDataProvider:
         return newest_first
 
     def get_quote(self, ticker: str) -> Quote:
+        _require_synthetic_runtime()
         base = MOCK_BASE_PRICES.get(ticker, 100.0)
         current = _current_prices.get(ticker, base)
 
@@ -365,6 +374,7 @@ class MockMarketDataProvider:
         bars: int = 50,
     ) -> list[dict[str, Any]]:
         """Generate fake OHLCV bars."""
+        _require_synthetic_runtime()
         if self.profile == "orb_breakout":
             return self._orb_breakout_bars(ticker, interval_minutes=interval_minutes, bars=bars)
         base = MOCK_BASE_PRICES.get(ticker, 100.0)
@@ -412,11 +422,13 @@ class MockMarketDataProvider:
 
     def is_market_open(self, ticker: str = "AAPL") -> bool:
         """Check the current XNYS regular-session state."""
+        _require_synthetic_runtime()
         del ticker
         return self._equity_market_is_open()
 
     def validate_staleness(self, quote: Quote, max_age_seconds: int = 60) -> bool:
         """Return True if quote is fresh enough."""
+        _require_synthetic_runtime()
         age = (datetime.now(UTC) - quote.timestamp).total_seconds()
         return age <= max_age_seconds
 

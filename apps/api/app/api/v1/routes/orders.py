@@ -188,7 +188,9 @@ async def _ensure_live_order_ready(
     if settings.APP_MODE != "live":
         return
 
-    readiness = await LiveReadinessService(db).evaluate()
+    readiness = await LiveReadinessService(db, owner_id=current_user.id).evaluate(
+        require_market_data=body.side == "buy"
+    )
     if readiness["ready_for_live"]:
         return
 

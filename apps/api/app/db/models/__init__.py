@@ -138,6 +138,9 @@ class BrokerConnection(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_test_ok: Mapped[bool | None] = mapped_column(Boolean)
+    last_test_audit_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("audit_logs.id", ondelete="RESTRICT")
+    )
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     account_id: Mapped[str | None] = mapped_column(String(100))
     account_currency: Mapped[str | None] = mapped_column(String(10))
@@ -848,6 +851,9 @@ class AppSettings(Base):
     auto_trading_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     kill_switch_active: Mapped[bool] = mapped_column(Boolean, default=False)
     live_trading_unlocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    live_readiness_audit_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("audit_logs.id", ondelete="RESTRICT")
+    )
     daily_stats_reset_time: Mapped[str] = mapped_column(String(10), default="00:00")
     extra: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     updated_at: Mapped[datetime] = mapped_column(

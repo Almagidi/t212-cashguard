@@ -1,4 +1,5 @@
 'use client'
+import { captureOwnerScope, isCurrentOwnerScope } from '@/lib/owner-scope'
 import { startTransition, use, useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { ArrowLeft, Play, Pause, Save, Clock, TrendingUp, ArrowUpRight, ArrowDownRight, FlaskConical, ShieldCheck, CheckCircle2, AlertTriangle } from 'lucide-react'
@@ -29,6 +30,7 @@ const PORTFOLIO_STRATEGY_COPY: Record<string, string> = {
 }
 
 export default function StrategyDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const [ownerScope] = useState(captureOwnerScope)
   const { id } = use(params)
   const qc = useQueryClient()
   const { data: strategy, isLoading } = useStrategy(id)
@@ -69,6 +71,7 @@ export default function StrategyDetailPage({ params }: { params: Promise<{ id: s
   }, [strategy])
 
   const onSubmit = async (data: any) => {
+    if (!isCurrentOwnerScope(ownerScope)) return
     setSaving(true)
     try {
       let parsedParams: Record<string, unknown> | undefined
@@ -87,11 +90,13 @@ export default function StrategyDetailPage({ params }: { params: Promise<{ id: s
         is_live: !!data.is_live,
         params: parsedParams,
       })
+      if (!isCurrentOwnerScope(ownerScope)) return
       qc.invalidateQueries({ queryKey: ['strategies'] })
       qc.invalidateQueries({ queryKey: ['strategies', id] })
       qc.invalidateQueries({ queryKey: ['strategies', id, 'promotion-status'] })
       toast.success('Strategy updated')
     } catch {
+      if (!isCurrentOwnerScope(ownerScope)) return
       toast.error('Update failed')
     } finally {
       setSaving(false)
@@ -99,19 +104,25 @@ export default function StrategyDetailPage({ params }: { params: Promise<{ id: s
   }
 
   const loadSignals = async () => {
+    if (!isCurrentOwnerScope(ownerScope)) return
     setLoadingSignals(true)
     try {
       const data = await api.getStrategySignals(id)
+      if (!isCurrentOwnerScope(ownerScope)) return
       setSignals(data)
+    } catch (error) {
+      if (isCurrentOwnerScope(ownerScope)) throw error
     } finally {
       setLoadingSignals(false)
     }
   }
 
   const runDry = async () => {
+    if (!isCurrentOwnerScope(ownerScope)) return
     setRunningDry(true)
     try {
       const result = await api.dryRunStrategy(id)
+      if (!isCurrentOwnerScope(ownerScope)) return
       const orderCount = Number((result.summary?.dry_run_orders as number | undefined) ?? 0)
       toast.success(orderCount > 0 ? `Dry run complete: ${orderCount} simulated orders` : result.message)
       qc.invalidateQueries({ queryKey: ['orders'] })
@@ -122,6 +133,7 @@ export default function StrategyDetailPage({ params }: { params: Promise<{ id: s
       qc.invalidateQueries({ queryKey: ['strategies', id, 'portfolio-attribution'] })
       await loadSignals()
     } catch {
+      if (!isCurrentOwnerScope(ownerScope)) return
       toast.error('Dry run failed')
     } finally {
       setRunningDry(false)

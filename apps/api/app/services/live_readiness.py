@@ -4,13 +4,26 @@ Live-trading readiness evaluation and attestation workflow.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.db.models import AppSettings, AuditLog, BrokerConnection
+from app.db.models import AppSettings, BrokerConnection
+from app.services.live_account import (
+    LiveAccountBinding,
+    LiveAccountError,
+    bound_lock_wait,
+    selected_live_account,
+)
+from app.services.live_evidence import (
+    LiveEvidenceError,
+    current_test_valid,
+    validated_evidence,
+    write_head,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,8 +37,6 @@ ReadinessAction = Literal[
     "lock_live",
 ]
 
-_EVIDENCE_KEY = "live_readiness"
-_BROKER_TEST_MAX_AGE = timedelta(hours=24)
 # Manual attestations expire so stale evidence cannot keep readiness green.
 # Missing, malformed, or future-skewed timestamps must always fail closed.
 _ATTESTATION_MAX_AGE = timedelta(hours=24)
@@ -36,33 +47,50 @@ class LiveReadinessError(Exception):
 
 
 class LiveReadinessService:
-    def __init__(self, db: AsyncSession) -> None:
-        self.db = db
+    def __init__(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: uuid.UUID | None = None,
+        binding: LiveAccountBinding | None = None,
+        lock: bool = False,
+    ) -> None:
+        self.db, self.owner_id, self.expected_binding, self.lock = db, owner_id, binding, lock
+        self.current_binding: LiveAccountBinding | None = None
+        self.current_head_id: uuid.UUID | None = None
 
     async def _get_settings(self) -> AppSettings:
-        result = await self.db.execute(select(AppSettings).where(AppSettings.id == 1))
-        app_settings = result.scalar_one_or_none()
-        if not app_settings:
+        query = (
+            select(AppSettings).where(AppSettings.id == 1).execution_options(populate_existing=True)
+        )
+        if self.lock:
+            await bound_lock_wait(self.db)
+            query = query.with_for_update()
+        app_settings = (await self.db.execute(query)).scalar_one_or_none()
+        if app_settings is None:
             raise LiveReadinessError("App settings are not initialized.")
+        self.current_head_id = app_settings.live_readiness_audit_id
         return app_settings
 
     async def _get_live_broker_connection(self) -> BrokerConnection | None:
-        result = await self.db.execute(
-            select(BrokerConnection)
-            .where(
-                BrokerConnection.environment == "live",
-                BrokerConnection.is_active == True,  # noqa: E712
-            )
-            .order_by(BrokerConnection.updated_at.desc(), BrokerConnection.created_at.desc())
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
-
-    @staticmethod
-    def _evidence(app_settings: AppSettings) -> dict[str, Any]:
-        extra = app_settings.extra or {}
-        evidence = extra.get(_EVIDENCE_KEY)
-        return evidence if isinstance(evidence, dict) else {}
+        self.current_binding = None
+        owner = self.owner_id
+        if self.expected_binding is not None:
+            try:
+                expected_owner = uuid.UUID(self.expected_binding.owner_id)
+            except ValueError:
+                return None
+            if owner is not None and owner != expected_owner:
+                return None
+            owner = expected_owner
+        try:
+            binding, connection = await selected_live_account(self.db, owner, lock=self.lock)
+        except LiveAccountError:
+            return None
+        if self.expected_binding is not None and binding != self.expected_binding:
+            return None
+        self.current_binding = binding
+        return connection
 
     @staticmethod
     def _parse_timestamp(value: Any) -> datetime | None:
@@ -129,14 +157,20 @@ class LiveReadinessService:
             "verified_at": verified_at,
         }
 
-    async def evaluate(self) -> dict[str, Any]:
+    async def evaluate(self, *, require_market_data: bool = True) -> dict[str, Any]:
         from app.services.telegram_control import TelegramControlService
 
-        now = datetime.now(UTC)
-        app_settings = await self._get_settings()
-        evidence = self._evidence(app_settings)
-        telegram_status = TelegramControlService.status_payload()
+        # Match dispatch/action lock order: owner, connection, then global controls.
         live_connection = await self._get_live_broker_connection()
+        app_settings = await self._get_settings()
+        now = datetime.now(UTC)
+        try:
+            evidence, _ = await validated_evidence(
+                self.db, app_settings, self.current_binding, live_connection
+            )
+        except LiveEvidenceError:
+            evidence = {}
+        telegram_status = TelegramControlService.status_payload()
 
         demo_validated_at = self._parse_timestamp(evidence.get("demo_validated_at"))
         broker_verified_at = self._parse_timestamp(evidence.get("broker_test_verified_at"))
@@ -152,8 +186,8 @@ class LiveReadinessService:
         )
         broker_test_recent = bool(
             live_connection
-            and live_connection.last_test_ok
-            and self._is_fresh(last_test_at, now, _BROKER_TEST_MAX_AGE)
+            and self.current_binding is not None
+            and await current_test_valid(self.db, live_connection, self.current_binding, now)
         )
         demo_validated_fresh = self._is_fresh(demo_validated_at, now)
         broker_attested_fresh = self._is_fresh(broker_verified_at, now)
@@ -171,7 +205,22 @@ class LiveReadinessService:
             app_settings.live_trading_unlocked and unlock_acknowledged_fresh
         )
 
+        market_source_ok = True
+        if require_market_data and app_mode_live:
+            from app.market_data.live_source import LiveMarketSourceError, resolve_live_source
+
+            try:
+                resolve_live_source()
+            except LiveMarketSourceError:
+                market_source_ok = False
+
         checks = [
+            self._build_check(
+                key="live_market_data_configuration",
+                label="Real market-data configuration selected",
+                passed=market_source_ok,
+                detail="Live entries require an explicit resolvable real provider; configuration does not certify feed freshness.",
+            ),
             self._build_check(
                 key="app_mode_live",
                 label="Server in live mode",
@@ -346,86 +395,67 @@ class LiveReadinessService:
         actor: str,
         notes: str | None = None,
     ) -> dict[str, Any]:
-        app_settings = await self._get_settings()
-        evidence = dict(self._evidence(app_settings))
-        now = datetime.now(UTC)
-
-        if action == "unlock_live":
-            evaluation = await self.evaluate()
-            if not evaluation["eligible_for_unlock"]:
-                raise LiveReadinessError(
-                    "Live trading cannot be unlocked until every readiness check passes."
-                )
-            app_settings.live_trading_unlocked = True
-            evidence["live_unlock_acknowledged_at"] = now.isoformat()
-            evidence["live_unlock_acknowledged_by"] = actor
-            if notes:
-                evidence["live_unlock_notes"] = notes
-            audit_action = "live_trading_unlocked"
-        elif action == "lock_live":
+        # Global lock is always available, even with missing account/evidence.
+        if action == "lock_live":
+            self.lock = True
+            app_settings = await self._get_settings()
             app_settings.live_trading_unlocked = False
-            evidence["live_unlock_acknowledged_at"] = None
-            evidence["live_unlock_acknowledged_by"] = None
-            if notes:
-                evidence["live_lock_notes"] = notes
-            audit_action = "live_trading_locked"
-        else:
-            evaluation = await self.evaluate()
-            field_map = {
-                "record_demo_validation": ("demo_validated_at", "demo_validated_by", "demo_notes"),
-                "record_broker_test": (
-                    "broker_test_verified_at",
-                    "broker_test_verified_by",
-                    "broker_test_notes",
-                ),
-                "record_telegram_test": (
-                    "telegram_test_verified_at",
-                    "telegram_test_verified_by",
-                    "telegram_test_notes",
-                ),
-                "record_kill_switch_test": (
-                    "kill_switch_tested_at",
-                    "kill_switch_tested_by",
-                    "kill_switch_test_notes",
-                ),
-            }
-            if action == "record_broker_test":
-                broker_check = next(
-                    check
-                    for check in evaluation["checks"]
-                    if check["key"] == "live_broker_test_recent"
-                )
-                if broker_check["status"] != "pass":
-                    raise LiveReadinessError(
-                        "A successful live broker test from the last 24 hours is required first."
-                    )
-            if action == "record_telegram_test":
-                telegram_check = next(
-                    check for check in evaluation["checks"] if check["key"] == "telegram_ready"
-                )
-                if telegram_check["status"] != "pass":
-                    raise LiveReadinessError(
-                        "Telegram must be fully configured before its test can be recorded."
-                    )
-            timestamp_field, actor_field, notes_field = field_map[action]
-            evidence[timestamp_field] = now.isoformat()
-            evidence[actor_field] = actor
-            if notes:
-                evidence[notes_field] = notes
-            audit_action = "live_readiness_recorded"
-
-        app_settings.extra = {
-            **(app_settings.extra or {}),
-            _EVIDENCE_KEY: evidence,
-        }
-        self.db.add(
-            AuditLog(
-                action=audit_action,
+            await write_head(
+                self.db,
+                app_settings,
+                binding=None,
+                connection=None,
+                action=action,
                 actor=actor,
-                payload={"action": action, "notes": notes},
-                occurred_at=now,
+                owner_id=None,
+                notes=notes,
             )
-        )
-        await self.db.flush()
-        await self.db.refresh(app_settings)
+            # Do not acquire owner/connection locks after the settings lock.
+            self.lock = False
+            self.expected_binding = None
+            return await self.evaluate()
+
+        self.lock = True
+        if self.owner_id is None:
+            raise LiveReadinessError(
+                "An authenticated owner is required for a live readiness action."
+            )
+        connection = await self._get_live_broker_connection()
+        if connection is None or self.current_binding is None:
+            raise LiveReadinessError("An explicit authorized live Trading 212 account is required.")
+        app_settings = await self._get_settings()
+        evaluation = await self.evaluate()
+        if action == "unlock_live" and not evaluation["eligible_for_unlock"]:
+            raise LiveReadinessError(
+                "Live trading cannot be unlocked until every bound readiness check passes."
+            )
+        if action == "record_broker_test":
+            checked = next(
+                item for item in evaluation["checks"] if item["key"] == "live_broker_test_recent"
+            )
+            if checked["status"] != "pass":
+                raise LiveReadinessError(
+                    "A successful current live broker test event is required first."
+                )
+        if action == "record_telegram_test":
+            checked = next(item for item in evaluation["checks"] if item["key"] == "telegram_ready")
+            if checked["status"] != "pass":
+                raise LiveReadinessError(
+                    "Telegram must be fully configured before its test can be recorded."
+                )
+        if action == "unlock_live":
+            app_settings.live_trading_unlocked = True
+        try:
+            await write_head(
+                self.db,
+                app_settings,
+                binding=self.current_binding,
+                connection=connection,
+                action=action,
+                actor=actor,
+                owner_id=connection.user_id,
+                notes=notes,
+            )
+        except LiveEvidenceError as exc:
+            raise LiveReadinessError(str(exc)) from exc
         return await self.evaluate()

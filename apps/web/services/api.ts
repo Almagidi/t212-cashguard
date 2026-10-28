@@ -1,6 +1,7 @@
-import axios, { AxiosError, type AxiosInstance } from "axios";
+import axios, { AxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from "axios";
 import { scrubPaperIntentPayloads } from "@/lib/paper-operation-intent";
 import { useAuthStore } from "@/stores/auth";
+import { assertCurrentOwnerScope, assertVerifiedOwnerScope, captureOwnerScope, isCurrentOwnerScope, type OwnerScope, OwnerScopeChangedError } from "@/lib/owner-scope";
 import type {
   AccountSummary,
   CancelAllResult,
@@ -96,11 +97,31 @@ class ApiClient {
       timeout: 15000,
     });
 
-    // Attach JWT token to every request
+    // Capture before Axios schedules async interceptors. The private WeakMap and
+    // adapter closure keep session material out of serializable request metadata.
+    const requestScopes = new WeakMap<InternalAxiosRequestConfig, OwnerScope>();
     this.client.interceptors.request.use((config) => {
-      const token = this.getToken();
-      if (token) config.headers.Authorization = `Bearer ${token}`;
+      const scope = requestScopes.get(config);
+      if (!scope) throw new OwnerScopeChangedError();
+      const authRequest = (config.url ?? "").startsWith("/auth/");
+      const admit = () => authRequest ? assertCurrentOwnerScope(scope) : assertVerifiedOwnerScope(scope);
+      admit();
+      if (scope.token) config.headers.Authorization = `Bearer ${scope.token}`;
+      else config.headers.delete("Authorization");
+      const adapter = axios.getAdapter(config.adapter ?? axios.defaults.adapter);
+      config.adapter = (dispatchConfig) => {
+        admit();
+        // A later interceptor must not substitute a different principal's token.
+        if (scope.token) dispatchConfig.headers.Authorization = `Bearer ${scope.token}`;
+        else dispatchConfig.headers.delete("Authorization");
+        return adapter(dispatchConfig).then(
+          (response) => { admit(); return response; },
+          (error) => { admit(); throw error; },
+        );
+      };
       return config;
+    }, undefined, {
+      runWhen: (config) => { requestScopes.set(config, captureOwnerScope()); return true; },
     });
 
     // Handle 401 globally — only redirect to login if the session is truly expired.
@@ -112,7 +133,10 @@ class ApiClient {
       async (error: AxiosError) => {
         const is401 = error.response?.status === 401;
         const isAuthEndpoint = (error.config?.url ?? "").startsWith("/auth/");
-        const hasToken = !!this.getToken();
+        const verificationToken = this.getToken();
+        const verificationScope = captureOwnerScope();
+        const requestToken = error.config?.headers?.Authorization;
+        const hasToken = !!verificationToken && requestToken === `Bearer ${verificationToken}`;
 
         if (
           is401 &&
@@ -125,13 +149,13 @@ class ApiClient {
           try {
             // Re-check the session; use a fresh axios instance to avoid recursion
             await axios.get(`${API_URL}/v1/auth/me`, {
-              headers: { Authorization: `Bearer ${this.getToken()}` },
+              headers: { Authorization: `Bearer ${verificationToken}` },
               timeout: 5000,
             });
             // /auth/me succeeded → the 401 was from a non-critical endpoint, stay logged in
           } catch (meErr: unknown) {
             const meStatus = (meErr as AxiosError)?.response?.status;
-            if (meStatus === 401) {
+            if (meStatus === 401 && isCurrentOwnerScope(verificationScope)) {
               // Token is genuinely invalid — log out
               this.clearToken();
               window.location.href = "/auth/login";
@@ -152,13 +176,16 @@ class ApiClient {
     if (typeof window === "undefined") return null;
     return localStorage.getItem("cg_token");
   }
-  setToken(token: string): void {
-    if (typeof window !== "undefined") localStorage.setItem("cg_token", token);
+  setToken(token: string, newSession = false): void {
+    if (typeof window !== "undefined" && (newSession || this.getToken() !== token)) {
+      localStorage.setItem("cg_token", token);
+      useAuthStore.getState().advanceSession();
+    }
   }
   clearToken(): void {
     if (typeof window !== "undefined") {
       try { scrubPaperIntentPayloads(sessionStorage); } catch { /* storage unavailable */ }
-      localStorage.removeItem("cg_token");
+      useAuthStore.getState().logout();
     }
   }
   isAuthenticated(): boolean {
@@ -167,13 +194,21 @@ class ApiClient {
 
   // ── Auth ────────────────────────────────────────────────────────────────────
   async login(data: LoginRequest): Promise<LoginResponse> {
-    const res = await this.client.post<LoginResponse>("/auth/login", data);
-    this.setToken(res.data.access_token);
-    return res.data;
+    const scope = captureOwnerScope();
+    try {
+      const res = await this.client.post<LoginResponse>("/auth/login", data);
+      assertCurrentOwnerScope(scope);
+      this.setToken(res.data.access_token, true);
+      return res.data;
+    } catch (error) {
+      assertCurrentOwnerScope(scope);
+      throw error;
+    }
   }
   async logout(): Promise<void> {
+    const scope = captureOwnerScope();
     await this.client.post("/auth/logout").catch(() => {});
-    this.clearToken();
+    if (isCurrentOwnerScope(scope)) this.clearToken();
   }
   async getMe(): Promise<User> {
     return (await this.client.get<User>("/auth/me")).data;

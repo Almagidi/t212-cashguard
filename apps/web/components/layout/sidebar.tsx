@@ -140,6 +140,7 @@ function SidebarContent({ onNavigate, forceExpanded = false }: { onNavigate?: ()
 
   const handleLogout = async () => {
     await api.logout()
+    if (api.getToken() || useAuthStore.getState().isAuthenticated) return
     logout()
     router.push('/auth/login')
     onNavigate?.()

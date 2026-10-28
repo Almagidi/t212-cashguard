@@ -495,7 +495,8 @@ def test_provider_selection_rejects_breakout_profile_outside_mock(
     monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", "mock")
     monkeypatch.setattr(settings, "MOCK_MARKET_PROFILE", "orb_breakout")
 
-    with pytest.raises(RuntimeError, match="mock market profile"):
+    expected = "market-data source.*mock" if app_mode == "live" else "mock market profile"
+    with pytest.raises(RuntimeError, match=expected):
         get_live_provider()
 
 

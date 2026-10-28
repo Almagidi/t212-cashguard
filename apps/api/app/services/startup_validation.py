@@ -197,8 +197,16 @@ def build_startup_report() -> dict[str, Any]:
         )
     )
 
-    mock_provider = settings.MARKET_DATA_PROVIDER == "mock"
+    mock_provider = settings.MARKET_DATA_PROVIDER.strip().lower() == "mock"
     mock_market_in_live = live_mode and mock_provider
+    unresolved_live_source = False
+    if live_mode:
+        from app.market_data.live_source import LiveMarketSourceError, resolve_live_source
+
+        try:
+            resolve_live_source()
+        except LiveMarketSourceError:
+            unresolved_live_source = True
     market_data_status: StartupStatus
     market_data_detail: str
     if mock_market_in_live:
@@ -206,6 +214,9 @@ def build_startup_report() -> dict[str, Any]:
         market_data_detail = (
             "Live mode is configured with mock market data, which is unsafe for real trading."
         )
+    elif unresolved_live_source:
+        market_data_status = "fail"
+        market_data_detail = "Live market-data configuration does not resolve a real provider."
     elif settings.APP_MODE == "demo" and mock_provider:
         market_data_status = "warn"
         market_data_detail = "Market data provider is mock-backed; acceptable for demo mode but not ideal for realism."

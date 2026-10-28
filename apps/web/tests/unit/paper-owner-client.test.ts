@@ -26,43 +26,43 @@ test('logout/relogin and delayed retry cannot dispatch a saved different-owner i
   expect(readPaperIntent(b, sessionStorage)).toBeNull()
 })
 
-test('an owner change inside actual Axios dispatch cannot change the expected-owner precondition', async () => {
-  useAuthStore.getState().setUser(user(a))
+test('an owner change inside Axios cannot dispatch a saved intent under a replacement token', async () => {
   api.setToken(crypto.randomUUID())
+  useAuthStore.getState().setUser(user(a))
   const nextToken = crypto.randomUUID()
-  let observedExpected: unknown
-  let observedAuth: unknown
-  let observedBody: unknown
-  client.defaults.adapter = async config => {
-    observedExpected = config.headers.get('X-Paper-Expected-Owner')
-    observedAuth = config.headers.get('Authorization')
-    observedBody = JSON.parse(config.data)
-    return { config, status: 403, statusText: 'Forbidden', headers: {}, data: { detail: 'expected-owner mismatch' } }
-  }
+  const transport = jest.fn(async () => { throw new Error('unexpected dispatch') })
+  client.defaults.adapter = transport
   const interceptor = client.interceptors.request.use(config => {
     useAuthStore.getState().setUser(user(b)); api.setToken(nextToken); return config
   })
   try {
-    await api.placePaperOrder({ ...input, operation_id: crypto.randomUUID(), expected_owner_id: a })
-    expect(observedExpected).toBe(a)
-    expect(observedAuth).toBe(`Bearer ${nextToken}`)
-    expect(observedBody).not.toHaveProperty('expected_owner_id')
+    await expect(api.placePaperOrder({ ...input, operation_id: crypto.randomUUID(), expected_owner_id: a })).rejects.toMatchObject({ name: 'OwnerScopeChangedError' })
+    expect(transport).not.toHaveBeenCalled()
   } finally { client.interceptors.request.eject(interceptor) }
 })
 
-test('receipt lookup preserves the saved expected owner across an Axios token/account switch', async () => {
+test('receipt lookup refuses an Axios token/account switch without disclosing either owner receipt', async () => {
+  api.setToken(crypto.randomUUID())
   useAuthStore.getState().setUser(user(a))
-  const nextToken = crypto.randomUUID()
-  const seen: unknown[] = []
-  client.defaults.adapter = async config => {
-    seen.push(config.headers.get('X-Paper-Expected-Owner'), config.headers.get('Authorization'))
-    return { config, status: 403, statusText: 'Forbidden', headers: {}, data: { detail: 'expected-owner mismatch' } }
-  }
+  const transport = jest.fn(async () => { throw new Error('unexpected dispatch') })
+  client.defaults.adapter = transport
   const interceptor = client.interceptors.request.use(config => {
-    useAuthStore.getState().setUser(user(b)); api.setToken(nextToken); return config
+    useAuthStore.getState().setUser(user(b)); api.setToken(crypto.randomUUID()); return config
   })
   try {
-    await api.getPaperOperation(crypto.randomUUID(), a)
-    expect(seen).toEqual([a, `Bearer ${nextToken}`])
+    await expect(api.getPaperOperation(crypto.randomUUID(), a)).rejects.toMatchObject({ name: 'OwnerScopeChangedError' })
+    expect(transport).not.toHaveBeenCalled()
   } finally { client.interceptors.request.eject(interceptor) }
+})
+
+ test('normal owner-bound receipt lookup retains its expected-owner header', async () => {
+  api.setToken(crypto.randomUUID())
+  useAuthStore.getState().setUser(user(a))
+  const seen: unknown[] = []
+  client.defaults.adapter = async config => {
+    seen.push(config.headers.get('X-Paper-Expected-Owner'))
+    return { config, status: 404, statusText: 'Not found', headers: {}, data: { detail: 'not found' } }
+  }
+  await api.getPaperOperation(crypto.randomUUID(), a)
+  expect(seen).toEqual([a])
 })

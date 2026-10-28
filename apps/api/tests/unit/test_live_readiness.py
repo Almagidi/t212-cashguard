@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -10,7 +11,9 @@ import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.db.models import AppSettings, BrokerConnection, User
+from app.db.models import AppSettings, AuditLog, BrokerConnection, User
+from app.services.live_account import binding_for
+from app.services.live_evidence import FIELDS, record_broker_test, write_head
 from app.services.live_readiness import LiveReadinessService
 
 if TYPE_CHECKING:
@@ -36,6 +39,9 @@ def _set_live_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "APP_MODE", "live")
     monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", True)
     monkeypatch.setattr(settings, "TELEGRAM_CHAT_ID", "12345")
+    monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", "alpaca")
+    monkeypatch.setattr(settings, "ALPACA_API_KEY", secrets.token_urlsafe(24))
+    monkeypatch.setattr(settings, "ALPACA_API_SECRET", secrets.token_urlsafe(24))
 
 
 async def _admin_user(db: AsyncSession) -> User:
@@ -53,21 +59,27 @@ async def _add_live_broker_connection(
     last_test_ok: bool = True,
 ) -> None:
     user = await _admin_user(db)
-    db.add(
-        BrokerConnection(
-            id=uuid.uuid4(),
-            user_id=user.id,
-            broker="trading212",
-            environment="live",
-            api_key_encrypted="enc-key",
-            api_secret_encrypted="enc-secret",
-            is_active=True,
-            last_test_at=last_test_at,
-            last_test_ok=last_test_ok,
-            account_id="LIVE-123",
-            account_currency="USD",
-        )
+    connection = BrokerConnection(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        broker="trading212",
+        environment="live",
+        api_key_encrypted="enc-key",
+        api_secret_encrypted="enc-secret",
+        is_active=True,
+        last_test_at=last_test_at,
+        last_test_ok=last_test_ok,
+        account_id="LIVE-123",
+        account_currency="USD",
     )
+    db.add(connection)
+    await db.flush()
+    await record_broker_test(db, connection, success=last_test_ok, actor=user.email)
+    # Preserve the original recency scenario with the new unique tested-event contract.
+    event = await db.get(AuditLog, connection.last_test_audit_id)
+    event.occurred_at = last_test_at
+    event.payload = {**event.payload, "tested_at": last_test_at.isoformat()}
+    connection.last_test_at = last_test_at
     await db.commit()
 
 
@@ -93,10 +105,39 @@ async def _set_manual_evidence(
         "live_unlock_acknowledged_by": "admin@test.com",
         **(overrides or {}),
     }
-    app_settings.extra = {
-        **(app_settings.extra or {}),
-        "live_readiness": evidence,
+    user = await _admin_user(db)
+    connection = (
+        await db.execute(
+            select(BrokerConnection).where(
+                BrokerConnection.user_id == user.id,
+                BrokerConnection.environment == "live",
+            )
+        )
+    ).scalar_one()
+    # Build real anchored snapshots; deliberately vary individual timestamp fields
+    # to retain every existing expiry/malformed/missing assertion below.
+    for action in FIELDS:
+        await write_head(
+            db,
+            app_settings,
+            binding=binding_for(connection),
+            connection=connection,
+            action=action,
+            actor=user.email,
+            owner_id=user.id,
+        )
+        event = await db.get(AuditLog, app_settings.live_readiness_audit_id)
+        await db.flush()
+    event.payload = {
+        **event.payload,
+        "evidence": {field: evidence[field] for field in FIELDS.values()},
     }
+    from app.services.live_evidence import parse_time
+
+    at = parse_time(evidence["live_unlock_acknowledged_at"])
+    if at is not None:
+        event.payload = {**event.payload, "recorded_at": at.isoformat()}
+        event.occurred_at = at
     app_settings.live_trading_unlocked = live_trading_unlocked
     app_settings.kill_switch_active = kill_switch_active
     await db.commit()
@@ -122,7 +163,7 @@ async def _evaluate_with_evidence_override(
         live_trading_unlocked=live_trading_unlocked,
         overrides={field: value},
     )
-    return await LiveReadinessService(db).evaluate()
+    return await LiveReadinessService(db, owner_id=(await _admin_user(db)).id).evaluate()
 
 
 @pytest.mark.asyncio
@@ -137,7 +178,7 @@ async def test_live_broker_test_older_than_24_hours_fails_recency(
         last_test_at=datetime.now(UTC) - timedelta(hours=24, minutes=1),
     )
 
-    status = await LiveReadinessService(db).evaluate()
+    status = await LiveReadinessService(db, owner_id=(await _admin_user(db)).id).evaluate()
 
     assert _check(status, "live_broker_connected")["status"] == "pass"
     assert _check(status, "live_broker_test_recent")["status"] == "fail"
@@ -156,7 +197,7 @@ async def test_live_broker_test_within_24_hours_passes_recency(
         last_test_at=datetime.now(UTC) - timedelta(hours=23, minutes=59),
     )
 
-    status = await LiveReadinessService(db).evaluate()
+    status = await LiveReadinessService(db, owner_id=(await _admin_user(db)).id).evaluate()
 
     assert _check(status, "live_broker_test_recent")["status"] == "pass"
 
@@ -179,7 +220,7 @@ async def test_old_manual_attestations_expire_and_block(
         live_trading_unlocked=True,
     )
 
-    status = await LiveReadinessService(db).evaluate()
+    status = await LiveReadinessService(db, owner_id=(await _admin_user(db)).id).evaluate()
 
     for key in ATTESTATION_CHECK_KEYS:
         assert _check(status, key)["status"] == "fail"
@@ -205,7 +246,7 @@ async def test_fresh_attestations_within_24_hours_pass(
         live_trading_unlocked=True,
     )
 
-    status = await LiveReadinessService(db).evaluate()
+    status = await LiveReadinessService(db, owner_id=(await _admin_user(db)).id).evaluate()
 
     for key in ATTESTATION_CHECK_KEYS:
         assert _check(status, key)["status"] == "pass"
@@ -231,7 +272,7 @@ async def test_stale_broker_test_is_not_offset_by_broker_attestation(
         live_trading_unlocked=True,
     )
 
-    status = await LiveReadinessService(db).evaluate()
+    status = await LiveReadinessService(db, owner_id=(await _admin_user(db)).id).evaluate()
 
     assert _check(status, "live_broker_test_recent")["status"] == "fail"
     assert _check(status, "broker_test_attested")["status"] == "pass"
@@ -257,7 +298,7 @@ async def test_global_kill_switch_blocks_readiness(
         kill_switch_active=True,
     )
 
-    status = await LiveReadinessService(db).evaluate()
+    status = await LiveReadinessService(db, owner_id=(await _admin_user(db)).id).evaluate()
 
     assert _check(status, "kill_switch_clear")["status"] == "fail"
     assert status["eligible_for_unlock"] is False

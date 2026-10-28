@@ -35,6 +35,10 @@ def get_live_provider() -> Any:
     Alpaca is the primary live source; Polygon validates and falls back when available.
     """
     provider = settings.MARKET_DATA_PROVIDER.strip().lower()
+    if settings.APP_MODE == "live":
+        from app.market_data.live_source import resolve_live_source
+
+        provider = resolve_live_source()
 
     if provider == "mock":
         return _configured_mock_provider()
@@ -113,6 +117,14 @@ def get_kraken_provider() -> Any:
 def get_provider_name() -> str:
     """Return name of active live data provider for display in UI."""
     provider = settings.MARKET_DATA_PROVIDER.strip().lower()
+    if settings.APP_MODE == "live":
+        from app.market_data.live_source import LiveMarketSourceError, resolve_live_source
+
+        try:
+            provider = resolve_live_source()
+        except LiveMarketSourceError:
+            return "unavailable"
+
     if provider == "mock":
         return "mock"
     if provider == "polygon":

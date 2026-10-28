@@ -1,5 +1,6 @@
 import { test, expect } from './test'
 import { ensureAppPage } from './helpers'
+import { selectTheme, textContrast } from './status-contrast'
 type Route = import('@playwright/test').Route
 
 async function unavailableRead(route: Route) {
@@ -83,29 +84,17 @@ test.describe('operator observation and keyboard safety', () => {
   test('critical navigation and operator status labels meet text contrast in both themes', async ({ page }, testInfo) => {
     await ensureAppPage(page, '/app/operator', 'Operator')
     await expect(page.getByText('Backend computed gate state', { exact: true })).toBeVisible()
-    for (const theme of ['light', 'dark']) {
-      await page.evaluate(value => { document.documentElement.classList.remove('light', 'dark'); document.documentElement.classList.add(value) }, theme)
+    for (const theme of ['light', 'dark'] as const) {
+      await selectTheme(page, theme)
       await expect(page.getByTestId('live-trading-disabled-badge')).toBeVisible()
-      await page.evaluate(() => { for (const animation of document.getAnimations()) if (animation.effect?.getTiming().iterations !== Infinity) animation.finish() })
-      const result = await page.evaluate(() => {
-        const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1
-        const ctx = canvas.getContext('2d', { willReadFrequently: true })!
-        const rgba = (css: string) => { ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = css; ctx.fillRect(0, 0, 1, 1); return [...ctx.getImageData(0, 0, 1, 1).data].map((n, i) => i === 3 ? n / 255 : n) }
-        const over = (a: number[], b: number[]) => [0, 1, 2].map(i => a[i] * a[3] + b[i] * (1 - a[3])).concat(1)
-        const luminance = (a: number[]) => a.slice(0, 3).map(n => n / 255).map(n => n <= .04045 ? n / 12.92 : ((n + .055) / 1.055) ** 2.4).reduce((sum, n, i) => sum + n * [.2126, .7152, .0722][i], 0)
-        const rows: Array<{ text: string; ratio: number }> = []
-        for (const element of document.querySelectorAll('.nav-section-header, a[href="/app/emergency"], [data-testid="live-trading-disabled-badge"], main .stat-sub')) {
-          if (!element.getClientRects().length) continue
-          const ancestors: string[] = []; let node: Element | null = element; let skipped = false
-          while (node) { const style = getComputedStyle(node); if (style.backgroundImage !== 'none' || Number(style.opacity) !== 1) skipped = true; ancestors.push(style.backgroundColor); node = node.parentElement }
-          if (skipped) continue
-          let background = [255, 255, 255, 1]
-          for (const color of ancestors.reverse()) background = over(rgba(color), background)
-          const foreground = over(rgba(getComputedStyle(element).color), background), a = luminance(foreground), b = luminance(background)
-          rows.push({ text: element.textContent?.trim() || '', ratio: (Math.max(a, b) + .05) / (Math.min(a, b) + .05) })
-        }
-        return rows
+      const backdrop = await page.locator('header').evaluate(element => {
+        const style = getComputedStyle(element), ctx = document.createElement('canvas').getContext('2d')!
+        ctx.fillStyle = style.backgroundColor; ctx.fillRect(0, 0, 1, 1)
+        return { alpha: ctx.getImageData(0, 0, 1, 1).data[3], filter: style.filter, backdropFilter: style.backdropFilter, opacity: style.opacity }
       })
+      expect(backdrop, 'Critical top-bar status has an opaque, unfiltered backdrop in either theme').toEqual({ alpha: 255, filter: 'none', backdropFilter: 'none', opacity: '1' })
+      const result = await textContrast(page, '.nav-section-header, a[href="/app/emergency"], [data-testid="live-trading-disabled-badge"], main .stat-sub')
+      expect(result.filter(row => row.unsupported.length), 'Critical labels must have supported paint composition').toEqual([])
       expect(result.map(row => row.text)).toEqual(expect.arrayContaining(['Operations', 'Monitoring', 'System', 'Emergency', 'Live disabled', 'Backend computed gate state']))
       expect(result.filter(row => row.ratio < 4.5)).toEqual([])
       await testInfo.attach(`critical-contrast-${theme}`, { body: JSON.stringify(result), contentType: 'application/json' })

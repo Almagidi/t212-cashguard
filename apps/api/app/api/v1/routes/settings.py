@@ -90,10 +90,12 @@ async def update_settings(
 
 @router.get("/live-readiness", response_model=LiveReadinessStatus)
 async def get_live_readiness(
-    _: User = Depends(get_current_admin),
+    current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ) -> LiveReadinessStatus:
-    return LiveReadinessStatus(**(await LiveReadinessService(db).evaluate()))
+    return LiveReadinessStatus(
+        **(await LiveReadinessService(db, owner_id=current_user.id).evaluate())
+    )
 
 
 @router.post("/live-readiness", response_model=LiveReadinessStatus)
@@ -103,7 +105,7 @@ async def update_live_readiness(
     db: AsyncSession = Depends(get_db),
 ) -> LiveReadinessStatus:
     try:
-        status = await LiveReadinessService(db).apply_action(
+        status = await LiveReadinessService(db, owner_id=current_user.id).apply_action(
             action=body.action,
             actor=current_user.email,
             notes=body.notes,

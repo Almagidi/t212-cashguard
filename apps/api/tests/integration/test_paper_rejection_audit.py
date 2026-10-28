@@ -387,7 +387,10 @@ async def test_missing_audit_table_fails_without_aborting_callers_economics(audi
         None
     ]
     async with audit_sessions() as setup:
-        await setup.execute(text(f'DROP TABLE "{schema}".audit_logs'))
+        # Intentional missing-table corruption only in this random disposable schema.
+        assert schema.startswith("paper_audit_")
+        assert (await setup.get(AppSettings, 1)).live_readiness_audit_id is None
+        await setup.execute(text(f'DROP TABLE "{schema}".audit_logs CASCADE'))
         await setup.commit()
     async with audit_sessions() as outer:
         engine, user, order, account, original_cash = await _pending_cash_rejection(
