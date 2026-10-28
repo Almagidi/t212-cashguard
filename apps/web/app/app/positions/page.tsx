@@ -3,7 +3,7 @@ import { RefreshCw, TrendingUp, TrendingDown } from 'lucide-react'
 import { usePositions } from '@/hooks/use-api'
 import { Button, Card, CardContent, Spinner, EmptyState, TerminalCard, PageHeader } from '@/components/ui'
 import { QueryError } from '@/components/shared/query-error'
-import { formatCurrency, formatPnL, pnlClass, cn } from '@/lib/utils'
+import { formatReportedAmount, formatReportedPnL, pnlClass, cn } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import api from '@/services/api'
 
@@ -26,7 +26,7 @@ export default function PositionsPage() {
         label="Positions"
         sub={<>
           {positions.length} open position{positions.length !== 1 ? 's' : ''}
-          {positions.length > 0 && <> · {formatCurrency(totalValue)} invested</>}
+          {positions.length > 0 && <> · {formatReportedAmount(totalValue)} invested</>}
         </>}
         actions={
           <Button variant="outline" size="sm" onClick={refresh}>
@@ -40,13 +40,13 @@ export default function PositionsPage() {
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <TerminalCard
             label="Position Value"
-            value={formatCurrency(totalValue)}
+            value={formatReportedAmount(totalValue)}
             sub="Current market value"
             variant="cyan"
           />
           <TerminalCard
             label="Unrealized P&L"
-            value={formatPnL(totalPnl)}
+            value={formatReportedPnL(totalPnl)}
             sub={totalPnl > 0 ? 'Profitable' : totalPnl < 0 ? 'In drawdown' : 'Flat'}
             variant={totalPnl > 0 ? 'teal' : totalPnl < 0 ? 'red' : 'cyan'}
           />
@@ -118,11 +118,11 @@ export default function PositionsPage() {
                           </div>
                         </td>
                         <td className="tnum text-right">{pos.quantity.toFixed(4)}</td>
-                        <td className="tnum text-right text-muted-foreground">{formatCurrency(pos.avg_price)}</td>
-                        <td className="tnum text-right">{pos.current_price ? formatCurrency(pos.current_price) : '—'}</td>
-                        <td className="tnum text-right font-medium">{pos.value ? formatCurrency(pos.value) : '—'}</td>
+                        <td className="tnum text-right text-muted-foreground">{formatReportedAmount(pos.avg_price)}</td>
+                        <td className="tnum text-right">{pos.current_price ? formatReportedAmount(pos.current_price) : '—'}</td>
+                        <td className="tnum text-right font-medium">{pos.value ? formatReportedAmount(pos.value) : '—'}</td>
                         <td className={cn('tnum text-right font-semibold', pnlClass(pos.unrealized_pnl))}>
-                          {formatPnL(pos.unrealized_pnl)}
+                          {formatReportedPnL(pos.unrealized_pnl)}
                         </td>
                         <td className="tnum text-right text-muted-foreground/80 hidden sm:table-cell">{pos.quantity_available?.toFixed(4) ?? '—'}</td>
                         <td className={cn('tnum text-right', returnPct !== null ? pnlClass(returnPct) : 'text-muted-foreground')}>

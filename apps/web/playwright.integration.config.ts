@@ -17,7 +17,8 @@ export default defineConfig({
   reporter: [['html', { open: 'never' }], ['list']],
   use: {
     baseURL: webUrl,
-    trace: 'on-first-retry',
+    // Raw traces persist fixture credentials and bearer tokens on failure/retry.
+    trace: 'off',
     screenshot: 'only-on-failure',
     actionTimeout: 20_000,
     navigationTimeout: 30_000,

@@ -12,7 +12,7 @@ async function adminToken(request: import('@playwright/test').APIRequestContext)
     method: 'POST',
     data: { email: adminEmail, password: adminPassword },
   })
-  expect(res.ok(), `login failed with status ${res.status()}: ${await res.text()}`).toBe(true)
+  expect(res.ok(), `Login response HTTP ${res.status()}`).toBe(true)
   const body = await res.json() as { access_token?: string }
   expect(body.access_token).toBeTruthy()
   cachedAdminToken = body.access_token!

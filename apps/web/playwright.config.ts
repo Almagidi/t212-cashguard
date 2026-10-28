@@ -16,7 +16,9 @@ export default defineConfig({
   reporter: [['html', { open: 'never' }], ['list']],
   use: {
     baseURL: webUrl,
-    trace: 'retain-on-failure',
+    // Raw protocol traces contain authentication arguments, headers and bodies.
+    // Keep screenshots/video and safe status diagnostics without retaining them.
+    trace: 'off',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
     // Give each action/assertion a generous timeout for slower CI runners

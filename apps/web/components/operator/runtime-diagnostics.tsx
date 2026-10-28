@@ -8,6 +8,7 @@ import { API_URL } from "@/services/api";
 import api from "@/services/api";
 import { Badge, Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
 import { cn } from "@/lib/utils";
+import { hasCurrentQueryData } from "@/lib/query-observation";
 
 type RuntimeProfile =
   | "Normal launcher"
@@ -40,14 +41,16 @@ function probeState(
     error: unknown;
     data: unknown;
     fetchStatus?: string;
+    isFetching?: boolean;
+    failureCount?: number;
+    failureReason?: unknown;
   },
 ): ProbeState {
   if (query.isPending && query.fetchStatus !== "idle") {
     return { label, status: "loading", ok: false, detail: "Checking..." };
   }
-  if (query.data) return { label, status: 200, ok: true, detail: "HTTP 200" };
-  if (query.isError) {
-    const status = httpStatus(query.error);
+  if (query.isError || query.failureCount || query.failureReason) {
+    const status = httpStatus(query.error || query.failureReason);
     const detail =
       status === "network"
         ? "Network error"
@@ -56,6 +59,8 @@ function probeState(
           : `HTTP ${status}`;
     return { label, status, ok: false, detail };
   }
+  if (query.isFetching || query.fetchStatus === "paused") return { label, status: "loading", ok: false, detail: query.fetchStatus === "paused" ? "Check paused" : "Checking..." };
+  if (hasCurrentQueryData(query)) return { label, status: 200, ok: true, detail: "HTTP 200" };
   return { label, status: "idle", ok: false, detail: "Not checked" };
 }
 
@@ -237,9 +242,8 @@ export function RuntimeDiagnostics({ compact = false }: { compact?: boolean }) {
     };
   }, []);
 
-  const backendMode = health.data?.mode ?? null;
-  const effectiveMode = backendMode ?? frontendMode;
-  const demoCredentialCheck = startup.data?.checks.find((check) => check.key === "t212_demo_credentials");
+  const backendMode = hasCurrentQueryData(health) ? health.data?.mode ?? null : null;
+  const demoCredentialCheck = hasCurrentQueryData(startup) ? startup.data?.checks.find((check) => check.key === "t212_demo_credentials") : undefined;
   const states = [
     probeState("Backend health /v1/health/live", health),
     hasToken
@@ -272,9 +276,9 @@ export function RuntimeDiagnostics({ compact = false }: { compact?: boolean }) {
               Frontend {frontendMode}
             </Badge>
             <Badge variant={backendMode ? "info" : "outline"}>
-              Backend {backendMode ?? "checking"}
+              Backend {backendMode ?? "unavailable"}
             </Badge>
-            {effectiveMode === "demo" && (
+            {backendMode === "demo" && (
               <>
                 <Badge variant="info" data-testid="demo-endpoint-status">
                   Demo endpoint only
@@ -314,13 +318,13 @@ export function RuntimeDiagnostics({ compact = false }: { compact?: boolean }) {
         <div className="space-y-2 rounded-lg border border-border/60 bg-background/35 p-3">
           <p className="text-sm font-semibold text-foreground">{message}</p>
           <p className="text-xs leading-relaxed text-muted-foreground">{action}</p>
-          {effectiveMode === "demo" && (
+          {backendMode === "demo" && (
             <div className="flex flex-wrap gap-2 text-xs">
               <Badge
                 variant={demoCredentialCheck?.status === "pass" ? "success" : "warning"}
                 data-testid="demo-credentials-status"
               >
-                Demo credentials {demoCredentialCheck?.status === "pass" ? "configured" : "not configured"}
+                Demo credentials {!demoCredentialCheck ? "unknown" : demoCredentialCheck.status === "pass" ? "configured" : "not configured"}
               </Badge>
               <span className="text-muted-foreground">
                 Demo mode uses Trading 212 demo only; live remains disabled.

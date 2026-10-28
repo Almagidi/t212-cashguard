@@ -4,7 +4,7 @@ import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, ReferenceLine,
 } from 'recharts'
-import { cn } from '@/lib/utils'
+import { cn, formatReportedPnL, formatNumber } from '@/lib/utils'
 
 export interface EquityPoint {
   date: string
@@ -20,7 +20,7 @@ interface EquityCurveProps {
 }
 
 function formatValue(v: number) {
-  return v >= 0 ? `+$${v.toFixed(2)}` : `-$${Math.abs(v).toFixed(2)}`
+  return formatReportedPnL(v)
 }
 
 const chartColors = {
@@ -62,7 +62,7 @@ export function EquityCurve({ data, className, height = 180, showGrid = false }:
   const fillId      = isPositive ? 'green-fill' : 'red-fill'
 
   return (
-    <div className={className} style={{ height }}>
+    <div className={className} style={{ height }} role="img" aria-label="Cumulative P&L; currency unavailable">
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
           <defs>
@@ -91,7 +91,7 @@ export function EquityCurve({ data, className, height = 180, showGrid = false }:
             tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
             tickLine={false}
             axisLine={false}
-            tickFormatter={(v) => `$${v}`}
+            tickFormatter={(v) => formatNumber(v)}
             width={45}
           />
           <Tooltip content={<CustomTooltip />} />

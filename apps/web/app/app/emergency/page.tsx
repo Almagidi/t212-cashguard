@@ -5,7 +5,8 @@ import {
   useSettings, useEmergencyKillSwitch, useEmergencyDisableKillSwitch, useEmergencyAutoTradingOff,
   useEmergencyAutoTradingOn, useEmergencyCancelAll, useEmergencyFlattenAll,
 } from '@/hooks/use-api'
-import { Button, Card, CardContent, Spinner, PageHeader } from '@/components/ui'
+import { Button, Card, CardContent, PageHeader } from '@/components/ui'
+import { hasCurrentQueryData } from '@/lib/query-observation'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 import { cn } from '@/lib/utils'
 
@@ -58,7 +59,12 @@ const ACTIONS: EmergencyAction[] = [
 ]
 
 export default function EmergencyPage() {
-  const { data: settings, isLoading } = useSettings()
+  const settingsQuery = useSettings()
+  const { data: settings } = settingsQuery
+  const known = hasCurrentQueryData(settingsQuery)
+    && typeof settings?.kill_switch_active === 'boolean'
+    && typeof settings?.auto_trading_enabled === 'boolean'
+  const canEnable = known && settings?.auto_trading_enabled === false && settings?.kill_switch_active === false
   const [pending, setPending] = useState<string | null>(null)
   const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null)
   const [recoveryError, setRecoveryError] = useState<string | null>(null)
@@ -72,6 +78,7 @@ export default function EmergencyPage() {
   const flattenAll = useEmergencyFlattenAll()
 
   const execute = async (id: string) => {
+    if ((id === 'flatten_all' && !known) || (id === 'disable_kill_switch' && (!known || settings?.kill_switch_active !== true))) return
     setPending(null)
     setRecoveryError(null)
     if (id === 'kill_switch') {
@@ -93,9 +100,7 @@ export default function EmergencyPage() {
   }
 
   const isBusy = killSwitch.isPending || disableKillSwitch.isPending || autoOff.isPending || autoOn.isPending || cancelAll.isPending || flattenAll.isPending
-  const killSwitchActive = Boolean(settings?.kill_switch_active)
-
-  if (isLoading) return <div className="flex items-center gap-2 text-muted-foreground text-sm"><Spinner className="w-4 h-4" />Loading...</div>
+  const killSwitchActive = known && settings?.kill_switch_active === true
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -120,23 +125,24 @@ export default function EmergencyPage() {
         </div>
       </div>
 
+      {!known && <p role="status" className="rounded-lg border border-amber-500/30 p-3 text-sm text-foreground">Control state unknown. Current settings are unavailable or being checked. Enabling automation, recovery and flattening are unavailable; protective actions remain available.</p>}
       {/* Current status */}
       <div className="grid grid-cols-2 gap-4">
         <div className={cn(
           'stat-card',
-          settings?.kill_switch_active && 'border-red-500/30 bg-red-500/5'
+          killSwitchActive && 'border-red-500/30 bg-red-500/5'
         )} data-testid="kill-switch-status">
           <p className="stat-label">Kill Switch</p>
           <div className="flex items-center gap-2 mt-2">
             <span className={cn(
               'w-2 h-2 rounded-full',
-              settings?.kill_switch_active ? 'bg-red-400 animate-pulse-slow' : 'bg-emerald-400'
+              !known ? 'bg-amber-400' : killSwitchActive ? 'bg-red-400 animate-pulse-slow' : 'bg-emerald-400'
             )} />
             <p className={cn(
               'text-base font-semibold',
-              settings?.kill_switch_active ? 'text-red-400' : 'text-emerald-400'
+              !known ? 'text-foreground' : killSwitchActive ? 'text-red-700 dark:text-red-400' : 'text-emerald-700 dark:text-emerald-400'
             )}>
-              {settings?.kill_switch_active ? 'ACTIVE' : 'Inactive'}
+              {!known ? 'Unknown' : killSwitchActive ? 'ACTIVE' : 'Inactive'}
             </p>
           </div>
         </div>
@@ -151,14 +157,14 @@ export default function EmergencyPage() {
               'text-base font-semibold',
               settings?.auto_trading_enabled ? 'text-emerald-400' : 'text-muted-foreground'
             )}>
-              {settings?.auto_trading_enabled ? 'Enabled' : 'Disabled'}
+              {!known ? 'Unknown' : settings?.auto_trading_enabled ? 'Enabled' : 'Disabled'}
             </p>
           </div>
         </div>
       </div>
 
       {recoveryMessage && (
-        <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200" data-testid="kill-switch-recovery-message">
+        <div role="status" className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-800 dark:text-emerald-200" data-testid="kill-switch-recovery-message">
           <div className="flex items-start gap-2">
             <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0" />
             <p>{recoveryMessage}</p>
@@ -167,13 +173,13 @@ export default function EmergencyPage() {
       )}
 
       {recoveryError && (
-        <div className="rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+        <div role="alert" className="rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-800 dark:text-red-200">
           {recoveryError}
         </div>
       )}
 
       {/* Re-enable auto trading */}
-      {!settings?.auto_trading_enabled && !settings?.kill_switch_active && (
+      {canEnable && (
         <Card className="border-emerald-500/20 bg-emerald-500/[0.03]">
           <CardContent className="p-4 flex items-center justify-between gap-4">
             <div className="flex items-start gap-3">
@@ -185,7 +191,7 @@ export default function EmergencyPage() {
                 <p className="text-xs text-muted-foreground mt-0.5">Re-enable to allow strategies to execute trades.</p>
               </div>
             </div>
-            <Button variant="success" size="sm" onClick={() => autoOn.mutate()} loading={autoOn.isPending} data-testid="auto-trading-enable-button">
+            <Button variant="success" size="sm" onClick={() => { if (canEnable) autoOn.mutate() }} disabled={isBusy || !canEnable} loading={autoOn.isPending} data-testid="auto-trading-enable-button">
               <Power className="w-3.5 h-3.5" />
               Re-enable
             </Button>
@@ -279,7 +285,7 @@ export default function EmergencyPage() {
                 size="sm"
                 className="flex-shrink-0"
                 onClick={() => setPending(action.id)}
-                disabled={isBusy}
+                disabled={isBusy || (action.id === 'flatten_all' && !known)}
                 data-testid={action.testId}
               >
                 {action.confirmLabel}
@@ -301,6 +307,7 @@ export default function EmergencyPage() {
           confirmLabel={action.confirmLabel}
           dangerous={action.variant === 'danger'}
           loading={isBusy}
+          confirmDisabled={action.id === 'flatten_all' && !known}
         />
       ))}
       <ConfirmDialog
@@ -323,6 +330,7 @@ export default function EmergencyPage() {
         confirmLabel="Disable Kill Switch"
         loading={isBusy}
         confirmButtonTestId="confirm-disable-kill-switch-button"
+        confirmDisabled={!known || !killSwitchActive}
       />
     </div>
   )

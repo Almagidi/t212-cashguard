@@ -18,7 +18,17 @@ export async function loginThroughUi(page: Page, email = adminEmail, password = 
   await page.goto('/auth/login')
   await page.waitForSelector('input[name="email"]')
   await page.fill('input[name="email"]', email)
-  await page.fill('input[type="password"]', password)
+  // Playwright records fill values in report step titles. Keep this runtime
+  // credential in the browser argument channel while exercising the real form.
+  const passwordInput = page.locator('input[type="password"]')
+  await passwordInput.evaluate((input: HTMLInputElement, value: string) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    if (!setter) throw new Error('Password input value setter unavailable')
+    setter.call(input, value)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  }, password)
+  expect(await passwordInput.inputValue() === password, 'Password input accepted the runtime fixture').toBe(true)
   await page.click('button[type="submit"]')
   await page.waitForURL('**/app/**', { timeout: 10_000 })
   await expect(page.locator('header h1')).toBeVisible({ timeout: 10_000 })
@@ -127,7 +137,8 @@ export async function ensureLoggedIn(page: Page) {
       method: 'POST',
       data: { email: adminEmail, password: adminPassword },
     })
-    expect(response.ok(), `login bootstrap failed with status ${response.status()}: ${await response.text()}`).toBe(true)
+    // Successful assertion titles are persisted too; authentication bodies are private.
+    expect(response.ok(), `Login bootstrap HTTP ${response.status()}`).toBe(true)
     const data = await response.json() as { access_token?: string }
     cachedToken = data.access_token
     expect(cachedToken).toBeTruthy()

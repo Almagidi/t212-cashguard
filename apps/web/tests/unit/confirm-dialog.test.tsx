@@ -7,6 +7,15 @@ import userEvent from '@testing-library/user-event'
 import { ConfirmDialog } from '@/components/shared/confirm-dialog'
 
 describe('ConfirmDialog', () => {
+  it('keeps initial focus inside a busy modal when both buttons are disabled', () => {
+    render(<ConfirmDialog open loading onClose={jest.fn()} onConfirm={jest.fn()} title="Working" description="Awaiting the result." />)
+    expect(screen.getByRole('dialog')).toHaveFocus()
+  })
+  it('names the modal and starts focus on the least destructive choice', () => {
+    render(<ConfirmDialog open onClose={jest.fn()} onConfirm={jest.fn()} title="Review flatten" description="Close positions only after review." dangerous />)
+    expect(screen.getByRole('dialog', { name: 'Review flatten' })).toHaveAccessibleDescription('Close positions only after review.')
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus()
+  })
   it('does not render when closed', () => {
     const { container } = render(
       <ConfirmDialog
@@ -78,7 +87,7 @@ describe('ConfirmDialog', () => {
     const user = userEvent.setup()
     const onClose = jest.fn()
 
-    const { container } = render(
+    render(
       <ConfirmDialog
         open
         onClose={onClose}
@@ -88,7 +97,7 @@ describe('ConfirmDialog', () => {
       />,
     )
 
-    const backdrop = container.querySelector('.absolute.inset-0.bg-black\\/60')
+    const backdrop = document.querySelector('[data-testid=confirmation-overlay]')
     expect(backdrop).not.toBeNull()
     await user.click(backdrop!)
     expect(onClose).toHaveBeenCalledTimes(1)

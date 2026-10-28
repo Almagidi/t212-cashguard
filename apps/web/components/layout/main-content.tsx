@@ -7,6 +7,8 @@ export function MainContent({ children }: { children: React.ReactNode }) {
 
   return (
     <main
+      id="main-content"
+      tabIndex={-1}
       className={cn(
         'pt-14 pb-7 min-h-screen relative transition-[margin-left] duration-200',
         sidebarCollapsed ? 'md:ml-16' : 'md:ml-56',
