@@ -110,7 +110,7 @@ function InfoRow({
     <div className="kv-row">
       <dt className="text-muted-foreground">{label}</dt>
       <dd
-        className={cn("text-right font-medium text-foreground", valueClassName)}
+        className={cn("text-right font-medium text-foreground [overflow-wrap:anywhere]", valueClassName)}
       >
         {value}
       </dd>

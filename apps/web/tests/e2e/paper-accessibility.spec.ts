@@ -97,9 +97,13 @@ test('order inspector repeatedly contains focus and returns to its named opener'
 test('operator reflows at 400 percent equivalent without inferring database type from ports', async ({ page }) => {
   await prepare(page)
   const actor = `synthetic-operator-${'a'.repeat(64)}@example.invalid`
+  const workerTask = 'app.workers.tasks.run_strategy_signals'
   await page.route('**/v1/operator/status', async route => {
     const response = await route.fetch()
-    await route.fulfill({ response, json: { ...await response.json(), recent_activity: [{
+    const status = await response.json()
+    await route.fulfill({ response, json: { ...status,
+      schedulers: { ...status.schedulers, strategy_signals_task_name: workerTask },
+      recent_activity: [{
       id: '00000000-0000-4000-8000-000000000020', occurred_at: '2026-10-28T00:00:00Z',
       action: 'auth_login', entity_type: 'user', entity_id: null, actor, payload_summary: {},
     }] } })
@@ -111,6 +115,20 @@ test('operator reflows at 400 percent equivalent without inferring database type
   await expect(page.getByText(/database type are not verified/)).toBeVisible()
   await expect(page.getByText(/incompatible with current startup admission/)).toHaveCount(0)
   await expect(page.getByText(actor)).toBeVisible()
+  const taskName = page.getByTestId('strategy-signals-scheduler-status').getByText(workerTask, { exact: true })
+  await expect(taskName).toBeVisible()
+  await expect(taskName).toHaveText(workerTask)
+  // Every part of the complete identifier must fit inside its row, even if an
+  // ancestor clips overflow. A naturally fitting system font need not wrap.
+  expect(await taskName.evaluate(element => {
+    const row = element.closest('.kv-row')
+    if (!row) throw new Error('Worker task row missing')
+    const bounds = row.getBoundingClientRect()
+    const range = document.createRange(); range.selectNodeContents(element)
+    return [...range.getClientRects()]
+      .filter(rect => rect.left < bounds.left - 1 || rect.right > bounds.right + 1 || rect.top < bounds.top - 1 || rect.bottom > bounds.bottom + 1)
+      .map(({ left, right, top, bottom }) => ({ left, right, top, bottom }))
+  })).toEqual([])
   const reflow = await page.evaluate(() => {
     const text: unknown[] = [], walker = document.createTreeWalker(document.querySelector('main')!, NodeFilter.SHOW_TEXT)
     while (walker.nextNode()) {
@@ -122,4 +140,5 @@ test('operator reflows at 400 percent equivalent without inferring database type
     return { width: document.documentElement.scrollWidth, text }
   })
   expect(reflow.width, JSON.stringify(reflow.text)).toBeLessThanOrEqual(320)
+  expect(reflow.text).toEqual([])
 })
