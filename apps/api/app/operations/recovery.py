@@ -32,6 +32,9 @@ if TYPE_CHECKING:
 ACTION = "recovery.controls_blocked"
 ACTOR = "offline_recovery"
 PAYLOAD = {"version": 1, "app_rows": 1, "venue_rows": 2, "venues": ["kraken", "t212"]}
+# Exact persisted representation emitted by PaperExecutionEngine._paper_connection.
+# Keep this offline module independent of engine/settings/broker imports.
+_PAPER_CREDENTIAL_MARKER = "paper-only-no-real-credential"
 
 
 @dataclass(frozen=True)
@@ -162,7 +165,8 @@ async def verify_credentials(connection: AsyncConnection, master_key: str | None
         (
             await connection.execute(
                 text(
-                    "SELECT id, is_active, api_key_encrypted, api_secret_encrypted "
+                    "SELECT id, broker, environment, is_active, api_key_encrypted, "
+                    "api_secret_encrypted "
                     "FROM broker_connections ORDER BY id"
                 )
             )
@@ -179,15 +183,27 @@ async def verify_credentials(connection: AsyncConnection, master_key: str | None
     cipher = Fernet(base64.urlsafe_b64encode(hashlib.sha256(master_key.encode()).digest()))
     result = []
     for row in rows:
-        try:
-            cipher.decrypt(row["api_key_encrypted"].encode()).decode()
-            cipher.decrypt(row["api_secret_encrypted"].encode()).decode()
-            state = "readable"
-        except (InvalidToken, UnicodeError, AttributeError):
-            state = "unreadable"
+        if (
+            row["broker"] == "paper"
+            and row["environment"] == "mock"
+            and row["api_key_encrypted"] == _PAPER_CREDENTIAL_MARKER
+            and row["api_secret_encrypted"] == _PAPER_CREDENTIAL_MARKER
+        ):
+            state = "not_required"
+        else:
+            try:
+                cipher.decrypt(row["api_key_encrypted"].encode()).decode()
+                cipher.decrypt(row["api_secret_encrypted"].encode()).decode()
+                state = "readable"
+            except (InvalidToken, UnicodeError, AttributeError):
+                state = "unreadable"
         result.append({"id": str(row["id"]), "active": row["is_active"], "status": state})
     return {
-        "status": "FAIL" if any(r["status"] != "readable" for r in result) else "PASS",
+        "status": (
+            "FAIL"
+            if any(r["status"] not in {"readable", "not_required"} for r in result)
+            else "PASS"
+        ),
         "credentials": result,
         "warnings": (
             [
@@ -200,7 +216,11 @@ async def verify_credentials(connection: AsyncConnection, master_key: str | None
             )
             else []
         ),
-        "scope": "Local decryption only; compare backup/schema/financial evidence separately.",
+        "scope": (
+            "Local decryption or exact credential-free paper classification only. "
+            "Paper-only data cannot prove key correctness; compare backup/schema/financial "
+            "evidence separately."
+        ),
     }
 
 
