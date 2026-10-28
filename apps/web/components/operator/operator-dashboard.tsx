@@ -138,8 +138,8 @@ function WhyBlockedPanel({ reasons }: { reasons: OperatorBlockingReason[] }) {
           className={cn(
             "flex items-start gap-2 rounded-md border px-3 py-2 text-xs",
             reason.severity === "blocked"
-              ? "border-red-500/30 bg-red-500/5 text-red-100"
-              : "border-amber-500/30 bg-amber-500/5 text-amber-100",
+              ? "border-red-500/30 bg-red-500/5 text-red-800 dark:text-red-100"
+              : "border-amber-500/30 bg-amber-500/5 text-amber-900 dark:text-amber-100",
           )}
         >
           <TextBadge tone={reason.severity === "blocked" ? "destructive" : "warning"}>
@@ -209,13 +209,13 @@ function ErrorState() {
       />
       <Card className="border-amber-500/30 bg-amber-500/5">
         <CardContent className="pt-5">
-          <div className="flex items-start gap-3 text-amber-100">
-            <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-300" />
+          <div className="flex items-start gap-3 text-amber-900 dark:text-amber-100">
+            <AlertTriangle className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-800 dark:text-amber-300" />
             <div>
               <p className="text-sm font-semibold">
                 Operator status unavailable
               </p>
-              <p className="mt-1 text-xs leading-relaxed text-amber-100/80">
+              <p className="mt-1 text-xs leading-relaxed text-amber-900 dark:text-amber-100/80">
                 Treat automation state as unknown. This page is read-only and no
                 trading action is available from this page.
               </p>
@@ -487,7 +487,7 @@ function Trading212Summary({ status }: { status: OperatorStatus }) {
             }
             valueClassName={
               readiness?.ready_for_live
-                ? "text-amber-300"
+                ? "text-amber-800 dark:text-amber-300"
                 : "text-muted-foreground"
             }
           />
@@ -850,7 +850,7 @@ function SchedulerWorkerHealth({ status }: { status: OperatorStatus }) {
                 strategySignals.strategy_signals_observation_status === "ok"
                   ? "text-emerald-400"
                   : strategySignals.strategy_signals_observation_status === "stale"
-                    ? "text-amber-300"
+                    ? "text-amber-800 dark:text-amber-300"
                     : "text-muted-foreground"
               }
             />
@@ -868,7 +868,7 @@ function SchedulerWorkerHealth({ status }: { status: OperatorStatus }) {
             />
           </dl>
           {showStrategySignalsWarning && (
-            <div className="rounded-md border border-amber-700/50 bg-amber-950/20 p-3 text-xs text-amber-100">
+            <div className="rounded-md border border-amber-700/50 bg-amber-50 dark:bg-amber-950/20 p-3 text-xs text-amber-900 dark:text-amber-100">
               Configured in Celery beat, but no real beat+worker run has been observed yet.
             </div>
           )}
@@ -952,10 +952,10 @@ function PaperExecutionHistoryPanel() {
           </div>
         ) : history.isError ? (
           <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
-            <p className="text-sm font-semibold text-amber-100">
+            <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">
               Paper execution history unavailable
             </p>
-            <p className="mt-1 text-xs text-amber-100/80">
+            <p className="mt-1 text-xs text-amber-900 dark:text-amber-100/80">
               Operator status remains visible. This read-only panel does not create,
               execute, or send broker orders.
             </p>
@@ -1028,17 +1028,17 @@ function PaperExecutionHistoryPanel() {
                           <TextBadge tone="success">No broker order sent</TextBadge>
                         </div>
                         <details className="group rounded-md border border-border/60 bg-secondary/20 p-2">
-                          <summary className="flex cursor-pointer list-none items-center gap-1.5 text-muted-foreground">
+                          <summary className="flex cursor-pointer list-none items-center gap-1.5 text-muted-foreground dark:text-slate-400">
                             <FileText className="h-3.5 w-3.5" />
                             Audit review
                           </summary>
-                          <div className="mt-2 space-y-1 text-muted-foreground">
+                          <div className="mt-2 space-y-1 text-muted-foreground dark:text-slate-400">
                             <p>Risk: {item.risk_result}</p>
                             <p>Audit events: {item.audit_count}</p>
                             <p>Latest audit: {formatDate(item.latest_audit_at)}</p>
                             <p>Live order sent: {String(item.live_order_sent)}</p>
                             {item.rejection_reason && (
-                              <p className="text-amber-200">
+                              <p className="text-amber-900 dark:text-amber-200">
                                 Rejection: {item.rejection_reason}
                               </p>
                             )}
@@ -1077,11 +1077,11 @@ function ActivitySummary({
         <p className="font-mono text-xs font-medium text-foreground">
           {activity.action}
         </p>
-        <p className="text-xs text-muted-foreground">
+        <p className="text-xs text-muted-foreground dark:text-slate-400">
           {formatDate(activity.occurred_at)}
         </p>
       </div>
-      <p className="mt-1 text-xs text-muted-foreground">
+      <p className="mt-1 text-xs text-muted-foreground dark:text-slate-400">
         {activity.entity_type ?? "system"}
         {activity.entity_id
           ? ` · ${activity.entity_id.slice(0, 12)}...`
@@ -1383,7 +1383,7 @@ function DemoReconciliationStatusCard({
     <Card data-testid="demo-reconciliation-status">
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
-          <RefreshCw className="h-4 w-4 text-cyan-300" />
+          <RefreshCw className="h-4 w-4 text-cyan-800 dark:text-cyan-300" />
           Trading 212 Demo Reconciliation
         </CardTitle>
       </CardHeader>
@@ -1394,7 +1394,7 @@ function DemoReconciliationStatusCard({
             <Skeleton className="h-20 w-full" />
           </div>
         ) : error || schedulerError ? (
-          <div className="rounded-md border border-amber-700/50 bg-amber-950/20 p-3 text-sm text-amber-100">
+          <div className="rounded-md border border-amber-700/50 bg-amber-50 dark:bg-amber-950/20 p-3 text-sm text-amber-900 dark:text-amber-100">
             Reconciliation status unavailable.
           </div>
         ) : (
@@ -1434,7 +1434,7 @@ function DemoReconciliationStatusCard({
                 valueClassName={
                   status?.safety_state === "safe"
                     ? "text-emerald-400"
-                    : "text-amber-300"
+                    : "text-amber-800 dark:text-amber-300"
                 }
               />
               <InfoRow
@@ -1475,7 +1475,7 @@ function DemoReconciliationStatusCard({
               />
             </dl>
             {schedulerWarnings.length > 0 && (
-              <div className="rounded-md border border-amber-700/50 bg-amber-950/20 p-3 text-xs text-amber-100">
+              <div className="rounded-md border border-amber-700/50 bg-amber-50 dark:bg-amber-950/20 p-3 text-xs text-amber-900 dark:text-amber-100">
                 <ul className="space-y-1">
                   {schedulerWarnings.map((warning) => (
                     <li key={warning}>{warning}</li>
@@ -1484,45 +1484,45 @@ function DemoReconciliationStatusCard({
               </div>
             )}
             <div className="grid grid-cols-3 gap-2 text-center text-xs sm:grid-cols-6">
-              <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
-                <p className="text-slate-500">Found</p>
-                <p className="mt-1 font-semibold text-slate-100">
+              <div className="rounded-md border border-slate-800 bg-slate-50 dark:bg-slate-900/60 p-2">
+                <p className="text-slate-600 dark:text-slate-400">Found</p>
+                <p className="mt-1 font-semibold text-slate-900 dark:text-slate-100">
                   {latestCounts?.candidates_found ?? 0}
                 </p>
               </div>
-              <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
-                <p className="text-slate-500">Tried</p>
-                <p className="mt-1 font-semibold text-slate-100">
+              <div className="rounded-md border border-slate-800 bg-slate-50 dark:bg-slate-900/60 p-2">
+                <p className="text-slate-600 dark:text-slate-400">Tried</p>
+                <p className="mt-1 font-semibold text-slate-900 dark:text-slate-100">
                   {latestCounts?.attempted ?? 0}
                 </p>
               </div>
-              <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
-                <p className="text-slate-500">OK</p>
-                <p className="mt-1 font-semibold text-emerald-300">
+              <div className="rounded-md border border-slate-800 bg-slate-50 dark:bg-slate-900/60 p-2">
+                <p className="text-slate-600 dark:text-slate-400">OK</p>
+                <p className="mt-1 font-semibold text-emerald-800 dark:text-emerald-300">
                   {latestCounts?.succeeded ?? 0}
                 </p>
               </div>
-              <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
-                <p className="text-slate-500">Missing</p>
+              <div className="rounded-md border border-slate-800 bg-slate-50 dark:bg-slate-900/60 p-2">
+                <p className="text-slate-600 dark:text-slate-400">Missing</p>
                 <p
-                  className="mt-1 font-semibold text-amber-300"
+                  className="mt-1 font-semibold text-amber-800 dark:text-amber-300"
                   data-testid="reconciliation-missing-count"
                 >
                   {latestCounts?.missing ?? 0}
                 </p>
               </div>
-              <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
-                <p className="text-slate-500">Failed</p>
+              <div className="rounded-md border border-slate-800 bg-slate-50 dark:bg-slate-900/60 p-2">
+                <p className="text-slate-600 dark:text-slate-400">Failed</p>
                 <p
-                  className="mt-1 font-semibold text-red-300"
+                  className="mt-1 font-semibold text-red-800 dark:text-red-300"
                   data-testid="reconciliation-failed-count"
                 >
                   {latestCounts?.failed ?? 0}
                 </p>
               </div>
-              <div className="rounded-md border border-slate-800 bg-slate-900/60 p-2">
-                <p className="text-slate-500">Limited</p>
-                <p className="mt-1 font-semibold text-amber-300">
+              <div className="rounded-md border border-slate-800 bg-slate-50 dark:bg-slate-900/60 p-2">
+                <p className="text-slate-600 dark:text-slate-400">Limited</p>
+                <p className="mt-1 font-semibold text-amber-800 dark:text-amber-300">
                   {latestCounts?.rate_limited ?? 0}
                 </p>
               </div>
@@ -1599,11 +1599,11 @@ function CashGuardCard({ status }: { status: OperatorStatus }) {
           </div>
         ) : displayStatus === "unavailable" ? (
           <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
-            <div className="flex items-start gap-3 text-amber-100">
-              <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-300" />
+            <div className="flex items-start gap-3 text-amber-900 dark:text-amber-100">
+              <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-800 dark:text-amber-300" />
               <div>
                 <p className="text-sm font-semibold">Cash snapshot unavailable</p>
-                <p className="mt-1 text-xs leading-relaxed text-amber-100/80">
+                <p className="mt-1 text-xs leading-relaxed text-amber-900 dark:text-amber-100/80">
                   CashGuard cash figures are unavailable from the broker
                   snapshot. Operator status remains visible. This panel is
                   read-only and provides no order controls.
@@ -1647,7 +1647,9 @@ function CashGuardCard({ status }: { status: OperatorStatus }) {
           </dl>
         )}
         <p className="text-xs text-muted-foreground">
-          Cash figures from broker account snapshot only. This panel is
+          {flags.credential_source === 'mock'
+            ? 'Mock adapter cash example; separate from the paper execution ledger. This panel is '
+            : 'Cash figures from broker account snapshot only. This panel is '}
           read-only and provides no order, buy, sell, or execution controls.
         </p>
       </CardContent>
@@ -1827,8 +1829,8 @@ export function OperatorDashboard({
       <RecentActivity status={status} />
 
       <Card className="border-blue-500/20 bg-blue-500/5">
-        <CardContent className="flex flex-wrap items-center gap-3 pt-5 text-xs text-blue-100/80">
-          <ListChecks className="h-4 w-4 text-blue-300" />
+        <CardContent className="flex flex-wrap items-center gap-3 pt-5 text-xs text-blue-900 dark:text-blue-100/80">
+          <ListChecks className="h-4 w-4 text-blue-800 dark:text-blue-300" />
           <span>
             Visibility only: no enable, disable, execute, trade, buy, sell,
             scheduler, broker, or live controls are available here.

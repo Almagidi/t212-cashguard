@@ -19,6 +19,7 @@ import { useWebSocket } from '@/hooks/use-websocket'
 import { EquityCurve, Sparkline, type EquityPoint } from '@/components/charts/equity-curve'
 import { RegimeBadge } from '@/components/dashboard/regime-badge'
 import { AutomationStatus, KillSwitchStatus } from '@/components/dashboard/automation-status'
+import { AccountSourceNotice } from '@/components/dashboard/account-source-notice'
 import api, { API_URL } from '@/services/api'
 import { StrategyPresetGrid } from '@/components/strategies/strategy-preset-grid'
 import type { AllocatorDecision } from '@/types'
@@ -39,7 +40,7 @@ function subscribeToTokenChanges(onStoreChange: () => void) {
 
 function WsStatusPill({ status }: { status: string }) {
   const map: Record<string, { label: string; cls: string; dot: string }> = {
-    connected:    { label: 'Live',           cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/25', dot: 'bg-emerald-400' },
+    connected:    { label: 'Stream connected', cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/25', dot: 'bg-emerald-400' },
     connecting:   { label: 'Connecting',     cls: 'text-amber-400 bg-amber-500/10 border-amber-500/25',       dot: 'bg-amber-400' },
     reconnecting: { label: 'Reconnecting',   cls: 'text-amber-400 bg-amber-500/10 border-amber-500/25',       dot: 'bg-amber-400' },
     disconnected: { label: 'Offline',        cls: 'text-red-400 bg-red-500/10 border-red-500/25',             dot: 'bg-red-400' },
@@ -112,6 +113,7 @@ export default function DashboardPage() {
 
   // Merge live WS data over REST data for real-time feel while preserving explainability.
   const liveAccount   = snapshot?.account
+  const exampleAccount = snapshot?.data_source === 'mock_market_animation' || account?.mode === 'mock'
   const livePositions = snapshot?.positions ?? positions
   const liveSignals = snapshot?.signals
     ? snapshot.signals.map((signal) => {
@@ -233,34 +235,34 @@ export default function DashboardPage() {
         ) : (
           <div data-testid="account-stats" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <TerminalCard
-              label="Total Value"
+              label={exampleAccount ? 'Example Total Value' : 'Total Value'}
               value={formatReportedAmount(totalValue, totalCurrency)}
               sub={totalCurrency ?? 'Currency unavailable'}
               variant="cyan"
               icon={<Wallet className="w-5 h-5" />}
-              live={wsStatus === 'connected'}
+              live={wsStatus === 'connected' && !exampleAccount}
             />
             <TerminalCard
-              label="Available to Trade"
+              label={exampleAccount ? 'Example Cash' : 'Available to Trade'}
               value={formatReportedAmount(freeCash, cashCurrency)}
               sub="Cash-only · no leverage"
               variant="cyan"
               icon={<ShieldCheck className="w-5 h-5" />}
             />
             <TerminalCard
-              label="Invested"
+              label={exampleAccount ? 'Example Invested' : 'Invested'}
               value={formatReportedAmount(invested, investedCurrency)}
               sub={`${livePositions.length} position${livePositions.length !== 1 ? 's' : ''}`}
               variant="cyan"
               icon={<BarChart2 className="w-5 h-5" />}
             />
             <TerminalCard
-              label="Unrealized P&L"
+              label={exampleAccount ? 'Example Unrealized P&L' : 'Unrealized P&L'}
               value={<span className={pnlClass(unrealizedPnl)}>{formatReportedPnL(unrealizedPnl, pnlCurrency)}</span>}
               sub={unrealizedPnl > 0 ? 'Profitable' : unrealizedPnl < 0 ? 'In drawdown' : 'Flat'}
               variant={unrealizedPnl >= 0 ? 'teal' : 'red'}
               icon={unrealizedPnl >= 0 ? <TrendingUp className="w-5 h-5" /> : <ArrowDownRight className="w-5 h-5" />}
-              live={wsStatus === 'connected'}
+              live={wsStatus === 'connected' && !exampleAccount}
             />
           </div>
         )}
@@ -870,7 +872,7 @@ export default function DashboardPage() {
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h2 className="text-xl font-semibold tracking-tight">Portfolio Overview</h2>
-          <p className="text-[13px] text-muted-foreground mt-1">Real-time account snapshot</p>
+          <p className="text-[13px] text-muted-foreground mt-1">{exampleAccount ? 'Separate mock examples and paper execution records' : 'Account data and stream status'}</p>
         </div>
         <div className="flex items-center gap-2">
           <WsStatusPill status={wsStatus} />
@@ -894,6 +896,8 @@ export default function DashboardPage() {
           </Button>
         </div>
       </div>
+
+      <AccountSourceNotice streamSource={snapshot?.data_source} hasSnapshot={!!snapshot} accountMode={account?.mode} />
 
       <AnimatePresence>
         {customizing && (

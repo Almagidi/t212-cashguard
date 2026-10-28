@@ -3,13 +3,15 @@ Mock broker adapter.
 Returns realistic fake data so the app runs fully without Trading 212 credentials.
 All mock data is deterministic and based on realistic market values.
 """
+
 from __future__ import annotations
 
 import random
-import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+
+MOCK_ACCOUNT_CURRENCY = "USD"
 
 
 class MockBrokerAdapter:
@@ -22,7 +24,7 @@ class MockBrokerAdapter:
         self._orders: dict[str, dict[str, Any]] = {}
         self._positions: dict[str, dict[str, Any]] = {}
         self._order_counter = 1000
-        self._account_currency = "USD"
+        self._account_currency = MOCK_ACCOUNT_CURRENCY
         self._available_cash = Decimal("10000.00")
         self._total_value = Decimal("12500.00")
 
@@ -56,19 +58,17 @@ class MockBrokerAdapter:
             },
         }
 
-    async def __aenter__(self) -> "MockBrokerAdapter":
+    async def __aenter__(self) -> MockBrokerAdapter:
         return self
 
     async def __aexit__(self, *args: Any) -> None:
         pass
 
     async def get_account_summary(self) -> dict[str, Any]:
-        invested = sum(
-            pos["quantity"] * pos["averagePrice"]
-            for pos in self._positions.values()
-        )
+        invested = sum(pos["quantity"] * pos["averagePrice"] for pos in self._positions.values())
         ppl = sum(pos["ppl"] for pos in self._positions.values())
         return {
+            "currencyCode": self._account_currency,
             "cash": float(self._available_cash),
             "free": float(self._available_cash),
             "invested": invested,
@@ -86,22 +86,100 @@ class MockBrokerAdapter:
 
     async def get_instruments(self) -> list[dict[str, Any]]:
         return [
-            {"ticker": "AAPL", "name": "Apple Inc.", "type": "STOCK", "currencyCode": "USD", "extendedHours": True, "workingScheduleId": 1},
-            {"ticker": "MSFT", "name": "Microsoft Corporation", "type": "STOCK", "currencyCode": "USD", "extendedHours": True, "workingScheduleId": 1},
-            {"ticker": "TSLA", "name": "Tesla Inc.", "type": "STOCK", "currencyCode": "USD", "extendedHours": True, "workingScheduleId": 1},
-            {"ticker": "GOOGL", "name": "Alphabet Inc.", "type": "STOCK", "currencyCode": "USD", "extendedHours": True, "workingScheduleId": 1},
-            {"ticker": "AMZN", "name": "Amazon.com Inc.", "type": "STOCK", "currencyCode": "USD", "extendedHours": True, "workingScheduleId": 1},
-            {"ticker": "NVDA", "name": "NVIDIA Corporation", "type": "STOCK", "currencyCode": "USD", "extendedHours": True, "workingScheduleId": 1},
-            {"ticker": "META", "name": "Meta Platforms Inc.", "type": "STOCK", "currencyCode": "USD", "extendedHours": True, "workingScheduleId": 1},
-            {"ticker": "SPY", "name": "SPDR S&P 500 ETF", "type": "ETF", "currencyCode": "USD", "extendedHours": False, "workingScheduleId": 1},
-            {"ticker": "QQQ", "name": "Invesco QQQ Trust", "type": "ETF", "currencyCode": "USD", "extendedHours": False, "workingScheduleId": 1},
-            {"ticker": "IWM", "name": "iShares Russell 2000 ETF", "type": "ETF", "currencyCode": "USD", "extendedHours": False, "workingScheduleId": 1},
+            {
+                "ticker": "AAPL",
+                "name": "Apple Inc.",
+                "type": "STOCK",
+                "currencyCode": "USD",
+                "extendedHours": True,
+                "workingScheduleId": 1,
+            },
+            {
+                "ticker": "MSFT",
+                "name": "Microsoft Corporation",
+                "type": "STOCK",
+                "currencyCode": "USD",
+                "extendedHours": True,
+                "workingScheduleId": 1,
+            },
+            {
+                "ticker": "TSLA",
+                "name": "Tesla Inc.",
+                "type": "STOCK",
+                "currencyCode": "USD",
+                "extendedHours": True,
+                "workingScheduleId": 1,
+            },
+            {
+                "ticker": "GOOGL",
+                "name": "Alphabet Inc.",
+                "type": "STOCK",
+                "currencyCode": "USD",
+                "extendedHours": True,
+                "workingScheduleId": 1,
+            },
+            {
+                "ticker": "AMZN",
+                "name": "Amazon.com Inc.",
+                "type": "STOCK",
+                "currencyCode": "USD",
+                "extendedHours": True,
+                "workingScheduleId": 1,
+            },
+            {
+                "ticker": "NVDA",
+                "name": "NVIDIA Corporation",
+                "type": "STOCK",
+                "currencyCode": "USD",
+                "extendedHours": True,
+                "workingScheduleId": 1,
+            },
+            {
+                "ticker": "META",
+                "name": "Meta Platforms Inc.",
+                "type": "STOCK",
+                "currencyCode": "USD",
+                "extendedHours": True,
+                "workingScheduleId": 1,
+            },
+            {
+                "ticker": "SPY",
+                "name": "SPDR S&P 500 ETF",
+                "type": "ETF",
+                "currencyCode": "USD",
+                "extendedHours": False,
+                "workingScheduleId": 1,
+            },
+            {
+                "ticker": "QQQ",
+                "name": "Invesco QQQ Trust",
+                "type": "ETF",
+                "currencyCode": "USD",
+                "extendedHours": False,
+                "workingScheduleId": 1,
+            },
+            {
+                "ticker": "IWM",
+                "name": "iShares Russell 2000 ETF",
+                "type": "ETF",
+                "currencyCode": "USD",
+                "extendedHours": False,
+                "workingScheduleId": 1,
+            },
         ]
 
     async def get_exchanges(self) -> list[dict[str, Any]]:
         return [
-            {"id": 1, "name": "NASDAQ", "workingSchedules": [{"id": 1, "timeFrom": "09:30", "timeTo": "16:00"}]},
-            {"id": 2, "name": "NYSE", "workingSchedules": [{"id": 1, "timeFrom": "09:30", "timeTo": "16:00"}]},
+            {
+                "id": 1,
+                "name": "NASDAQ",
+                "workingSchedules": [{"id": 1, "timeFrom": "09:30", "timeTo": "16:00"}],
+            },
+            {
+                "id": 2,
+                "name": "NYSE",
+                "workingSchedules": [{"id": 1, "timeFrom": "09:30", "timeTo": "16:00"}],
+            },
         ]
 
     async def get_positions(self) -> list[dict[str, Any]]:
@@ -118,10 +196,7 @@ class MockBrokerAdapter:
         return self._positions.get(ticker)
 
     async def get_pending_orders(self) -> list[dict[str, Any]]:
-        return [
-            o for o in self._orders.values()
-            if o["status"] in ("PENDING", "WORKING")
-        ]
+        return [o for o in self._orders.values() if o["status"] in ("PENDING", "WORKING")]
 
     async def get_order_by_id(self, order_id: str) -> dict[str, Any]:
         if order_id not in self._orders:
@@ -143,9 +218,16 @@ class MockBrokerAdapter:
 
         # Simulate fill price
         base_prices = {
-            "AAPL": 178.0, "MSFT": 395.0, "TSLA": 248.0, "GOOGL": 168.0,
-            "AMZN": 198.0, "NVDA": 875.0, "META": 540.0, "SPY": 560.0,
-            "QQQ": 480.0, "IWM": 220.0,
+            "AAPL": 178.0,
+            "MSFT": 395.0,
+            "TSLA": 248.0,
+            "GOOGL": 168.0,
+            "AMZN": 198.0,
+            "NVDA": 875.0,
+            "META": 540.0,
+            "SPY": 560.0,
+            "QQQ": 480.0,
+            "IWM": 220.0,
         }
         fill_price = base_prices.get(ticker, 100.0) * (1 + random.uniform(-0.001, 0.001))
         cost = abs_qty * fill_price
@@ -153,7 +235,9 @@ class MockBrokerAdapter:
         if not is_sell:
             # Update mock cash
             if Decimal(str(cost)) > self._available_cash:
-                raise ValueError(f"Insufficient cash: need {cost:.2f}, have {float(self._available_cash):.2f}")
+                raise ValueError(
+                    f"Insufficient cash: need {cost:.2f}, have {float(self._available_cash):.2f}"
+                )
             self._available_cash -= Decimal(str(cost))
             # Update or create position
             if ticker in self._positions:
@@ -172,7 +256,7 @@ class MockBrokerAdapter:
                     "fxPpl": 0.0,
                     "maxBuy": 100.0,
                     "maxSell": abs_qty,
-                    "initialFillDate": datetime.now(timezone.utc).isoformat(),
+                    "initialFillDate": datetime.now(UTC).isoformat(),
                     "frontend": "WC4",
                     "pieQuantity": 0.0,
                 }
@@ -196,8 +280,8 @@ class MockBrokerAdapter:
             "status": "FILLED",
             "filledQuantity": abs_qty,
             "filledPrice": fill_price,
-            "dateCreated": datetime.now(timezone.utc).isoformat(),
-            "dateModified": datetime.now(timezone.utc).isoformat(),
+            "dateCreated": datetime.now(UTC).isoformat(),
+            "dateModified": datetime.now(UTC).isoformat(),
         }
         self._orders[order_id] = order
         return order
@@ -221,8 +305,8 @@ class MockBrokerAdapter:
             "type": "LIMIT",
             "status": "WORKING",
             "filledQuantity": 0.0,
-            "dateCreated": datetime.now(timezone.utc).isoformat(),
-            "dateModified": datetime.now(timezone.utc).isoformat(),
+            "dateCreated": datetime.now(UTC).isoformat(),
+            "dateModified": datetime.now(UTC).isoformat(),
         }
         self._orders[order_id] = order
         return order
@@ -246,8 +330,8 @@ class MockBrokerAdapter:
             "type": "STOP",
             "status": "WORKING",
             "filledQuantity": 0.0,
-            "dateCreated": datetime.now(timezone.utc).isoformat(),
-            "dateModified": datetime.now(timezone.utc).isoformat(),
+            "dateCreated": datetime.now(UTC).isoformat(),
+            "dateModified": datetime.now(UTC).isoformat(),
         }
         self._orders[order_id] = order
         return order
@@ -273,8 +357,8 @@ class MockBrokerAdapter:
             "type": "STOP_LIMIT",
             "status": "WORKING",
             "filledQuantity": 0.0,
-            "dateCreated": datetime.now(timezone.utc).isoformat(),
-            "dateModified": datetime.now(timezone.utc).isoformat(),
+            "dateCreated": datetime.now(UTC).isoformat(),
+            "dateModified": datetime.now(UTC).isoformat(),
         }
         self._orders[order_id] = order
         return order

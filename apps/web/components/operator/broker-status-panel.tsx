@@ -41,7 +41,7 @@ function statusBadgeClass(status: string): string {
     normalized.includes("ok") ||
     normalized.includes("healthy")
   ) {
-    return "border-emerald-700/60 bg-emerald-950/50 text-emerald-200";
+    return "border-emerald-700/60 bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-200";
   }
 
   if (
@@ -51,10 +51,10 @@ function statusBadgeClass(status: string): string {
     normalized.includes("failed") ||
     normalized.includes("not_connected")
   ) {
-    return "border-amber-700/60 bg-amber-950/40 text-amber-200";
+    return "border-amber-700/60 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200";
   }
 
-  return "border-slate-700 bg-slate-900 text-slate-200";
+  return "border-slate-700 bg-muted dark:bg-slate-900 text-slate-800 dark:text-slate-200";
 }
 
 export function BrokerStatusPanel({
@@ -64,13 +64,13 @@ export function BrokerStatusPanel({
 }: BrokerStatusPanelProps) {
   if (isLoading) {
     return (
-      <section className="rounded-2xl border border-slate-800 bg-slate-950/60 p-5 shadow-sm">
+      <section className="rounded-2xl border border-border dark:border-slate-800 bg-card dark:bg-slate-950/60 p-5 shadow-sm">
         <div className="h-5 w-64 animate-pulse rounded bg-slate-800" />
         <div className="mt-4 grid gap-3 md:grid-cols-4">
-          <div className="h-20 animate-pulse rounded-xl bg-slate-900" />
-          <div className="h-20 animate-pulse rounded-xl bg-slate-900" />
-          <div className="h-20 animate-pulse rounded-xl bg-slate-900" />
-          <div className="h-20 animate-pulse rounded-xl bg-slate-900" />
+          <div className="h-20 animate-pulse rounded-xl bg-muted dark:bg-slate-900" />
+          <div className="h-20 animate-pulse rounded-xl bg-muted dark:bg-slate-900" />
+          <div className="h-20 animate-pulse rounded-xl bg-muted dark:bg-slate-900" />
+          <div className="h-20 animate-pulse rounded-xl bg-muted dark:bg-slate-900" />
         </div>
       </section>
     );
@@ -78,11 +78,11 @@ export function BrokerStatusPanel({
 
   if (error) {
     return (
-      <section className="rounded-2xl border border-amber-700/50 bg-amber-950/20 p-5 shadow-sm">
-        <h2 className="text-lg font-semibold text-amber-100">
+      <section className="rounded-2xl border border-amber-700/50 bg-amber-50 dark:bg-amber-950/20 p-5 shadow-sm">
+        <h2 className="text-lg font-semibold text-amber-900 dark:text-amber-100">
           Broker connection status
         </h2>
-        <p className="mt-2 text-sm text-amber-200">
+        <p className="mt-2 text-sm text-amber-900 dark:text-amber-200">
           Broker status is unavailable. Treat broker connectivity as unknown.
         </p>
       </section>
@@ -95,23 +95,23 @@ export function BrokerStatusPanel({
   const demoBroker = status?.environment === "demo";
 
   return (
-    <section className="space-y-5 rounded-2xl border border-slate-800 bg-slate-950/60 p-5 shadow-sm" data-testid={demoBroker ? "demo-broker-status" : "broker-runtime-status"}>
+    <section className="space-y-5 rounded-2xl border border-border dark:border-slate-800 bg-card dark:bg-slate-950/60 p-5 shadow-sm" data-testid={demoBroker ? "demo-broker-status" : "broker-runtime-status"}>
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-slate-100">
+          <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
             Broker connection status
           </h2>
-          <p className="mt-1 text-sm text-slate-400">
+          <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
             Read-only broker visibility. This panel does not connect,
             disconnect, trade, or place orders.
           </p>
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <span className="rounded-full border border-sky-700/60 bg-sky-950/50 px-3 py-1 text-xs font-medium text-sky-200">
+          <span className="rounded-full border border-sky-700/60 bg-sky-50 dark:bg-sky-950/50 px-3 py-1 text-xs font-medium text-sky-800 dark:text-sky-200">
             Read-only
           </span>
-          <span className="rounded-full border border-rose-700/60 bg-rose-950/40 px-3 py-1 text-xs font-medium text-rose-200">
+          <span className="rounded-full border border-rose-700/60 bg-rose-50 dark:bg-rose-950/40 px-3 py-1 text-xs font-medium text-rose-800 dark:text-rose-200">
             No broker actions
           </span>
           <span
@@ -123,12 +123,12 @@ export function BrokerStatusPanel({
             {formatValue(connectionStatus)}
           </span>
           {demoBroker ? (
-            <span className="rounded-full border border-cyan-700/60 bg-cyan-950/50 px-3 py-1 text-xs font-medium text-cyan-200" data-testid="demo-endpoint-status">
+            <span className="rounded-full border border-cyan-700/60 bg-cyan-50 dark:bg-cyan-950/50 px-3 py-1 text-xs font-medium text-cyan-800 dark:text-cyan-200" data-testid="demo-endpoint-status">
               Demo endpoint only
             </span>
           ) : null}
           {demoBroker ? (
-            <span className="rounded-full border border-emerald-700/60 bg-emerald-950/50 px-3 py-1 text-xs font-medium text-emerald-200" data-testid="live-endpoint-blocked-badge">
+            <span className="rounded-full border border-emerald-700/60 bg-emerald-50 dark:bg-emerald-950/50 px-3 py-1 text-xs font-medium text-emerald-800 dark:text-emerald-200" data-testid="live-endpoint-blocked-badge">
               Live endpoint blocked
             </span>
           ) : null}
@@ -136,8 +136,8 @@ export function BrokerStatusPanel({
       </div>
 
       {!status ? (
-        <div className="rounded-xl border border-amber-800/60 bg-amber-950/20 p-4">
-          <p className="text-sm text-amber-200">
+        <div className="rounded-xl border border-amber-800/60 bg-amber-50 dark:bg-amber-950/20 p-4">
+          <p className="text-sm text-amber-900 dark:text-amber-200">
             No broker connection status was returned. Treat broker state as
             unknown.
           </p>
@@ -145,90 +145,90 @@ export function BrokerStatusPanel({
       ) : null}
 
       <div className="grid gap-3 md:grid-cols-4">
-        <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
-          <p className="text-xs uppercase tracking-wide text-slate-500">
+        <div className="rounded-xl border border-border dark:border-slate-800 bg-muted dark:bg-slate-900/70 p-4">
+          <p className="text-xs uppercase tracking-wide text-slate-600 dark:text-slate-400">
             Broker
           </p>
-          <p className="mt-2 text-xl font-semibold text-slate-100">
+          <p className="mt-2 text-xl font-semibold text-slate-900 dark:text-slate-100">
             {formatValue(status?.broker ?? "trading212")}
           </p>
         </div>
 
-        <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
-          <p className="text-xs uppercase tracking-wide text-slate-500">
+        <div className="rounded-xl border border-border dark:border-slate-800 bg-muted dark:bg-slate-900/70 p-4">
+          <p className="text-xs uppercase tracking-wide text-slate-600 dark:text-slate-400">
             Environment
           </p>
-          <p className="mt-2 text-xl font-semibold text-slate-100">
+          <p className="mt-2 text-xl font-semibold text-slate-900 dark:text-slate-100">
             {formatValue(status?.environment)}
           </p>
         </div>
 
-        <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4" data-testid="broker-real-configured">
-          <p className="text-xs uppercase tracking-wide text-slate-500">
+        <div className="rounded-xl border border-border dark:border-slate-800 bg-muted dark:bg-slate-900/70 p-4" data-testid="broker-real-configured">
+          <p className="text-xs uppercase tracking-wide text-slate-600 dark:text-slate-400">
             Real broker configured
           </p>
-          <p className="mt-2 text-xl font-semibold text-slate-100">
+          <p className="mt-2 text-xl font-semibold text-slate-900 dark:text-slate-100">
             {formatValue(status?.credential_state === "configured")}
           </p>
         </div>
 
-        <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4" data-testid="broker-mock-active">
-          <p className="text-xs uppercase tracking-wide text-slate-500">
+        <div className="rounded-xl border border-border dark:border-slate-800 bg-muted dark:bg-slate-900/70 p-4" data-testid="broker-mock-active">
+          <p className="text-xs uppercase tracking-wide text-slate-600 dark:text-slate-400">
             Mock broker active
           </p>
-          <p className="mt-2 text-xl font-semibold text-slate-100">
+          <p className="mt-2 text-xl font-semibold text-slate-900 dark:text-slate-100">
             {formatValue(mockBrokerActive)}
           </p>
         </div>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-          <h3 className="text-sm font-semibold text-slate-100">
+        <div className="rounded-xl border border-border dark:border-slate-800 bg-muted dark:bg-slate-900/50 p-4">
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
             Account metadata
           </h3>
           <dl className="mt-3 grid gap-3 text-sm">
-            <div className="flex items-center justify-between gap-4 border-b border-slate-800 pb-2">
-              <dt className="text-slate-400">Account ID</dt>
-              <dd className="font-medium text-slate-100">
+            <div className="flex items-center justify-between gap-4 border-b border-border dark:border-slate-800 pb-2">
+              <dt className="text-slate-600 dark:text-slate-400">Account ID</dt>
+              <dd className="font-medium text-slate-900 dark:text-slate-100">
                 {maskAccountId(status?.account_id)}
               </dd>
             </div>
-            <div className="flex items-center justify-between gap-4 border-b border-slate-800 pb-2">
-              <dt className="text-slate-400">Account currency</dt>
-              <dd className="font-medium text-slate-100">
+            <div className="flex items-center justify-between gap-4 border-b border-border dark:border-slate-800 pb-2">
+              <dt className="text-slate-600 dark:text-slate-400">Account currency</dt>
+              <dd className="font-medium text-slate-900 dark:text-slate-100">
                 {formatValue(status?.account_currency)}
               </dd>
             </div>
             <div
-              className="flex items-center justify-between gap-4 border-b border-slate-800 pb-2"
+              className="flex items-center justify-between gap-4 border-b border-border dark:border-slate-800 pb-2"
               data-testid="broker-credential-source"
             >
-              <dt className="text-slate-400">Credential source</dt>
-              <dd className="font-medium text-slate-100">
+              <dt className="text-slate-600 dark:text-slate-400">Credential source</dt>
+              <dd className="font-medium text-slate-900 dark:text-slate-100">
                 {credentialSourceLabel(status?.credential_source)}
               </dd>
             </div>
-            <div className="flex items-center justify-between gap-4 border-b border-slate-800 pb-2">
-              <dt className="text-slate-400">Last connection test</dt>
-              <dd className="font-medium text-slate-100">
+            <div className="flex items-center justify-between gap-4 border-b border-border dark:border-slate-800 pb-2">
+              <dt className="text-slate-600 dark:text-slate-400">Last connection test</dt>
+              <dd className="font-medium text-slate-900 dark:text-slate-100">
                 {formatValue(status?.last_test_at)}
               </dd>
             </div>
             <div className="flex items-center justify-between gap-4">
-              <dt className="text-slate-400">Last test OK</dt>
-              <dd className="font-medium text-slate-100">
+              <dt className="text-slate-600 dark:text-slate-400">Last test OK</dt>
+              <dd className="font-medium text-slate-900 dark:text-slate-100">
                 {formatValue(status?.last_test_ok)}
               </dd>
             </div>
           </dl>
         </div>
 
-        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-          <h3 className="text-sm font-semibold text-slate-100">
+        <div className="rounded-xl border border-border dark:border-slate-800 bg-muted dark:bg-slate-900/50 p-4">
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
             Safety boundary
           </h3>
-          <div className="mt-3 space-y-2 text-sm text-slate-300">
+          <div className="mt-3 space-y-2 text-sm text-slate-700 dark:text-slate-300">
             <p>Broker credentials are not displayed.</p>
             <p>
               No connect, reconnect, disconnect, buy, sell, execute, or live
@@ -240,7 +240,7 @@ export function BrokerStatusPanel({
           </div>
 
           {status?.recovery_hint ? (
-            <div className="mt-4 rounded-lg border border-amber-800/60 bg-amber-950/20 p-3 text-sm text-amber-200">
+            <div className="mt-4 rounded-lg border border-amber-800/60 bg-amber-50 dark:bg-amber-950/20 p-3 text-sm text-amber-900 dark:text-amber-200">
               {status.recovery_hint}
             </div>
           ) : null}

@@ -12,8 +12,10 @@ test.describe('Dashboard', () => {
   })
 
   test('shows account stats cards', async ({ page }) => {
-    await expect(page.locator('text=Total Value')).toBeVisible({ timeout: 10_000 })
-    await expect(page.locator('text=Available to Trade')).toBeVisible()
+    const stats = page.getByTestId('account-stats')
+    await expect(stats.getByText('Example Total Value', { exact: true })).toBeVisible({ timeout: 10_000 })
+    await expect(stats.getByText('Example Cash', { exact: true })).toBeVisible()
+    await expect(page.getByTestId('account-source-notice')).toContainText('paper ledger')
   })
 
   // The values are single-line and truncate with an ellipsis when they do not

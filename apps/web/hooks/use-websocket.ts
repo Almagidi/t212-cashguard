@@ -70,6 +70,7 @@ const WsRegimeSchema = z.object({
 
 const WsSnapshotSchema = z.object({
   type: z.string(),
+  data_source: z.literal("mock_market_animation").optional(),
   ts: z.string(),
   account: WsAccountSnapshotSchema,
   positions: z.array(WsPositionSchema),
