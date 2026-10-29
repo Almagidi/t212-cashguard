@@ -4,14 +4,18 @@ Backtest and performance attribution routes.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, Self, cast
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.api.deps import get_current_user
+from app.backtest.configuration import resolve_backtest_configuration
 from app.backtest.portfolio_engine import InsufficientPortfolioEvidence
 from app.backtest.portfolio_strategies import (
     get_portfolio_backtest_strategy,
@@ -21,13 +25,39 @@ from app.backtest.strategy_registry import get_backtest_strategy, list_backtest_
 from app.core.config import settings
 from app.db.session import get_db
 from app.market_data.exchange_calendar import calendar_for_venue
+from app.services.strategy_presets import get_strategy_preset
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+
     from sqlalchemy.ext.asyncio import AsyncSession
+    from starlette.requests import Request
+    from starlette.responses import Response
 
     from app.db.models import User
 
-router = APIRouter(prefix="/backtest", tags=["backtest"])
+
+class BacktestValidationRoute(APIRoute):
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        original = super().get_route_handler()
+
+        async def handler(request: Request) -> Response:
+            try:
+                return await original(request)
+            except RequestValidationError as exc:
+                if not self.path.endswith("/backtest/run"):
+                    raise
+                # Do not echo request input: nonfinite JSON numbers cannot themselves
+                # be serialized in FastAPI's default validation-error response.
+                detail = [
+                    {key: error[key] for key in ("loc", "msg", "type")} for error in exc.errors()
+                ]
+                raise HTTPException(status_code=422, detail=detail) from exc
+
+        return handler
+
+
+router = APIRouter(prefix="/backtest", tags=["backtest"], route_class=BacktestValidationRoute)
 attribution_router = APIRouter(prefix="/attribution", tags=["attribution"])
 
 # ── In-memory job store (sufficient for local use) ───────────────────────────
@@ -50,25 +80,44 @@ PortfolioBacktestStrategyType = Literal[
 
 
 class BacktestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     ticker: str
     strategy_type: BacktestStrategyType = "orb"
+    preset_key: BacktestStrategyType | None = None
     strategy_params: dict[str, Any] = Field(default_factory=dict)
     from_date: date
     to_date: date
     initial_capital: float = 10000.0
     run_walk_forward: bool = False
 
+    def configuration(self) -> dict[str, Any]:
+        return resolve_backtest_configuration(
+            self.strategy_type,
+            self.strategy_params,
+            self.preset_key,
+            parameters_supplied="strategy_params" in self.model_fields_set,
+        )
+
+    @model_validator(mode="after")
+    def validate_configuration(self) -> Self:
+        self.configuration()
+        return self
+
 
 class BacktestJobResponse(BaseModel):
     job_id: str
     status: str
     message: str
+    configuration: dict[str, Any] | None = None
 
 
 class BacktestStrategyInfo(BaseModel):
     type: BacktestStrategyType
     label: str
     description: str
+    preset_key: BacktestStrategyType
+    strategy_params: dict[str, Any]
 
 
 class PortfolioBacktestRequest(BaseModel):
@@ -102,14 +151,20 @@ class PortfolioBacktestStrategyInfo(BaseModel):
 async def get_backtest_strategies(
     _: User = Depends(get_current_user),
 ) -> list[BacktestStrategyInfo]:
-    return [
-        BacktestStrategyInfo(
-            type=cast("BacktestStrategyType", item["type"]),
-            label=item["label"],
-            description=item["description"],
+    catalog = []
+    for item in list_backtest_strategies():
+        key = cast("BacktestStrategyType", item["type"])
+        configuration = resolve_backtest_configuration(key, {}, key, parameters_supplied=False)
+        catalog.append(
+            BacktestStrategyInfo(
+                type=key,
+                label=configuration["label"],
+                description=get_strategy_preset(key).description,
+                preset_key=key,
+                strategy_params=configuration["strategy_params"],
+            )
         )
-        for item in list_backtest_strategies()
-    ]
+    return catalog
 
 
 @router.get("/portfolio/strategies", response_model=list[PortfolioBacktestStrategyInfo])
@@ -148,13 +203,21 @@ async def run_backtest(
     import uuid
 
     job_id = str(uuid.uuid4())[:12]
-    _jobs[job_id] = {"status": "running", "created_at": datetime.now(UTC).isoformat()}
+    configuration = body.configuration()
+    _jobs[job_id] = {
+        "status": "running",
+        "created_at": datetime.now(UTC).isoformat(),
+        "configuration": deepcopy(configuration),
+    }
 
-    background_tasks.add_task(_run_backtest_job, job_id, body)
+    background_tasks.add_task(
+        _run_backtest_job, job_id, body.model_copy(deep=True), deepcopy(configuration)
+    )
 
     return BacktestJobResponse(
         job_id=job_id,
         status="running",
+        configuration=deepcopy(configuration),
         message=f"Backtest started for {body.ticker} ({body.from_date} to {body.to_date}). "
         f"Poll GET /v1/backtest/result/{job_id}",
     )
@@ -231,8 +294,23 @@ async def list_portfolio_backtest_jobs(_: User = Depends(get_current_user)) -> l
     ]
 
 
-async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
+async def _run_backtest_job(
+    job_id: str, body: BacktestRequest, configuration: dict[str, Any] | None = None
+) -> None:
     """Background task: run backtest and store result."""
+    configuration = deepcopy(configuration) if configuration is not None else body.configuration()
+    strategy_config = get_backtest_strategy(body.strategy_type)
+    param_grid = deepcopy(strategy_config["param_grid"])
+    metadata = {
+        "configuration": deepcopy(configuration),
+        "walk_forward_configuration": {
+            "source": "registry_parameter_grid",
+            "strategy_type": body.strategy_type,
+            "parameter_grid": deepcopy(param_grid),
+        }
+        if body.run_walk_forward
+        else None,
+    }
     try:
         from app.backtest.data_fetcher import BacktestDataFetcher
         from app.backtest.engine import (
@@ -262,6 +340,7 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
         )
         if requested_bar_count < 50:
             _jobs[job_id] = {
+                **metadata,
                 "status": "error",
                 "error": (
                     f"Only {requested_bar_count} requested-period regular bars fetched"
@@ -270,11 +349,9 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
             }
             return
 
-        strategy_config = get_backtest_strategy(body.strategy_type)
         strategy_class = strategy_config["strategy_class"]
-        param_grid = strategy_config["param_grid"]
 
-        strategy = strategy_class(body.strategy_params or None)
+        strategy = strategy_class(deepcopy(configuration["strategy_params"]))
         bt = Backtester(
             strategy=strategy,
             ticker=body.ticker,
@@ -306,6 +383,7 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
             }
 
         _jobs[job_id] = {
+            **metadata,
             "status": "complete",
             "ticker": body.ticker,
             "strategy_type": body.strategy_type,
@@ -314,7 +392,7 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
             "result": _serialize_backtest_result(
                 result=result,
                 strategy_type=body.strategy_type,
-                strategy_label=str(strategy_config["label"]),
+                strategy_label=configuration["label"],
             ),
             "walk_forward": wf_results,
             "walk_forward_summary": wf_summary,
@@ -325,6 +403,7 @@ async def _run_backtest_job(job_id: str, body: BacktestRequest) -> None:
         import traceback
 
         _jobs[job_id] = {
+            **metadata,
             "status": "error",
             "error": str(exc),
             "traceback": traceback.format_exc(),
