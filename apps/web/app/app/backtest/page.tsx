@@ -1,7 +1,7 @@
 'use client'
 import { captureOwnerScope, isCurrentOwnerScope } from '@/lib/owner-scope'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useForm, useWatch } from 'react-hook-form'
 import {
   AlertTriangle,
@@ -43,6 +43,7 @@ import { PortfolioEvidenceCard } from '@/components/backtest/portfolio-evidence-
 import { cn, formatCurrency, formatPercent, pnlClass } from '@/lib/utils'
 import api from '@/services/api'
 import type {
+  BacktestConfiguration,
   BacktestJob,
   BacktestMonteCarlo,
   BacktestResult,
@@ -57,6 +58,14 @@ import type {
 } from '@/types'
 
 type JobStatus = 'idle' | 'running' | 'complete' | 'error'
+
+function hasPresetSnapshot(strategy: BacktestStrategyInfo | undefined, type: BacktestStrategyType): strategy is BacktestStrategyInfo {
+  const params = strategy?.strategy_params
+  return strategy?.preset_key === type && params != null && typeof params === 'object'
+    && !Array.isArray(params) && Object.keys(params).length > 0
+    && Object.values(params).every(value => typeof value === 'boolean' || typeof value === 'string'
+      || (typeof value === 'number' && Number.isFinite(value)))
+}
 
 type BacktestFormValues = {
   ticker: string
@@ -457,6 +466,8 @@ export default function BacktestPage() {
   const [jobId, setJobId] = useState<string | null>(null)
   const [job, setJob] = useState<BacktestJob | null>(null)
   const [strategies, setStrategies] = useState<BacktestStrategyInfo[]>([])
+  const [submittedConfiguration, setSubmittedConfiguration] = useState<BacktestConfiguration | null>(null)
+  const requestGeneration = useRef(0)
   const [portfolioStatus, setPortfolioStatus] = useState<JobStatus>('idle')
   const [portfolioJobId, setPortfolioJobId] = useState<string | null>(null)
   const [portfolioJob, setPortfolioJob] = useState<PortfolioBacktestJob | null>(null)
@@ -487,6 +498,7 @@ export default function BacktestPage() {
   const selectedStrategyType = useWatch({ control, name: 'strategy_type' })
   const runWalkForward = useWatch({ control, name: 'run_walk_forward' })
   const selectedStrategy = strategies.find((strategy) => strategy.type === selectedStrategyType)
+  const presetAvailable = hasPresetSnapshot(selectedStrategy, selectedStrategyType)
 
   useEffect(() => {
     if (!isCurrentOwnerScope(ownerScope)) return
@@ -520,11 +532,12 @@ export default function BacktestPage() {
 
     if (!isCurrentOwnerScope(ownerScope)) return
     let active = true
+    const generation = requestGeneration.current
     const interval = window.setInterval(() => {
       if (!active || !isCurrentOwnerScope(ownerScope)) return
       void api.getBacktestResult(jobId)
         .then((data) => {
-          if (!active || !isCurrentOwnerScope(ownerScope)) return
+          if (!active || generation !== requestGeneration.current || !isCurrentOwnerScope(ownerScope)) return
           if (data.status === 'complete') {
             setJob(data)
             setStatus('complete')
@@ -587,23 +600,40 @@ export default function BacktestPage() {
 
   const onSubmit = async (values: BacktestFormValues) => {
     if (!isCurrentOwnerScope(ownerScope)) return
+    const selected = strategies.find((strategy) => strategy.type === values.strategy_type)
+    if (!hasPresetSnapshot(selected, values.strategy_type)) {
+      toast.error('Preset configuration is unavailable. Reload the strategy catalog before running.')
+      return
+    }
+    const configuration: BacktestConfiguration = {
+      strategy_type: values.strategy_type,
+      preset_key: selected.preset_key,
+      source: 'preset',
+      label: selected.label,
+      strategy_params: { ...selected.strategy_params },
+    }
+    const generation = ++requestGeneration.current
+    setJobId(null)
     setStatus('running')
     setJob(null)
+    setSubmittedConfiguration(configuration)
 
     try {
       const response = await api.runBacktest({
         ticker: values.ticker.toUpperCase(),
         strategy_type: values.strategy_type,
+        preset_key: configuration.preset_key!,
+        strategy_params: configuration.strategy_params,
         from_date: values.from_date,
         to_date: values.to_date,
         initial_capital: Number(values.initial_capital),
         run_walk_forward: values.run_walk_forward,
       })
-      if (!isCurrentOwnerScope(ownerScope)) return
+      if (generation !== requestGeneration.current || !isCurrentOwnerScope(ownerScope)) return
       setJobId(response.job_id)
       toast.success('Backtest started. Polling for results.')
     } catch (error) {
-      if (!isCurrentOwnerScope(ownerScope)) return
+      if (generation !== requestGeneration.current || !isCurrentOwnerScope(ownerScope)) return
       const message = error instanceof Error ? error.message : 'Backtest failed.'
       setStatus('error')
       setJob({ status: 'error', error: message })
@@ -640,6 +670,7 @@ export default function BacktestPage() {
   }
 
   const result = job?.result as BacktestResult | undefined
+  const runConfiguration = job?.configuration ?? submittedConfiguration
   const interpretation = job?.interpretation
   const verdict = interpretation?.verdict || 'insufficient_data'
   const verdictStyle = VERDICT_STYLES[verdict] || VERDICT_STYLES.insufficient_data
@@ -673,7 +704,7 @@ export default function BacktestPage() {
             <CardTitle>Configure Backtest</CardTitle>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+            <form onSubmit={event => { void handleSubmit(onSubmit)(event) }} className="space-y-4">
               <div className="space-y-1.5">
                 <Label htmlFor="ticker">Symbol</Label>
                 <Input id="ticker" placeholder="AAPL" className="uppercase" {...register('ticker', { required: true })} />
@@ -717,14 +748,14 @@ export default function BacktestPage() {
               <label className="flex items-start gap-3 rounded-lg border border-border/60 bg-muted/20 p-3">
                 <input type="checkbox" className="mt-1 h-4 w-4 rounded" {...register('run_walk_forward')} />
                 <span className="space-y-1">
-                  <span className="block text-sm font-medium">Run walk-forward validation</span>
+                  <span className="block text-sm font-medium">Run separate walk-forward parameter search</span>
                   <span className="block text-xs text-muted-foreground">
-                    Slower, but much better for spotting overfit results across rolling out-of-sample windows.
+                    Uses the registry parameter grid, not the selected preset configuration. Results are separate from the primary run.
                   </span>
                 </span>
               </label>
 
-              <Button type="submit" className="w-full" loading={status === 'running'} disabled={status === 'running'}>
+              <Button type="submit" className="w-full" loading={status === 'running'} disabled={status === 'running' || !presetAvailable}>
                 <Play className="h-3.5 w-3.5" />
                 {status === 'running' ? 'Running...' : 'Run Backtest'}
               </Button>
@@ -744,6 +775,10 @@ export default function BacktestPage() {
               <p className="text-muted-foreground">
                 {selectedStrategy?.description || 'Choose a strategy to compare its market hypothesis and risk profile.'}
               </p>
+              {presetAvailable && <details className="text-xs">
+                <summary className="cursor-pointer">Selected preset parameters</summary>
+                <pre className="mt-2 whitespace-pre-wrap break-words">{JSON.stringify(selectedStrategy.strategy_params, null, 2)}</pre>
+              </details>}
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-lg border border-border/60 bg-muted/20 p-4">
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Execution realism</p>
@@ -755,13 +790,24 @@ export default function BacktestPage() {
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Validation stance</p>
                   <p className="mt-2 text-sm text-foreground">
                     {runWalkForward
-                      ? 'This run will add rolling out-of-sample validation on top of the main backtest.'
+                      ? 'A separate registry-grid search will produce walk-forward results; it does not validate this exact preset.'
                       : 'This run will execute a single historical simulation. Turn on walk-forward for stronger evidence.'}
                   </p>
                 </div>
               </div>
             </CardContent>
           </Card>
+
+          {runConfiguration && <Card>
+            <CardContent className="space-y-2 p-4 text-sm" data-testid="backtest-run-configuration">
+              <p className="font-medium">{job?.configuration ? 'Recorded primary configuration' : 'Submitted primary configuration'}: {runConfiguration.label}</p>
+              <p className="text-xs text-muted-foreground">Source: {runConfiguration.source}; preset: {runConfiguration.preset_key ?? 'none'}; strategy: {runConfiguration.strategy_type}</p>
+              <details className="text-xs">
+                <summary className="cursor-pointer">Run parameters</summary>
+                <pre className="mt-2 whitespace-pre-wrap break-words">{JSON.stringify(runConfiguration.strategy_params, null, 2)}</pre>
+              </details>
+            </CardContent>
+          </Card>}
 
           {status === 'running' && (
             <Card>

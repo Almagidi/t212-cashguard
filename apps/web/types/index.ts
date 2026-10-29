@@ -1027,6 +1027,16 @@ export interface BacktestStrategyInfo {
   type: BacktestStrategyType;
   label: string;
   description: string;
+  preset_key: BacktestStrategyType;
+  strategy_params: Record<string, unknown>;
+}
+
+export interface BacktestConfiguration {
+  strategy_type: BacktestStrategyType;
+  preset_key: BacktestStrategyType | null;
+  source: 'preset' | 'custom' | 'class_defaults';
+  label: string;
+  strategy_params: Record<string, unknown>;
 }
 
 export interface PortfolioBacktestStrategyInfo {
@@ -1041,6 +1051,7 @@ export interface PortfolioBacktestStrategyInfo {
 export interface BacktestRunRequest {
   ticker: string;
   strategy_type: BacktestStrategyType;
+  preset_key?: BacktestStrategyType;
   strategy_params?: Record<string, unknown>;
   from_date: string;
   to_date: string;
@@ -1061,6 +1072,7 @@ export interface BacktestJobResponse {
   job_id: string;
   status: string;
   message: string;
+  configuration?: BacktestConfiguration | null;
 }
 
 export interface BacktestTrade {
@@ -1203,6 +1215,12 @@ export interface BacktestJob {
   created_at?: string;
   ticker?: string;
   strategy_type?: BacktestStrategyType;
+  configuration?: BacktestConfiguration;
+  walk_forward_configuration?: {
+    source: 'registry_parameter_grid';
+    strategy_type: BacktestStrategyType;
+    parameter_grid: Record<string, unknown>[];
+  } | null;
   bars_used?: number;
   result?: BacktestResult;
   walk_forward?: WalkForwardWindow[] | null;
