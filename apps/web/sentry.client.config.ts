@@ -4,6 +4,12 @@
  * It is a no-op when NEXT_PUBLIC_SENTRY_DSN is not set.
  */
 import * as Sentry from '@sentry/nextjs'
+import {
+  confidentialTelemetryIntegration,
+  sanitizeTelemetryBreadcrumb,
+  sanitizeTelemetryEvent,
+  type TelemetryIntegration,
+} from './lib/telemetry-privacy'
 
 const DSN = process.env.NEXT_PUBLIC_SENTRY_DSN
 
@@ -19,26 +25,18 @@ if (DSN) {
     // Never send PII — auth tokens, cookies, user details
     sendDefaultPii: false,
 
-    // Replay — record a short clip of what the user did before an error
-    // 1 % of sessions, 100 % when an error occurs
-    replaysSessionSampleRate: 0.01,
-    replaysOnErrorSampleRate: 1.0,
-
-    integrations: [
-      Sentry.replayIntegration({
-        // Mask all text and block all media to avoid capturing PII
-        maskAllText: true,
-        blockAllMedia: true,
-      }),
+    // Replay and other unqualified channels stay withheld.
+    replaysSessionSampleRate: 0,
+    replaysOnErrorSampleRate: 0,
+    enableLogs: false,
+    enableMetrics: false,
+    sendClientReports: false,
+    integrations: (defaults: TelemetryIntegration[]) => [
+      confidentialTelemetryIntegration(),
+      ...defaults,
     ],
-
-    // Strip auth headers from outgoing fetch/XHR breadcrumbs
-    beforeBreadcrumb(breadcrumb: Sentry.Breadcrumb) {
-      if (breadcrumb.category === 'fetch' || breadcrumb.category === 'xhr') {
-        const data = breadcrumb.data ?? {}
-        if (data.headers?.authorization) data.headers.authorization = '[Filtered]'
-      }
-      return breadcrumb
-    },
+    beforeSend: sanitizeTelemetryEvent,
+    beforeSendTransaction: sanitizeTelemetryEvent,
+    beforeBreadcrumb: sanitizeTelemetryBreadcrumb,
   })
 }

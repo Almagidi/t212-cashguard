@@ -3,6 +3,12 @@
  * No-op when SENTRY_DSN is not set.
  */
 import * as Sentry from '@sentry/nextjs'
+import {
+  confidentialTelemetryIntegration,
+  sanitizeTelemetryBreadcrumb,
+  sanitizeTelemetryEvent,
+  type TelemetryIntegration,
+} from './lib/telemetry-privacy'
 
 const DSN = process.env.SENTRY_DSN ?? process.env.NEXT_PUBLIC_SENTRY_DSN
 
@@ -13,5 +19,15 @@ if (DSN) {
     release: process.env.NEXT_PUBLIC_APP_VERSION ?? 'cashguard@1.0.0',
     tracesSampleRate: 0.1,
     sendDefaultPii: false,
+    enableLogs: false,
+    enableMetrics: false,
+    sendClientReports: false,
+    integrations: (defaults: TelemetryIntegration[]) => [
+      confidentialTelemetryIntegration(),
+      ...defaults,
+    ],
+    beforeSend: sanitizeTelemetryEvent,
+    beforeSendTransaction: sanitizeTelemetryEvent,
+    beforeBreadcrumb: sanitizeTelemetryBreadcrumb,
   })
 }
