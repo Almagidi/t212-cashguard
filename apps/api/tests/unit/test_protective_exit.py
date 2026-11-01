@@ -309,3 +309,67 @@ async def test_policy_rechecks_the_authorization_against_the_order(db) -> None:
             await require_order_submission_allowed(
                 db, order=sell, broker_environment=None, protective_exit=wrong
             )
+
+
+async def test_duplicate_broker_position_rows_fail_closed_instead_of_summing(db) -> None:
+    """Two rows for one ticker could be one holding listed twice: never add them up."""
+    await _settings(db, kill=True)
+    engine = ExecutionEngine(db, _Broker([_position("5"), _position("5")]))
+    sell = await engine.create_order_intent(
+        ticker="AAPL", side="sell", order_type="market", quantity=Decimal("10"), is_dry_run=True
+    )
+
+    with pytest.raises(SafetyPolicyViolation) as refused:
+        await engine.submit_protective_exit(sell)
+
+    assert refused.value.decision_code == "protective_exit_refused"
+    assert "duplicate position rows" in refused.value.reason
+    assert sell.status == "pending_intent"
+
+
+async def test_duplicate_rows_refuse_even_a_small_sell(db) -> None:
+    await _settings(db, kill=True)
+    engine = ExecutionEngine(db, _Broker([_position("5"), _position("2")]))
+    sell = await engine.create_order_intent(
+        ticker="AAPL", side="sell", order_type="market", quantity=Decimal("1"), is_dry_run=True
+    )
+
+    with pytest.raises(SafetyPolicyViolation):
+        await engine.submit_protective_exit(sell)
+
+
+async def test_max_sell_already_net_of_pending_sells_is_treated_conservatively(db) -> None:
+    """maxSell may already exclude a pending sell; the engine subtracts it again and refuses.
+
+    Documented fail-closed behaviour: a refused stop is retried and alerted, a short is
+    not recoverable. 10 held, broker maxSell 6 (4 pending at the broker), our own record of
+    that 4 in flight: a sell of 6 is refused although it would in fact be safe.
+    """
+    await _settings(db, kill=True)
+    position = {**_position("10"), "maxSell": "6"}
+    engine = ExecutionEngine(db, _Broker([position]))
+    db.add(
+        Order(
+            id=uuid.uuid4(),
+            client_order_key="pending-at-broker",
+            ticker="AAPL",
+            side="sell",
+            order_type="market",
+            quantity=Decimal("4"),
+            filled_quantity=Decimal("0"),
+            status="submitted",
+            is_dry_run=True,
+        )
+    )
+    await db.flush()
+    sell = await engine.create_order_intent(
+        ticker="AAPL", side="sell", order_type="market", quantity=Decimal("6"), is_dry_run=True
+    )
+
+    with pytest.raises(SafetyPolicyViolation):
+        await engine.submit_protective_exit(sell)
+
+    smaller = await engine.create_order_intent(
+        ticker="AAPL", side="sell", order_type="market", quantity=Decimal("2"), is_dry_run=True
+    )
+    assert (await engine.submit_protective_exit(smaller)).status == "filled"

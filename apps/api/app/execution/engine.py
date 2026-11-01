@@ -580,18 +580,26 @@ class ExecutionEngine:
             positions = await self.broker.get_positions()
         except Exception as exc:
             raise refuse(f"held position could not be read ({type(exc).__name__})") from exc
+        rows = [r for r in positions if str(r.get("ticker", "")).strip().upper() == ticker]
+        if len(rows) > 1:
+            # Never sum rows: if the broker lists the same instrument twice we cannot tell
+            # whether they are one holding reported twice (summing would double the
+            # quantity and allow a short) or two real lots. Fail closed, as EOD flatten does.
+            raise refuse("the broker returned duplicate position rows for this ticker")
         held = Decimal("0")
-        for row in positions:
-            if str(row.get("ticker", "")).strip().upper() != ticker:
-                continue
+        for row in rows:
             try:
                 quantity = Decimal(str(row.get("quantity", 0)))
                 max_sell_raw = row.get("maxSell")
                 sellable = quantity if max_sell_raw is None else Decimal(str(max_sell_raw))
             except (ArithmeticError, ValueError):
                 continue
+            # ``maxSell`` may already be net of sells the broker holds as pending. The sells
+            # in flight are subtracted again below, which can refuse an exit that would in
+            # fact have been safe. That is deliberate: a refused stop is retried and alerted,
+            # a short is not recoverable, so the check errs towards refusing.
             if quantity > 0 and sellable > 0:
-                held += min(quantity, sellable)
+                held = min(quantity, sellable)
         in_flight_rows = (
             await self.db.execute(
                 select(Order.quantity, Order.filled_quantity).where(
