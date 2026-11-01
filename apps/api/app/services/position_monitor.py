@@ -34,12 +34,14 @@ from app.db.models import (
     AppSettings,
     AuditLog,
     BrokerConnection,
+    Order,
     Signal,
     Strategy,
     Trade,
     User,
 )
 from app.execution.engine import ExecutionEngine
+from app.execution.state_machine import ACTIVE_ORDER_STATUSES
 from app.risk.engine import activate_kill_switch
 from app.services.alert_service import AlertService, alert_kill_switch_activated
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
@@ -519,6 +521,21 @@ class PositionMonitor:
         if sell_qty <= 0:
             return result
 
+        # One exit at a time per ticker: while a dispatched sell is still active (submitted,
+        # working, partly filled, or of unknown outcome) a second exit is never issued; its
+        # quantity would be judged against a position the first has not yet reduced.
+        active_sell = await self._active_dispatched_sell(ticker)
+        if active_sell is not None:
+            log.warning(
+                "position_monitor.exit_skipped_active_sell",
+                ticker=ticker,
+                order_id=str(active_sell.id),
+                order_status=active_sell.status,
+            )
+            if active_sell.status == "submission_unknown":
+                result["unconfirmed"] = 1
+            return result
+
         # Submit the exit order
         async with broker as b:
             engine = ExecutionEngine(self.db, b)
@@ -647,6 +664,25 @@ class PositionMonitor:
             )
 
         return result
+
+    async def _active_dispatched_sell(self, ticker: str) -> Order | None:
+        """A sell for this ticker that has been dispatched and has not yet ended.
+
+        ``pending_intent`` is excluded: it was never sent, so it is not in flight (and is the
+        intent a retry of the same exit re-submits).
+        """
+        result = await self.db.execute(
+            select(Order)
+            .where(
+                Order.ticker == ticker,
+                Order.side == "sell",
+                Order.is_dry_run.is_(settings.APP_MODE == "mock"),
+                Order.status.in_(ACTIVE_ORDER_STATUSES - {"pending_intent"}),
+            )
+            .order_by(Order.created_at)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     async def eod_flatten(
         self,

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from decimal import Decimal
 from types import SimpleNamespace
@@ -373,3 +374,103 @@ async def test_max_sell_already_net_of_pending_sells_is_treated_conservatively(d
         ticker="AAPL", side="sell", order_type="market", quantity=Decimal("2"), is_dry_run=True
     )
     assert (await engine.submit_protective_exit(smaller)).status == "filled"
+
+
+# -- Concurrency: exits for one ticker are serialized ------------------------------------
+
+
+class _DemoBroker:
+    """A demo-environment broker that holds 10 AAPL and leaves each sell working."""
+
+    environment = "demo"
+    account_scope = None
+
+    def __init__(self, held: str = "10", *, delay: float = 0.02) -> None:
+        self.held = held
+        self.delay = delay
+        self.sent: list[Decimal] = []
+        self.inside = 0
+        self.max_inside = 0
+
+    async def __aenter__(self) -> _DemoBroker:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def get_account_summary(self) -> dict[str, Any]:
+        return {"total": 10_000}
+
+    async def get_positions(self) -> list[dict[str, Any]]:
+        self.inside += 1
+        self.max_inside = max(self.max_inside, self.inside)
+        await asyncio.sleep(self.delay)  # a real position read is network I/O
+        self.inside -= 1
+        return [_position(self.held)]
+
+    async def place_market_order(self, ticker, quantity, time_validity="DAY"):
+        self.sent.append(abs(Decimal(str(quantity))))
+        return {"id": f"B-{len(self.sent)}", "status": "WORKING", "filledQuantity": 0}
+
+
+async def _demo_sell(engine: ExecutionEngine, quantity: str, identity: str) -> Order:
+    return await engine.create_order_intent(
+        ticker="AAPL",
+        side="sell",
+        order_type="market",
+        quantity=Decimal(quantity),
+        is_dry_run=False,
+        stable_operation_identity=identity,
+    )
+
+
+async def test_two_concurrent_exits_for_one_ticker_cannot_both_sell_the_held_quantity(
+    db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    broker = _DemoBroker("10")
+    engine = ExecutionEngine(db, broker)
+    first = await _demo_sell(engine, "10", "test:concurrent:a")
+    second = await _demo_sell(engine, "9", "test:concurrent:b")
+
+    results = await asyncio.gather(
+        engine.submit_protective_exit(first),
+        engine.submit_protective_exit(second),
+        return_exceptions=True,
+    )
+
+    refused = [r for r in results if isinstance(r, SafetyPolicyViolation)]
+    assert len(refused) == 1, results
+    assert len(broker.sent) == 1  # never 10 + 9 against 10 held
+    assert broker.max_inside == 1  # the position read and the dispatch commit never overlap
+
+
+async def test_monitor_does_not_issue_a_second_exit_while_a_sell_is_active(
+    db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    await _held_long_with_entry_signal(db)
+    db.add(
+        Order(
+            id=uuid.uuid4(),
+            client_order_key="earlier-exit",
+            ticker="AAPL",
+            side="sell",
+            order_type="market",
+            quantity=Decimal("5"),
+            filled_quantity=Decimal("0"),
+            status="submitted",
+            is_dry_run=False,
+        )
+    )
+    await db.commit()
+    broker = _DemoBroker("10")  # room for another 5: only the active-sell rule stops it
+
+    result = await _monitor(db, broker).run()
+
+    assert result["exits_submitted"] == 0
+    assert result["errors"] == []
+    assert broker.sent == []
+    assert len(await _sells(db)) == 1

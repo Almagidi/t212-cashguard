@@ -11,13 +11,15 @@ import hashlib
 import inspect
 import json
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.broker.protocols import (
@@ -98,6 +100,10 @@ if TYPE_CHECKING:
     from app.broker.snapshots import BrokerOrderSnapshot
 
 log = structlog.get_logger()
+
+# Per-ticker in-process serialization of protective exits: [lock, users]. Removed when unused so
+# a worker that runs each task on a new event loop never reuses a lock across loops.
+_EXIT_LOCKS: dict[str, list[Any]] = {}
 
 
 def _safe_broker_error_reason(exc: Exception) -> str:
@@ -636,20 +642,60 @@ class ExecutionEngine:
         """
         if order.status != "pending_intent":
             raise ValueError(f"Cannot submit order in status {order.status!r}")
+        ticker = str(order.ticker).strip().upper()
+        # The position read, the in-flight read and the dispatch commit (after which this
+        # order counts as in flight) form one critical section per ticker. Without it two
+        # exits can both see the full held quantity and both sell it, leaving a short.
+        async with self._serialized_exit(ticker, is_dry_run=order.is_dry_run):
+            try:
+                authorization = await self._verified_protective_exit(order)
+            except SafetyPolicyViolation as exc:
+                await audit_safety_decision(
+                    self.db,
+                    action="protective_exit_refused",
+                    actor="execution_engine",
+                    decision="blocked",
+                    reason=exc.reason,
+                    order=order,
+                    metadata={"decision_code": exc.decision_code},
+                )
+                raise
+            return await self.submit_order(order, protective_exit=authorization)
+
+    @asynccontextmanager
+    async def _serialized_exit(self, ticker: str, *, is_dry_run: bool) -> AsyncIterator[None]:
+        """Serialize protective exits for one ticker, in this process and across processes.
+
+        In-process: an asyncio lock per ticker. Across processes (PostgreSQL): a transaction
+        advisory lock, which is released by the commit that records the dispatch
+        (``submission_unknown``), so the next exit's in-flight read sees this one. Dry-run
+        orders never reach a broker and cannot open a real short, so they take only the
+        in-process lock (they do not commit, and holding database locks until the caller's
+        later commit could deadlock two workers).
+        """
+        entry = _EXIT_LOCKS.get(ticker)
+        if entry is None:
+            entry = _EXIT_LOCKS[ticker] = [asyncio.Lock(), 0]
+        entry[1] += 1
         try:
-            authorization = await self._verified_protective_exit(order)
-        except SafetyPolicyViolation as exc:
-            await audit_safety_decision(
-                self.db,
-                action="protective_exit_refused",
-                actor="execution_engine",
-                decision="blocked",
-                reason=exc.reason,
-                order=order,
-                metadata={"decision_code": exc.decision_code},
+            async with entry[0]:
+                if not is_dry_run:
+                    await self._advisory_lock(f"protective_exit:{ticker}")
+                yield
+        finally:
+            entry[1] -= 1
+            if entry[1] == 0 and _EXIT_LOCKS.get(ticker) is entry:
+                del _EXIT_LOCKS[ticker]
+
+    async def _advisory_lock(self, key: str) -> None:
+        try:
+            dialect = self.db.get_bind().dialect.name
+        except Exception:
+            return
+        if dialect == "postgresql":
+            await self.db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key}
             )
-            raise
-        return await self.submit_order(order, protective_exit=authorization)
 
     async def submit_order(
         self,
