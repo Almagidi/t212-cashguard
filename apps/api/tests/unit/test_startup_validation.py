@@ -260,3 +260,40 @@ def test_assert_startup_safe_only_warns_about_short_security_secrets_in_mock_mod
     assert statuses["secret_key"] == "warn"
     assert statuses["master_key"] == "warn"
     assert statuses["admin_password"] == "warn"
+
+
+def test_live_startup_fails_when_telegram_control_enabled_without_webhook_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import settings
+    from app.services.startup_validation import build_startup_report
+
+    _set_safe_startup_settings(monkeypatch, "live")
+    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "bot-token")
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_CHAT_IDS", "12345")
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "")
+
+    report = build_startup_report()
+    check = next(c for c in report["checks"] if c["key"] == "telegram_webhook_secret")
+    assert check["status"] == "fail"
+
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "webhook-secret")
+    report = build_startup_report()
+    check = next(c for c in report["checks"] if c["key"] == "telegram_webhook_secret")
+    assert check["status"] == "pass"
+
+
+def test_non_live_startup_does_not_fail_on_missing_telegram_webhook_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import settings
+    from app.services.startup_validation import build_startup_report
+
+    _set_safe_startup_settings(monkeypatch, "paper")
+    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "bot-token")
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_CHAT_IDS", "12345")
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "")
+
+    report = build_startup_report()
+    check = next(c for c in report["checks"] if c["key"] == "telegram_webhook_secret")
+    assert check["status"] == "pass"

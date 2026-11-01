@@ -253,6 +253,25 @@ def build_startup_report() -> dict[str, Any]:
         )
     )
 
+    telegram_control_without_secret = bool(
+        settings.TELEGRAM_BOT_TOKEN
+        and (settings.telegram_allowed_chat_ids or settings.telegram_allowed_user_ids)
+        and not settings.TELEGRAM_WEBHOOK_SECRET
+    )
+    checks.append(
+        _check(
+            key="telegram_webhook_secret",
+            label="Telegram webhook secret set when control is enabled",
+            status="fail" if live_mode and telegram_control_without_secret else "pass",
+            detail=(
+                "Telegram control is enabled without TELEGRAM_WEBHOOK_SECRET; "
+                "the webhook would be unauthenticated."
+                if telegram_control_without_secret
+                else "Telegram webhook secret requirement is satisfied."
+            ),
+        )
+    )
+
     failures = [check for check in checks if check["status"] == "fail"]
     warnings = [check for check in checks if check["status"] == "warn"]
 
