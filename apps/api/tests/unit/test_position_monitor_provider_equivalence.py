@@ -717,6 +717,7 @@ async def test_run_reads_positions_and_account_then_routes_exit_through_executio
             [_strategy(strategy_id)],  # 3. live strategies for AAPL
             last_signal,  # 4. last executed entry signal
             None,  # 5. partial-exit signal
+            None,  # 6. no dispatched sell is active for the ticker
         ]
     )
     service = PositionMonitor(db)
@@ -769,7 +770,7 @@ async def test_monitor_position_dry_run_flag_is_currently_app_mode_mock_only(
 ) -> None:
     strategy_id = uuid.uuid4()
     last_signal = _last_entry_signal(strategy_id)
-    db = FakeSession(results=[last_signal, None])
+    db = FakeSession(results=[last_signal, None, None])
     service = PositionMonitor(db)
     broker = RecordingBroker()
     monkeypatch.setattr(settings, "APP_MODE", "mock")
@@ -834,7 +835,7 @@ async def test_eod_flatten_enters_provider_then_delegates_to_scoped_service(
 
 async def _run_exit_check(monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, int], FakeSession]:
     strategy_id = uuid.uuid4()
-    db = FakeSession(results=[_last_entry_signal(strategy_id), None])
+    db = FakeSession(results=[_last_entry_signal(strategy_id), None, None])
     service = PositionMonitor(db)
     monkeypatch.setattr(settings, "APP_MODE", "demo")
 
