@@ -199,7 +199,7 @@ class RecordingExecutionEngine:
     submission_status: ClassVar[str] = "accepted"
     existing_status: ClassVar[str] = "pending_intent"
 
-    async def submit_order(self, order: FakeSubmittedOrder) -> FakeSubmittedOrder:
+    async def submit_protective_exit(self, order: FakeSubmittedOrder) -> FakeSubmittedOrder:
         self.submitted_orders.append(order)
         order.status = self.submission_status
         return order
@@ -383,7 +383,7 @@ def test_position_monitor_source_uses_provider_final_construction_and_remains_wr
 
     assert {"get_positions", "get_account_summary"} <= _call_names(run)
     assert "get_positions" in _call_names(check_daily_loss)
-    assert {"create_order_intent", "submit_order"} <= _call_names(monitor_position)
+    assert {"create_order_intent", "submit_protective_exit"} <= _call_names(monitor_position)
     assert {"EodFlattenService", "eod_due_window", "run"} <= _call_names(eod_flatten)
     assert "position_exit_automated" in ast.unparse(monitor_position)
     assert "get_positions" not in _call_names(eod_flatten)
@@ -661,21 +661,24 @@ async def test_get_broker_provider_validation_error_returns_none_and_logs_safe_f
         (FakeAppSettings(auto_trading_enabled=False), "auto_trading_disabled"),
     ],
 )
-async def test_run_safety_gates_skip_before_broker_lookup(
+async def test_run_halt_flags_block_entries_but_still_look_up_the_broker_for_exits(
     monkeypatch: pytest.MonkeyPatch,
     app_settings: FakeAppSettings,
     expected_reason: str,
 ) -> None:
     db = FakeSession(results=[app_settings])
     service = PositionMonitor(db)
+    lookups: list[str] = []
 
-    async def get_broker() -> RecordingBroker:
-        raise AssertionError("run safety gate must skip before broker lookup")
+    async def get_broker() -> None:
+        lookups.append("broker")
+        return None
 
     monkeypatch.setattr(service, "_get_broker", get_broker)
 
     summary = await service.run()
 
+    assert lookups == ["broker"]
     assert summary == {
         "positions_checked": 0,
         "exits_submitted": 0,
@@ -683,7 +686,8 @@ async def test_run_safety_gates_skip_before_broker_lookup(
         "stops_hit": 0,
         "take_profits": 0,
         "errors": [],
-        "skipped": expected_reason,
+        "entries_blocked": expected_reason,
+        "skipped": "no_broker",
     }
     assert RecordingExecutionEngine.order_intents == []
     assert RecordingTrading212Adapter.constructed == []

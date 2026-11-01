@@ -106,14 +106,19 @@ class TestRunEarlyExits:
     async def test_kill_switch_active(self, db):
         await _make_app_settings(db, kill_switch_active=True)
         monitor = PositionMonitor(db)
-        result = await monitor.run()
-        assert result.get("skipped") == "kill_switch_active"
+        with patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=None):
+            result = await monitor.run()
+        # Entries are blocked, but monitoring (exits) is not skipped: the broker is consulted.
+        assert result.get("entries_blocked") == "kill_switch_active"
+        assert result.get("skipped") == "no_broker"
 
     async def test_auto_trading_disabled(self, db):
         await _make_app_settings(db, auto_trading_enabled=False)
         monitor = PositionMonitor(db)
-        result = await monitor.run()
-        assert result.get("skipped") == "auto_trading_disabled"
+        with patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=None):
+            result = await monitor.run()
+        assert result.get("entries_blocked") == "auto_trading_disabled"
+        assert result.get("skipped") == "no_broker"
 
     async def test_no_broker_returns_skipped(self, db):
         await _make_app_settings(db)

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Literal, cast
 
 from sqlalchemy import select
@@ -26,6 +28,39 @@ class SafetyPolicyViolation(Exception):
         self.reason = reason
         self.decision_code = decision_code
         super().__init__(reason)
+
+
+@dataclass(frozen=True)
+class ProtectiveExitAuthorization:
+    """Evidence that a sell only reduces a long position that is really held.
+
+    Built by ``ExecutionEngine.submit_protective_exit`` from a fresh broker position read.
+    It is the only thing that lets a sell through the kill-switch check, and the policy
+    re-checks it against the order itself. It never relaxes any other gate.
+    """
+
+    ticker: str
+    held_quantity: Decimal
+    in_flight_sell_quantity: Decimal = Decimal("0")
+
+
+def verify_protective_exit(order: Order, auth: ProtectiveExitAuthorization) -> None:
+    """Refuse anything that is not a sell reducing a held long position."""
+
+    def refuse(why: str) -> SafetyPolicyViolation:
+        return SafetyPolicyViolation(
+            f"Protective exit refused: {why}.", decision_code="protective_exit_refused"
+        )
+
+    if order.side != "sell":
+        raise refuse("only a sell can be a protective exit")
+    if str(order.ticker).strip().upper() != auth.ticker:
+        raise refuse("order ticker does not match the verified position")
+    quantity = Decimal(str(order.quantity))
+    if quantity <= 0 or auth.held_quantity <= 0:
+        raise refuse("there is no held long quantity to reduce")
+    if quantity + auth.in_flight_sell_quantity > auth.held_quantity:
+        raise refuse("quantity exceeds the held long position (would open or grow a short)")
 
 
 def current_runtime_mode() -> RuntimeMode:
@@ -180,8 +215,13 @@ async def require_order_submission_allowed(
     broker_environment: str | None,
     actor: str = "execution_engine",
     broker: Any = None,
+    protective_exit: ProtectiveExitAuthorization | None = None,
 ) -> dict[str, Any] | None:
-    """Final gate immediately before any simulated or broker-backed submit."""
+    """Final gate immediately before any simulated or broker-backed submit.
+
+    ``protective_exit`` exempts a verified long-reducing sell from the kill-switch check
+    only. Mode, broker environment, live binding and live readiness still apply.
+    """
     app_settings = await _get_app_settings(db)
     if app_settings is None:
         raise SafetyPolicyViolation(
@@ -189,7 +229,35 @@ async def require_order_submission_allowed(
             decision_code="settings_missing",
         )
 
-    if app_settings.kill_switch_active:
+    if protective_exit is not None:
+        try:
+            verify_protective_exit(order, protective_exit)
+        except SafetyPolicyViolation as exc:
+            await audit_safety_decision(
+                db,
+                action="protective_exit_refused",
+                actor=actor,
+                decision="blocked",
+                reason=exc.reason,
+                order=order,
+                metadata={"decision_code": exc.decision_code},
+            )
+            raise
+
+    if app_settings.kill_switch_active and protective_exit is not None:
+        await audit_safety_decision(
+            db,
+            action="protective_exit_allowed_under_kill_switch",
+            actor=actor,
+            decision="protective_exit_allowed",
+            reason="Kill switch is active; a sell reducing a held long position is allowed.",
+            order=order,
+            metadata={
+                "no_broker_order_sent": False,
+                "held_quantity": str(protective_exit.held_quantity),
+            },
+        )
+    elif app_settings.kill_switch_active:
         reason = "Kill switch is active. Order submission is blocked."
         await audit_safety_decision(
             db,
@@ -226,7 +294,9 @@ async def require_order_submission_allowed(
         from app.services.live_dispatch import LiveDispatchError, authorize_dispatch
 
         try:
-            return await authorize_dispatch(db, broker, order)
+            return await authorize_dispatch(
+                db, broker, order, protective_exit=protective_exit is not None
+            )
         except LiveDispatchError as exc:
             reason = str(exc)
             await audit_safety_decision(

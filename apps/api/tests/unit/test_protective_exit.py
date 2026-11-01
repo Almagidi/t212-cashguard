@@ -1,0 +1,311 @@
+# mypy: disable-error-code="no-untyped-def"
+"""Protective exits: halts block entries, never the exit of an already-held long position."""
+
+from __future__ import annotations
+
+import uuid
+from decimal import Decimal
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock
+
+import pytest
+from sqlalchemy import select
+
+from app.core.config import settings
+from app.db.models import AppSettings, Order, RiskProfile, Signal, Strategy
+from app.execution.engine import ExecutionEngine
+from app.services import position_monitor
+from app.services.position_monitor import PositionMonitor
+from app.services.safety_policy import (
+    ProtectiveExitAuthorization,
+    SafetyPolicyViolation,
+    require_order_submission_allowed,
+)
+from app.strategies.indicators import Bar
+
+
+class _Broker:
+    environment = None
+    account_scope = None
+
+    def __init__(self, positions: list[dict[str, Any]], total: int = 10_000) -> None:
+        self.positions = positions
+        self.total = total
+
+    async def __aenter__(self) -> _Broker:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def get_positions(self) -> list[dict[str, Any]]:
+        return self.positions
+
+    async def get_account_summary(self) -> dict[str, Any]:
+        return {"total": self.total}
+
+
+class _StopHit:
+    def __init__(self, _params: Any = None) -> None:
+        pass
+
+    def check_exit_conditions(self, _ticker, _state, price, _bars):
+        return SimpleNamespace(
+            signal_type="stop",
+            suggested_quantity=Decimal("-5"),
+            stop_price=price,
+            take_profit_price=price,
+            confidence=Decimal("1"),
+            reason="stop hit",
+        )
+
+
+@pytest.fixture(autouse=True)
+def _mock_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "mock")
+    monkeypatch.setattr(position_monitor, "OpeningRangeBreakoutStrategy", _StopHit)
+    monkeypatch.setattr(position_monitor, "alert_kill_switch_activated", AsyncMock())
+
+
+async def _settings(db, *, kill: bool = False, auto: bool = True) -> None:
+    db.add(
+        AppSettings(
+            id=1,
+            auto_trading_enabled=auto,
+            kill_switch_active=kill,
+            live_trading_unlocked=False,
+        )
+    )
+    await db.commit()
+
+
+async def _held_long_with_entry_signal(db) -> None:
+    strategy = Strategy(
+        id=uuid.uuid4(),
+        name="ORB",
+        type="orb",
+        params={},
+        venue="t212",
+        session_end="16:00",
+        eod_flatten=False,
+        is_enabled=True,
+        is_live=True,
+    )
+    db.add(strategy)
+    await db.flush()
+    db.add(
+        Signal(
+            id=uuid.uuid4(),
+            strategy_id=strategy.id,
+            ticker="AAPL",
+            side="buy",
+            signal_type="entry",
+            status="executed",
+            stop_price=Decimal("95"),
+            take_profit_price=Decimal("110"),
+        )
+    )
+    await db.commit()
+
+
+def _monitor(db, broker: _Broker) -> PositionMonitor:
+    monitor = PositionMonitor(db)
+    bars = [
+        Bar(
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+            volume=Decimal("1000"),
+        )
+        for _ in range(20)
+    ]
+    monitor._get_broker = AsyncMock(return_value=broker)  # type: ignore[method-assign]
+    monitor._get_market_data = AsyncMock(return_value=(bars, Decimal("94")))  # type: ignore[method-assign]
+    return monitor
+
+
+def _position(quantity: str = "5", ppl: int = 0) -> dict[str, Any]:
+    return {
+        "ticker": "AAPL",
+        "quantity": quantity,
+        "maxSell": quantity,
+        "averagePrice": "100",
+        "ppl": ppl,
+    }
+
+
+async def _sells(db) -> list[Order]:
+    rows = await db.execute(select(Order).where(Order.side == "sell"))
+    return list(rows.scalars().all())
+
+
+async def test_kill_switch_on_stop_loss_sell_is_still_submitted(db) -> None:
+    await _settings(db, kill=True)
+    await _held_long_with_entry_signal(db)
+
+    result = await _monitor(db, _Broker([_position()])).run()
+
+    assert result["entries_blocked"] == "kill_switch_active"
+    assert result["exits_submitted"] == 1
+    assert result["stops_hit"] == 1
+    sells = await _sells(db)
+    assert len(sells) == 1
+    assert sells[0].status == "filled"
+    assert sells[0].quantity == Decimal("5")
+
+
+async def test_auto_trading_paused_exits_still_run(db) -> None:
+    await _settings(db, auto=False)
+    await _held_long_with_entry_signal(db)
+
+    result = await _monitor(db, _Broker([_position()])).run()
+
+    assert result["entries_blocked"] == "auto_trading_disabled"
+    assert result["exits_submitted"] == 1
+    assert [o.status for o in await _sells(db)] == ["filled"]
+
+
+async def test_daily_loss_breach_activates_kill_switch_and_exits_still_run(db) -> None:
+    await _settings(db)
+    await _held_long_with_entry_signal(db)
+    db.add(
+        RiskProfile(
+            id=uuid.uuid4(),
+            name="Default",
+            max_risk_per_trade_pct=Decimal("1.0"),
+            max_daily_loss_pct=Decimal("3.0"),
+            max_open_positions=5,
+            max_position_size_pct=Decimal("10.0"),
+            max_trades_per_day=20,
+            stop_after_consecutive_losses=3,
+            symbol_cooldown_seconds=300,
+            force_flat_eod=True,
+            is_default=True,
+        )
+    )
+    await db.commit()
+
+    result = await _monitor(db, _Broker([_position(ppl=-4000)])).run()
+
+    assert result["halted"] == "daily_loss_breach"
+    assert result["exits_submitted"] == 1
+    app_settings = (await db.execute(select(AppSettings))).scalar_one()
+    await db.refresh(app_settings)
+    assert app_settings.kill_switch_active is True
+    assert [o.status for o in await _sells(db)] == ["filled"]
+
+
+async def test_buy_is_still_refused_under_kill_switch(db) -> None:
+    await _settings(db, kill=True)
+    engine = ExecutionEngine(db, _Broker([_position()]))
+    buy = await engine.create_order_intent(
+        ticker="AAPL", side="buy", order_type="market", quantity=Decimal("1"), is_dry_run=True
+    )
+
+    with pytest.raises(SafetyPolicyViolation) as plain:
+        await engine.submit_order(buy)
+    assert plain.value.decision_code == "kill_switch_block"
+
+    other = await engine.create_order_intent(
+        ticker="AAPL", side="buy", order_type="market", quantity=Decimal("2"), is_dry_run=True
+    )
+    with pytest.raises(SafetyPolicyViolation) as protective:
+        await engine.submit_protective_exit(other)
+    assert protective.value.decision_code == "protective_exit_refused"
+
+
+async def test_plain_sell_is_still_refused_under_kill_switch(db) -> None:
+    """Only the verified protective-exit path is exempt, not sells in general."""
+    await _settings(db, kill=True)
+    engine = ExecutionEngine(db, _Broker([_position()]))
+    sell = await engine.create_order_intent(
+        ticker="AAPL", side="sell", order_type="market", quantity=Decimal("1"), is_dry_run=True
+    )
+
+    with pytest.raises(SafetyPolicyViolation) as plain:
+        await engine.submit_order(sell)
+
+    assert plain.value.decision_code == "kill_switch_block"
+
+
+@pytest.mark.parametrize(
+    ("positions", "quantity"),
+    [
+        ([_position("5")], "6"),  # exceeds the held quantity
+        ([], "1"),  # nothing held: would open a short
+        ([{"ticker": "MSFT", "quantity": "9", "maxSell": "9"}], "1"),  # other ticker only
+        ([{"ticker": "AAPL", "quantity": "-3", "maxSell": "3"}], "1"),  # a short is not held
+        ([{"ticker": "AAPL", "quantity": "5", "maxSell": "2"}], "3"),  # beyond maxSell
+    ],
+)
+async def test_protective_exit_beyond_held_long_or_opening_short_is_refused(
+    db, positions, quantity
+) -> None:
+    await _settings(db, kill=True)
+    engine = ExecutionEngine(db, _Broker(positions))
+    sell = await engine.create_order_intent(
+        ticker="AAPL",
+        side="sell",
+        order_type="market",
+        quantity=Decimal(quantity),
+        is_dry_run=True,
+    )
+
+    with pytest.raises(SafetyPolicyViolation) as refused:
+        await engine.submit_protective_exit(sell)
+
+    assert refused.value.decision_code == "protective_exit_refused"
+    assert sell.status == "pending_intent"
+
+
+async def test_sells_already_in_flight_count_against_the_held_quantity(db) -> None:
+    await _settings(db, kill=True)
+    engine = ExecutionEngine(db, _Broker([_position("5")]))
+    db.add(
+        Order(
+            id=uuid.uuid4(),
+            client_order_key="in-flight-sell",
+            ticker="AAPL",
+            side="sell",
+            order_type="market",
+            quantity=Decimal("4"),
+            filled_quantity=Decimal("0"),
+            status="submitted",
+            is_dry_run=True,
+        )
+    )
+    await db.flush()
+    sell = await engine.create_order_intent(
+        ticker="AAPL", side="sell", order_type="market", quantity=Decimal("2"), is_dry_run=True
+    )
+
+    with pytest.raises(SafetyPolicyViolation):
+        await engine.submit_protective_exit(sell)  # 4 in flight + 2 > 5 held
+
+
+async def test_policy_rechecks_the_authorization_against_the_order(db) -> None:
+    await _settings(db, kill=True)
+    engine = ExecutionEngine(db, _Broker([]))
+    buy = await engine.create_order_intent(
+        ticker="AAPL", side="buy", order_type="market", quantity=Decimal("1"), is_dry_run=True
+    )
+    forged = ProtectiveExitAuthorization(ticker="AAPL", held_quantity=Decimal("100"))
+    with pytest.raises(SafetyPolicyViolation) as exc:
+        await require_order_submission_allowed(
+            db, order=buy, broker_environment=None, protective_exit=forged
+        )
+    assert exc.value.decision_code == "protective_exit_refused"
+
+    sell = await engine.create_order_intent(
+        ticker="AAPL", side="sell", order_type="market", quantity=Decimal("2"), is_dry_run=True
+    )
+    for wrong in (
+        ProtectiveExitAuthorization(ticker="MSFT", held_quantity=Decimal("100")),
+        ProtectiveExitAuthorization(ticker="AAPL", held_quantity=Decimal("1")),
+    ):
+        with pytest.raises(SafetyPolicyViolation):
+            await require_order_submission_allowed(
+                db, order=sell, broker_environment=None, protective_exit=wrong
+            )

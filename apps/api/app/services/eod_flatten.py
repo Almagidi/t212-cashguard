@@ -226,8 +226,8 @@ class EodFlattenService:
         kill_switch_active = await self._kill_switch_active()
         if kill_switch_active is None:
             return self._summary(reason="settings_missing")
-        if kill_switch_active:
-            return self._summary(reason="kill_switch")
+        # An active kill switch blocks new entries only; it must not stop the flatten of
+        # positions that are already held (submitted as protective exits below).
         if settings.APP_MODE == "live":
             return self._summary(reason="live_eod_prohibited")
 
@@ -304,10 +304,6 @@ class EodFlattenService:
                     summary["operations_created"] += 1
                     summary["manual_reconciliation_required"] += 1
             summary["reason"] = "paper_eod_unsupported"
-            return summary
-
-        if await self._kill_switch_active():
-            summary["reason"] = "kill_switch"
             return summary
 
         try:
@@ -401,7 +397,9 @@ class EodFlattenService:
             if order is None:
                 raise RuntimeError("EOD operation was committed without its order intent")
             try:
-                order = await ExecutionEngine(self.db, self.broker).submit_order(order)
+                order = await ExecutionEngine(self.db, self.broker).submit_protective_exit(
+                    order
+                )
             except Exception as exc:
                 operation.status = "manual_reconciliation_required"
                 operation.requires_manual_reconciliation = True

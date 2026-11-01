@@ -157,7 +157,12 @@ class LiveReadinessService:
             "verified_at": verified_at,
         }
 
-    async def evaluate(self, *, require_market_data: bool = True) -> dict[str, Any]:
+    async def evaluate(
+        self,
+        *,
+        require_market_data: bool = True,
+        allow_active_kill_switch: bool = False,
+    ) -> dict[str, Any]:
         from app.services.telegram_control import TelegramControlService
 
         # Match dispatch/action lock order: owner, connection, then global controls.
@@ -200,7 +205,9 @@ class LiveReadinessService:
             and telegram_status["webhook_secret_configured"]
             and telegram_status["control_enabled"]
         )
-        kill_switch_clear = not app_settings.kill_switch_active
+        # ``allow_active_kill_switch`` is used only to authorize a protective exit (a sell
+        # that reduces a held long position); every other readiness check still applies.
+        kill_switch_clear = allow_active_kill_switch or not app_settings.kill_switch_active
         live_unlock_acknowledged = bool(
             app_settings.live_trading_unlocked and unlock_acknowledged_fresh
         )

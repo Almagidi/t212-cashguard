@@ -305,11 +305,18 @@ class PositionMonitor:
         if not app_settings:
             return summary
 
-        # Hard gates
+        # A kill switch or paused auto-trading blocks NEW ENTRIES only. This monitor never
+        # opens positions, and the stop-loss / take-profit exits of positions that are
+        # already held must keep running, or those positions are left with no stop.
+        # Exits go through ExecutionEngine.submit_protective_exit (sell-only, quantity
+        # capped at the held long position), which is exempt from the kill switch only.
+        entries_blocked: str | None = None
         if app_settings.kill_switch_active:
-            return {**summary, "skipped": "kill_switch_active"}
-        if not app_settings.auto_trading_enabled:
-            return {**summary, "skipped": "auto_trading_disabled"}
+            entries_blocked = "kill_switch_active"
+        elif not app_settings.auto_trading_enabled:
+            entries_blocked = "auto_trading_disabled"
+        if entries_blocked is not None:
+            summary["entries_blocked"] = entries_blocked
 
         broker = await self._get_broker()
         if broker is None:
@@ -329,39 +336,49 @@ class PositionMonitor:
 
         account_value = Decimal(str(account_data.get("total", 0)))
 
-        # Check daily loss breach (including unrealized) — halt if exceeded
-        daily_loss_outcome = await self._check_daily_loss_with_unrealized(
-            app_settings, broker, account_value
-        )
+        # Check daily loss breach (including unrealized). A breach (or a failure to measure
+        # it) blocks new entries by activating or enforcing the halt, but it must not stop
+        # monitoring: existing positions keep their stop-loss / take-profit exits. When
+        # entries are already blocked there is nothing further to halt, so the check is
+        # skipped (and the kill switch and its alert are not re-fired every cycle).
+        daily_loss_outcome = _DailyLossOutcome.NO_BREACH
+        if entries_blocked is None:
+            daily_loss_outcome = await self._check_daily_loss_with_unrealized(
+                app_settings, broker, account_value
+            )
         if daily_loss_outcome is _DailyLossOutcome.POLICY_BLOCK_TRADING:
             log.critical(
                 "position_monitor.daily_loss_halt",
                 failure_policy="block_trading",
                 fail_closed=True,
+                exits_continue=True,
             )
-            return {
-                **summary,
-                "halted": "unrealized_pnl_failure_block_trading",
-                "failure_policy": "block_trading",
-                "fail_closed": True,
-            }
-        if daily_loss_outcome is _DailyLossOutcome.POLICY_KILL_SWITCH:
+            summary.update(
+                {
+                    "halted": "unrealized_pnl_failure_block_trading",
+                    "failure_policy": "block_trading",
+                    "fail_closed": True,
+                }
+            )
+        elif daily_loss_outcome is _DailyLossOutcome.POLICY_KILL_SWITCH:
             log.critical(
                 "position_monitor.daily_loss_halt",
                 failure_policy="activate_kill_switch",
                 fail_closed=True,
+                exits_continue=True,
             )
-            return {
-                **summary,
-                "halted": "unrealized_pnl_failure_kill_switch",
-                "failure_policy": "activate_kill_switch",
-                "fail_closed": True,
-            }
-        if daily_loss_outcome is _DailyLossOutcome.BREACH_KILL_SWITCH:
-            log.critical("position_monitor.daily_loss_halt")
+            summary.update(
+                {
+                    "halted": "unrealized_pnl_failure_kill_switch",
+                    "failure_policy": "activate_kill_switch",
+                    "fail_closed": True,
+                }
+            )
+        elif daily_loss_outcome is _DailyLossOutcome.BREACH_KILL_SWITCH:
+            log.critical("position_monitor.daily_loss_halt", exits_continue=True)
             await activate_kill_switch(self.db, actor="position_monitor:daily_loss")
             await alert_kill_switch_activated(self.db, actor="position_monitor:daily_loss")
-            return {**summary, "halted": "daily_loss_breach"}
+            summary["halted"] = "daily_loss_breach"
 
         # Get all live strategies for context
         strat_result = await self.db.execute(
@@ -515,7 +532,9 @@ class PositionMonitor:
                 estimated_price=current_price,
             )
             if order.status == "pending_intent":
-                order = await engine.submit_order(order)
+                # Protective exit: sell-only, capped at the held long quantity, exempt from
+                # the kill-switch check only (see ExecutionEngine.submit_protective_exit).
+                order = await engine.submit_protective_exit(order)
             else:
                 # An exit order for this entry already exists; it is never sent again.
                 log.warning(

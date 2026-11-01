@@ -81,11 +81,13 @@ from app.services.execution_quality import (
     should_alert_abnormal_slippage,
 )
 from app.services.safety_policy import (
+    ProtectiveExitAuthorization,
     SafetyPolicyViolation,
     audit_broker_request_attempt,
     audit_safety_decision,
     current_runtime_mode,
     require_order_submission_allowed,
+    verify_protective_exit,
 )
 
 if TYPE_CHECKING:
@@ -558,10 +560,100 @@ class ExecutionEngine:
                 error=str(exc),
             )
 
-    async def submit_order(self, order: Order) -> Order:
+    async def _verified_protective_exit(self, order: Order) -> ProtectiveExitAuthorization:
+        """Prove from a fresh broker position read that this sell only reduces a held long.
+
+        Refuses (``SafetyPolicyViolation``) a buy, a sell with no held long position, and a
+        sell that together with sells already in flight exceeds the held quantity, so a
+        protective exit can never open or grow a short.
+        """
+
+        def refuse(why: str) -> SafetyPolicyViolation:
+            return SafetyPolicyViolation(
+                f"Protective exit refused: {why}.", decision_code="protective_exit_refused"
+            )
+
+        if order.side != "sell":
+            raise refuse("only a sell can be a protective exit")
+        ticker = str(order.ticker).strip().upper()
+        try:
+            positions = await self.broker.get_positions()
+        except Exception as exc:
+            raise refuse(f"held position could not be read ({type(exc).__name__})") from exc
+        held = Decimal("0")
+        for row in positions:
+            if str(row.get("ticker", "")).strip().upper() != ticker:
+                continue
+            try:
+                quantity = Decimal(str(row.get("quantity", 0)))
+                max_sell_raw = row.get("maxSell")
+                sellable = quantity if max_sell_raw is None else Decimal(str(max_sell_raw))
+            except (ArithmeticError, ValueError):
+                continue
+            if quantity > 0 and sellable > 0:
+                held += min(quantity, sellable)
+        in_flight_rows = (
+            await self.db.execute(
+                select(Order.quantity, Order.filled_quantity).where(
+                    Order.id != order.id,
+                    Order.ticker == order.ticker,
+                    Order.side == "sell",
+                    Order.is_dry_run.is_(order.is_dry_run),
+                    Order.status.in_(ACTIVE_ORDER_STATUSES - {"pending_intent"}),
+                )
+            )
+        ).all()
+        in_flight = sum(
+            (
+                max(Decimal(str(qty)) - Decimal(str(filled or 0)), Decimal("0"))
+                for qty, filled in in_flight_rows
+            ),
+            Decimal("0"),
+        )
+        authorization = ProtectiveExitAuthorization(
+            ticker=ticker, held_quantity=held, in_flight_sell_quantity=in_flight
+        )
+        verify_protective_exit(order, authorization)
+        return authorization
+
+    async def submit_protective_exit(self, order: Order) -> Order:
+        """Submit a sell that reduces an existing long position, even if trading is halted.
+
+        The kill switch (and a paused auto-trading flag, which the caller no longer
+        consults for exits) must not leave a held position without its stop. This path is
+        exempt from the kill-switch check ONLY: the order is verified against a fresh broker
+        position read to be a sell no larger than the held long quantity (net of sells in
+        flight), and mode, broker-environment, live-binding and live-readiness gates apply
+        unchanged. Buys, shorts and oversized sells are refused.
+        """
+        if order.status != "pending_intent":
+            raise ValueError(f"Cannot submit order in status {order.status!r}")
+        try:
+            authorization = await self._verified_protective_exit(order)
+        except SafetyPolicyViolation as exc:
+            await audit_safety_decision(
+                self.db,
+                action="protective_exit_refused",
+                actor="execution_engine",
+                decision="blocked",
+                reason=exc.reason,
+                order=order,
+                metadata={"decision_code": exc.decision_code},
+            )
+            raise
+        return await self.submit_order(order, protective_exit=authorization)
+
+    async def submit_order(
+        self,
+        order: Order,
+        *,
+        protective_exit: ProtectiveExitAuthorization | None = None,
+    ) -> Order:
         """
         Submit order to broker. Updates order status throughout.
         For dry-run orders, simulates success without contacting broker.
+
+        ``protective_exit`` is produced only by ``submit_protective_exit``; see there.
         """
         if order.status != "pending_intent":
             raise ValueError(f"Cannot submit order in status {order.status!r}")
@@ -573,6 +665,7 @@ class ExecutionEngine:
                 order=order,
                 broker_environment=broker_environment,
                 broker=self.broker,
+                protective_exit=protective_exit,
             )
         except SafetyPolicyViolation as exc:
             if order.side == "buy" and not order.is_dry_run:
@@ -681,7 +774,12 @@ class ExecutionEngine:
             try:
                 async with async_sessionmaker(self.db.bind, expire_on_commit=False)() as check:
                     await authorize_dispatch(
-                        check, self.broker, order, lock=False, expected=authorization
+                        check,
+                        self.broker,
+                        order,
+                        lock=False,
+                        expected=authorization,
+                        protective_exit=protective_exit is not None,
                     )
             except Exception as exc:
                 raise BrokerSubmissionNotTransmitted(error_type="LiveAuthorizationRevoked") from exc
