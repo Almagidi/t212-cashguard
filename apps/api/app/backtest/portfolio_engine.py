@@ -30,6 +30,11 @@ if TYPE_CHECKING:
 SHARE_QUANT = Decimal("0.0001")
 MIN_PORTFOLIO_COVERAGE_PCT = Decimal("95")
 
+BENCHMARK_UNIVERSE_EW = "universe_equal_weight_costed"
+BENCHMARK_BROAD_INDEX = "broad_index"
+BENCHMARK_RISK_MATCHED = "risk_matched_blend"
+BENCHMARK_KEYS = (BENCHMARK_UNIVERSE_EW, BENCHMARK_BROAD_INDEX, BENCHMARK_RISK_MATCHED)
+
 
 @dataclass
 class PortfolioTrade:
@@ -67,6 +72,29 @@ class PortfolioAllocationPoint:
 
 
 @dataclass
+class BenchmarkComparison:
+    """A costed benchmark measured over the same window and with the same metrics as the strategy.
+
+    ``excess_*`` fields are strategy minus benchmark.  For drawdown a positive excess means the
+    strategy drew down *more* than the benchmark.
+    """
+
+    key: str
+    name: str
+    total_return_pct: Decimal
+    annualised_return_pct: Decimal
+    sharpe_ratio: Decimal | None
+    sortino_ratio: Decimal | None
+    max_drawdown_pct: Decimal
+    avg_exposure_pct: Decimal
+    total_execution_cost: Decimal
+    excess_return_pct: Decimal
+    excess_sharpe_ratio: Decimal | None
+    excess_max_drawdown_pct: Decimal
+    daily_returns: list[float] = field(default_factory=list, repr=False)
+
+
+@dataclass
 class PortfolioBacktestResult:
     strategy_name: str
     universe: list[str]
@@ -100,6 +128,11 @@ class PortfolioBacktestResult:
     warmup_bars_excluded: int = 0
     total_fx_fee_cost: Decimal = Decimal("0")
     cost_model: dict[str, Any] = field(default_factory=dict)
+    # Annual risk-free rate used for Sharpe/Sortino (default 0.0; cash in the simulation earns 0).
+    risk_free_rate_annual: Decimal = Decimal("0")
+    primary_benchmark: str = BENCHMARK_UNIVERSE_EW
+    benchmarks: dict[str, BenchmarkComparison] = field(default_factory=dict)
+    daily_returns: list[float] = field(default_factory=list, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -462,6 +495,42 @@ def _align_research_histories(
     return ordered_dates, aligned, report
 
 
+def _annualised_return_pct(final: Decimal, initial: Decimal, day_count: int) -> Decimal:
+    if initial <= 0 or final <= 0:
+        return Decimal("0")
+    value = ((float(final) / float(initial)) ** (365.0 / float(max(1, day_count))) - 1.0) * 100.0
+    return Decimal(str(value))
+
+
+def _round_ratio(value: float | None) -> Decimal | None:
+    return Decimal(str(round(value, 3))) if value is not None else None
+
+
+def _align_benchmark_bars(
+    benchmark: tuple[list[Bar], list[datetime]],
+    dates: list[date],
+    *,
+    ticker: str,
+    calendar_venue: str,
+) -> list[Bar]:
+    bars, bar_times = benchmark
+    validate_bar_series(bars, bar_times, label=f"benchmark bar series for {ticker}")
+    exchange_timezone = ZoneInfo(calendar_for_venue(calendar_venue).exchange_timezone)
+    per_day: dict[date, Bar] = {}
+    for bar_time, bar in zip(bar_times, bars, strict=True):
+        bar_date = bar_time.astimezone(exchange_timezone).date()
+        if bar_date in per_day:
+            raise ValueError(f"benchmark {ticker}: duplicate date {bar_date.isoformat()}")
+        per_day[bar_date] = bar
+    missing = [d for d in dates if d not in per_day]
+    if missing:
+        raise ValueError(
+            f"benchmark {ticker} is missing {len(missing)} session(s) of the portfolio window "
+            f"(first missing {missing[0].isoformat()}); a benchmark must cover every date"
+        )
+    return [per_day[d] for d in dates]
+
+
 def _rebalance_due(previous: date | None, current: date, frequency: str) -> bool:
     if previous is None:
         return True
@@ -488,6 +557,10 @@ class PortfolioBacktester:
         transaction_cost_bps: Decimal | None = None,
         coverage_policy: PortfolioCoveragePolicy | None = None,
         cost_model: TransactionCostModel | None = None,
+        risk_free_rate: Decimal = Decimal("0"),
+        benchmark_history: tuple[list[Bar], list[datetime]] | None = None,
+        benchmark_ticker: str = "BROAD_INDEX",
+        primary_benchmark: str = BENCHMARK_UNIVERSE_EW,
     ) -> None:
         self.strategy = strategy
         self.universe = sorted(dict.fromkeys(universe))
@@ -503,6 +576,16 @@ class PortfolioBacktester:
         if transaction_cost_bps is not None and cost_model is not None:
             raise ValueError("pass either transaction_cost_bps (legacy flat fee) or cost_model")
         self.cost_model = cost_model or TransactionCostModel()
+        if risk_free_rate <= Decimal("-1"):
+            raise ValueError("risk_free_rate must be greater than -1")
+        self.risk_free_rate = risk_free_rate
+        if primary_benchmark not in BENCHMARK_KEYS:
+            raise ValueError(f"primary_benchmark must be one of {', '.join(BENCHMARK_KEYS)}")
+        if primary_benchmark != BENCHMARK_UNIVERSE_EW and benchmark_history is None:
+            raise ValueError(f"primary_benchmark {primary_benchmark!r} needs benchmark_history")
+        self.benchmark_history = benchmark_history
+        self.benchmark_ticker = benchmark_ticker.strip().upper()
+        self.primary_benchmark = primary_benchmark
 
     def _execute(
         self,
@@ -537,20 +620,26 @@ class PortfolioBacktester:
             }
         return self.cost_model.describe()
 
-    def _run_benchmark(
+    def _buy_and_hold_equities(
         self,
         *,
-        history: dict[str, list[Bar]],
+        bars_by_ticker: dict[str, list[Bar]],
+        weights: dict[str, Decimal],
         first_index: int,
-    ) -> Decimal:
-        """Equal-weight buy-and-hold from the first allocation, net of the same costs."""
-        weight = Decimal("1") / Decimal(str(len(history)))
+        length: int,
+    ) -> tuple[list[Decimal], Decimal]:
+        """Costed buy-and-hold from ``first_index`` open; remaining capital stays in cash.
+
+        Positions are marked to market at each close (no liquidation cost at the end,
+        exactly like the strategy's final equity).  Returns (equity per index from
+        ``first_index``, total execution cost of the entry).
+        """
         cash = self.initial_capital
         shares: dict[str, Decimal] = {}
-
-        for ticker, bars in history.items():
-            open_price = bars[first_index].open
-            if open_price <= 0:
+        entry_cost = Decimal("0")
+        for ticker, weight in weights.items():
+            open_price = bars_by_ticker[ticker][first_index].open
+            if open_price <= 0 or weight <= 0:
                 continue
             budget = self.initial_capital * weight
             quantity = (budget / open_price).quantize(SHARE_QUANT, rounding=ROUND_DOWN)
@@ -562,16 +651,64 @@ class PortfolioBacktester:
                 if outlay <= budget:
                     shares[ticker] = fill.shares
                     cash -= outlay
+                    entry_cost += abs(fill.price - open_price) * fill.shares + fill.fee
                     break
                 quantity = (quantity * budget / outlay).quantize(SHARE_QUANT, rounding=ROUND_DOWN)
+        equities: list[Decimal] = []
+        for index in range(first_index, length):
+            equity = cash
+            for ticker, quantity in shares.items():
+                equity += quantity * bars_by_ticker[ticker][index].close
+            equities.append(equity.quantize(Decimal("0.01")))
+        return equities, entry_cost
 
-        final_equity = cash
-        for ticker, bars in history.items():
-            final_equity += shares.get(ticker, Decimal("0")) * bars[-1].close
-
-        if self.initial_capital <= 0:
-            return Decimal("0")
-        return ((final_equity / self.initial_capital) - Decimal("1")) * Decimal("100")
+    def _comparison(
+        self,
+        *,
+        key: str,
+        name: str,
+        equities: list[Decimal],
+        entry_cost: Decimal,
+        day_count: int,
+        avg_exposure_pct: Decimal,
+        strategy_total_return_pct: Decimal,
+        strategy_sharpe: Decimal | None,
+        strategy_max_drawdown_pct: Decimal,
+    ) -> BenchmarkComparison:
+        rf = float(self.risk_free_rate)
+        returns = returns_from_equity(equities, self.initial_capital)
+        final = equities[-1]
+        total_return_pct = (
+            ((final / self.initial_capital) - Decimal("1")) * Decimal("100")
+            if self.initial_capital > 0
+            else Decimal("0")
+        )
+        sharpe = _round_ratio(sharpe_ratio(returns, rf))
+        max_dd = Decimal(
+            str(round(max_drawdown_pct_from_equity(equities, self.initial_capital), 6))
+        )
+        return BenchmarkComparison(
+            key=key,
+            name=name,
+            total_return_pct=total_return_pct.quantize(Decimal("0.01")),
+            annualised_return_pct=_annualised_return_pct(
+                final, self.initial_capital, day_count
+            ).quantize(Decimal("0.01")),
+            sharpe_ratio=sharpe,
+            sortino_ratio=_round_ratio(sortino_ratio(returns, rf)),
+            max_drawdown_pct=max_dd.quantize(Decimal("0.01")),
+            avg_exposure_pct=avg_exposure_pct.quantize(Decimal("0.01")),
+            total_execution_cost=entry_cost.quantize(Decimal("0.01")),
+            excess_return_pct=strategy_total_return_pct.quantize(Decimal("0.01"))
+            - total_return_pct.quantize(Decimal("0.01")),
+            excess_sharpe_ratio=(
+                strategy_sharpe - sharpe
+                if strategy_sharpe is not None and sharpe is not None
+                else None
+            ),
+            excess_max_drawdown_pct=strategy_max_drawdown_pct - max_dd.quantize(Decimal("0.01")),
+            daily_returns=returns,
+        )
 
     def run(
         self, histories: dict[str, tuple[list[Bar], list[datetime]]]
@@ -583,6 +720,25 @@ class PortfolioBacktester:
             end_date=self.end_date,
             coverage_policy=self.coverage_policy,
         )
+        benchmark_bars = None
+        if self.benchmark_history is not None:
+            benchmark_bars = _align_benchmark_bars(
+                self.benchmark_history,
+                dates,
+                ticker=self.benchmark_ticker,
+                calendar_venue=self.coverage_policy.calendar_venue,
+            )
+        return self.run_aligned(dates, history, coverage_report, benchmark_bars=benchmark_bars)
+
+    def run_aligned(
+        self,
+        dates: list[date],
+        history: dict[str, list[Bar]],
+        coverage_report: PortfolioSessionCoverageReport,
+        *,
+        benchmark_bars: list[Bar] | None = None,
+    ) -> PortfolioBacktestResult:
+        """Run on already-aligned, equal-length per-symbol bars (used by walk-forward slices)."""
         min_history = int(getattr(self.strategy, "min_history_bars", 0))
         if len(dates) <= min_history:
             raise ValueError(
@@ -672,18 +828,9 @@ class PortfolioBacktester:
                 "100"
             )
         day_count = max(1, (dates[-1] - dates[first_trade_index]).days)
-        annualised_return_pct = Decimal("0")
-        if self.initial_capital > 0 and final_equity > 0:
-            annualised_return_pct = Decimal(
-                str(
-                    (
-                        (float(final_equity) / float(self.initial_capital))
-                        ** (365.0 / float(day_count))
-                        - 1.0
-                    )
-                    * 100.0
-                )
-            )
+        annualised_return_pct = _annualised_return_pct(
+            final_equity, self.initial_capital, day_count
+        )
 
         # Everything below is measured from the first allocation index so warm-up days
         # spent 100% in cash do not dilute Sharpe/Sortino/drawdown/exposure.  The base of
@@ -691,10 +838,9 @@ class PortfolioBacktester:
         metrics_curve = equity_curve[first_trade_index:]
         metrics_equities = [point.equity for point in metrics_curve]
         daily_returns = returns_from_equity(metrics_equities, self.initial_capital)
-        sharpe_value = sharpe_ratio(daily_returns)
-        sortino_value = sortino_ratio(daily_returns)
-        sharpe = Decimal(str(round(sharpe_value, 3))) if sharpe_value is not None else None
-        sortino = Decimal(str(round(sortino_value, 3))) if sortino_value is not None else None
+        rf = float(self.risk_free_rate)
+        sharpe = _round_ratio(sharpe_ratio(daily_returns, rf))
+        sortino = _round_ratio(sortino_ratio(daily_returns, rf))
 
         max_drawdown_pct = Decimal(
             str(round(max_drawdown_pct_from_equity(metrics_equities, self.initial_capital), 6))
@@ -703,8 +849,6 @@ class PortfolioBacktester:
         if max_drawdown_pct > 0:
             calmar = Decimal(str(round(float(annualised_return_pct / max_drawdown_pct), 3)))
 
-        benchmark_return_pct = self._run_benchmark(history=history, first_index=first_trade_index)
-        alpha_vs_benchmark_pct = total_return_pct - benchmark_return_pct
         avg_exposure_pct = _decimal_mean([point.exposure_pct for point in metrics_curve]).quantize(
             Decimal("0.01")
         )
@@ -717,6 +861,66 @@ class PortfolioBacktester:
         total_slippage_cost = sum((trade.slippage_cost for trade in trades), Decimal("0"))
         total_fee_cost = sum((trade.fee_cost for trade in trades), Decimal("0"))
 
+        strategy_max_dd = max_drawdown_pct.quantize(Decimal("0.01"))
+        comparison_args = {
+            "day_count": day_count,
+            "strategy_total_return_pct": total_return_pct,
+            "strategy_sharpe": sharpe,
+            "strategy_max_drawdown_pct": strategy_max_dd,
+        }
+        length = len(dates)
+        benchmarks: dict[str, BenchmarkComparison] = {}
+        equal_weight = Decimal("1") / Decimal(str(len(history)))
+        ew_equities, ew_cost = self._buy_and_hold_equities(
+            bars_by_ticker=history,
+            weights=dict.fromkeys(history, equal_weight),
+            first_index=first_trade_index,
+            length=length,
+        )
+        benchmarks[BENCHMARK_UNIVERSE_EW] = self._comparison(
+            key=BENCHMARK_UNIVERSE_EW,
+            name="Universe equal-weight buy & hold (costed)",
+            equities=ew_equities,
+            entry_cost=ew_cost,
+            avg_exposure_pct=Decimal("100"),
+            **comparison_args,
+        )
+        if benchmark_bars is not None:
+            if len(benchmark_bars) != length:
+                raise ValueError("benchmark bars must align one-to-one with portfolio dates")
+            index_series = {self.benchmark_ticker: benchmark_bars}
+            index_equities, index_cost = self._buy_and_hold_equities(
+                bars_by_ticker=index_series,
+                weights={self.benchmark_ticker: Decimal("1")},
+                first_index=first_trade_index,
+                length=length,
+            )
+            benchmarks[BENCHMARK_BROAD_INDEX] = self._comparison(
+                key=BENCHMARK_BROAD_INDEX,
+                name=f"Broad index {self.benchmark_ticker} buy & hold (costed)",
+                equities=index_equities,
+                entry_cost=index_cost,
+                avg_exposure_pct=Decimal("100"),
+                **comparison_args,
+            )
+            blend_weight = min(max(avg_exposure_pct / Decimal("100"), Decimal("0")), Decimal("1"))
+            blend_equities, blend_cost = self._buy_and_hold_equities(
+                bars_by_ticker=index_series,
+                weights={self.benchmark_ticker: blend_weight},
+                first_index=first_trade_index,
+                length=length,
+            )
+            blend_pct = (blend_weight * 100).quantize(Decimal("0.1"))
+            benchmarks[BENCHMARK_RISK_MATCHED] = self._comparison(
+                key=BENCHMARK_RISK_MATCHED,
+                name=f"Risk-matched blend: {blend_pct}% {self.benchmark_ticker} / rest cash (costed)",
+                equities=blend_equities,
+                entry_cost=blend_cost,
+                avg_exposure_pct=blend_weight * Decimal("100"),
+                **comparison_args,
+            )
+        primary = benchmarks[self.primary_benchmark]
+
         return PortfolioBacktestResult(
             strategy_name=self.strategy.label,
             universe=self.universe,
@@ -724,9 +928,9 @@ class PortfolioBacktester:
             end_date=dates[-1],
             initial_capital=self.initial_capital.quantize(Decimal("0.01")),
             final_capital=final_equity.quantize(Decimal("0.01")),
-            benchmark_name="Equal-Weight Buy & Hold",
-            benchmark_return_pct=benchmark_return_pct.quantize(Decimal("0.01")),
-            alpha_vs_benchmark_pct=alpha_vs_benchmark_pct.quantize(Decimal("0.01")),
+            benchmark_name=primary.name,
+            benchmark_return_pct=primary.total_return_pct,
+            alpha_vs_benchmark_pct=primary.excess_return_pct,
             total_return_pct=total_return_pct.quantize(Decimal("0.01")),
             annualised_return_pct=annualised_return_pct.quantize(Decimal("0.01")),
             sharpe_ratio=sharpe,
@@ -748,6 +952,10 @@ class PortfolioBacktester:
             latest_weights=equity_curve[-1].weights if equity_curve else {},
             metrics_start_date=dates[first_trade_index],
             warmup_bars_excluded=first_trade_index,
+            risk_free_rate_annual=self.risk_free_rate,
+            primary_benchmark=self.primary_benchmark,
+            benchmarks=benchmarks,
+            daily_returns=daily_returns,
         )
 
     def _rebalance_portfolio(

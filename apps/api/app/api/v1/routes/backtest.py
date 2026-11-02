@@ -16,7 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.api.deps import get_current_user
 from app.backtest.configuration import resolve_backtest_configuration
-from app.backtest.portfolio_engine import InsufficientPortfolioEvidence
+from app.backtest.portfolio_costs import TransactionCostModel
+from app.backtest.portfolio_engine import (
+    BENCHMARK_UNIVERSE_EW,
+    InsufficientPortfolioEvidence,
+)
 from app.backtest.portfolio_strategies import (
     get_portfolio_backtest_strategy,
     list_portfolio_backtest_strategies,
@@ -120,6 +124,53 @@ class BacktestStrategyInfo(BaseModel):
     strategy_params: dict[str, Any]
 
 
+PortfolioBenchmarkKey = Literal["universe_equal_weight_costed", "broad_index", "risk_matched_blend"]
+
+
+class PortfolioCostRequest(BaseModel):
+    """Transaction costs for a portfolio backtest (per side, in bps unless stated).
+
+    ``spread_bps`` is the full quoted spread (half is paid per side).  ``fx_fee_rate`` is a
+    fraction of notional charged per side on instruments whose currency differs from
+    ``account_currency``; an instrument with no known currency is treated as foreign and pays it.
+    ``stress_multiplier`` scales every cost.  ``zero_cost`` must be set explicitly to run
+    frictionless; the result is then labelled ``zero_cost_explicit``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    spread_bps: float = Field(default=10.0, ge=0, le=500)
+    slippage_bps: float = Field(default=5.0, ge=0, le=500)
+    commission_bps: float = Field(default=2.0, ge=0, le=500)
+    fx_fee_rate: float = Field(default=0.0015, ge=0, le=0.05)
+    account_currency: str = Field(default="GBP", min_length=3, max_length=3)
+    instrument_currencies: dict[str, str] = Field(default_factory=dict)
+    default_instrument_currency: str | None = Field(default=None, min_length=3, max_length=3)
+    spread_bps_by_ticker: dict[str, float] = Field(default_factory=dict)
+    stress_multiplier: Literal[1, 2, 3] = 1
+    zero_cost: bool = False
+
+    def to_model(self) -> TransactionCostModel:
+        if self.zero_cost:
+            return TransactionCostModel.explicit_zero(account_currency=self.account_currency)
+        return TransactionCostModel(
+            spread_bps=Decimal(str(self.spread_bps)),
+            slippage_bps=Decimal(str(self.slippage_bps)),
+            commission_bps=Decimal(str(self.commission_bps)),
+            fx_fee_rate=Decimal(str(self.fx_fee_rate)),
+            account_currency=self.account_currency,
+            instrument_currencies=dict(self.instrument_currencies),
+            default_instrument_currency=self.default_instrument_currency,
+            spread_bps_by_ticker={k: Decimal(str(v)) for k, v in self.spread_bps_by_ticker.items()},
+            stress_multiplier=Decimal(self.stress_multiplier),
+        )
+
+    @model_validator(mode="after")
+    def validate_model(self) -> Self:
+        self.to_model()  # surfaces e.g. "all costs are zero" as a 422 instead of a failed job
+        return self
+
+
 class PortfolioBacktestRequest(BaseModel):
     tickers: list[str] = Field(min_length=1, max_length=20)
     strategy_type: PortfolioBacktestStrategyType = "buy_hold_core"
@@ -127,6 +178,13 @@ class PortfolioBacktestRequest(BaseModel):
     from_date: date
     to_date: date
     initial_capital: float = 10000.0
+    cost_model: PortfolioCostRequest = Field(default_factory=PortfolioCostRequest)
+    # Annual risk-free rate for Sharpe/Sortino.  Default 0.0 (documented, reported in the result).
+    risk_free_rate_annual: float = Field(default=0.0, ge=-0.5, le=1.0)
+    # A price series already in/fetchable as daily bars (e.g. SPY or a global ETF), used for the
+    # 'broad_index' and 'risk_matched_blend' benchmarks, net of the same costs.
+    benchmark_ticker: str | None = Field(default=None, min_length=1, max_length=12)
+    primary_benchmark: PortfolioBenchmarkKey = BENCHMARK_UNIVERSE_EW
 
     @field_validator("tickers")
     @classmethod
@@ -136,6 +194,17 @@ class PortfolioBacktestRequest(BaseModel):
         if not unique:
             raise ValueError("Provide at least one ticker.")
         return unique
+
+    @field_validator("benchmark_ticker")
+    @classmethod
+    def normalize_benchmark(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value and value.strip() else None
+
+    @model_validator(mode="after")
+    def validate_benchmark(self) -> Self:
+        if self.primary_benchmark != BENCHMARK_UNIVERSE_EW and self.benchmark_ticker is None:
+            raise ValueError(f"primary_benchmark {self.primary_benchmark!r} needs benchmark_ticker")
+        return self
 
 
 class PortfolioBacktestStrategyInfo(BaseModel):
@@ -430,6 +499,21 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
             )
             dataset_manifests.append(fetcher.manifest_for(ticker))
 
+        benchmark_history = None
+        if body.benchmark_ticker is not None:
+            benchmark_history = histories.get(body.benchmark_ticker)
+            if benchmark_history is None:
+                benchmark_history = await fetcher.fetch_bars(
+                    ticker=body.benchmark_ticker,
+                    from_date=body.from_date,
+                    to_date=body.to_date,
+                    multiplier=1,
+                    timespan="day",
+                    membership_source="benchmark_series",
+                    universe=(body.benchmark_ticker,),
+                )
+                dataset_manifests.append(fetcher.manifest_for(body.benchmark_ticker))
+
         strategy_config = get_portfolio_backtest_strategy(body.strategy_type)
         strategy_class = strategy_config["strategy_class"]
         strategy = strategy_class(body.strategy_params or None)
@@ -440,6 +524,11 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
             initial_capital=Decimal(str(body.initial_capital)),
             start_date=body.from_date,
             end_date=body.to_date,
+            cost_model=body.cost_model.to_model(),
+            risk_free_rate=Decimal(str(body.risk_free_rate_annual)),
+            benchmark_history=benchmark_history,
+            benchmark_ticker=body.benchmark_ticker or "BROAD_INDEX",
+            primary_benchmark=body.primary_benchmark,
         )
         result = backtester.run(histories)
 
@@ -571,6 +660,15 @@ def _serialize_portfolio_backtest_result(
         "benchmark_name": result.benchmark_name,
         "benchmark_return_pct": float(result.benchmark_return_pct),
         "alpha_vs_benchmark_pct": float(result.alpha_vs_benchmark_pct),
+        "primary_benchmark": result.primary_benchmark,
+        "benchmarks": {key: _serialize_benchmark(item) for key, item in result.benchmarks.items()},
+        "risk_free_rate_annual": float(result.risk_free_rate_annual),
+        "cost_model": result.cost_model,
+        "metrics_start_date": (
+            result.metrics_start_date.isoformat() if result.metrics_start_date else None
+        ),
+        "warmup_bars_excluded": result.warmup_bars_excluded,
+        "total_fx_fee_cost": float(result.total_fx_fee_cost),
         "sharpe_ratio": float(result.sharpe_ratio) if result.sharpe_ratio is not None else None,
         "sortino_ratio": float(result.sortino_ratio) if result.sortino_ratio is not None else None,
         "calmar_ratio": float(result.calmar_ratio) if result.calmar_ratio is not None else None,
@@ -608,6 +706,7 @@ def _serialize_portfolio_backtest_result(
                 "notional": float(trade.notional),
                 "slippage_cost": float(trade.slippage_cost),
                 "fee_cost": float(trade.fee_cost),
+                "fx_fee_cost": float(trade.fx_fee_cost),
                 "cost": float(trade.cost),
                 "reason": trade.reason,
                 "target_weight": float(trade.target_weight),
@@ -615,6 +714,26 @@ def _serialize_portfolio_backtest_result(
             for trade in result.trades[-250:]
         ],
         "rationale": rationale,
+    }
+
+
+def _serialize_benchmark(item: Any) -> dict[str, Any]:
+    def number(value: Any) -> float | None:
+        return float(value) if value is not None else None
+
+    return {
+        "key": item.key,
+        "name": item.name,
+        "total_return_pct": number(item.total_return_pct),
+        "annualised_return_pct": number(item.annualised_return_pct),
+        "sharpe_ratio": number(item.sharpe_ratio),
+        "sortino_ratio": number(item.sortino_ratio),
+        "max_drawdown_pct": number(item.max_drawdown_pct),
+        "avg_exposure_pct": number(item.avg_exposure_pct),
+        "total_execution_cost": number(item.total_execution_cost),
+        "excess_return_pct": number(item.excess_return_pct),
+        "excess_sharpe_ratio": number(item.excess_sharpe_ratio),
+        "excess_max_drawdown_pct": number(item.excess_max_drawdown_pct),
     }
 
 
