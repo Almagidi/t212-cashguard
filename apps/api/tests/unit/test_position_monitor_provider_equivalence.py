@@ -185,6 +185,11 @@ class RecordingExecutionEngine:
         self.broker = broker
         self.brokers.append(broker)
 
+    async def next_exit_identity(
+        self, *, ticker: str, entry_signal_id: uuid.UUID, exit_type: str
+    ) -> str:
+        return f"exit:{entry_signal_id}:{exit_type}:0"
+
     async def create_order_intent(self, **kwargs: Any) -> FakeSubmittedOrder:
         self.order_intents.append(kwargs)
         return FakeSubmittedOrder(
@@ -746,6 +751,7 @@ async def test_run_reads_positions_and_account_then_routes_exit_through_executio
             "signal_id": last_signal.id,
             "is_dry_run": False,
             "estimated_price": Decimal("105"),
+            "stable_operation_identity": f"exit:{last_signal.id}:take_profit:0",
         }
     ]
     assert RecordingExecutionEngine.submitted_orders[0].side == "sell"

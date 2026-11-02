@@ -514,9 +514,10 @@ class PositionMonitor:
             return result
 
         # Determine sell qty
-        sell_qty = abs(exit_signal.suggested_quantity)
-        if sell_qty > max_sell_qty:
-            sell_qty = max_sell_qty
+        # The quantity comes from the position read this cycle, never from the entry: after a
+        # partial exit the remaining position is what a stop may sell. (The engine verifies it
+        # again against a fresh read before anything is sent.)
+        sell_qty = min(abs(exit_signal.suggested_quantity), max_sell_qty, pos_qty)
 
         if sell_qty <= 0:
             return result
@@ -539,6 +540,12 @@ class PositionMonitor:
         # Submit the exit order
         async with broker as b:
             engine = ExecutionEngine(self.db, b)
+            # One identity per (entry, kind of exit, attempt): a partial exit and a later stop
+            # are different exits, a repeat of one in flight is deduplicated, and one the
+            # broker refused is retried as the next attempt.
+            identity = await engine.next_exit_identity(
+                ticker=ticker, entry_signal_id=last_signal.id, exit_type=exit_signal.signal_type
+            )
             order = await engine.create_order_intent(
                 ticker=ticker,
                 side="sell",
@@ -547,6 +554,7 @@ class PositionMonitor:
                 signal_id=last_signal.id,
                 is_dry_run=(settings.APP_MODE == "mock"),
                 estimated_price=current_price,
+                stable_operation_identity=identity,
             )
             if order.status == "pending_intent":
                 # Protective exit: sell-only, capped at the held long quantity, exempt from

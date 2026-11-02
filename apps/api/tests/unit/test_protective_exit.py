@@ -525,3 +525,110 @@ async def test_engine_minted_authorization_is_bound_to_order_quantity_and_time(
         verify_protective_exit(sell, minted, now=later)
     assert "expired" in expired.value.reason
 
+
+# -- Exit idempotency: one identity per exit, a new attempt only after a failed one -----------
+
+
+class _ScriptedBroker(_DemoBroker):
+    """Answers each sell with the next scripted broker status and reflects fills in the position."""
+
+    def __init__(self, held: str, script: list[str]) -> None:
+        super().__init__(held, delay=0)
+        self.script = list(script)
+
+    async def place_market_order(self, ticker, quantity, time_validity="DAY"):
+        qty = abs(Decimal(str(quantity)))
+        self.sent.append(qty)
+        status = self.script.pop(0)
+        filled = qty if status == "FILLED" else Decimal("0")
+        if status == "FILLED":
+            self.held = str(Decimal(self.held) - qty)
+        return {
+            "id": f"B-{len(self.sent)}",
+            "status": status,
+            "filledQuantity": float(filled),
+            "filledPrice": 94.0,
+        }
+
+
+def _exit_strategy(signal_type: str, quantity: str):
+    class _Exit:
+        def __init__(self, _params: Any = None) -> None:
+            pass
+
+        def check_exit_conditions(self, _ticker, _state, price, _bars):
+            return SimpleNamespace(
+                signal_type=signal_type,
+                suggested_quantity=-Decimal(quantity),
+                stop_price=price,
+                take_profit_price=price,
+                confidence=Decimal("1"),
+                reason=signal_type,
+            )
+
+    return _Exit
+
+
+async def _run_exit(db, monkeypatch, broker, signal_type: str, quantity: str) -> dict[str, Any]:
+    monkeypatch.setattr(
+        position_monitor, "OpeningRangeBreakoutStrategy", _exit_strategy(signal_type, quantity)
+    )
+    return await _monitor(db, broker).run()
+
+
+async def test_partial_exit_then_stop_create_two_orders(db, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    await _held_long_with_entry_signal(db)
+    broker = _ScriptedBroker("10", ["FILLED", "FILLED"])
+
+    first = await _run_exit(db, monkeypatch, broker, "partial_exit", "4")
+    second = await _run_exit(db, monkeypatch, broker, "stop", "6")
+
+    assert first["exits_submitted"] == 1
+    assert second["exits_submitted"] == 1
+    assert broker.sent == [Decimal("4"), Decimal("6")]
+    sells = await _sells(db)
+    assert len(sells) == 2
+    assert len({o.client_order_key for o in sells}) == 2
+    assert {o.status for o in sells} == {"filled"}
+
+
+async def test_rejected_exit_is_retried_with_a_new_attempt(db, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    await _held_long_with_entry_signal(db)
+    broker = _ScriptedBroker("10", ["REJECTED", "FILLED"])
+
+    first = await _run_exit(db, monkeypatch, broker, "stop", "10")
+    assert first["exits_submitted"] == 1  # the order was recorded (as rejected)
+    assert [o.status for o in await _sells(db)] == ["rejected"]
+
+    second = await _run_exit(db, monkeypatch, broker, "stop", "10")
+
+    assert second["exits_submitted"] == 1
+    assert broker.sent == [Decimal("10"), Decimal("10")]
+    statuses = sorted(o.status for o in await _sells(db))
+    assert statuses == ["filled", "rejected"]
+
+
+async def test_identical_exit_still_in_flight_is_deduplicated(db, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    await _held_long_with_entry_signal(db)
+    broker = _ScriptedBroker("10", ["WORKING", "FILLED"])
+
+    await _run_exit(db, monkeypatch, broker, "stop", "10")
+    await _run_exit(db, monkeypatch, broker, "stop", "10")
+
+    assert broker.sent == [Decimal("10")]
+    sells = await _sells(db)
+    assert [o.status for o in sells] == ["accepted"]
+    # And at the engine: the same exit asked for again is the same identity (attempt 0).
+    engine = ExecutionEngine(db, broker)
+    entry = (await db.execute(select(Signal).where(Signal.side == "buy"))).scalar_one()
+    identity = await engine.next_exit_identity(
+        ticker="AAPL", entry_signal_id=entry.id, exit_type="stop"
+    )
+    assert identity == f"exit:{entry.id}:stop:0"
+

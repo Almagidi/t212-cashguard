@@ -225,6 +225,35 @@ class ExecutionEngine:
         )
         return hashlib.sha256(raw.encode()).hexdigest()[:40]
 
+    # An exit that the broker refuses can be asked again, but not without bound.
+    MAX_EXIT_ATTEMPTS = 5
+    _FAILED_EXIT_STATUSES = frozenset({"rejected", "cancelled", "error"})
+
+    async def next_exit_identity(
+        self, *, ticker: str, entry_signal_id: uuid.UUID, exit_type: str
+    ) -> str:
+        """The stable identity of the next exit of this kind for this entry.
+
+        ``exit:{entry}:{exit_type}:{attempt}``. The attempt starts at 0 and moves on only when
+        the previous attempt ended without selling (rejected, cancelled or errored), so a
+        repeat of an exit that is in flight or done is the same identity (and deduplicated),
+        a retry after a failure is a new order, and a partial exit followed by a stop are two
+        different exits. After ``MAX_EXIT_ATTEMPTS`` failures the last identity is returned
+        and its failed order stands: no further automatic retry.
+        """
+        identity = f"exit:{entry_signal_id}:{exit_type}:0"
+        for attempt in range(self.MAX_EXIT_ATTEMPTS):
+            identity = f"exit:{entry_signal_id}:{exit_type}:{attempt}"
+            key = self._make_client_order_key(
+                ticker, "sell", None, stable_operation_identity=identity
+            )
+            status = (
+                await self.db.execute(select(Order.status).where(Order.client_order_key == key))
+            ).scalar_one_or_none()
+            if status not in self._FAILED_EXIT_STATUSES:
+                return identity
+        return identity
+
     async def _log_order_event(
         self,
         order_id: uuid.UUID,
