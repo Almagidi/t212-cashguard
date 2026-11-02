@@ -73,6 +73,32 @@ def _fail_on_external_network_access() -> Generator[None, None, None]:
     network_guard.ATTEMPTS.fail_if_any()
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "real_bar_gate: run with the real strategy-runner bar-age gate (default: neutralised)",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _neutral_bar_age_gate(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fixtures replay fixed historical bars; the wall-clock bar-age gate would make
+    results depend on whether the suite runs during US market hours. Tests that
+    exercise the gate itself opt back in with ``@pytest.mark.real_bar_gate``."""
+    if request.node.get_closest_marker("real_bar_gate") is not None:
+        return
+    from app.market_data.bar_freshness import BarFreshness
+    from app.services import strategy_runner
+
+    monkeypatch.setattr(
+        strategy_runner,
+        "assess_bar_freshness",
+        lambda *_a, **_k: BarFreshness(False, "neutralised_in_tests"),
+    )
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Fail the session if anything outside a test tried to leave this machine."""
     outside_tests = network_guard.ATTEMPTS.unattributed() + network_guard.ATTEMPTS.pending()

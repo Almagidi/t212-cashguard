@@ -55,6 +55,7 @@ from app.db.repositories.venue_config_repo import VenueConfigRepository
 from app.execution.engine import ExecutionEngine
 from app.execution.paper_engine import PaperExecutionError
 from app.execution.state_machine import ACTIVE_ORDER_STATUSES
+from app.market_data.bar_freshness import assess_bar_freshness
 from app.market_data.exchange_calendar import calendar_for_venue
 from app.risk.engine import RiskEngine, RiskViolation
 from app.risk.realized_pnl import realized_pnl_today
@@ -1017,6 +1018,17 @@ class StrategyRunner:
                     "runner.early_close_entry_blocked",
                     ticker=ticker,
                     venue="XNYS",
+                )
+                return 0, 0, 0
+            # Entries only (exits returned above): do not open risk on old bars.
+            freshness = assess_bar_freshness(session_times[-1], bar_interval_minutes)
+            if freshness.stale:
+                log.warning(
+                    "runner.entry_blocked_stale_bars",
+                    ticker=ticker,
+                    reason=freshness.reason,
+                    age_seconds=freshness.age_seconds,
+                    last_bar_time=session_times[-1].isoformat(),
                 )
                 return 0, 0, 0
 
