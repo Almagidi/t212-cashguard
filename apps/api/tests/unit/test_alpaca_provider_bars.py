@@ -178,3 +178,70 @@ async def test_cache_key_separates_limit_and_dates() -> None:
     assert again is small  # identical request is served from cache
     assert len(fake.requests) == 3
 
+
+
+# ── opening range: start-anchored ascending fetch ───────────────────────────
+
+def _session_series(day: date, *, one_minute: bool) -> list[dict[str, Any]]:
+    """Full regular session 09:30-16:00 ET (DST-correct) as raw bars."""
+    from zoneinfo import ZoneInfo
+
+    open_utc = datetime(day.year, day.month, day.day, 9, 30, tzinfo=ZoneInfo("America/New_York")).astimezone(UTC)
+    step, n = (1, 390) if one_minute else (5, 78)
+    return [_bar(open_utc + timedelta(minutes=step * i), str(100 + i)) for i in range(n)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("day", [date(2026, 7, 14), date(2026, 1, 14)])  # EDT and EST
+async def test_opening_range_bars_returned_even_when_requested_late_in_day(day: date) -> None:
+    fake = FakeAlpaca(_session_series(day, one_minute=True))
+    provider = _provider(fake)
+
+    bars = await provider.get_opening_range_bars("AAPL", session_date=day, orb_minutes=15)
+
+    assert len(bars) == 15
+    assert [b.close for b in bars] == [Decimal(100 + i) for i in range(15)]
+    assert all(a.timestamp < b.timestamp for a, b in zip(bars, bars[1:], strict=False))
+    assert fake.requests[0].url.params["sort"] == "asc"
+
+
+@pytest.mark.asyncio
+async def test_opening_range_with_five_minute_series_returns_only_window_bars() -> None:
+    day = date(2026, 7, 14)
+    fake = FakeAlpaca(_session_series(day, one_minute=False))
+    provider = _provider(fake)
+
+    bars = await provider.get_opening_range_bars("AAPL", session_date=day, orb_minutes=15)
+
+    # 09:30, 09:35, 09:40 inside the window; 09:45 is excluded (end-exclusive)
+    assert [b.close for b in bars] == [Decimal(100), Decimal(101), Decimal(102)]
+
+
+@pytest.mark.asyncio
+async def test_opening_range_survives_premarket_bars_before_the_open() -> None:
+    day = date(2026, 7, 14)
+    series = _session_series(day, one_minute=True)
+    first = datetime.fromisoformat(series[0]["t"].replace("Z", "+00:00"))
+    pre = [_bar(first - timedelta(minutes=m), "1") for m in range(60, 0, -1)]
+    provider = _provider(FakeAlpaca(pre + series))
+
+    bars = await provider.get_opening_range_bars("AAPL", session_date=day, orb_minutes=15)
+
+    assert [b.close for b in bars] == [Decimal(100 + i) for i in range(15)]
+
+
+@pytest.mark.asyncio
+async def test_asc_sort_is_start_anchored_and_cache_key_distinct() -> None:
+    fake = FakeAlpaca(_recent_series(100))
+    provider = _provider(fake)
+    today = datetime.now(UTC).date()
+    kw: dict[str, Any] = dict(from_date=today - timedelta(days=3), to_date=today, limit=5)
+
+    newest = await provider.get_bars("AAPL", **kw)
+    oldest = await provider.get_bars("AAPL", sort="asc", **kw)
+
+    assert [b.close for b in newest] == [Decimal(100 + i) for i in range(95, 100)]
+    assert [b.close for b in oldest] == [Decimal(100 + i) for i in range(5)]
+    assert len(fake.requests) == 2
+    with pytest.raises(ValueError):
+        await provider.get_bars("AAPL", sort="sideways")

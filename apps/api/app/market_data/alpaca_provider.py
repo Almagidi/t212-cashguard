@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -220,11 +221,19 @@ class AlpacaMarketDataProvider:
         from_date: date | None = None,
         to_date: date | None = None,
         limit: int = 50,
+        sort: str = "desc",
+        start: datetime | None = None,
+        end: datetime | None = None,
     ) -> list[AlpacaBar]:
         """
         Fetch aggregated bars (OHLCV), always returned oldest -> newest.
 
-        Returns the LATEST ``limit`` bars within the window: the request is
+        ``sort="desc"`` (default) is newest-N; ``sort="asc"`` is start-anchored
+        (the FIRST ``limit`` bars at/after the window start - use it for
+        "the opening window of a given day"). ``start`` / ``end`` (tz-aware
+        datetimes) override the date-based window with an exact UTC range.
+
+        With the default sort this returns the LATEST ``limit`` bars: the request is
         sorted descending (so the limit truncates the OLD end), pages are
         followed via ``next_page_token`` (page size capped at
         ``MAX_PAGE_SIZE``, at most ``MAX_PAGES`` pages), then the result is
@@ -234,13 +243,17 @@ class AlpacaMarketDataProvider:
 
         timespan options: "1Min", "5Min", "15Min", "1Hour", "1Day"
         """
-        # Always newest-first on the wire so ``limit`` truncates the OLD end,
-        # for default lookbacks and explicit [from, to] windows alike.
-        sort = "desc"
+        # Default newest-first on the wire so ``limit`` truncates the OLD end;
+        # "asc" is the explicit start-anchored mode.
+        if sort not in ("asc", "desc"):
+            raise ValueError(f"sort must be 'asc' or 'desc', got {sort!r}")
+        _fmt = "%Y-%m-%dT%H:%M:%SZ"
+        start_s = start.astimezone(timezone.utc).strftime(_fmt) if start else "-"
+        end_s = end.astimezone(timezone.utc).strftime(_fmt) if end else "-"
         cache_key = (
             f"bars:{ticker}:{multiplier}:{timespan}:"
             f"{from_date.isoformat() if from_date else '-'}:"
-            f"{to_date.isoformat() if to_date else '-'}:{limit}:{sort}"
+            f"{to_date.isoformat() if to_date else '-'}:{start_s}:{end_s}:{limit}:{sort}"
         )
         cached = self._cached(cache_key)
         if cached is not None:
@@ -260,8 +273,8 @@ class AlpacaMarketDataProvider:
         start_day = from_date or (
             today - timedelta(days=self._lookback_days(multiplier, timespan, limit))
         )
-        start_dt = start_day.isoformat() + "T00:00:00Z"
-        end_dt   = (to_date or today).isoformat() + "T23:59:59Z"
+        start_dt = start_s if start else start_day.isoformat() + "T00:00:00Z"
+        end_dt   = end_s if end else (to_date or today).isoformat() + "T23:59:59Z"
 
         base_params: dict[str, Any] = {
             "timeframe": timeframe,
@@ -286,7 +299,8 @@ class AlpacaMarketDataProvider:
             if not page_token:
                 break
         raw_bars = raw_bars[:limit]
-        raw_bars.reverse()  # newest-first -> callers always receive ascending order
+        if sort == "desc":
+            raw_bars.reverse()  # newest-first -> callers always receive ascending order
 
         bars: list[AlpacaBar] = []
         for b in raw_bars:
@@ -318,21 +332,23 @@ class AlpacaMarketDataProvider:
         Real-time — no delay.
         """
         target_date = session_date or date.today()
+        # 09:30 ET converted to UTC (DST-correct: 13:30Z summer, 14:30Z winter).
+        session_open_utc = datetime(
+            target_date.year, target_date.month, target_date.day, 9, 30,
+            tzinfo=ZoneInfo("America/New_York"),
+        ).astimezone(timezone.utc)
+        cutoff = session_open_utc + timedelta(minutes=orb_minutes)
+        # Start-anchored ascending fetch of exactly the opening window, so the
+        # result never depends on how late in the day it is requested.
         bars = await self.get_bars(
             ticker,
             multiplier=1,
             timespan="minute",
-            from_date=target_date,
-            to_date=target_date,
             limit=orb_minutes + 10,
+            sort="asc",
+            start=session_open_utc,
+            end=cutoff,
         )
-
-        # Filter to opening range: 09:30–09:45 ET = 13:30–13:45 UTC
-        session_open_utc = datetime(
-            target_date.year, target_date.month, target_date.day,
-            13, 30, tzinfo=timezone.utc
-        )
-        cutoff = session_open_utc + timedelta(minutes=orb_minutes)
         return [b for b in bars if session_open_utc <= b.timestamp < cutoff]
 
     # ── Latest quote ──────────────────────────────────────────────────────────
