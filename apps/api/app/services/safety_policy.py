@@ -224,7 +224,7 @@ async def _get_app_settings(db: Any) -> AppSettings | None:
 PROTECTIVE_EXIT_NOTICE_WINDOW = timedelta(minutes=15)
 
 
-async def report_protective_exit_blocked_once(
+async def record_protective_exit_blocked_once(
     db: Any,
     *,
     action: str,
@@ -233,13 +233,13 @@ async def report_protective_exit_blocked_once(
     actor: str,
     order: Order | None = None,
     metadata: dict[str, Any] | None = None,
-    alert_type: str | None = None,
 ) -> bool:
-    """Audit and alert a blocked or refused protective exit, once per (ticker, reason) per window.
+    """Audit (no alert) a blocked or refused protective exit, once per (ticker, reason) per window.
 
-    Returns True if it reported (the first time in the window), False if it was already
-    reported. The audit rows themselves are the memory, so this survives restarts and is
-    shared by every worker.
+    Returns True if it recorded (the first time in the window), False if it was already
+    recorded. The audit rows themselves are the memory, so this survives restarts and is
+    shared by every worker. Pair with ``send_protective_exit_blocked_alert``: they are split
+    so a caller holding a database lock can record under it and alert after releasing it.
     """
     ticker = str(ticker).strip().upper()
     cutoff = datetime.now(UTC) - PROTECTIVE_EXIT_NOTICE_WINDOW
@@ -262,6 +262,19 @@ async def report_protective_exit_blocked_once(
         order=order,
         metadata={**(metadata or {}), "ticker": ticker},
     )
+    return True
+
+
+async def send_protective_exit_blocked_alert(
+    db: Any,
+    *,
+    action: str,
+    ticker: str,
+    reason: str,
+    alert_type: str | None = None,
+) -> None:
+    """Raise the critical alert (in-app plus any external channels) for a blocked exit."""
+    ticker = str(ticker).strip().upper()
     from app.services.alert_service import AlertService
 
     await AlertService(db).send(
@@ -270,6 +283,37 @@ async def report_protective_exit_blocked_once(
         message=reason,
         severity="critical",
         payload={"ticker": ticker, "action": action},
+    )
+
+
+async def report_protective_exit_blocked_once(
+    db: Any,
+    *,
+    action: str,
+    ticker: str,
+    reason: str,
+    actor: str,
+    order: Order | None = None,
+    metadata: dict[str, Any] | None = None,
+    alert_type: str | None = None,
+) -> bool:
+    """Audit and alert a blocked or refused protective exit, once per (ticker, reason) per window.
+
+    Returns True if it reported (the first time in the window), False if it was already
+    reported.
+    """
+    if not await record_protective_exit_blocked_once(
+        db,
+        action=action,
+        ticker=ticker,
+        reason=reason,
+        actor=actor,
+        order=order,
+        metadata=metadata,
+    ):
+        return False
+    await send_protective_exit_blocked_alert(
+        db, action=action, ticker=ticker, reason=reason, alert_type=alert_type
     )
     return True
 

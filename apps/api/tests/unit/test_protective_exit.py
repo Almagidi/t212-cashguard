@@ -951,3 +951,110 @@ async def test_only_a_pending_sell_intent_can_be_resized(db) -> None:
     await engine.submit_protective_exit(sent)
     with pytest.raises(ValueError):
         await engine.resize_pending_exit(sent, Decimal("2"))
+
+
+# -- The exit lock is released on every path; alerts run outside it ------------------------
+
+
+async def _refusable_real_sell(db, monkeypatch, identity: str):
+    """A non-dry-run (lock-taking) sell the broker position cannot cover."""
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    broker = _DemoBroker("0")  # nothing held (the position row quantity is "0")
+    engine = ExecutionEngine(db, broker)
+    return engine, broker, await _demo_sell(engine, "5", identity)
+
+
+async def test_refusal_ends_the_transaction_before_alerting(db, monkeypatch) -> None:
+    engine, _broker, sell = await _refusable_real_sell(db, monkeypatch, "test:lock:refuse")
+    events: list[str] = []
+    real_commit = db.commit
+
+    async def commit() -> None:
+        events.append("commit")
+        await real_commit()
+
+    async def alert(*_args: Any, **_kwargs: Any) -> None:
+        events.append("alert")
+
+    monkeypatch.setattr(db, "commit", commit)
+    monkeypatch.setattr("app.execution.engine.send_protective_exit_blocked_alert", alert)
+
+    with pytest.raises(SafetyPolicyViolation):
+        await engine.submit_protective_exit(sell)
+
+    assert events == ["commit", "alert"]  # lock released first, alert (network I/O) after
+    assert len(await _audit_rows(db, "protective_exit_refused")) == 1
+
+
+async def test_alert_failure_never_masks_the_refusal(db, monkeypatch) -> None:
+    engine, _broker, sell = await _refusable_real_sell(db, monkeypatch, "test:lock:alertfail")
+
+    async def broken_alert(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("telegram is down")
+
+    monkeypatch.setattr("app.execution.engine.send_protective_exit_blocked_alert", broken_alert)
+
+    with pytest.raises(SafetyPolicyViolation) as refused:
+        await engine.submit_protective_exit(sell)
+
+    assert refused.value.decision_code == "protective_exit_refused"
+
+
+async def test_unexpected_failure_while_submitting_still_releases_the_lock(db, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    broker = _DemoBroker("10")
+    engine = ExecutionEngine(db, broker)
+    sell = await _demo_sell(engine, "5", "test:lock:boom")
+    commits: list[int] = []
+    real_commit = db.commit
+
+    async def commit() -> None:
+        commits.append(1)
+        await real_commit()
+
+    async def boom(*_args: Any, **_kwargs: Any) -> Order:
+        raise RuntimeError("dispatch exploded")
+
+    monkeypatch.setattr(db, "commit", commit)
+    monkeypatch.setattr(engine, "submit_order", boom)
+
+    with pytest.raises(RuntimeError):
+        await engine.submit_protective_exit(sell)
+
+    assert commits  # the transaction (and so the advisory lock) did not stay open
+
+
+async def test_lock_is_refused_when_the_dialect_cannot_be_determined(db, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    broker = _DemoBroker("10")
+    engine = ExecutionEngine(db, broker)
+    sell = await _demo_sell(engine, "5", "test:lock:nodialect")
+
+    def no_bind(*_args: Any, **_kwargs: Any):
+        raise RuntimeError("no bind")
+
+    monkeypatch.setattr(db, "get_bind", no_bind)
+
+    with pytest.raises(SafetyPolicyViolation) as refused:
+        await engine.submit_protective_exit(sell)
+
+    assert refused.value.decision_code == "protective_exit_refused"
+    assert broker.sent == []  # nothing is sent unserialized
+
+
+async def test_dry_run_exit_does_not_need_the_database_lock(db, monkeypatch) -> None:
+    await _settings(db, kill=True)
+    engine = ExecutionEngine(db, _Broker([_position("5")]))
+    sell = await engine.create_order_intent(
+        ticker="AAPL", side="sell", order_type="market", quantity=Decimal("5"), is_dry_run=True
+    )
+
+    def no_bind(*_args: Any, **_kwargs: Any):
+        raise RuntimeError("no bind")
+
+    monkeypatch.setattr(db, "get_bind", no_bind)
+
+    assert (await engine.submit_protective_exit(sell)).status == "filled"

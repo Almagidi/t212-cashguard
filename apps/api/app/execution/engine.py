@@ -90,7 +90,8 @@ from app.services.safety_policy import (
     audit_broker_request_attempt,
     audit_safety_decision,
     current_runtime_mode,
-    report_protective_exit_blocked_once,
+    record_protective_exit_blocked_once,
+    send_protective_exit_blocked_alert,
     require_order_submission_allowed,
     verify_protective_exit,
 )
@@ -708,23 +709,91 @@ class ExecutionEngine:
         # The position read, the in-flight read and the dispatch commit (after which this
         # order counts as in flight) form one critical section per ticker. Without it two
         # exits can both see the full held quantity and both sell it, leaving a short.
-        async with self._serialized_exit(ticker, is_dry_run=order.is_dry_run):
+        blocked: SafetyPolicyViolation | None = None
+        recorded = False
+        entered = False
+        try:
+            async with self._serialized_exit(ticker, is_dry_run=order.is_dry_run):
+                entered = True
+                try:
+                    authorization = await self._verified_protective_exit(order)
+                except SafetyPolicyViolation as exc:
+                    blocked = exc
+                    recorded = await self._record_protective_refusal(order, ticker, exc)
+                    # The refusal ends this critical section: end the transaction so the
+                    # database lock is not held while the caller goes on to other tickers.
+                    await self._release_exit_lock(order)
+                    raise
+                try:
+                    return await self.submit_order(order, protective_exit=authorization)
+                except BaseException:
+                    await self._release_exit_lock(order)
+                    raise
+        except SafetyPolicyViolation as exc:
+            if not entered:
+                # Refused before the check could run (the lock could not be taken safely).
+                blocked = exc
+                recorded = await self._record_protective_refusal(order, ticker, exc)
+            if blocked is exc and recorded:
+                # Alerting (Telegram, email, ...) is network I/O: only after the lock is gone,
+                # and a delivery failure never replaces the refusal being raised.
+                await self._alert_protective_refusal(ticker, exc)
+            raise
+
+    async def _record_protective_refusal(
+        self, order: Order, ticker: str, exc: SafetyPolicyViolation
+    ) -> bool:
+        """Audit a refusal (once per ticker and reason per window); never raises.
+
+        The caller retries every cycle: one audit row and alert per ticker and reason per
+        window, not one per cycle.
+        """
+        try:
+            return await record_protective_exit_blocked_once(
+                self.db,
+                action="protective_exit_refused",
+                ticker=ticker,
+                reason=exc.reason,
+                actor="execution_engine",
+                order=order,
+                metadata={"decision_code": exc.decision_code},
+            )
+        except Exception as audit_error:
+            log.error(
+                "execution.protective_refusal_audit_failed",
+                ticker=ticker,
+                error=str(audit_error),
+            )
+            return False
+
+    async def _alert_protective_refusal(self, ticker: str, exc: SafetyPolicyViolation) -> None:
+        try:
+            await send_protective_exit_blocked_alert(
+                self.db, action="protective_exit_refused", ticker=ticker, reason=exc.reason
+            )
+        except Exception as alert_error:
+            log.error(
+                "execution.protective_refusal_alert_failed",
+                ticker=ticker,
+                error=str(alert_error),
+            )
+
+    async def _release_exit_lock(self, order: Order) -> None:
+        """End the transaction so a transaction-scoped advisory lock is released.
+
+        Commits what the critical section already flushed (the audit row, order state) and
+        rolls back if the commit itself fails. Dry-run exits hold no database lock.
+        """
+        if order.is_dry_run:
+            return
+        try:
+            await self.db.commit()
+        except Exception as commit_error:
+            log.error("execution.exit_lock_release_commit_failed", error=str(commit_error))
             try:
-                authorization = await self._verified_protective_exit(order)
-            except SafetyPolicyViolation as exc:
-                # The caller retries every cycle: one audit row and alert per ticker and
-                # reason per window, not one per cycle.
-                await report_protective_exit_blocked_once(
-                    self.db,
-                    action="protective_exit_refused",
-                    ticker=ticker,
-                    reason=exc.reason,
-                    actor="execution_engine",
-                    order=order,
-                    metadata={"decision_code": exc.decision_code},
-                )
-                raise
-            return await self.submit_order(order, protective_exit=authorization)
+                await self.db.rollback()
+            except Exception as rollback_error:
+                log.error("execution.exit_lock_release_failed", error=str(rollback_error))
 
     @asynccontextmanager
     async def _serialized_exit(self, ticker: str, *, is_dry_run: bool) -> AsyncIterator[None]:
@@ -754,8 +823,14 @@ class ExecutionEngine:
     async def _advisory_lock(self, key: str) -> None:
         try:
             dialect = self.db.get_bind().dialect.name
-        except Exception:
-            return
+        except Exception as exc:
+            # Not knowing the dialect means not knowing whether a lock is needed: a real
+            # (non-dry-run) exit is refused rather than sent unserialized.
+            raise SafetyPolicyViolation(
+                "Protective exit refused: the database dialect could not be determined, so "
+                "the per-ticker exit lock cannot be taken.",
+                decision_code="protective_exit_refused",
+            ) from exc
         if dialect == "postgresql":
             await self.db.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key}
