@@ -422,6 +422,8 @@ class PositionMonitor:
                 summary["partial_exits"] += result.get("partial", 0)
                 summary["stops_hit"] += result.get("stops", 0)
                 summary["take_profits"] += result.get("tps", 0)
+                if result.get("failed"):
+                    summary["exits_failed"] = summary.get("exits_failed", 0) + result["failed"]
                 if result.get("unconfirmed"):
                     summary["exits_unconfirmed"] = (
                         summary.get("exits_unconfirmed", 0) + result["unconfirmed"]
@@ -636,6 +638,48 @@ class PositionMonitor:
                 order_id=str(order.id),
             )
             result["unconfirmed"] = 1
+            return result
+
+        if order.status in ExecutionEngine._FAILED_EXIT_STATUSES:
+            # The broker refused (or errored) the exit and nothing was sold: it is not an
+            # executed signal (a failed partial exit must not count as taken, or it is never
+            # retried) and there is no "stop hit" to announce. The next cycle retries it as
+            # the next attempt, up to MAX_EXIT_ATTEMPTS.
+            self.db.add(
+                AuditLog(
+                    action="position_exit_failed",
+                    entity_type="order",
+                    entity_id=str(order.id),
+                    actor="position_monitor",
+                    payload={
+                        "ticker": ticker,
+                        "exit_type": exit_signal.signal_type,
+                        "qty": float(sell_qty),
+                        "order_status": order.status,
+                    },
+                    occurred_at=datetime.now(UTC),
+                )
+            )
+            log.error(
+                "position_monitor.exit_failed",
+                ticker=ticker,
+                exit_type=exit_signal.signal_type,
+                order_id=str(order.id),
+                order_status=order.status,
+            )
+            await report_protective_exit_blocked_once(
+                self.db,
+                action="protective_exit_failed",
+                ticker=ticker,
+                reason=(
+                    f"The {exit_signal.signal_type} exit for {ticker} was {order.status} and "
+                    "nothing was sold; it is retried next cycle."
+                ),
+                actor="position_monitor",
+                order=order,
+                metadata={"order_status": order.status},
+            )
+            result["failed"] = 1
             return result
 
         # Record the exit signal

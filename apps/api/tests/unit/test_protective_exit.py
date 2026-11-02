@@ -599,7 +599,8 @@ async def test_rejected_exit_is_retried_with_a_new_attempt(db, monkeypatch) -> N
     broker = _ScriptedBroker("10", ["REJECTED", "FILLED"])
 
     first = await _run_exit(db, monkeypatch, broker, "stop", "10")
-    assert first["exits_submitted"] == 1  # the order was recorded (as rejected)
+    assert first["exits_submitted"] == 0  # the broker rejected it: nothing was sold
+    assert first["exits_failed"] == 1
     assert [o.status for o in await _sells(db)] == ["rejected"]
 
     second = await _run_exit(db, monkeypatch, broker, "stop", "10")
@@ -1058,3 +1059,48 @@ async def test_dry_run_exit_does_not_need_the_database_lock(db, monkeypatch) -> 
     monkeypatch.setattr(db, "get_bind", no_bind)
 
     assert (await engine.submit_protective_exit(sell)).status == "filled"
+
+
+# -- A failed exit is not recorded as executed and is retried ------------------------------
+
+
+async def _signals(db, signal_type: str) -> list[Signal]:
+    rows = await db.execute(select(Signal).where(Signal.signal_type == signal_type))
+    return list(rows.scalars().all())
+
+
+async def test_rejected_partial_exit_is_not_marked_done_and_is_retried(db, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    await _held_long_with_entry_signal(db)
+    broker = _ScriptedBroker("10", ["REJECTED", "FILLED"])
+
+    first = await _run_exit(db, monkeypatch, broker, "partial_exit", "4")
+
+    assert first["partial_exits"] == 0
+    assert first["exits_submitted"] == 0
+    assert await _signals(db, "partial_exit") == []  # not "executed": partial_done stays False
+    assert await _alerts(db, "stop_hit") == []
+    assert len(await _audit_rows(db, "position_exit_failed")) == 1
+
+    second = await _run_exit(db, monkeypatch, broker, "partial_exit", "4")
+
+    assert second["partial_exits"] == 1
+    assert broker.sent == [Decimal("4"), Decimal("4")]  # retried
+    executed = await _signals(db, "partial_exit")
+    assert len(executed) == 1
+    assert executed[0].status == "executed"
+
+
+async def test_rejected_stop_sends_no_stop_hit_alert_or_executed_signal(db, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    await _held_long_with_entry_signal(db)
+    broker = _ScriptedBroker("10", ["REJECTED"])
+
+    result = await _run_exit(db, monkeypatch, broker, "stop", "10")
+
+    assert result["stops_hit"] == 0
+    assert await _signals(db, "stop") == []
+    assert await _alerts(db, "stop_hit") == []
+    assert len(await _alerts(db, "protective_exit_failed")) == 1
