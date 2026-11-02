@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.market_data.alpaca_provider import OpeningRangeBars
 from app.market_data.validated_provider import ValidatedMarketDataProvider
 from app.services.feed_health import get_feed_health_snapshot, reset_feed_health
 
@@ -136,3 +137,20 @@ async def test_validated_provider_marks_symbol_degraded_on_large_divergence():
     assert provider.is_trade_safe("NVDA") is False
     assert snapshot["status"] == "degraded"
     assert snapshot["symbols"][0]["divergence_pct"] is not None
+
+
+@pytest.mark.asyncio
+async def test_opening_range_polygon_fallback_is_flagged_incomplete():
+    reset_feed_health()
+    now = datetime.now(UTC)
+    primary = FakePrimaryProvider()  # no opening-range bars from the primary
+    validator = FakeValidatorProvider(
+        bars=[FakeBar(now, Decimal("99"), Decimal("101"), Decimal("98"), Decimal("100"), Decimal("1"))],
+    )
+
+    async with ValidatedMarketDataProvider(primary=primary, validator=validator) as provider:
+        bars = await provider.get_opening_range_bars("AAPL")
+
+    assert len(bars) == 1
+    assert isinstance(bars, OpeningRangeBars)
+    assert bars.complete is False

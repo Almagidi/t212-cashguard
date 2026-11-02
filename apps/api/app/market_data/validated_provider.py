@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from app.market_data.alpaca_provider import AlpacaMarketDataProvider
+from app.market_data.alpaca_provider import AlpacaMarketDataProvider, OpeningRangeBars
 from app.market_data.polygon_provider import PolygonMarketDataProvider
 from app.services.feed_health import is_symbol_trade_safe, record_feed_health
 
@@ -160,7 +160,15 @@ class ValidatedMarketDataProvider:
                 primary_timestamp=None,
                 validator_timestamp=getattr(latest, "timestamp", None),
             )
-            return validator_bars
+            # Delayed Polygon data can never prove the window is complete: flag it
+            # so callers do not derive a final opening range from it.
+            return OpeningRangeBars(
+                validator_bars,
+                complete=False,
+                expected_bars=getattr(validator_bars, "expected_bars", 0),
+                min_bars=getattr(validator_bars, "min_bars", 0),
+                window_end=getattr(validator_bars, "window_end", None),
+            )
 
         raise primary_error or RuntimeError("No opening-range bars available")
 
