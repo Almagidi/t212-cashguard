@@ -400,6 +400,15 @@ class RiskEngine:
                 "correlation_block",
             )
 
+    @staticmethod
+    def _mock_market_data() -> bool:
+        from app.core.config import settings as cfg
+
+        return (
+            cfg.APP_MODE != "live"
+            and cfg.MARKET_DATA_PROVIDER.strip().lower() == "mock"
+        )
+
     async def check_market_conditions(
         self,
         *,
@@ -423,6 +432,26 @@ class RiskEngine:
                 symbol_detail = str(symbol.get("detail") or "")
                 symbol_delayed = symbol.get("is_delayed")
                 break
+
+        # Unknown-symbol rule (entries only; this method is never on the exit path):
+        #   * a real data provider validates every symbol it serves, so a symbol
+        #     with NO feed-health record was never validated -> fail closed,
+        #     consistent with is_symbol_trade_safe(purpose="entry");
+        #   * the mock provider (APP_MODE != live and MARKET_DATA_PROVIDER ==
+        #     "mock") records no health at all, so it is exempt.
+        if symbol_status is None and not self._mock_market_data():
+            msg = (
+                f"No feed-health record for {ticker}; market data was never validated, "
+                "so new entries are blocked."
+            )
+            await self._log(
+                "feed_symbol_block",
+                msg,
+                ticker=ticker,
+                signal_id=signal_id,
+                payload={"feed_status": feed_status, "symbol_status": "unknown"},
+            )
+            raise RiskViolation(msg, "feed_symbol_block")
 
         if feed_status in {"stale", "error"}:
             msg = f"Primary market data is {feed_status}; new entries are blocked until feed health recovers."

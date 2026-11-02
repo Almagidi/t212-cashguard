@@ -459,17 +459,33 @@ class StrategyRunner:
                         to_date=date.today(),
                         limit=max_bars * 3,
                     )
-                    with suppress(Exception):
+                    # ENTRY fails closed: an unobtainable quote or a feed-health
+                    # check that cannot run blocks new entries (entry-only block,
+                    # protective exits on an open position still see the bars).
+                    try:
                         latest_quote = await md.get_quote(ticker)
-                    if (
-                        hasattr(md, "is_trade_safe")
-                        and latest_quote is not None
-                        and not md.is_trade_safe(ticker, purpose="entry")
-                    ):
-                        # Entry-only block: protective exits on an open position
-                        # must still see the bars, so do not discard the context.
-                        log.warning("runner.feed_unhealthy", ticker=ticker)
-                        self._entry_blocks[ticker] = "feed_unhealthy"
+                    except Exception as exc:
+                        log.warning(
+                            "runner.quote_unavailable", ticker=ticker, error=str(exc)
+                        )
+                        self._entry_blocks[ticker] = "quote_unavailable"
+                    else:
+                        if latest_quote is None:
+                            self._entry_blocks[ticker] = "quote_unavailable"
+                        elif hasattr(md, "is_trade_safe"):
+                            try:
+                                trade_safe = bool(md.is_trade_safe(ticker, purpose="entry"))
+                            except Exception as exc:
+                                log.warning(
+                                    "runner.feed_health_check_failed",
+                                    ticker=ticker,
+                                    error=str(exc),
+                                )
+                                self._entry_blocks[ticker] = "feed_health_check_failed"
+                            else:
+                                if not trade_safe:
+                                    log.warning("runner.feed_unhealthy", ticker=ticker)
+                                    self._entry_blocks[ticker] = "feed_unhealthy"
             else:
                 # Sync mock provider
                 raw_bars = provider.get_ohlcv(
