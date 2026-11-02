@@ -564,11 +564,21 @@ def run_portfolio_walk_forward(
     oos = _stitched_summary(windows, risk_free, benchmark_keys)
     holdout_summary = _stitched_summary([holdout], risk_free, benchmark_keys)
     oos_returns = [r for w in windows if w.valid for r in w.daily_returns]
-    if n_trials > 1 and trials_variance <= 0 and len(oos_returns) >= 2:
-        # A single-entry grid has no cross-trial Sharpe variance, which would zero SR0 and make
-        # ``extra_trials`` meaningless.  Fall back to the null sampling variance of a per-period
-        # Sharpe estimate, 1 / (T - 1), so declared extra trials still raise the bar.
-        trials_variance = 1.0 / (len(oos_returns) - 1)
+    grid_variance = trials_variance
+    variance_floor = None
+    if n_trials > 1 and len(oos_returns) >= 2:
+        # Trial-variance floor: V = max(grid variance, 1 / (T - 1)), T = stitched out-of-sample
+        # observations.  1 / (T - 1) is the sampling variance of a per-period Sharpe estimate
+        # for a skill-less strategy (SR = 0, normal returns).  The floor assumes the untried
+        # ideas counted by ``extra_trials``, and the grid entries themselves, are at least as
+        # dispersed as pure estimation noise over T observations.  It stops a grid of
+        # near-duplicate entries (tiny measured variance) or a single-entry grid with
+        # ``extra_trials`` (zero measured variance) from buying a weaker penalty than noise
+        # alone implies.  It is an assumption, not a measurement: truly independent ideas may
+        # be more dispersed (the penalty is then too small) and the grid variance is measured
+        # on the train period, not out of sample.
+        variance_floor = 1.0 / (len(oos_returns) - 1)
+        trials_variance = max(grid_variance, variance_floor)
     deflated = {
         "oos": deflated_sharpe_for_returns(
             oos_returns,
@@ -597,6 +607,9 @@ def run_portfolio_walk_forward(
                 r for w in evaluated for r in w.benchmark_daily_returns.get(BENCHMARK_BROAD_INDEX, [])
             ],
         )
+    for part in deflated.values():
+        part["trials_sr_variance_grid"] = grid_variance
+        part["trials_sr_variance_floor"] = variance_floor
     cost_description = cost_model.describe(tickers=universe)
     reasons, warnings = evaluate_gate(
         config=config,

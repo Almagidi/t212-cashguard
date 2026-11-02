@@ -52,9 +52,16 @@ research pass. Code: `apps/api/app/backtest/portfolio_*.py`, route `POST /v1/bac
   test windows, parameters picked from your grid on train Sharpe only and then frozen, a final
   holdout never used for selection, a minimum rebalance count per window, and the deflated Sharpe
   ratio with the number of trials recorded (grid size plus `extra_trials` for ideas already
-  tried). With a single-entry grid there is no cross-trial variance, so `extra_trials` falls back
-  to the null sampling variance of a Sharpe estimate, 1 / (T - 1), instead of silently
-  doing nothing.
+  tried). The trial-Sharpe variance fed to the deflated Sharpe is
+  `max(grid variance, 1 / (T - 1))` whenever there is more than one trial, where the grid
+  variance is the sample variance of the per-period train Sharpe across the grid on the final
+  pre-holdout fit and T is the number of stitched out-of-sample observations. `1 / (T - 1)` is
+  the sampling variance of a per-period Sharpe estimate for a skill-less strategy with normal
+  returns. The floor assumes your trials (grid entries and `extra_trials`) are at least as
+  dispersed as estimation noise; it stops near-duplicate grid entries or a one-entry grid with
+  `extra_trials` from earning a weaker penalty than noise implies. It is an assumption, not a
+  measurement: independent ideas may be more dispersed, so the penalty can still be too small.
+  Both inputs are reported (`trials_sr_variance_grid`, `trials_sr_variance_floor`).
 - **The gate for 'promising' and 'strong'.** Server-side floors in
   `app/backtest/gate_floors.py` that a request can raise but not lower (a setting below a floor
   is itself a gate failure, and the enforced value never drops below the floor):
