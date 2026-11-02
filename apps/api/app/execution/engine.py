@@ -85,6 +85,7 @@ from app.services.execution_quality import (
 from app.services.safety_policy import (
     ProtectiveExitAuthorization,
     SafetyPolicyViolation,
+    _issue_protective_exit_authorization,
     audit_broker_request_attempt,
     audit_safety_decision,
     current_runtime_mode,
@@ -624,8 +625,8 @@ class ExecutionEngine:
             ),
             Decimal("0"),
         )
-        authorization = ProtectiveExitAuthorization(
-            ticker=ticker, held_quantity=held, in_flight_sell_quantity=in_flight
+        authorization = _issue_protective_exit_authorization(
+            order, held_quantity=held, in_flight_sell_quantity=in_flight
         )
         verify_protective_exit(order, authorization)
         return authorization
@@ -707,7 +708,8 @@ class ExecutionEngine:
         Submit order to broker. Updates order status throughout.
         For dry-run orders, simulates success without contacting broker.
 
-        ``protective_exit`` is produced only by ``submit_protective_exit``; see there.
+        ``protective_exit`` is accepted only if ``submit_protective_exit`` issued it for this
+        very order (see ``verify_protective_exit``); a hand-built one is refused.
         """
         if order.status != "pending_intent":
             raise ValueError(f"Cannot submit order in status {order.status!r}")
@@ -826,6 +828,9 @@ class ExecutionEngine:
             from app.services.live_dispatch import authorize_dispatch
 
             try:
+                if protective_exit is not None:
+                    # Still the engine's own, unexpired authorization for this very order.
+                    verify_protective_exit(order, protective_exit)
                 async with async_sessionmaker(self.db.bind, expire_on_commit=False)() as check:
                     await authorize_dispatch(
                         check,

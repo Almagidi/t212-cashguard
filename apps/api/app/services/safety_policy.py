@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import secrets
+import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal, cast
 
@@ -30,33 +32,86 @@ class SafetyPolicyViolation(Exception):
         super().__init__(reason)
 
 
+# An authorization is a short-lived permit: it is valid from the fresh position read that
+# produced it until the order is sent, which is seconds. A permit older than this was not
+# produced by the read that justified it.
+PROTECTIVE_EXIT_AUTHORIZATION_TTL = timedelta(seconds=120)
+
+
 @dataclass(frozen=True)
 class ProtectiveExitAuthorization:
     """Evidence that a sell only reduces a long position that is really held.
 
-    Built by ``ExecutionEngine.submit_protective_exit`` from a fresh broker position read.
-    It is the only thing that lets a sell through the kill-switch check, and the policy
-    re-checks it against the order itself. It never relaxes any other gate.
+    Only ``ExecutionEngine`` creates one that counts, through
+    ``_issue_protective_exit_authorization``, from a fresh broker position read. Every
+    issued authorization is recorded in a process-private registry under a random
+    ``nonce``; ``verify_protective_exit`` accepts an object only if it is identical to the
+    recorded one, so an instance built by any other code (a made-up ``held_quantity``, a
+    copied or altered real one) is refused. It is bound to one order (id, ticker,
+    quantity) and expires after ``PROTECTIVE_EXIT_AUTHORIZATION_TTL``. It never relaxes
+    any gate but the kill switch.
     """
 
     ticker: str
     held_quantity: Decimal
     in_flight_sell_quantity: Decimal = Decimal("0")
+    order_id: uuid.UUID | None = None
+    quantity: Decimal = Decimal("0")
+    issued_at: datetime = datetime.min.replace(tzinfo=UTC)
+    nonce: str = ""
 
 
-def verify_protective_exit(order: Order, auth: ProtectiveExitAuthorization) -> None:
-    """Refuse anything that is not a sell reducing a held long position."""
+_ISSUED_PROTECTIVE_EXITS: dict[str, ProtectiveExitAuthorization] = {}
+
+
+def _issue_protective_exit_authorization(
+    order: Order,
+    *,
+    held_quantity: Decimal,
+    in_flight_sell_quantity: Decimal,
+    now: datetime | None = None,
+) -> ProtectiveExitAuthorization:
+    """Mint and record an authorization. For ``ExecutionEngine`` only."""
+    issued_at = now or datetime.now(UTC)
+    for nonce, issued in list(_ISSUED_PROTECTIVE_EXITS.items()):
+        if issued_at - issued.issued_at > PROTECTIVE_EXIT_AUTHORIZATION_TTL:
+            del _ISSUED_PROTECTIVE_EXITS[nonce]
+    authorization = ProtectiveExitAuthorization(
+        ticker=str(order.ticker).strip().upper(),
+        held_quantity=held_quantity,
+        in_flight_sell_quantity=in_flight_sell_quantity,
+        order_id=order.id,
+        quantity=Decimal(str(order.quantity)),
+        issued_at=issued_at,
+        nonce=secrets.token_urlsafe(24),
+    )
+    _ISSUED_PROTECTIVE_EXITS[authorization.nonce] = authorization
+    return authorization
+
+
+def verify_protective_exit(
+    order: Order, auth: ProtectiveExitAuthorization, *, now: datetime | None = None
+) -> None:
+    """Refuse anything that is not a sell reducing a held long position, proven by the engine."""
 
     def refuse(why: str) -> SafetyPolicyViolation:
         return SafetyPolicyViolation(
             f"Protective exit refused: {why}.", decision_code="protective_exit_refused"
         )
 
+    if _ISSUED_PROTECTIVE_EXITS.get(auth.nonce) != auth or not auth.nonce:
+        raise refuse("the authorization was not issued by the execution engine")
+    if (now or datetime.now(UTC)) - auth.issued_at > PROTECTIVE_EXIT_AUTHORIZATION_TTL:
+        raise refuse("the authorization has expired; the position must be read again")
+    if auth.order_id != order.id:
+        raise refuse("the authorization belongs to a different order")
     if order.side != "sell":
         raise refuse("only a sell can be a protective exit")
     if str(order.ticker).strip().upper() != auth.ticker:
         raise refuse("order ticker does not match the verified position")
     quantity = Decimal(str(order.quantity))
+    if quantity != auth.quantity:
+        raise refuse("order quantity changed after the position was verified")
     if quantity <= 0 or auth.held_quantity <= 0:
         raise refuse("there is no held long quantity to reduce")
     if quantity + auth.in_flight_sell_quantity > auth.held_quantity:

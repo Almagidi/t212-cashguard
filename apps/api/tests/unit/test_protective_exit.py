@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -22,6 +24,7 @@ from app.services.safety_policy import (
     ProtectiveExitAuthorization,
     SafetyPolicyViolation,
     require_order_submission_allowed,
+    verify_protective_exit,
 )
 from app.strategies.indicators import Bar
 
@@ -305,6 +308,7 @@ async def test_policy_rechecks_the_authorization_against_the_order(db) -> None:
     for wrong in (
         ProtectiveExitAuthorization(ticker="MSFT", held_quantity=Decimal("100")),
         ProtectiveExitAuthorization(ticker="AAPL", held_quantity=Decimal("1")),
+        ProtectiveExitAuthorization(ticker="AAPL", held_quantity=Decimal("100")),
     ):
         with pytest.raises(SafetyPolicyViolation):
             await require_order_submission_allowed(
@@ -474,3 +478,50 @@ async def test_monitor_does_not_issue_a_second_exit_while_a_sell_is_active(
     assert result["errors"] == []
     assert broker.sent == []
     assert len(await _sells(db)) == 1
+
+
+# -- Authorization cannot be forged or replayed --------------------------------------------
+
+
+async def test_forged_authorization_with_huge_held_quantity_is_refused(db, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    broker = _DemoBroker("1")
+    engine = ExecutionEngine(db, broker)
+    sell = await _demo_sell(engine, "500", "test:forged")
+    forged = ProtectiveExitAuthorization(ticker="AAPL", held_quantity=Decimal("1000000"))
+
+    with pytest.raises(SafetyPolicyViolation) as refused:
+        await engine.submit_order(sell, protective_exit=forged)
+
+    assert refused.value.decision_code == "protective_exit_refused"
+    assert broker.sent == []
+    assert sell.status == "pending_intent"
+
+
+async def test_engine_minted_authorization_is_bound_to_order_quantity_and_time(
+    db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    engine = ExecutionEngine(db, _DemoBroker("10"))
+    sell = await _demo_sell(engine, "4", "test:bound:a")
+    other = await _demo_sell(engine, "4", "test:bound:b")
+    minted = await engine._verified_protective_exit(sell)
+    from app.services.safety_policy import PROTECTIVE_EXIT_AUTHORIZATION_TTL
+
+    verify_protective_exit(sell, minted)  # the real thing verifies
+
+    with pytest.raises(SafetyPolicyViolation):  # another order of the same size and ticker
+        verify_protective_exit(other, minted)
+    with pytest.raises(SafetyPolicyViolation):  # tampered copy of a real authorization
+        verify_protective_exit(sell, dataclasses.replace(minted, held_quantity=Decimal("999")))
+    sell.quantity = Decimal("5")
+    with pytest.raises(SafetyPolicyViolation):  # order changed after the verification
+        verify_protective_exit(sell, minted)
+    sell.quantity = Decimal("4")
+    later = minted.issued_at + PROTECTIVE_EXIT_AUTHORIZATION_TTL + timedelta(seconds=1)
+    with pytest.raises(SafetyPolicyViolation) as expired:  # stale
+        verify_protective_exit(sell, minted, now=later)
+    assert "expired" in expired.value.reason
+
