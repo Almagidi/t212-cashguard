@@ -23,6 +23,7 @@ from app.backtest.gate_floors import (
     MIN_REBALANCES_PER_WINDOW,
     MIN_VALID_WINDOWS,
     config_floor_violations,
+    benchmark_sanity_text,
     cost_gate_refusal,
 )
 from app.backtest.portfolio_costs import TransactionCostModel
@@ -1078,6 +1079,12 @@ def _interpret_portfolio_results(result: Any, walk_forward: Any = None) -> dict[
         else None,
         "validated_evidence": validated_evidence,
     }
+    sanity = getattr(walk_forward, "benchmark_sanity", None) if walk_forward is not None else None
+    validation["benchmark_sanity"] = sanity
+    if sanity is not None:
+        warnings.append(
+            "Benchmark sanity: " + benchmark_sanity_text(sanity) + f"; passes: {sanity['passes']}."
+        )
     claimed = next(
         (v for v in (in_sample_verdict, validated_verdict) if v in POSITIVE_VERDICTS), None
     )
@@ -1101,6 +1108,14 @@ def _interpret_portfolio_results(result: Any, walk_forward: Any = None) -> dict[
             refusal = cost_reason
         elif BENCHMARK_BROAD_INDEX not in walk_forward.benchmarks_evaluated:
             refusal = "no broad-index benchmark series was supplied; best verdict is 'unvalidated'"
+        elif sanity is None or not sanity.get("passes"):
+            # Defence in depth: the harness folds these into gate_reasons, but a missing or
+            # failing sanity record must never let a caller-chosen benchmark anchor a verdict.
+            refusal = (
+                "; ".join(sanity["reasons"])
+                if sanity and sanity.get("reasons")
+                else "the broad-index benchmark was not sanity-checked"
+            )
         elif validated_verdict != in_sample_verdict:
             refusal = (
                 f"the in-sample verdict '{in_sample_verdict}' (strategy_params, full period) and "

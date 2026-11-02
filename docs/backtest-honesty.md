@@ -68,10 +68,20 @@ research pass. Code: `apps/api/app/backtest/portfolio_*.py`, route `POST /v1/bac
   | Deflated Sharpe probability (out-of-sample) | at least 0.95, mandatory |
   | Windows beating each gated benchmark | more than half of the valid windows |
   | Round-trip cost | at least 10 bps, not zero-cost, not the legacy path |
+  | Broad-index benchmark sanity | ticker not in the universe, annualised volatility at least 8%, correlation with the universe equal-weight returns at least 0.5 |
 
   On top of the floors the stitched out-of-sample return and Sharpe and the holdout return and
   Sharpe must each beat every gated costed benchmark, and a broad-index series must have been
   supplied. Without a broad index the best verdict is `unvalidated`.
+- **The broad index is sanity-checked.** `benchmark_ticker` is free-form, so a cash or T-bill
+  ETF (beaten trivially) or a universe member would otherwise be a weak "index". Over the
+  evaluated period (valid out-of-sample windows plus the holdout) the harness computes the
+  benchmark's annualised volatility and its correlation with the universe equal-weight daily
+  returns. The gate fails, and the verdict is `unvalidated`, if the ticker is in the universe,
+  volatility is below 8% or correlation is below 0.5. The ticker and both statistics are in
+  `benchmark_sanity` (walk-forward result and `validation.benchmark_sanity`) and in the
+  interpretation warnings. Passing proves the benchmark moves with the universe, not that it is
+  the right index for your question.
 - **Two verdicts, shown together.** `in_sample_verdict` comes from the full-period run with
   `strategy_params`. `validated_verdict` classifies the walk-forward's out-of-sample and holdout
   evidence (the weaker of the two on Sharpe and return, the deeper drawdown) with the same

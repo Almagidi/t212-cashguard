@@ -143,6 +143,14 @@ def _fake_wf(
         oos=dict(evidence),
         holdout_summary=dict(evidence),
         benchmarks_evaluated=list(benchmarks),
+        benchmark_sanity={
+            "ticker": "SPY",
+            "in_universe": False,
+            "annualised_volatility": 0.16,
+            "correlation_with_universe": 0.9,
+            "passes": True,
+            "reasons": [],
+        },
     )
 
 

@@ -36,6 +36,7 @@ from app.backtest.gate_floors import (
     MIN_DEFLATED_SHARPE_PROBABILITY,
     MIN_VALID_WINDOWS,
     MIN_WINDOW_WIN_FRACTION,
+    benchmark_sanity,
     config_floor_violations,
     cost_gate_refusal,
     effective_deflated_sharpe_threshold,
@@ -242,6 +243,7 @@ class WalkForwardResult:
     passes_gate: bool
     gate_reasons: list[str]
     gate_warnings: list[str]
+    benchmark_sanity: dict[str, Any] | None = None
 
 
 def _train_sharpe(returns: list[float], risk_free: float) -> float | None:
@@ -322,6 +324,7 @@ def evaluate_gate(
     deflated: dict[str, Any],
     benchmark_keys: list[str],
     cost_model: dict[str, Any],
+    sanity: dict[str, Any] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Gate reasons (any reason fails the gate) and warnings.
 
@@ -355,6 +358,11 @@ def evaluate_gate(
         reasons.append(
             "no broad-index benchmark series supplied: a positive verdict needs a broad-index comparison"
         )
+    if BENCHMARK_BROAD_INDEX in benchmark_keys:
+        if sanity is None:
+            reasons.append("broad-index benchmark could not be sanity-checked")
+        else:
+            reasons.extend(sanity["reasons"])
     valid_windows = [w for w in windows if w.valid]
     for key in benchmark_keys:
         oos_bench = oos["benchmarks"][key]
@@ -576,6 +584,19 @@ def run_portfolio_walk_forward(
         ),
     }
 
+    sanity = None
+    if BENCHMARK_BROAD_INDEX in benchmark_keys:
+        evaluated = [w for w in windows if w.valid] + [holdout]
+        sanity = benchmark_sanity(
+            benchmark_ticker=benchmark_ticker,
+            universe=universe,
+            universe_returns=[
+                r for w in evaluated for r in w.benchmark_daily_returns.get(BENCHMARK_UNIVERSE_EW, [])
+            ],
+            benchmark_returns=[
+                r for w in evaluated for r in w.benchmark_daily_returns.get(BENCHMARK_BROAD_INDEX, [])
+            ],
+        )
     cost_description = cost_model.describe(tickers=universe)
     reasons, warnings = evaluate_gate(
         config=config,
@@ -586,6 +607,7 @@ def run_portfolio_walk_forward(
         deflated=deflated,
         benchmark_keys=benchmark_keys,
         cost_model=cost_description,
+        sanity=sanity,
     )
     passes = not reasons
 
@@ -605,6 +627,7 @@ def run_portfolio_walk_forward(
         passes_gate=passes,
         gate_reasons=reasons,
         gate_warnings=warnings,
+        benchmark_sanity=sanity,
     )
 
 
@@ -669,4 +692,5 @@ def serialize_walk_forward(result: WalkForwardResult) -> dict[str, Any]:
         "passes_gate": result.passes_gate,
         "gate_reasons": result.gate_reasons,
         "gate_warnings": result.gate_warnings,
+        "benchmark_sanity": result.benchmark_sanity,
     }
