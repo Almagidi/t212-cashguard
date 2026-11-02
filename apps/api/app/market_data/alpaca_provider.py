@@ -158,6 +158,9 @@ class AlpacaMarketDataProvider:
     # a bounded stall beats hammering a rate-limited API.
     MAX_TOTAL_SLEEP_SECONDS = 45.0
 
+    # Injectable wall clock (tz-aware UTC) so tests are deterministic.
+    _now = staticmethod(lambda: datetime.now(timezone.utc))
+
     # Injectable so tests never really sleep / are deterministic.
     _sleep = staticmethod(asyncio.sleep)
     # Returns a float in [0, 1); used for equal-jitter on computed backoff.
@@ -359,7 +362,10 @@ class AlpacaMarketDataProvider:
         Used by ORB strategy to compute opening range high/low.
         Real-time — no delay.
         """
-        target_date = session_date or date.today()
+        # The exchange session date is the America/New_York calendar date, NOT the
+        # server-local date (which differs from ET after 20:00 ET when the server
+        # runs in UTC, and around midnight on any non-ET host).
+        target_date = session_date or self._now().astimezone(ZoneInfo("America/New_York")).date()
         # 09:30 ET converted to UTC (DST-correct: 13:30Z summer, 14:30Z winter).
         session_open_utc = datetime(
             target_date.year, target_date.month, target_date.day, 9, 30,

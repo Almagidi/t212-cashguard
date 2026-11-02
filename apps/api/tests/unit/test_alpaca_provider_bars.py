@@ -281,3 +281,36 @@ async def test_no_truncation_warning_when_limit_reached_on_last_page() -> None:
         await provider.get_bars("AAPL", from_date=today - timedelta(days=3), to_date=today, limit=30)
 
     assert not [e for e in logs if e["event"] == "alpaca.bars_pagination_truncated"]
+
+
+# ── opening range: session date is the America/New_York date ────────────────
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("now_utc", "expected_et_day"),
+    [
+        # 19:59 ET (EDT) Jul 14 == 23:59Z Jul 14 -> still Jul 14
+        (datetime(2026, 7, 14, 23, 59, tzinfo=UTC), date(2026, 7, 14)),
+        # 20:00 ET Jul 14 == 00:00Z Jul 15: UTC date has rolled, ET date has not
+        (datetime(2026, 7, 15, 0, 0, tzinfo=UTC), date(2026, 7, 14)),
+        (datetime(2026, 7, 15, 3, 59, tzinfo=UTC), date(2026, 7, 14)),
+        # 00:00 ET Jul 15 == 04:00Z -> ET date rolls
+        (datetime(2026, 7, 15, 4, 0, tzinfo=UTC), date(2026, 7, 15)),
+        # winter: 19:00 EST Jan 14 == 00:00Z Jan 15
+        (datetime(2026, 1, 15, 0, 0, tzinfo=UTC), date(2026, 1, 14)),
+    ],
+)
+async def test_opening_range_default_date_is_new_york_date(now_utc, expected_et_day) -> None:
+    fake = FakeAlpaca([])
+    provider = _provider(fake)
+    provider._now = lambda: now_utc
+
+    await provider.get_opening_range_bars("AAPL", orb_minutes=15)
+
+    from zoneinfo import ZoneInfo
+
+    open_utc = datetime(
+        expected_et_day.year, expected_et_day.month, expected_et_day.day, 9, 30,
+        tzinfo=ZoneInfo("America/New_York"),
+    ).astimezone(UTC)
+    assert fake.requests[0].url.params["start"] == open_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
