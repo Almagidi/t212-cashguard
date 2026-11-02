@@ -10,11 +10,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
-from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from app.backtest.data_contract import validate_bar_series
+from app.backtest.portfolio_metrics import (
+    max_drawdown_pct_from_equity,
+    returns_from_equity,
+    sharpe_ratio,
+    sortino_ratio,
+)
 from app.execution.paper_policy import evaluate_paper_fill
 from app.market_data.exchange_calendar import TradingSession, calendar_for_venue
 
@@ -87,6 +92,10 @@ class PortfolioBacktestResult:
     equity_curve: list[PortfolioAllocationPoint] = field(default_factory=list)
     trades: list[PortfolioTrade] = field(default_factory=list)
     latest_weights: dict[str, Decimal] = field(default_factory=dict)
+    # Risk metrics, annualised return, exposure and the benchmark all start at this
+    # date (the first allocation); warm-up days at 100% cash are excluded.
+    metrics_start_date: date | None = None
+    warmup_bars_excluded: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,14 +170,6 @@ def _decimal_mean(values: list[Decimal]) -> Decimal:
     if not values:
         return Decimal("0")
     return sum(values, Decimal("0")) / Decimal(str(len(values)))
-
-
-def _stddev(values: list[float]) -> float:
-    if len(values) < 2:
-        return 0.0
-    mean = sum(values) / len(values)
-    variance = sum((value - mean) ** 2 for value in values) / len(values)
-    return float(variance**0.5)
 
 
 def _latest_completed_session(*, venue: str, as_of: datetime) -> TradingSession:
@@ -662,39 +663,31 @@ class PortfolioBacktester:
                 )
             )
 
-        daily_returns: list[float] = []
-        downside_returns: list[float] = []
-        for prev, current in pairwise(equity_curve):
-            if prev.equity <= 0:
-                continue
-            daily_return = float((current.equity / prev.equity) - Decimal("1"))
-            daily_returns.append(daily_return)
-            if daily_return < 0:
-                downside_returns.append(daily_return)
+        # Everything below is measured from the first allocation index so warm-up days
+        # spent 100% in cash do not dilute Sharpe/Sortino/drawdown/exposure.  The base of
+        # the first return is the initial capital (all cash before the first trade).
+        metrics_curve = equity_curve[first_trade_index:]
+        metrics_equities = [point.equity for point in metrics_curve]
+        daily_returns = returns_from_equity(metrics_equities, self.initial_capital)
+        sharpe_value = sharpe_ratio(daily_returns)
+        sortino_value = sortino_ratio(daily_returns)
+        sharpe = Decimal(str(round(sharpe_value, 3))) if sharpe_value is not None else None
+        sortino = Decimal(str(round(sortino_value, 3))) if sortino_value is not None else None
 
-        sharpe = None
-        sortino = None
-        if daily_returns:
-            daily_mean = sum(daily_returns) / len(daily_returns)
-            daily_std = _stddev(daily_returns)
-            if daily_std > 0:
-                sharpe = Decimal(str(round((daily_mean / daily_std) * (252**0.5), 3)))
-            downside_std = _stddev(downside_returns) if downside_returns else 0.0
-            if downside_std > 0:
-                sortino = Decimal(str(round((daily_mean / downside_std) * (252**0.5), 3)))
-
-        max_drawdown_pct = max((point.drawdown_pct for point in equity_curve), default=Decimal("0"))
+        max_drawdown_pct = Decimal(
+            str(round(max_drawdown_pct_from_equity(metrics_equities, self.initial_capital), 6))
+        )
         calmar = None
         if max_drawdown_pct > 0:
             calmar = Decimal(str(round(float(annualised_return_pct / max_drawdown_pct), 3)))
 
         benchmark_return_pct = self._run_benchmark(history=history, first_index=first_trade_index)
         alpha_vs_benchmark_pct = total_return_pct - benchmark_return_pct
-        avg_exposure_pct = _decimal_mean([point.exposure_pct for point in equity_curve]).quantize(
+        avg_exposure_pct = _decimal_mean([point.exposure_pct for point in metrics_curve]).quantize(
             Decimal("0.01")
         )
         turnover_pct = Decimal("0")
-        avg_equity = _decimal_mean([point.equity for point in equity_curve])
+        avg_equity = _decimal_mean(metrics_equities)
         if avg_equity > 0:
             turnover_pct = ((total_turnover / avg_equity) * Decimal("100")).quantize(
                 Decimal("0.01")
@@ -729,6 +722,8 @@ class PortfolioBacktester:
             equity_curve=equity_curve,
             trades=trades,
             latest_weights=equity_curve[-1].weights if equity_curve else {},
+            metrics_start_date=dates[first_trade_index],
+            warmup_bars_excluded=first_trade_index,
         )
 
     def _rebalance_portfolio(
