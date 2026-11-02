@@ -10,6 +10,7 @@ import os
 import subprocess
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -39,7 +40,12 @@ def _code_sha() -> str:
 # Configurable via BACKTEST_CACHE_DIR; otherwise a per-user cache directory for the
 # platform.  Directories are created on first publish by the cache itself.  The location
 # never enters a dataset/manifest id.
-CACHE_DIR = resolve_cache_dir(settings.BACKTEST_CACHE_DIR)
+# Resolved lazily (never at import): CACHE_DIR is only an explicit override (tests).
+CACHE_DIR: Path | None = None
+
+
+def cache_dir() -> Path:
+    return CACHE_DIR if CACHE_DIR is not None else resolve_cache_dir(settings.BACKTEST_CACHE_DIR)
 
 
 class BacktestDataFetcher:
@@ -108,7 +114,7 @@ class BacktestDataFetcher:
             membership_source,
             universe,
         )
-        cache = ImmutableDatasetCache(CACHE_DIR)
+        cache = ImmutableDatasetCache(cache_dir())
         cached = cache.load(request) if cache.reference_path(request).exists() else None
         if cached is not None:
             log.info("backtest_data.cache_hit", ticker=ticker)
@@ -209,7 +215,7 @@ class BacktestDataFetcher:
         if ticker is not None:
             raise ValueError("content-addressed cache clearing cannot filter by ticker")
         count = 0
-        for f in CACHE_DIR.rglob("*.json"):
+        for f in cache_dir().rglob("*.json"):
             if f.is_file():
                 f.unlink()
                 count += 1

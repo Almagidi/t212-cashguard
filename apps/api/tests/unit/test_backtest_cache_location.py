@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -51,8 +52,37 @@ def test_configured_directory_wins_and_blank_falls_back() -> None:
 def test_module_default_is_not_tmp() -> None:
     configured = data_fetcher.settings.BACKTEST_CACHE_DIR
     if not configured:
-        assert "tmp" not in Path(data_fetcher.CACHE_DIR).parts
-        assert Path(data_fetcher.CACHE_DIR).name == "backtest_cache"
+        assert "tmp" not in data_fetcher.cache_dir().parts
+        assert data_fetcher.cache_dir().name == "backtest_cache"
+
+
+def _no_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*_: Any, **__: Any) -> Path:
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(Path, "home", boom)
+    for name in ("HOME", "USERPROFILE", "LOCALAPPDATA", "XDG_CACHE_HOME"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
+def test_no_home_directory_falls_back_to_temp_without_raising(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    _no_home(monkeypatch)
+    expected = Path(tempfile.gettempdir()) / "cashguard-backtest-cache"
+    assert default_cache_dir(platform=platform, env={}) == expected
+    assert resolve_cache_dir("", platform=platform, env={}) == expected
+
+
+def test_no_home_keeps_configured_override_and_fetcher_resolves_lazily(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_home(monkeypatch)
+    assert resolve_cache_dir("/data/bt") == Path("/data/bt")
+    monkeypatch.setattr(data_fetcher, "CACHE_DIR", None)
+    monkeypatch.setattr(data_fetcher.settings, "BACKTEST_CACHE_DIR", "")
+    assert data_fetcher.cache_dir() == Path(tempfile.gettempdir()) / "cashguard-backtest-cache"
 
 
 def test_manifest_and_content_ids_do_not_depend_on_the_cache_location(tmp_path: Path) -> None:
