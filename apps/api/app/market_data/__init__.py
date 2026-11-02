@@ -34,9 +34,11 @@ def resolve_provider_kind() -> str:
 
     Returns one of ``mock``, ``alpaca``, ``polygon``, ``validated``, or
     ``unresolved`` (live mode whose configuration resolves no real source).
-    Includes the silent paper/demo fallback to the mock provider (``auto`` or an
-    unconfigured vendor with no keys), so callers cannot disagree with the
-    factory about what is actually serving data.
+    Includes the silent paper/demo fallback to the mock provider (``auto`` with no
+    keys), so callers cannot disagree with the factory about what is actually
+    serving data. An EXPLICIT ``alpaca`` or ``polygon`` setting with no keys is
+    not a fallback: it returns that vendor name and the provider fails closed
+    (``quote_unavailable``).
     """
     provider = settings.MARKET_DATA_PROVIDER.strip().lower()
     if settings.APP_MODE == "live":

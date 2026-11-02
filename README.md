@@ -190,6 +190,7 @@ See [`.env.example`](.env.example) for the full list. Key variables:
 | `ADMIN_PASSWORD` | First admin account password | `change-me` |
 | `T212_ENVIRONMENT` | `demo` or `live` | `demo` |
 | `MARKET_DATA_PROVIDER` | Market-data provider selected explicitly for this runtime | `mock` |
+| `ALPACA_API_KEY` / `ALPACA_API_SECRET` / `POLYGON_API_KEY` | Market-data vendor keys. **Live mode requires both vendors** (validated provider: Alpaca primary, Polygon validator) and refuses to start otherwise. Paper/demo with a single vendor warns at startup and relies on quote/bar freshness only; an explicit `alpaca` or `polygon` setting with no keys fails closed (`quote_unavailable`). | empty |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token | empty |
 | `TELEGRAM_CHAT_ID` | Telegram alert chat id | empty |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | CSV allowlist for Telegram control chats | empty |
