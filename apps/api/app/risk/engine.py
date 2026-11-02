@@ -416,10 +416,12 @@ class RiskEngine:
         feed_status = str(feed_snapshot.get("status") or "unknown")
         symbol_status: str | None = None
         symbol_detail: str | None = None
+        symbol_delayed: bool | None = None
         for symbol in feed_snapshot.get("symbols", []):
             if str(symbol.get("ticker") or "").upper() == ticker.upper():
                 symbol_status = str(symbol.get("status") or "unknown")
                 symbol_detail = str(symbol.get("detail") or "")
+                symbol_delayed = symbol.get("is_delayed")
                 break
 
         if feed_status in {"stale", "error"}:
@@ -433,7 +435,10 @@ class RiskEngine:
             )
             raise RiskViolation(msg, "feed_health_block")
 
-        if symbol_status and symbol_status not in {"ok", "fallback"}:
+        # A fallback source is only acceptable for entries when it is known to be
+        # real-time; the Polygon free tier is 15 minutes delayed.
+        delayed_fallback = symbol_status == "fallback" and symbol_delayed is not False
+        if delayed_fallback or (symbol_status and symbol_status not in {"ok", "fallback"}):
             msg = (
                 f"Feed validation blocked {ticker}: {symbol_status}. "
                 f"{symbol_detail or 'Cross-source data mismatch persists.'}"

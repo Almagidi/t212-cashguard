@@ -110,7 +110,9 @@ async def test_validated_provider_falls_back_when_primary_quote_is_stale():
 
     snapshot = get_feed_health_snapshot()
     assert quote.last == Decimal("100.25")
-    assert provider.is_trade_safe("MSFT") is True
+    # Polygon fallback is 15-min delayed: not safe for entries, still fine for exits.
+    assert provider.is_trade_safe("MSFT") is False
+    assert provider.is_trade_safe("MSFT", purpose="exit") is True
     assert snapshot["status"] == "fallback"
     assert snapshot["symbols"][0]["fallback_used"] is True
 

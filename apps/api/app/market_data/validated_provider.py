@@ -98,6 +98,7 @@ class ValidatedMarketDataProvider:
                 used_source="polygon",
                 validator_source="polygon",
                 fallback_used=True,
+                is_delayed=True,  # Polygon free tier is 15-minute delayed
                 primary_timestamp=None,
                 validator_timestamp=getattr(latest, "timestamp", None),
             )
@@ -148,6 +149,7 @@ class ValidatedMarketDataProvider:
                 used_source="polygon",
                 validator_source="polygon",
                 fallback_used=True,
+                is_delayed=True,  # Polygon free tier is 15-minute delayed
                 primary_timestamp=None,
                 validator_timestamp=getattr(latest, "timestamp", None),
             )
@@ -186,6 +188,7 @@ class ValidatedMarketDataProvider:
                 used_source="polygon",
                 validator_source="polygon",
                 fallback_used=True,
+                is_delayed=True,  # Polygon free tier is 15-minute delayed
                 primary_timestamp=None,
                 validator_timestamp=getattr(validator_quote, "timestamp", None),
             )
@@ -236,6 +239,7 @@ class ValidatedMarketDataProvider:
                 used_source="polygon",
                 validator_source="polygon",
                 fallback_used=True,
+                is_delayed=True,  # Polygon free tier is 15-minute delayed
                 validator_timestamp=datetime.now(UTC),
             )
             return validator_open
@@ -247,8 +251,8 @@ class ValidatedMarketDataProvider:
             return bool(self.primary.validate_staleness(quote, max_age_seconds=max_age_seconds))
         return True
 
-    def is_trade_safe(self, ticker: str) -> bool:
-        return is_symbol_trade_safe(ticker)
+    def is_trade_safe(self, ticker: str, *, purpose: str = "entry") -> bool:
+        return is_symbol_trade_safe(ticker, purpose="exit" if purpose == "exit" else "entry")
 
     def _record_quote_health(self, ticker: str, primary_quote: Any, validator_quote: Any | None) -> str:
         primary_fresh = self._quote_is_trade_safe(primary_quote)
@@ -269,6 +273,7 @@ class ValidatedMarketDataProvider:
                 used_source="polygon" if status == "fallback" else "alpaca",
                 validator_source="polygon" if validator_quote is not None else None,
                 fallback_used=status == "fallback",
+                is_delayed=True if status == "fallback" else None,
                 primary_timestamp=primary_ts,
                 validator_timestamp=validator_ts,
             )

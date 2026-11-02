@@ -37,6 +37,7 @@ def record_feed_health(
     primary_timestamp: datetime | None = None,
     validator_timestamp: datetime | None = None,
     divergence_pct: float | None = None,
+    is_delayed: bool | None = None,
 ) -> None:
     checked_at = datetime.now(UTC)
     symbols: dict[str, Any] = _state["symbols"]
@@ -50,6 +51,7 @@ def record_feed_health(
         "primary_timestamp": primary_timestamp,
         "validator_timestamp": validator_timestamp,
         "divergence_pct": divergence_pct,
+        "is_delayed": is_delayed,
         "checked_at": checked_at,
     }
 
@@ -81,11 +83,32 @@ def get_feed_health_snapshot() -> dict[str, Any]:
     }
 
 
-def is_symbol_trade_safe(ticker: str) -> bool:
+def is_symbol_trade_safe(ticker: str, *, purpose: Literal["entry", "exit"] = "entry") -> bool:
+    """Whether market data for ``ticker`` may be acted on.
+
+    ``purpose="entry"`` (default, fail-closed) is for opening new risk:
+      - no health record for the symbol -> False (never validated);
+      - ``ok`` -> True;
+      - ``fallback`` -> True only if the fallback source is explicitly known to
+        be real-time (``is_delayed is False``). The Polygon free tier is 15
+        minutes delayed, so a Polygon fallback is NOT safe to enter on;
+      - anything else (degraded/stale/error/unknown) -> False.
+
+    ``purpose="exit"`` keeps the permissive behaviour so protective exits are
+    never gated by feed health: unknown symbols and ``ok``/``fallback`` data
+    are accepted (callers that must exit regardless should not call this at all).
+    """
     symbol = _state["symbols"].get(ticker.upper())
+    if purpose == "exit":
+        return symbol is None or symbol["status"] in {"ok", "fallback"}
     if not symbol:
+        return False
+    status = symbol["status"]
+    if status == "ok":
         return True
-    return symbol["status"] in {"ok", "fallback"}
+    if status == "fallback":
+        return symbol.get("is_delayed") is False
+    return False
 
 
 def _summarize_status(symbols: Any) -> FeedStatus:

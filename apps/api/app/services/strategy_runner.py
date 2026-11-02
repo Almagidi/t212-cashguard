@@ -85,6 +85,8 @@ class StrategyRunner:
         self.db = db
         # When this run read the account's cash from the broker.
         self._cash_read_at: datetime | None = None
+        # ticker -> reason new ENTRIES are blocked for the current fetch (exits ignore it).
+        self._entry_blocks: dict[str, str] = {}
 
     @staticmethod
     def _signal_decision_key(
@@ -426,6 +428,7 @@ class StrategyRunner:
         """
         now = datetime.now(UTC)
         now_utc = now.strftime("%H:%M")
+        self._entry_blocks.pop(ticker, None)
 
         if data_provider_type == "kraken":
             return await self._fetch_kraken_context(
@@ -460,10 +463,12 @@ class StrategyRunner:
                     if (
                         hasattr(md, "is_trade_safe")
                         and latest_quote is not None
-                        and not md.is_trade_safe(ticker)
+                        and not md.is_trade_safe(ticker, purpose="entry")
                     ):
+                        # Entry-only block: protective exits on an open position
+                        # must still see the bars, so do not discard the context.
                         log.warning("runner.feed_unhealthy", ticker=ticker)
-                        return [], [], [], [], None, now_utc
+                        self._entry_blocks[ticker] = "feed_unhealthy"
             else:
                 # Sync mock provider
                 raw_bars = provider.get_ohlcv(
@@ -981,6 +986,11 @@ class StrategyRunner:
                     risk=risk,
                 )
                 return (1 if submitted is not None else 0), (submitted or 0), 0
+            return 0, 0, 0
+
+        entry_block = self._entry_blocks.pop(ticker, None)
+        if entry_block is not None:
+            log.info("runner.entry_blocked_by_feed", ticker=ticker, reason=entry_block)
             return 0, 0, 0
 
         if data_provider_type != "kraken":

@@ -1573,6 +1573,7 @@ class MarketDataSymbolHealth(BaseModel):
     primary_timestamp: datetime | None = None
     validator_timestamp: datetime | None = None
     divergence_pct: float | None = None
+    is_delayed: bool | None = None
     checked_at: datetime | None = None
 
 
