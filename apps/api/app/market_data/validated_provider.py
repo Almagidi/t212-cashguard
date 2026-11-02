@@ -13,6 +13,10 @@ from app.services.feed_health import is_symbol_trade_safe, record_feed_health
 class ValidatedMarketDataProvider:
     """Use Alpaca as the live source and Polygon as validator/fallback."""
 
+    # Only this provider records per-symbol feed health (see
+    # app.market_data.provider_records_feed_health).
+    records_feed_health = True
+
     QUOTE_DIVERGENCE_WARN_PCT = Decimal("0.75")
     QUOTE_DIVERGENCE_FAIL_PCT = Decimal("2.00")
     BAR_DIVERGENCE_WARN_PCT = Decimal("1.00")

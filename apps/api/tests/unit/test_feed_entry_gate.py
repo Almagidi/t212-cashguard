@@ -131,7 +131,7 @@ async def test_risk_engine_blocks_unknown_symbol_with_real_provider(db, monkeypa
     db.add(AppSettings(id=1))
     await db.commit()
     reset_feed_health()
-    monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", "alpaca")
+    monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", "validated")
 
     with pytest.raises(RiskViolation) as exc:
         await RiskEngine(db).check_market_conditions(
@@ -175,6 +175,8 @@ async def test_risk_engine_allows_unknown_symbol_in_mock_mode(db, monkeypatch):
 # ── runner: quote / health-check failure blocks ENTRY only ──────────────────
 
 class _FakeMd:
+    records_feed_health = True  # behaves like the validated provider
+
     def __init__(self, *, quote=object(), quote_error=None, safe=True, safe_error=None):
         self._quote, self._quote_error = quote, quote_error
         self._safe, self._safe_error = safe, safe_error
@@ -242,3 +244,97 @@ async def test_quote_failure_blocks_entry_but_not_protective_exit():
     entry_kwargs = _process_kwargs(runner, pos_map={})
     assert await runner._process_ticker(**entry_kwargs) == (0, 0, 0)
     entry_kwargs["engine"].generate_signal.assert_not_called()
+
+
+# ── unknown-symbol rule applies only when the provider records feed health ───
+
+def _cfg(monkeypatch, *, mode, provider, alpaca=False, polygon=False):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "APP_MODE", mode)
+    monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", provider)
+    monkeypatch.setattr(settings, "ALPACA_API_KEY", "k" if alpaca else "")
+    monkeypatch.setattr(settings, "ALPACA_API_SECRET", "s" if alpaca else "")
+    monkeypatch.setattr(settings, "POLYGON_API_KEY", "p" if polygon else "")
+
+
+async def _check(db):
+    db.add(AppSettings(id=1))
+    await db.commit()
+    reset_feed_health()
+    await RiskEngine(db).check_market_conditions(
+        ticker="AAPL", strategy_type="orb", market_regime=_REGIME
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "alpaca", "polygon"),
+    [
+        ("alpaca", True, False),
+        ("polygon", False, True),
+        ("auto", True, False),   # auto with a single vendor key
+        ("auto", False, True),
+        ("auto", False, False),  # auto with no keys falls back to mock
+    ],
+)
+async def test_unknown_symbol_allowed_when_provider_records_no_health(
+    db, monkeypatch, provider, alpaca, polygon
+):
+    _cfg(monkeypatch, mode="paper", provider=provider, alpaca=alpaca, polygon=polygon)
+    await _check(db)  # must not raise
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["validated", "auto"])
+async def test_unknown_symbol_blocked_when_validated_provider_has_no_record(
+    db, monkeypatch, provider
+):
+    _cfg(monkeypatch, mode="paper", provider=provider, alpaca=True, polygon=True)
+    with pytest.raises(RiskViolation) as exc:
+        await _check(db)
+    assert exc.value.event_type == "feed_symbol_block"
+
+
+@pytest.mark.asyncio
+async def test_validated_provider_with_record_passes(db, monkeypatch):
+    _cfg(monkeypatch, mode="paper", provider="validated", alpaca=True, polygon=True)
+    db.add(AppSettings(id=1))
+    await db.commit()
+    reset_feed_health()
+    _record("ok", is_delayed=False)
+    await RiskEngine(db).check_market_conditions(
+        ticker="AAPL", strategy_type="orb", market_regime=_REGIME
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["mock", "alpaca", "auto"])
+async def test_live_mode_is_never_exempt(db, monkeypatch, provider):
+    # mock, a single vendor, or unresolved config in live: no record -> blocked.
+    _cfg(monkeypatch, mode="live", provider=provider, alpaca=provider != "mock")
+    with pytest.raises(RiskViolation) as exc:
+        await _check(db)
+    assert exc.value.event_type == "feed_symbol_block"
+
+
+@pytest.mark.asyncio
+async def test_runner_and_risk_engine_agree_for_raw_provider(monkeypatch):
+    from app.market_data import provider_records_feed_health
+
+    class _Raw(_FakeMd):
+        records_feed_health = False
+
+    _cfg(monkeypatch, mode="paper", provider="alpaca", alpaca=True)
+    assert provider_records_feed_health() is False  # risk-engine view
+    # runner view: raw provider is not asked is_trade_safe (even though it unsafe)
+    assert await _fetch_with(monkeypatch, _Raw(safe=False)) is None
+
+
+@pytest.mark.asyncio
+async def test_runner_blocks_entries_in_live_when_provider_cannot_record_health(monkeypatch):
+    class _Raw(_FakeMd):
+        records_feed_health = False
+
+    _cfg(monkeypatch, mode="live", provider="alpaca", alpaca=True)
+    assert await _fetch_with(monkeypatch, _Raw()) == "feed_health_unavailable"

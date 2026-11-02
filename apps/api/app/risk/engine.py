@@ -402,12 +402,15 @@ class RiskEngine:
 
     @staticmethod
     def _mock_market_data() -> bool:
-        from app.core.config import settings as cfg
+        from app.market_data import is_mock_market_data
 
-        return (
-            cfg.APP_MODE != "live"
-            and cfg.MARKET_DATA_PROVIDER.strip().lower() == "mock"
-        )
+        return is_mock_market_data()
+
+    @staticmethod
+    def _provider_records_health() -> bool:
+        from app.market_data import provider_records_feed_health
+
+        return provider_records_feed_health()
 
     async def check_market_conditions(
         self,
@@ -437,9 +440,18 @@ class RiskEngine:
         #   * a real data provider validates every symbol it serves, so a symbol
         #     with NO feed-health record was never validated -> fail closed,
         #     consistent with is_symbol_trade_safe(purpose="entry");
-        #   * the mock provider (APP_MODE != live and MARKET_DATA_PROVIDER ==
-        #     "mock") records no health at all, so it is exempt.
-        if symbol_status is None and not self._mock_market_data():
+        #   * the rule applies ONLY when the active provider actually records
+        #     health (the validated provider; see provider_records_feed_health).
+        #     Plain single-vendor providers and the mock provider (including a
+        #     paper-mode fallback to mock) record none, so "no record" carries no
+        #     information there; their entries are gated by bar/quote freshness.
+        #     Live mode is never exempt: unresolved live config counts as
+        #     health-recording, and live startup requires the validated provider.
+        if (
+            symbol_status is None
+            and self._provider_records_health()
+            and not self._mock_market_data()
+        ):
             msg = (
                 f"No feed-health record for {ticker}; market data was never validated, "
                 "so new entries are blocked."

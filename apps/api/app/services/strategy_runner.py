@@ -57,6 +57,7 @@ from app.execution.paper_engine import PaperExecutionError
 from app.execution.state_machine import ACTIVE_ORDER_STATUSES
 from app.market_data.bar_freshness import assess_bar_freshness
 from app.market_data.exchange_calendar import calendar_for_venue
+from app.market_data import provider_records_feed_health
 from app.risk.engine import RiskEngine, RiskViolation
 from app.risk.realized_pnl import realized_pnl_today
 from app.services.alert_service import (
@@ -472,7 +473,12 @@ class StrategyRunner:
                     else:
                         if latest_quote is None:
                             self._entry_blocks[ticker] = "quote_unavailable"
-                        elif hasattr(md, "is_trade_safe"):
+                        elif not provider_records_feed_health(md):
+                            if settings.APP_MODE == "live":
+                                # Live must run the validated provider; a plain
+                                # provider cannot certify feed health -> no entries.
+                                self._entry_blocks[ticker] = "feed_health_unavailable"
+                        else:
                             try:
                                 trade_safe = bool(md.is_trade_safe(ticker, purpose="entry"))
                             except Exception as exc:
