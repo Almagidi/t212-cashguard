@@ -8,7 +8,7 @@ from typing import Any
 
 from app.market_data.alpaca_provider import AlpacaMarketDataProvider, OpeningRangeBars
 from app.market_data.polygon_provider import PolygonMarketDataProvider
-from app.services.feed_health import is_symbol_trade_safe, record_feed_health
+from app.services.feed_health import FeedStatus, is_symbol_trade_safe, record_feed_health
 
 
 class ValidatedMarketDataProvider:
@@ -233,7 +233,7 @@ class ValidatedMarketDataProvider:
                 validator_open = None
 
         if primary_open is not None:
-            status = "ok"
+            status: FeedStatus = "ok"
             detail = "Alpaca market status healthy."
             if validator_open is not None and validator_open != primary_open:
                 status = "degraded"
@@ -276,7 +276,7 @@ class ValidatedMarketDataProvider:
 
     def _record_quote_health(
         self, ticker: str, primary_quote: Any, validator_quote: Any | None
-    ) -> str:
+    ) -> FeedStatus:
         primary_fresh = self._quote_is_trade_safe(primary_quote)
         primary_ts = getattr(primary_quote, "timestamp", None)
         validator_ts = (
@@ -284,7 +284,7 @@ class ValidatedMarketDataProvider:
         )
 
         if not primary_fresh:
-            status = "stale"
+            status: FeedStatus = "stale"
             detail = "Alpaca quote is stale beyond the trading threshold."
             if validator_quote is not None and self._quote_is_trade_safe(validator_quote):
                 status = "fallback"
@@ -341,7 +341,7 @@ class ValidatedMarketDataProvider:
         validator_ts = (
             getattr(latest_validator, "timestamp", None) if latest_validator is not None else None
         )
-        status = "ok"
+        status: FeedStatus = "ok"
         detail = "Alpaca bars validated."
         divergence_pct = self._percent_diff(
             Decimal(str(getattr(latest_primary, "close", 0))),

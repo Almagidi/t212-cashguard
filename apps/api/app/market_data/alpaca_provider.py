@@ -38,7 +38,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -75,7 +75,7 @@ class AlpacaQuote:
     is_delayed: bool = False  # Always False for Alpaca
 
 
-class OpeningRangeBars(list):  # type: ignore[type-arg]
+class OpeningRangeBars(list):
     """Opening-range bars plus whether the window is known to be complete.
 
     A plain ``list`` subclass so existing callers keep working. ``complete`` is
@@ -341,7 +341,7 @@ class AlpacaMarketDataProvider:
         )
         cached = self._cached(cache_key) if use_cache else None
         if cached is not None:
-            return cached
+            return cast("list[AlpacaBar]", cached)
 
         # Alpaca timeframe format: "5Min", "1Min", "15Min"
         tf_map = {
@@ -490,7 +490,7 @@ class AlpacaMarketDataProvider:
         cache_key = f"quote:{ticker}"
         cached = self._cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("AlpacaQuote", cached)
 
         data = await self._get(
             f"/v2/stocks/{ticker}/quotes/latest",
@@ -531,7 +531,7 @@ class AlpacaMarketDataProvider:
         cache_key = "market_open"
         cached = self._cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("bool", cached)
 
         try:
             data = await self._get("/v1/clock")
@@ -557,14 +557,14 @@ class AlpacaMarketDataProvider:
         cache_key = f"snapshot:{ticker}"
         cached = self._cached(cache_key)
         if cached is not None:
-            return cached
+            return cast("dict[str, Any]", cached)
 
         data = await self._get(
             f"/v2/stocks/{ticker}/snapshot",
             params={"feed": "iex"},
         )
         self._cache_set(cache_key, data)
-        return data
+        return cast("dict[str, Any]", data)
 
     async def get_snapshots(self, tickers: list[str]) -> dict[str, Any]:
         """
@@ -582,7 +582,7 @@ class AlpacaMarketDataProvider:
                 "feed": "iex",
             },
         )
-        return data  # dict of {ticker: snapshot_data}
+        return cast("dict[str, Any]", data)  # dict of {ticker: snapshot_data}
 
     def validate_staleness(self, quote: AlpacaQuote, max_age_seconds: int = 60) -> bool:
         """Return True if quote data is fresh enough to trade on."""
