@@ -104,7 +104,11 @@ def _fake_result(*, sharpe: float, total_return: float = 20.0, zero_cost: bool =
         rebalance_count=12,
         turnover_pct=Decimal("50"),
         avg_exposure_pct=Decimal("90"),
-        cost_model={"zero_cost": zero_cost},
+        cost_model={
+            "label": "zero_cost_explicit" if zero_cost else "standard",
+            "zero_cost": zero_cost,
+            "min_round_trip_cost_bps": 0.0 if zero_cost else 54.0,
+        },
     )
 
 

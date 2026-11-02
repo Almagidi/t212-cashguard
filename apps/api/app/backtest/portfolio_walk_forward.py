@@ -37,6 +37,7 @@ from app.backtest.gate_floors import (
     MIN_VALID_WINDOWS,
     MIN_WINDOW_WIN_FRACTION,
     config_floor_violations,
+    cost_gate_refusal,
     effective_deflated_sharpe_threshold,
     floors_as_dict,
 )
@@ -308,7 +309,7 @@ def evaluate_gate(
     holdout_summary: dict[str, Any],
     deflated: dict[str, Any],
     benchmark_keys: list[str],
-    zero_cost: bool,
+    cost_model: dict[str, Any],
 ) -> tuple[list[str], list[str]]:
     """Gate reasons (any reason fails the gate) and warnings.
 
@@ -317,8 +318,8 @@ def evaluate_gate(
     """
     reasons: list[str] = []
     warnings: list[str] = []
-    if zero_cost:
-        reasons.append("zero-cost run: friction-free results cannot qualify")
+    if cost_reason := cost_gate_refusal(cost_model):
+        reasons.append(cost_reason)
     reasons.extend(
         config_floor_violations(
             holdout_bars=config.holdout_bars,
@@ -563,6 +564,7 @@ def run_portfolio_walk_forward(
         ),
     }
 
+    cost_description = cost_model.describe(tickers=universe)
     reasons, warnings = evaluate_gate(
         config=config,
         windows=windows,
@@ -571,7 +573,7 @@ def run_portfolio_walk_forward(
         holdout_summary=holdout_summary,
         deflated=deflated,
         benchmark_keys=benchmark_keys,
-        zero_cost=cost_model.zero_cost,
+        cost_model=cost_description,
     )
     passes = not reasons
 
@@ -586,7 +588,7 @@ def run_portfolio_walk_forward(
         holdout_summary=holdout_summary,
         deflated_sharpe=deflated,
         risk_free_rate_annual=risk_free,
-        cost_model=cost_model.describe(),
+        cost_model=cost_description,
         benchmarks_evaluated=benchmark_keys,
         passes_gate=passes,
         gate_reasons=reasons,

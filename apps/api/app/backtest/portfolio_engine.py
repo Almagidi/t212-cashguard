@@ -621,8 +621,10 @@ class PortfolioBacktester:
                 "label": "legacy_flat_bps",
                 "zero_cost": self.transaction_cost_rate == 0,
                 "transaction_cost_bps": float(self.transaction_cost_rate * Decimal("10000")),
+                # Flat fee only: no spread, slippage or FX; never eligible for a gated verdict.
+                "gated": False,
             }
-        return self.cost_model.describe()
+        return self.cost_model.describe(tickers=self.universe)
 
     def _buy_and_hold_equities(
         self,

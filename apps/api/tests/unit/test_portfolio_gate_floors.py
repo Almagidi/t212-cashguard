@@ -27,6 +27,7 @@ from app.backtest.portfolio_walk_forward import (
 from tests.unit.portfolio_synth import synth_history
 from tests.unit.test_portfolio_backtest_route import _fake_result, _fake_wf
 
+STANDARD_COST = {"label": "standard", "zero_cost": False, "min_round_trip_cost_bps": 54.0}
 BROAD = "broad_index"
 EW = "universe_equal_weight_costed"
 
@@ -79,7 +80,7 @@ def _gate(
     config: WalkForwardConfig | None = None,
     probability: float | None = 0.99,
     keys: tuple[str, ...] = (EW, BROAD),
-    zero_cost: bool = False,
+    cost_model: dict[str, Any] | None = None,
 ) -> list[str]:
     config = config or WalkForwardConfig(
         initial_train_bars=300,
@@ -97,7 +98,7 @@ def _gate(
         holdout_summary=holdout_summary,
         deflated={"oos": {"deflated_sharpe_probability": probability}},
         benchmark_keys=benchmark_keys,
-        zero_cost=zero_cost,
+        cost_model=cost_model or STANDARD_COST,
     )
     return reasons
 
@@ -215,7 +216,15 @@ def test_broad_index_benchmark_is_required_to_pass() -> None:
 
 
 def test_zero_cost_still_fails() -> None:
-    assert any("zero-cost" in r for r in _gate(_good_windows(), _good_holdout(), zero_cost=True))
+    zero = {"label": "zero_cost_explicit", "zero_cost": True, "min_round_trip_cost_bps": 0.0}
+    reasons = _gate(_good_windows(), _good_holdout(), cost_model=zero)
+    assert any("zero-cost" in r for r in reasons)
+
+
+def test_near_zero_cost_fails_the_gate() -> None:
+    cheap = {"label": "standard", "zero_cost": False, "min_round_trip_cost_bps": 3.0}
+    reasons = _gate(_good_windows(), _good_holdout(), cost_model=cheap)
+    assert any("round-trip cost of 3 bps" in r for r in reasons)
 
 
 def test_single_entry_grid_does_not_zero_out_the_trial_penalty() -> None:

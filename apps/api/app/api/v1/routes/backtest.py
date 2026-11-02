@@ -21,6 +21,7 @@ from app.backtest.gate_floors import (
     MIN_REBALANCES_PER_WINDOW,
     MIN_VALID_WINDOWS,
     config_floor_violations,
+    cost_gate_refusal,
 )
 from app.backtest.portfolio_costs import TransactionCostModel
 from app.backtest.portfolio_engine import (
@@ -994,8 +995,8 @@ def _interpret_portfolio_results(result: Any, walk_forward: Any = None) -> dict[
             # Defence in depth: the harness already enforces the floors; do not trust a
             # walk-forward object that claims a pass on settings below them.
             refusal = "; ".join(floor_reasons)
-        elif result.cost_model.get("zero_cost"):
-            refusal = "the run used an explicit zero-cost model"
+        elif cost_reason := cost_gate_refusal(result.cost_model):
+            refusal = cost_reason
         elif BENCHMARK_BROAD_INDEX not in walk_forward.benchmarks_evaluated:
             refusal = "no broad-index benchmark series was supplied; best verdict is 'unvalidated'"
         elif validated_verdict != in_sample_verdict:

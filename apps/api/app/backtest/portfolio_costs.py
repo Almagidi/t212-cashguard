@@ -35,12 +35,12 @@ from app.execution.paper_policy import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 DEFAULT_FX_FEE_RATE = Decimal("0.0015")
 DEFAULT_ACCOUNT_CURRENCY = "GBP"
 
-_BPS = Decimal("10000")
+_BPS = Decimal("10000")  # one unit of rate == 10,000 bps
 _QUANTUM = Decimal("0.00000001")
 
 
@@ -74,10 +74,10 @@ class TransactionCostModel:
             raise ValueError("stress_multiplier must be positive")
         if not self.account_currency.strip():
             raise ValueError("account_currency is required")
-        total = self.spread_bps + self.slippage_bps + self.commission_bps + self.fx_fee_rate
-        if self.zero_cost and (total != 0 or any(self.spread_bps_by_ticker.values())):
+        has_cost = self.total_per_side_bps != 0 or any(self.spread_bps_by_ticker.values())
+        if self.zero_cost and has_cost:
             raise ValueError("zero_cost=True requires every cost component to be zero")
-        if total == 0 and not self.zero_cost:
+        if not has_cost and not self.zero_cost:
             raise ValueError(
                 "all costs are zero: a frictionless run must be requested explicitly "
                 "with TransactionCostModel.explicit_zero()"
@@ -95,6 +95,27 @@ class TransactionCostModel:
             account_currency=account_currency,
             zero_cost=True,
         )
+
+    @property
+    def fx_fee_bps(self) -> Decimal:
+        """The FX fee (a fraction of notional) expressed in bps like every other component."""
+        return self.fx_fee_rate * _BPS
+
+    @property
+    def total_per_side_bps(self) -> Decimal:
+        """Default-spread cost of one side in bps (full spread, as quoted; FX fee included)."""
+        return self.spread_bps + self.slippage_bps + self.commission_bps + self.fx_fee_bps
+
+    def round_trip_cost_bps(self, ticker: str) -> Decimal:
+        """All-in cost of buying then selling ``ticker``, in bps of notional, after stress.
+
+        Per side: half the spread, slippage, commission (the minimum fee is not counted) and the
+        FX fee when the instrument is foreign.
+        """
+        per_side = self.spread_for(ticker) / Decimal("2") + self.slippage_bps + self.commission_bps
+        if self.is_foreign(ticker):
+            per_side += self.fx_fee_bps
+        return per_side * Decimal("2") * self.stress_multiplier
 
     @property
     def label(self) -> str:
@@ -140,8 +161,15 @@ class TransactionCostModel:
             fx_fee=fx_fee.quantize(_QUANTUM),
         )
 
-    def describe(self) -> dict[str, Any]:
+    def describe(self, tickers: Sequence[str] | None = None) -> dict[str, Any]:
+        """Parameters of the model; with ``tickers``, also the cheapest round-trip cost among them."""
         return {
+            "min_round_trip_cost_bps": (
+                float(min(self.round_trip_cost_bps(ticker) for ticker in tickers))
+                if tickers
+                else None
+            ),
+            "gated": True,
             "label": self.label,
             "zero_cost": self.zero_cost,
             "spread_bps": float(self.spread_bps),

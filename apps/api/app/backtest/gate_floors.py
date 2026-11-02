@@ -12,6 +12,8 @@ All lengths are in trading sessions (daily bars); see ``docs/backtest-honesty.md
 
 from __future__ import annotations
 
+from typing import Any
+
 # The untouched final slice must be long enough to say something: ~6 months of sessions.
 MIN_HOLDOUT_BARS = 126
 # Each out-of-sample test window: ~3 months of sessions.
@@ -22,6 +24,11 @@ MIN_VALID_WINDOWS = 3
 MIN_REBALANCES_PER_WINDOW = 3
 # The deflated-Sharpe probability gate is mandatory; a request can only raise it.
 MIN_DEFLATED_SHARPE_PROBABILITY = 0.95
+# Minimum all-in round-trip (buy then sell) cost, in basis points of notional, on the cheapest
+# instrument in the universe, after the stress multiplier.  Below this the costs are too close
+# to frictionless to support a positive verdict.  The default model charges 24 bps (GBP listing)
+# to 54 bps (foreign listing); commission minimum fees are not counted, so this is conservative.
+MIN_ROUND_TRIP_COST_BPS = 10.0
 # More than this fraction of valid windows must beat each gated costed benchmark
 # (strictly greater than, so a 50/50 split fails).
 MIN_WINDOW_WIN_FRACTION = 0.5
@@ -65,6 +72,24 @@ def config_floor_violations(
     return reasons
 
 
+def cost_gate_refusal(cost_model: dict[str, Any]) -> str | None:
+    """Why a cost model description (``TransactionCostModel.describe``) cannot support a gated
+    verdict, or None.  The legacy flat-bps path is never gated, whatever its size."""
+    if cost_model.get("label") == "legacy_flat_bps":
+        return "the legacy flat-bps cost path is never eligible for a positive verdict"
+    if cost_model.get("zero_cost"):
+        return "zero-cost run: friction-free results cannot qualify"
+    round_trip = cost_model.get("min_round_trip_cost_bps")
+    if round_trip is None:
+        return "the round-trip cost of the run could not be verified against the cost floor"
+    if round_trip < MIN_ROUND_TRIP_COST_BPS:
+        return (
+            f"round-trip cost of {round_trip:g} bps is below the minimum "
+            f"{MIN_ROUND_TRIP_COST_BPS:g} bps required for a positive verdict"
+        )
+    return None
+
+
 def effective_deflated_sharpe_threshold(requested: float | None) -> float:
     """The probability actually enforced: never below the floor, whatever was requested."""
     return max(requested if requested is not None else 0.0, MIN_DEFLATED_SHARPE_PROBABILITY)
@@ -78,4 +103,5 @@ def floors_as_dict() -> dict[str, float | int]:
         "min_rebalances_per_window": MIN_REBALANCES_PER_WINDOW,
         "min_deflated_sharpe_probability": MIN_DEFLATED_SHARPE_PROBABILITY,
         "min_window_win_fraction_exclusive": MIN_WINDOW_WIN_FRACTION,
+        "min_round_trip_cost_bps": MIN_ROUND_TRIP_COST_BPS,
     }
