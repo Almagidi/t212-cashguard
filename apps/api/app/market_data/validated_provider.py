@@ -1,4 +1,5 @@
 """Alpaca-primary market data with Polygon validation and fallback."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -190,7 +191,11 @@ class ValidatedMarketDataProvider:
 
         if primary_quote is not None:
             status = self._record_quote_health(ticker, primary_quote, validator_quote)
-            if status == "fallback" and validator_quote is not None and self._quote_is_trade_safe(validator_quote):
+            if (
+                status == "fallback"
+                and validator_quote is not None
+                and self._quote_is_trade_safe(validator_quote)
+            ):
                 return validator_quote
             return primary_quote
 
@@ -269,10 +274,14 @@ class ValidatedMarketDataProvider:
     def is_trade_safe(self, ticker: str, *, purpose: str = "entry") -> bool:
         return is_symbol_trade_safe(ticker, purpose="exit" if purpose == "exit" else "entry")
 
-    def _record_quote_health(self, ticker: str, primary_quote: Any, validator_quote: Any | None) -> str:
+    def _record_quote_health(
+        self, ticker: str, primary_quote: Any, validator_quote: Any | None
+    ) -> str:
         primary_fresh = self._quote_is_trade_safe(primary_quote)
         primary_ts = getattr(primary_quote, "timestamp", None)
-        validator_ts = getattr(validator_quote, "timestamp", None) if validator_quote is not None else None
+        validator_ts = (
+            getattr(validator_quote, "timestamp", None) if validator_quote is not None else None
+        )
 
         if not primary_fresh:
             status = "stale"
@@ -296,7 +305,9 @@ class ValidatedMarketDataProvider:
 
         divergence_pct = self._percent_diff(
             Decimal(str(getattr(primary_quote, "last", 0))),
-            Decimal(str(getattr(validator_quote, "last", 0))) if validator_quote is not None else None,
+            Decimal(str(getattr(validator_quote, "last", 0)))
+            if validator_quote is not None
+            else None,
         )
         status = "ok"
         detail = "Alpaca quote validated."
@@ -321,16 +332,22 @@ class ValidatedMarketDataProvider:
         )
         return status
 
-    def _record_bar_health(self, ticker: str, primary_bars: list[Any], validator_bars: list[Any]) -> None:
+    def _record_bar_health(
+        self, ticker: str, primary_bars: list[Any], validator_bars: list[Any]
+    ) -> None:
         latest_primary = primary_bars[-1]
         latest_validator = validator_bars[-1] if validator_bars else None
         primary_ts = getattr(latest_primary, "timestamp", None)
-        validator_ts = getattr(latest_validator, "timestamp", None) if latest_validator is not None else None
+        validator_ts = (
+            getattr(latest_validator, "timestamp", None) if latest_validator is not None else None
+        )
         status = "ok"
         detail = "Alpaca bars validated."
         divergence_pct = self._percent_diff(
             Decimal(str(getattr(latest_primary, "close", 0))),
-            Decimal(str(getattr(latest_validator, "close", 0))) if latest_validator is not None else None,
+            Decimal(str(getattr(latest_validator, "close", 0)))
+            if latest_validator is not None
+            else None,
         )
         if divergence_pct is not None and divergence_pct >= float(self.BAR_DIVERGENCE_FAIL_PCT):
             status = "degraded"

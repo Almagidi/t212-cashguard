@@ -13,6 +13,7 @@ Rules (fail-closed for entries):
     before the session open, so the first minutes of a session are not
     penalised for yesterday's close.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

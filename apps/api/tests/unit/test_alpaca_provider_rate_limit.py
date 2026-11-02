@@ -1,4 +1,5 @@
 """Alpaca 429 retry/backoff handling (fake transport, no real sleeping)."""
+
 from __future__ import annotations
 
 import httpx
@@ -14,7 +15,6 @@ def _provider(handler):
     )
     provider._random = lambda: 1.0  # full computed backoff (no jitter reduction)
     return provider
-
 
 
 class _Sleeps:
@@ -136,7 +136,7 @@ async def test_total_sleep_cap_raises_on_large_retry_after() -> None:
 
 @pytest.mark.asyncio
 async def test_exit_path_sleep_cap_limits_total_stall_but_default_keeps_45s() -> None:
-    handler, seen = _rate_limited_then_ok([429, 429, 429], retry_after="30")
+    handler, _seen = _rate_limited_then_ok([429, 429, 429], retry_after="30")
     provider = _provider(handler)
     sleeps = _Sleeps()
     provider._sleep = sleeps

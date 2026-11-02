@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import secrets
-import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from sqlalchemy import select
 
 from app.core.config import settings
 from app.db.models import AppSettings, AuditLog, Order
+
+if TYPE_CHECKING:
+    import uuid
 
 RuntimeMode = Literal["mock", "paper", "demo", "live"]
 BrokerEnvironment = Literal["demo", "live"]
@@ -37,6 +39,8 @@ class SafetyPolicyViolation(Exception):
 # produced by the read that justified it.
 PROTECTIVE_EXIT_AUTHORIZATION_TTL = timedelta(seconds=120)
 
+_EPOCH = datetime.min.replace(tzinfo=UTC)
+
 
 @dataclass(frozen=True)
 class ProtectiveExitAuthorization:
@@ -57,7 +61,7 @@ class ProtectiveExitAuthorization:
     in_flight_sell_quantity: Decimal = Decimal("0")
     order_id: uuid.UUID | None = None
     quantity: Decimal = Decimal("0")
-    issued_at: datetime = datetime.min.replace(tzinfo=UTC)
+    issued_at: datetime = _EPOCH
     nonce: str = ""
 
 

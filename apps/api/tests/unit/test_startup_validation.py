@@ -286,7 +286,9 @@ def test_live_startup_fails_when_telegram_control_enabled_without_webhook_secret
     assert check["status"] == "pass"
 
 
-@pytest.mark.parametrize(("mode", "expected"), [("paper", "warn"), ("demo", "warn"), ("mock", "pass")])
+@pytest.mark.parametrize(
+    ("mode", "expected"), [("paper", "warn"), ("demo", "warn"), ("mock", "pass")]
+)
 def test_non_live_startup_warns_but_does_not_fail_on_missing_telegram_webhook_secret(
     monkeypatch: pytest.MonkeyPatch, mode: str, expected: str
 ) -> None:

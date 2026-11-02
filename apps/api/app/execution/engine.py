@@ -11,7 +11,6 @@ import hashlib
 import inspect
 import json
 import uuid
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -91,13 +90,13 @@ from app.services.safety_policy import (
     audit_safety_decision,
     current_runtime_mode,
     record_protective_exit_blocked_once,
-    send_protective_exit_blocked_alert,
     require_order_submission_allowed,
+    send_protective_exit_blocked_alert,
     verify_protective_exit,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from sqlalchemy.ext.asyncio import AsyncSession
 

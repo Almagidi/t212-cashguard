@@ -55,9 +55,9 @@ from app.db.repositories.venue_config_repo import VenueConfigRepository
 from app.execution.engine import ExecutionEngine
 from app.execution.paper_engine import PaperExecutionError
 from app.execution.state_machine import ACTIVE_ORDER_STATUSES
+from app.market_data import provider_records_feed_health
 from app.market_data.bar_freshness import assess_bar_freshness
 from app.market_data.exchange_calendar import calendar_for_venue
-from app.market_data import provider_records_feed_health
 from app.risk.engine import RiskEngine, RiskViolation
 from app.risk.realized_pnl import realized_pnl_today
 from app.services.alert_service import (
@@ -466,9 +466,7 @@ class StrategyRunner:
                     try:
                         latest_quote = await md.get_quote(ticker)
                     except Exception as exc:
-                        log.warning(
-                            "runner.quote_unavailable", ticker=ticker, error=str(exc)
-                        )
+                        log.warning("runner.quote_unavailable", ticker=ticker, error=str(exc))
                         self._entry_blocks[ticker] = "quote_unavailable"
                     else:
                         if latest_quote is None:

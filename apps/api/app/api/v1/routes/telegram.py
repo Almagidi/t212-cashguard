@@ -1,15 +1,16 @@
 """Telegram monitoring and control routes."""
+
 from __future__ import annotations
 
 import hmac
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from app.api.deps import get_current_admin
 from app.api.schemas import TelegramStatusOut, TelegramTestResult, TelegramWebhookResult
 from app.core.config import settings
-from app.db.models import User
+from app.db.models import User  # noqa: TC001
 from app.db.session import get_db
 from app.services.alert_service import AlertService
 from app.services.telegram_control import TelegramControlService

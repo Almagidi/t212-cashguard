@@ -397,9 +397,7 @@ class EodFlattenService:
             if order is None:
                 raise RuntimeError("EOD operation was committed without its order intent")
             try:
-                order = await ExecutionEngine(self.db, self.broker).submit_protective_exit(
-                    order
-                )
+                order = await ExecutionEngine(self.db, self.broker).submit_protective_exit(order)
             except Exception as exc:
                 operation.status = "manual_reconciliation_required"
                 operation.requires_manual_reconciliation = True

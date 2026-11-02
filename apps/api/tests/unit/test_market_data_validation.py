@@ -32,7 +32,13 @@ class FakeBar:
 
 
 class FakePrimaryProvider:
-    def __init__(self, *, quote: FakeQuote | None = None, bars: list[FakeBar] | None = None, quote_error: Exception | None = None):
+    def __init__(
+        self,
+        *,
+        quote: FakeQuote | None = None,
+        bars: list[FakeBar] | None = None,
+        quote_error: Exception | None = None,
+    ):
         self.quote = quote
         self.bars = bars or []
         self.quote_error = quote_error
@@ -75,11 +81,24 @@ async def test_validated_provider_prefers_primary_when_validator_agrees():
     now = datetime.now(UTC)
     primary = FakePrimaryProvider(
         quote=FakeQuote("AAPL", Decimal("100.0"), Decimal("100.1"), Decimal("100.05"), 1000, now),
-        bars=[FakeBar(now, Decimal("99"), Decimal("101"), Decimal("98"), Decimal("100"), Decimal("100000"))],
+        bars=[
+            FakeBar(
+                now, Decimal("99"), Decimal("101"), Decimal("98"), Decimal("100"), Decimal("100000")
+            )
+        ],
     )
     validator = FakeValidatorProvider(
         quote=FakeQuote("AAPL", Decimal("100.0"), Decimal("100.1"), Decimal("100.08"), 1200, now),
-        bars=[FakeBar(now, Decimal("99"), Decimal("101"), Decimal("98"), Decimal("100.2"), Decimal("120000"))],
+        bars=[
+            FakeBar(
+                now,
+                Decimal("99"),
+                Decimal("101"),
+                Decimal("98"),
+                Decimal("100.2"),
+                Decimal("120000"),
+            )
+        ],
     )
 
     async with ValidatedMarketDataProvider(primary=primary, validator=validator) as provider:
@@ -145,7 +164,9 @@ async def test_opening_range_polygon_fallback_is_flagged_incomplete():
     now = datetime.now(UTC)
     primary = FakePrimaryProvider()  # no opening-range bars from the primary
     validator = FakeValidatorProvider(
-        bars=[FakeBar(now, Decimal("99"), Decimal("101"), Decimal("98"), Decimal("100"), Decimal("1"))],
+        bars=[
+            FakeBar(now, Decimal("99"), Decimal("101"), Decimal("98"), Decimal("100"), Decimal("1"))
+        ],
     )
 
     async with ValidatedMarketDataProvider(primary=primary, validator=validator) as provider:

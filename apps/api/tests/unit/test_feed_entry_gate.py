@@ -1,4 +1,5 @@
 """Entry-only feed gating in the risk engine and strategy runner."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -19,8 +20,12 @@ _REGIME = {"regime": "trending_up", "suppressed_strategies": []}
 
 def _record(status: str, **kwargs) -> None:
     record_feed_health(
-        provider="test", ticker="AAPL", status=status, detail="x",
-        used_source="polygon", **kwargs,
+        provider="test",
+        ticker="AAPL",
+        status=status,
+        detail="x",
+        used_source="polygon",
+        **kwargs,
     )
 
 
@@ -48,8 +53,6 @@ async def test_risk_engine_allows_entry_on_realtime_ok_feed(db):
     await RiskEngine(db).check_market_conditions(
         ticker="AAPL", strategy_type="orb", market_regime=_REGIME
     )
-
-
 
 
 def _runner() -> StrategyRunner:
@@ -86,11 +89,19 @@ def _process_kwargs(runner: StrategyRunner, *, pos_map: dict):
     risk.check_market_conditions = AsyncMock()
     allocator = SignalAllocator()
     return {
-        "ticker": "AAPL", "strategy": strategy, "engine": engine, "risk": risk,
-        "broker": MagicMock(), "cash": Decimal("10000"), "total": Decimal("10000"),
-        "n_open": 0, "pos_map": pos_map, "all_positions": [],
+        "ticker": "AAPL",
+        "strategy": strategy,
+        "engine": engine,
+        "risk": risk,
+        "broker": MagicMock(),
+        "cash": Decimal("10000"),
+        "total": Decimal("10000"),
+        "n_open": 0,
+        "pos_map": pos_map,
+        "all_positions": [],
         "intelligence": {"regime": {"regime": "trending_up"}},
-        "allocator": allocator, "allocation_state": allocator.new_state(),
+        "allocator": allocator,
+        "allocation_state": allocator.new_state(),
     }
 
 
@@ -112,9 +123,7 @@ async def test_runner_feed_block_never_blocks_protective_exit_check():
     runner = _runner()
     runner._fetch_market_context = _context(runner)
     runner._check_exit = AsyncMock(return_value=5)
-    kwargs = _process_kwargs(
-        runner, pos_map={"AAPL": {"quantity": 5, "averagePrice": 100}}
-    )
+    kwargs = _process_kwargs(runner, pos_map={"AAPL": {"quantity": 5, "averagePrice": 100}})
 
     result = await runner._process_ticker(**kwargs)
 
@@ -123,6 +132,7 @@ async def test_runner_feed_block_never_blocks_protective_exit_check():
 
 
 # ── unknown symbol rule in the risk engine ──────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_risk_engine_blocks_unknown_symbol_with_real_provider(db, monkeypatch):
@@ -141,7 +151,9 @@ async def test_risk_engine_blocks_unknown_symbol_with_real_provider(db, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_risk_engine_blocks_unknown_symbol_in_live_mode_even_if_provider_says_mock(db, monkeypatch):
+async def test_risk_engine_blocks_unknown_symbol_in_live_mode_even_if_provider_says_mock(
+    db, monkeypatch
+):
     from app.core.config import settings
 
     db.add(AppSettings(id=1))
@@ -173,6 +185,7 @@ async def test_risk_engine_allows_unknown_symbol_in_mock_mode(db, monkeypatch):
 
 
 # ── runner: quote / health-check failure blocks ENTRY only ──────────────────
+
 
 class _FakeMd:
     records_feed_health = True  # behaves like the validated provider
@@ -248,6 +261,7 @@ async def test_quote_failure_blocks_entry_but_not_protective_exit():
 
 # ── unknown-symbol rule applies only when the provider records feed health ───
 
+
 def _cfg(monkeypatch, *, mode, provider, alpaca=False, polygon=False):
     from app.core.config import settings
 
@@ -273,7 +287,7 @@ async def _check(db):
     [
         ("alpaca", True, False),
         ("polygon", False, True),
-        ("auto", True, False),   # auto with a single vendor key
+        ("auto", True, False),  # auto with a single vendor key
         ("auto", False, True),
         ("auto", False, False),  # auto with no keys falls back to mock
     ],
@@ -351,12 +365,16 @@ async def test_risk_engine_unknown_symbol_rule_skips_kraken_but_not_equity(db, m
 
     # Kraken tickers never get feed-health records: must not be blocked.
     await RiskEngine(db).check_market_conditions(
-        ticker="XBTUSD", strategy_type="kraken_trend_follow", market_regime=_REGIME,
+        ticker="XBTUSD",
+        strategy_type="kraken_trend_follow",
+        market_regime=_REGIME,
         data_provider_type="kraken",
     )
     # Equity (e.g. Trading 212) ticker behaviour is unchanged.
     with pytest.raises(RiskViolation) as exc:
         await RiskEngine(db).check_market_conditions(
-            ticker="AAPL", strategy_type="orb", market_regime=_REGIME,
+            ticker="AAPL",
+            strategy_type="orb",
+            market_regime=_REGIME,
         )
     assert exc.value.event_type == "feed_symbol_block"

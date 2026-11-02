@@ -81,9 +81,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _neutral_bar_age_gate(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _neutral_bar_age_gate(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Fixtures replay fixed historical bars; the wall-clock bar-age gate would make
     results depend on whether the suite runs during US market hours. Tests that
     exercise the gate itself opt back in with ``@pytest.mark.real_bar_gate``."""

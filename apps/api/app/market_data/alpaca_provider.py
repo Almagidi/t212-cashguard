@@ -28,6 +28,7 @@ Note: Polygon is STILL used for backtesting (historical data).
         - ALPACA_API_KEY / ALPACA_API_SECRET  → live signals (real-time)
         - POLYGON_API_KEY                     → backtesting (historical)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -35,7 +36,7 @@ import math
 import random
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -134,7 +135,7 @@ class AlpacaMarketDataProvider:
         api_key: str | None = None,
         api_secret: str | None = None,
     ) -> None:
-        self._api_key    = api_key    or settings.ALPACA_API_KEY
+        self._api_key = api_key or settings.ALPACA_API_KEY
         self._api_secret = api_secret or settings.ALPACA_API_SECRET
 
         if not self._api_key or not self._api_secret:
@@ -150,11 +151,11 @@ class AlpacaMarketDataProvider:
         self._client: httpx.AsyncClient | None = None
         self._cache: dict[str, tuple[float, Any]] = {}
 
-    async def __aenter__(self) -> "AlpacaMarketDataProvider":
+    async def __aenter__(self) -> AlpacaMarketDataProvider:
         self._client = httpx.AsyncClient(
             base_url=self.DATA_BASE_URL,
             headers={
-                "APCA-API-KEY-ID":     self._api_key,
+                "APCA-API-KEY-ID": self._api_key,
                 "APCA-API-SECRET-KEY": self._api_secret,
             },
             timeout=15.0,
@@ -169,7 +170,9 @@ class AlpacaMarketDataProvider:
     @property
     def _http(self) -> httpx.AsyncClient:
         if not self._client:
-            raise RuntimeError("Use as async context manager: async with AlpacaMarketDataProvider() as md:")
+            raise RuntimeError(
+                "Use as async context manager: async with AlpacaMarketDataProvider() as md:"
+            )
         return self._client
 
     def _cached(self, key: str) -> Any | None:
@@ -199,7 +202,7 @@ class AlpacaMarketDataProvider:
     EXIT_MAX_TOTAL_SLEEP_SECONDS = 10.0
 
     # Injectable wall clock (tz-aware UTC) so tests are deterministic.
-    _now = staticmethod(lambda: datetime.now(timezone.utc))
+    _now = staticmethod(lambda: datetime.now(UTC))
 
     # Injectable so tests never really sleep / are deterministic.
     _sleep = staticmethod(asyncio.sleep)
@@ -244,7 +247,7 @@ class AlpacaMarketDataProvider:
             if delay is None:
                 # Equal jitter: half fixed, half random, so concurrent callers
                 # do not retry in lockstep.
-                base = self.BACKOFF_BASE_SECONDS * (2 ** attempt)
+                base = self.BACKOFF_BASE_SECONDS * (2**attempt)
                 delay = min(base / 2 + (base / 2) * self._random(), remaining)
             elif delay > remaining:
                 # Server-supplied Retry-After is the server's instruction: if it
@@ -258,8 +261,7 @@ class AlpacaMarketDataProvider:
 
         if resp.status_code == 401:
             raise AlpacaError(
-                "Invalid Alpaca API credentials. "
-                "Check ALPACA_API_KEY and ALPACA_API_SECRET in .env"
+                "Invalid Alpaca API credentials. Check ALPACA_API_KEY and ALPACA_API_SECRET in .env"
             )
         if resp.status_code == 403:
             raise AlpacaError(
@@ -330,8 +332,8 @@ class AlpacaMarketDataProvider:
         if sort not in ("asc", "desc"):
             raise ValueError(f"sort must be 'asc' or 'desc', got {sort!r}")
         _fmt = "%Y-%m-%dT%H:%M:%SZ"
-        start_s = start.astimezone(timezone.utc).strftime(_fmt) if start else "-"
-        end_s = end.astimezone(timezone.utc).strftime(_fmt) if end else "-"
+        start_s = start.astimezone(UTC).strftime(_fmt) if start else "-"
+        end_s = end.astimezone(UTC).strftime(_fmt) if end else "-"
         cache_key = (
             f"bars:{ticker}:{multiplier}:{timespan}:"
             f"{from_date.isoformat() if from_date else '-'}:"
@@ -343,28 +345,28 @@ class AlpacaMarketDataProvider:
 
         # Alpaca timeframe format: "5Min", "1Min", "15Min"
         tf_map = {
-            (1, "minute"):  "1Min",
-            (5, "minute"):  "5Min",
+            (1, "minute"): "1Min",
+            (5, "minute"): "5Min",
             (15, "minute"): "15Min",
-            (1, "hour"):    "1Hour",
-            (1, "day"):     "1Day",
+            (1, "hour"): "1Hour",
+            (1, "day"): "1Day",
         }
         timeframe = tf_map.get((multiplier, timespan), f"{multiplier}Min")
 
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         start_day = from_date or (
             today - timedelta(days=self._lookback_days(multiplier, timespan, limit))
         )
         start_dt = start_s if start else start_day.isoformat() + "T00:00:00Z"
-        end_dt   = end_s if end else (to_date or today).isoformat() + "T23:59:59Z"
+        end_dt = end_s if end else (to_date or today).isoformat() + "T23:59:59Z"
 
         base_params: dict[str, Any] = {
             "timeframe": timeframe,
-            "start":     start_dt,
-            "end":       end_dt,
+            "start": start_dt,
+            "end": end_dt,
             "adjustment": "raw",
-            "feed":      "iex",   # IEX = free real-time feed
-            "sort":      sort,
+            "feed": "iex",  # IEX = free real-time feed
+            "sort": sort,
         }
         raw_bars: list[dict[str, Any]] = []
         page_token: str | None = None
@@ -399,15 +401,17 @@ class AlpacaMarketDataProvider:
             ts_str = b.get("t", "")
             # Parse ISO timestamp
             ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-            bars.append(AlpacaBar(
-                timestamp=ts,
-                open=Decimal(str(b["o"])),
-                high=Decimal(str(b["h"])),
-                low=Decimal(str(b["l"])),
-                close=Decimal(str(b["c"])),
-                volume=Decimal(str(b.get("v", 0))),
-                vwap=Decimal(str(b["vw"])) if b.get("vw") else None,
-            ))
+            bars.append(
+                AlpacaBar(
+                    timestamp=ts,
+                    open=Decimal(str(b["o"])),
+                    high=Decimal(str(b["h"])),
+                    low=Decimal(str(b["l"])),
+                    close=Decimal(str(b["c"])),
+                    volume=Decimal(str(b.get("v", 0))),
+                    vwap=Decimal(str(b["vw"])) if b.get("vw") else None,
+                )
+            )
 
         if use_cache:
             self._cache_set(cache_key, bars)
@@ -436,9 +440,13 @@ class AlpacaMarketDataProvider:
         target_date = session_date or self._now().astimezone(ZoneInfo("America/New_York")).date()
         # 09:30 ET converted to UTC (DST-correct: 13:30Z summer, 14:30Z winter).
         session_open_utc = datetime(
-            target_date.year, target_date.month, target_date.day, 9, 30,
+            target_date.year,
+            target_date.month,
+            target_date.day,
+            9,
+            30,
             tzinfo=ZoneInfo("America/New_York"),
-        ).astimezone(timezone.utc)
+        ).astimezone(UTC)
         cutoff = session_open_utc + timedelta(minutes=orb_minutes)
         # Start-anchored ascending fetch of exactly the opening window, so the
         # result never depends on how late in the day it is requested.
@@ -502,7 +510,7 @@ class AlpacaMarketDataProvider:
         ask = Decimal(str(q.get("ap") or last_price))
 
         ts_str = trade.get("t") or q.get("t", "")
-        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else datetime.now(timezone.utc)
+        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else datetime.now(UTC)
 
         quote = AlpacaQuote(
             ticker=ticker,
@@ -530,7 +538,7 @@ class AlpacaMarketDataProvider:
             is_open = bool(data.get("is_open", False))
         except Exception:
             # Fallback to UTC time check
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             is_open = (
                 now.weekday() < 5
                 and not (now.hour == 13 and now.minute < 30)
@@ -571,12 +579,12 @@ class AlpacaMarketDataProvider:
             "/v2/stocks/snapshots",
             params={
                 "symbols": ",".join(tickers),
-                "feed":    "iex",
+                "feed": "iex",
             },
         )
         return data  # dict of {ticker: snapshot_data}
 
     def validate_staleness(self, quote: AlpacaQuote, max_age_seconds: int = 60) -> bool:
         """Return True if quote data is fresh enough to trade on."""
-        age = (datetime.now(timezone.utc) - quote.timestamp).total_seconds()
+        age = (datetime.now(UTC) - quote.timestamp).total_seconds()
         return age <= max_age_seconds

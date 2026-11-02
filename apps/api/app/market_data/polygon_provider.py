@@ -118,7 +118,8 @@ class PolygonMarketDataProvider:
         from_date: date | None = None,
         to_date: date | None = None,
         limit: int = 50,
-        max_total_sleep: float | None = None,  # accepted for interface parity; Polygon never sleeps on 429
+        max_total_sleep: float
+        | None = None,  # accepted for interface parity; Polygon never sleeps on 429
     ) -> list[Bar]:
         """
         Fetch aggregated bars (OHLCV) for a ticker.

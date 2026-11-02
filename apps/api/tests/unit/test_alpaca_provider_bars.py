@@ -1,8 +1,10 @@
 """Alpaca get_bars newest-N semantics, cache keying, and 429 handling (fake transport only)."""
+
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from itertools import pairwise
 from typing import Any
 
 import httpx
@@ -14,7 +16,11 @@ from app.market_data.alpaca_provider import AlpacaMarketDataProvider
 def _bar(ts: datetime, close: str) -> dict[str, Any]:
     return {
         "t": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "o": close, "h": close, "l": close, "c": close, "v": 10,
+        "o": close,
+        "h": close,
+        "l": close,
+        "c": close,
+        "v": 10,
     }
 
 
@@ -33,7 +39,7 @@ class FakeAlpaca:
         rows = rows if q["sort"] == "asc" else list(reversed(rows))
         offset = int(q["page_token"]) if "page_token" in q else 0
         size = min(int(q["limit"]), self.page_cap)
-        page = rows[offset: offset + size]
+        page = rows[offset : offset + size]
         body: dict[str, Any] = {"bars": page}
         if offset + size < len(rows):
             body["next_page_token"] = str(offset + size)
@@ -50,10 +56,7 @@ def _provider(handler: Any) -> AlpacaMarketDataProvider:
 
 def _recent_series(count: int) -> list[dict[str, Any]]:
     end = datetime.now(UTC).replace(second=0, microsecond=0)
-    return [
-        _bar(end - timedelta(minutes=5 * (count - 1 - i)), str(100 + i))
-        for i in range(count)
-    ]
+    return [_bar(end - timedelta(minutes=5 * (count - 1 - i)), str(100 + i)) for i in range(count)]
 
 
 @pytest.mark.asyncio
@@ -65,7 +68,7 @@ async def test_default_request_returns_latest_n_bars_in_ascending_order() -> Non
     bars = await provider.get_bars("AAPL", multiplier=5, timespan="minute", limit=50)
 
     assert [b.close for b in bars] == [Decimal(100 + i) for i in range(150, 200)]
-    assert all(a.timestamp < b.timestamp for a, b in zip(bars, bars[1:], strict=False))
+    assert all(a.timestamp < b.timestamp for a, b in pairwise(bars))
     assert fake.requests[0].url.params["sort"] == "desc"
     assert isinstance(bars[0].close, Decimal)
 
@@ -77,14 +80,21 @@ async def test_explicit_window_returns_newest_limit_bars_ascending() -> None:
     today = datetime.now(UTC).date()
 
     bars = await provider.get_bars(
-        "AAPL", multiplier=5, timespan="minute",
-        from_date=today - timedelta(days=3), to_date=today, limit=50,
+        "AAPL",
+        multiplier=5,
+        timespan="minute",
+        from_date=today - timedelta(days=3),
+        to_date=today,
+        limit=50,
     )
 
     assert fake.requests[0].url.params["sort"] == "desc"
-    assert fake.requests[0].url.params["start"] == (today - timedelta(days=3)).isoformat() + "T00:00:00Z"
+    assert (
+        fake.requests[0].url.params["start"]
+        == (today - timedelta(days=3)).isoformat() + "T00:00:00Z"
+    )
     assert [b.close for b in bars] == [Decimal(100 + i) for i in range(200, 250)]
-    assert all(a.timestamp < b.timestamp for a, b in zip(bars, bars[1:], strict=False))
+    assert all(a.timestamp < b.timestamp for a, b in pairwise(bars))
 
 
 @pytest.mark.asyncio
@@ -95,14 +105,18 @@ async def test_explicit_window_follows_pagination_across_three_pages() -> None:
     today = datetime.now(UTC).date()
 
     bars = await provider.get_bars(
-        "AAPL", multiplier=5, timespan="minute",
-        from_date=today - timedelta(days=3), to_date=today, limit=250,
+        "AAPL",
+        multiplier=5,
+        timespan="minute",
+        from_date=today - timedelta(days=3),
+        to_date=today,
+        limit=250,
     )
 
     assert len(fake.requests) == 3
     assert fake.requests[1].url.params["page_token"] == "100"
     assert [b.close for b in bars] == [Decimal(100 + i) for i in range(250)]
-    assert all(a.timestamp < b.timestamp for a, b in zip(bars, bars[1:], strict=False))
+    assert all(a.timestamp < b.timestamp for a, b in pairwise(bars))
 
 
 @pytest.mark.asyncio
@@ -113,8 +127,12 @@ async def test_pagination_stops_once_limit_reached() -> None:
     today = datetime.now(UTC).date()
 
     bars = await provider.get_bars(
-        "AAPL", multiplier=5, timespan="minute",
-        from_date=today - timedelta(days=3), to_date=today, limit=50,
+        "AAPL",
+        multiplier=5,
+        timespan="minute",
+        from_date=today - timedelta(days=3),
+        to_date=today,
+        limit=50,
     )
 
     assert len(fake.requests) == 2
@@ -128,8 +146,12 @@ async def test_limit_larger_than_available_returns_all_ascending() -> None:
     today = datetime.now(UTC).date()
 
     bars = await provider.get_bars(
-        "AAPL", multiplier=5, timespan="minute",
-        from_date=today - timedelta(days=3), to_date=today, limit=500,
+        "AAPL",
+        multiplier=5,
+        timespan="minute",
+        from_date=today - timedelta(days=3),
+        to_date=today,
+        limit=500,
     )
 
     assert [b.close for b in bars] == [Decimal(100 + i) for i in range(40)]
@@ -179,14 +201,16 @@ async def test_cache_key_separates_limit_and_dates() -> None:
     assert len(fake.requests) == 3
 
 
-
 # ── opening range: start-anchored ascending fetch ───────────────────────────
+
 
 def _session_series(day: date, *, one_minute: bool) -> list[dict[str, Any]]:
     """Full regular session 09:30-16:00 ET (DST-correct) as raw bars."""
     from zoneinfo import ZoneInfo
 
-    open_utc = datetime(day.year, day.month, day.day, 9, 30, tzinfo=ZoneInfo("America/New_York")).astimezone(UTC)
+    open_utc = datetime(
+        day.year, day.month, day.day, 9, 30, tzinfo=ZoneInfo("America/New_York")
+    ).astimezone(UTC)
     step, n = (1, 390) if one_minute else (5, 78)
     return [_bar(open_utc + timedelta(minutes=step * i), str(100 + i)) for i in range(n)]
 
@@ -201,7 +225,7 @@ async def test_opening_range_bars_returned_even_when_requested_late_in_day(day: 
 
     assert len(bars) == 15
     assert [b.close for b in bars] == [Decimal(100 + i) for i in range(15)]
-    assert all(a.timestamp < b.timestamp for a, b in zip(bars, bars[1:], strict=False))
+    assert all(a.timestamp < b.timestamp for a, b in pairwise(bars))
     assert fake.requests[0].url.params["sort"] == "asc"
 
 
@@ -235,7 +259,7 @@ async def test_asc_sort_is_start_anchored_and_cache_key_distinct() -> None:
     fake = FakeAlpaca(_recent_series(100))
     provider = _provider(fake)
     today = datetime.now(UTC).date()
-    kw: dict[str, Any] = dict(from_date=today - timedelta(days=3), to_date=today, limit=5)
+    kw: dict[str, Any] = {"from_date": today - timedelta(days=3), "to_date": today, "limit": 5}
 
     newest = await provider.get_bars("AAPL", **kw)
     oldest = await provider.get_bars("AAPL", sort="asc", **kw)
@@ -259,7 +283,10 @@ async def test_pagination_stops_at_max_pages_and_logs_warning() -> None:
 
     with capture_logs() as logs:
         bars = await provider.get_bars(
-            "AAPL", from_date=today - timedelta(days=3), to_date=today, limit=100,
+            "AAPL",
+            from_date=today - timedelta(days=3),
+            to_date=today,
+            limit=100,
         )
 
     assert len(fake.requests) == 3 and len(bars) == 30
@@ -278,12 +305,15 @@ async def test_no_truncation_warning_when_limit_reached_on_last_page() -> None:
     today = datetime.now(UTC).date()
 
     with capture_logs() as logs:
-        await provider.get_bars("AAPL", from_date=today - timedelta(days=3), to_date=today, limit=30)
+        await provider.get_bars(
+            "AAPL", from_date=today - timedelta(days=3), to_date=today, limit=30
+        )
 
     assert not [e for e in logs if e["event"] == "alpaca.bars_pagination_truncated"]
 
 
 # ── opening range: session date is the America/New_York date ────────────────
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -310,7 +340,11 @@ async def test_opening_range_default_date_is_new_york_date(now_utc, expected_et_
     from zoneinfo import ZoneInfo
 
     open_utc = datetime(
-        expected_et_day.year, expected_et_day.month, expected_et_day.day, 9, 30,
+        expected_et_day.year,
+        expected_et_day.month,
+        expected_et_day.day,
+        9,
+        30,
         tzinfo=ZoneInfo("America/New_York"),
     ).astimezone(UTC)
     assert fake.requests[0].url.params["start"] == open_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -318,10 +352,13 @@ async def test_opening_range_default_date_is_new_york_date(now_utc, expected_et_
 
 # ── opening range: partial windows are flagged and not cached ───────────────
 
+
 def _et(day: date, hh: int, mm: int, ss: int = 0) -> datetime:
     from zoneinfo import ZoneInfo
 
-    return datetime(day.year, day.month, day.day, hh, mm, ss, tzinfo=ZoneInfo("America/New_York")).astimezone(UTC)
+    return datetime(
+        day.year, day.month, day.day, hh, mm, ss, tzinfo=ZoneInfo("America/New_York")
+    ).astimezone(UTC)
 
 
 @pytest.mark.asyncio

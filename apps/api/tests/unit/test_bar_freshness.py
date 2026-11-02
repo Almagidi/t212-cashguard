@@ -1,4 +1,5 @@
 """Bar-age gate: entries fail closed on stale/invalid bars; exits are never gated."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -54,9 +55,13 @@ def test_prior_session_bar_does_not_count_as_stale_in_first_minutes():
 
 
 def test_early_close_session_uses_early_close_hours():
-    now = datetime(2024, 11, 29, 17, 30, tzinfo=UTC)  # day after Thanksgiving, closed 13:00 ET = 18:00 UTC
+    now = datetime(
+        2024, 11, 29, 17, 30, tzinfo=UTC
+    )  # day after Thanksgiving, closed 13:00 ET = 18:00 UTC
     assert bars_are_stale(now - timedelta(minutes=30), 5, now=now)
-    assert not bars_are_stale(now - timedelta(minutes=30), 5, now=datetime(2024, 11, 29, 18, 30, tzinfo=UTC))
+    assert not bars_are_stale(
+        now - timedelta(minutes=30), 5, now=datetime(2024, 11, 29, 18, 30, tzinfo=UTC)
+    )
 
 
 @pytest.mark.parametrize(
@@ -90,7 +95,9 @@ def test_invalid_interval_fails_closed():
 
 
 def test_out_of_calendar_range_fails_closed():
-    assert bars_are_stale(datetime(2101, 1, 4, 15, 0, tzinfo=UTC), 5, now=datetime(2101, 1, 4, 15, 5, tzinfo=UTC))
+    assert bars_are_stale(
+        datetime(2101, 1, 4, 15, 0, tzinfo=UTC), 5, now=datetime(2101, 1, 4, 15, 5, tzinfo=UTC)
+    )
 
 
 # ── runner wiring ────────────────────────────────────────────────────────────
@@ -118,11 +125,19 @@ def _kwargs(*, pos_map: dict):
     risk.check_market_conditions = AsyncMock()
     allocator = SignalAllocator()
     return {
-        "ticker": "AAPL", "strategy": strategy, "engine": engine, "risk": risk,
-        "broker": MagicMock(), "cash": Decimal("10000"), "total": Decimal("10000"),
-        "n_open": 0, "pos_map": pos_map, "all_positions": [],
+        "ticker": "AAPL",
+        "strategy": strategy,
+        "engine": engine,
+        "risk": risk,
+        "broker": MagicMock(),
+        "cash": Decimal("10000"),
+        "total": Decimal("10000"),
+        "n_open": 0,
+        "pos_map": pos_map,
+        "all_positions": [],
         "intelligence": {"regime": {"regime": "trending_up"}},
-        "allocator": allocator, "allocation_state": allocator.new_state(),
+        "allocator": allocator,
+        "allocation_state": allocator.new_state(),
     }
 
 
@@ -168,7 +183,9 @@ async def test_runner_never_applies_stale_gate_to_protective_exit(monkeypatch):
 @pytest.mark.real_bar_gate
 async def test_runner_lets_fresh_bar_entry_through_the_real_gate(monkeypatch):
     # Last bar is 09:33 ET, "now" is 2 minutes later: the REAL gate must pass it.
-    monkeypatch.setattr("app.market_data.bar_freshness._utcnow", lambda: OPEN + timedelta(minutes=5))
+    monkeypatch.setattr(
+        "app.market_data.bar_freshness._utcnow", lambda: OPEN + timedelta(minutes=5)
+    )
     runner = _runner()
     runner._fetch_market_context = _fetch()
     kwargs = _kwargs(pos_map={})
