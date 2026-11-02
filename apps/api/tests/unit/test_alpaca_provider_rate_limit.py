@@ -65,15 +65,16 @@ async def test_429_honours_retry_after_header() -> None:
 
 
 @pytest.mark.asyncio
-async def test_429_retry_after_is_capped() -> None:
-    handler, _ = _rate_limited_then_ok([429, 200], retry_after="3600")
+async def test_429_retry_after_beyond_the_cap_raises_without_sleeping() -> None:
+    handler, seen = _rate_limited_then_ok([429, 200], retry_after="3600")
     provider = _provider(handler)
     sleeps = _Sleeps()
     provider._sleep = sleeps
 
-    await provider._get("/v2/stocks/AAPL/bars")
+    with pytest.raises(AlpacaError, match="429"):
+        await provider._get("/v2/stocks/AAPL/bars")
 
-    assert sleeps.calls == [AlpacaMarketDataProvider.MAX_BACKOFF_SECONDS]
+    assert sleeps.calls == [] and seen["n"] == 1
 
 
 @pytest.mark.asyncio
@@ -117,7 +118,7 @@ async def test_backoff_has_equal_jitter_with_injected_random() -> None:
 
 
 @pytest.mark.asyncio
-async def test_total_sleep_cap_truncates_large_retry_after() -> None:
+async def test_total_sleep_cap_raises_on_large_retry_after() -> None:
     handler, seen = _rate_limited_then_ok([429], retry_after="3600")
     provider = _provider(handler)
     sleeps = _Sleeps()
@@ -127,10 +128,10 @@ async def test_total_sleep_cap_truncates_large_retry_after() -> None:
     with pytest.raises(AlpacaError):
         await provider._get("/v2/stocks/AAPL/bars")
 
-    assert seen["n"] == 3
-    # 30 s (per-sleep cap), then only the 10 s left of the 40 s budget
-    assert sleeps.calls == [30.0, 10.0]
-    assert sum(sleeps.calls) <= provider.MAX_TOTAL_SLEEP_SECONDS
+    # Retry-After 3600 s fits neither the per-sleep cap nor the budget: raise,
+    # do not ignore it and retry early.
+    assert seen["n"] == 1
+    assert sleeps.calls == []
 
 
 @pytest.mark.asyncio
@@ -142,7 +143,7 @@ async def test_exit_path_sleep_cap_limits_total_stall_but_default_keeps_45s() ->
 
     with pytest.raises(AlpacaError):
         await provider._get("/v2/stocks/AAPL/bars", max_total_sleep=10.0)
-    assert sleeps.calls == [10.0]  # 30 s Retry-After clamped to the 10 s budget
+    assert sleeps.calls == []  # 30 s Retry-After exceeds the 10 s budget: raise at once
 
     handler2, _ = _rate_limited_then_ok([429, 429, 429], retry_after="30")
     default = _provider(handler2)
@@ -150,7 +151,9 @@ async def test_exit_path_sleep_cap_limits_total_stall_but_default_keeps_45s() ->
     default._sleep = sleeps2
     with pytest.raises(AlpacaError):
         await default._get("/v2/stocks/AAPL/bars")
-    assert sleeps2.calls == [30.0, 15.0]  # non-exit callers keep the 45 s budget
+    # non-exit callers keep the 45 s budget: 30 s fits, the next 30 s exceeds the
+    # 15 s left, so it raises after 2 requests rather than retrying early.
+    assert sleeps2.calls == [30.0]
 
 
 @pytest.mark.asyncio
@@ -176,3 +179,33 @@ async def test_get_bars_forwards_max_total_sleep() -> None:
     with pytest.raises(AlpacaError):
         await provider.get_bars("AAPL", limit=5, max_total_sleep=10.0)
     assert sum(sleeps.calls) <= 10.0
+
+
+@pytest.mark.asyncio
+async def test_exhausted_budget_stops_retrying_instead_of_zero_sleep_loop() -> None:
+    handler, seen = _rate_limited_then_ok([429, 429, 429, 429])
+    provider = _provider(handler)
+    sleeps = _Sleeps()
+    provider._sleep = sleeps
+    provider.MAX_TOTAL_SLEEP_SECONDS = 1.0  # first backoff (1 s) uses it all
+
+    with pytest.raises(AlpacaError, match="429"):
+        await provider._get("/v2/stocks/AAPL/bars")
+
+    assert sleeps.calls == [1.0]
+    assert seen["n"] == 2  # second 429 with no budget left: no third request
+
+
+@pytest.mark.asyncio
+async def test_retry_after_larger_than_remaining_budget_raises() -> None:
+    handler, seen = _rate_limited_then_ok([429, 429, 200], retry_after="8")
+    provider = _provider(handler)
+    sleeps = _Sleeps()
+    provider._sleep = sleeps
+    provider.MAX_TOTAL_SLEEP_SECONDS = 10.0
+
+    with pytest.raises(AlpacaError, match="429"):
+        await provider._get("/v2/stocks/AAPL/bars")
+
+    assert sleeps.calls == [8.0]  # 8 s fits; the next 8 s exceeds the 2 s left
+    assert seen["n"] == 2

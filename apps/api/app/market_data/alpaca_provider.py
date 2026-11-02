@@ -237,14 +237,20 @@ class AlpacaMarketDataProvider:
             resp = await self._http.get(path, params=params)
             if resp.status_code != 429 or attempt + 1 >= self.MAX_ATTEMPTS:
                 break
+            remaining = min(self.MAX_BACKOFF_SECONDS, budget - slept)
+            if remaining <= 0:
+                break  # sleep budget exhausted: stop retrying, raise below
             delay = self._retry_after_seconds(resp)
             if delay is None:
                 # Equal jitter: half fixed, half random, so concurrent callers
-                # do not retry in lockstep. Server-supplied Retry-After is
-                # honoured exactly (it is the server's instruction).
+                # do not retry in lockstep.
                 base = self.BACKOFF_BASE_SECONDS * (2 ** attempt)
-                delay = base / 2 + (base / 2) * self._random()
-            delay = min(delay, self.MAX_BACKOFF_SECONDS, budget - slept)
+                delay = min(base / 2 + (base / 2) * self._random(), remaining)
+            elif delay > remaining:
+                # Server-supplied Retry-After is the server's instruction: if it
+                # does not fit the remaining budget, retrying early would just
+                # be another 429, so give up now instead of ignoring it.
+                break
             if delay > 0:
                 await self._sleep(delay)
                 slept += delay
@@ -264,8 +270,8 @@ class AlpacaMarketDataProvider:
             raise AlpacaError(f"Alpaca rejected request: {resp.text[:200]}")
         if resp.status_code == 429:
             raise AlpacaError(
-                f"Alpaca rate limit hit (HTTP 429) after {self.MAX_ATTEMPTS} attempts "
-                "— reduce request frequency"
+                "Alpaca rate limit hit (HTTP 429); retries exhausted or the "
+                "retry-sleep budget was used up — reduce request frequency"
             )
 
         resp.raise_for_status()
