@@ -19,7 +19,8 @@ Alpaca's free tier includes:
   - Real-time 1-minute and 5-minute bars for all US equities
   - Real-time quotes (bid/ask/last)
   - Market status endpoint
-  - No rate limits on IEX data feed (unlimited calls)
+  - IEX feed only (single-exchange volume); calls ARE rate limited (HTTP 429),
+    so _get() retries a bounded number of times honouring Retry-After
 
 Note: Polygon is STILL used for backtesting (historical data).
       Alpaca is used for LIVE signal generation only.
@@ -29,6 +30,8 @@ Note: Polygon is STILL used for backtesting (historical data).
 """
 from __future__ import annotations
 
+import asyncio
+import math
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -158,6 +161,19 @@ class AlpacaMarketDataProvider:
 
     # ── Real-time bars ────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _lookback_days(multiplier: int, timespan: str, limit: int) -> int:
+        """Calendar days to look back so ``limit`` bars fit, covering weekends/holidays."""
+        mult = max(multiplier, 1)
+        if timespan == "day":
+            trading_days = limit * mult
+        elif timespan == "hour":
+            trading_days = math.ceil(limit / (6.5 / mult))
+        else:
+            trading_days = math.ceil(limit / max(1, 390 // mult))
+        # 7/5 for weekends plus slack for holidays; never below the old 5 days.
+        return max(5, math.ceil(trading_days * 7 / 5) + 5)
+
     async def get_bars(
         self,
         ticker: str,
@@ -169,12 +185,23 @@ class AlpacaMarketDataProvider:
         limit: int = 50,
     ) -> list[AlpacaBar]:
         """
-        Fetch recent aggregated bars (OHLCV).
-        Default: last 50 five-minute bars (real-time, no delay).
+        Fetch aggregated bars (OHLCV), always returned oldest -> newest.
+
+        With no explicit ``from_date``/``to_date`` this returns the LATEST
+        ``limit`` bars: the request is sorted descending (so the limit
+        truncates the OLD end) over a lookback window sized to the timeframe,
+        then reversed. With explicit dates the window is honoured as given and
+        sorted ascending (backtest / opening-range behaviour).
 
         timespan options: "1Min", "5Min", "15Min", "1Hour", "1Day"
         """
-        cache_key = f"bars:{ticker}:{multiplier}:{timespan}"
+        explicit_window = from_date is not None or to_date is not None
+        sort = "asc" if explicit_window else "desc"
+        cache_key = (
+            f"bars:{ticker}:{multiplier}:{timespan}:"
+            f"{from_date.isoformat() if from_date else '-'}:"
+            f"{to_date.isoformat() if to_date else '-'}:{limit}:{sort}"
+        )
         cached = self._cached(cache_key)
         if cached is not None:
             return cached
@@ -189,9 +216,11 @@ class AlpacaMarketDataProvider:
         }
         timeframe = tf_map.get((multiplier, timespan), f"{multiplier}Min")
 
-        today = date.today()
-        # Go back 5 days to handle weekends/holidays
-        start_dt = (from_date or (today - timedelta(days=5))).isoformat() + "T00:00:00Z"
+        today = datetime.now(timezone.utc).date()
+        start_day = from_date or (
+            today - timedelta(days=self._lookback_days(multiplier, timespan, limit))
+        )
+        start_dt = start_day.isoformat() + "T00:00:00Z"
         end_dt   = (to_date or today).isoformat() + "T23:59:59Z"
 
         data = await self._get(
@@ -203,12 +232,16 @@ class AlpacaMarketDataProvider:
                 "limit":     limit,
                 "adjustment": "raw",
                 "feed":      "iex",   # IEX = free real-time feed
-                "sort":      "asc",
+                "sort":      sort,
             },
         )
 
+        raw_bars = list(data.get("bars") or [])
+        if sort == "desc":
+            raw_bars.reverse()  # callers always receive ascending order
+
         bars: list[AlpacaBar] = []
-        for b in data.get("bars", []):
+        for b in raw_bars:
             ts_str = b.get("t", "")
             # Parse ISO timestamp
             ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
