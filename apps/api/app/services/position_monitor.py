@@ -580,6 +580,9 @@ class PositionMonitor:
                 stable_operation_identity=identity,
             )
             if order.status == "pending_intent":
+                # A standing intent for this exit keeps the quantity it was created with; the
+                # position may have shrunk since, so re-size it to this cycle's verified one.
+                order = await engine.resize_pending_exit(order, sell_qty)
                 # Protective exit: sell-only, capped at the held long quantity, exempt from
                 # the kill-switch check only (see ExecutionEngine.submit_protective_exit).
                 order = await engine.submit_protective_exit(order)

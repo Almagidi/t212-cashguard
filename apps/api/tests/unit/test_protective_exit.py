@@ -907,3 +907,47 @@ async def test_stuck_sell_never_allows_selling_more_than_the_held_quantity(db, m
     sell = await _demo_sell(engine, "5", "test:stale:oversell")
     with pytest.raises(SafetyPolicyViolation):
         await engine.submit_protective_exit(sell)  # 8 active + 5 > 10; the stale 3 is ignored
+
+
+# -- A stale pending intent is re-sized to the verified quantity ---------------------------
+
+
+async def test_stale_pending_exit_intent_is_resized_to_the_shrunken_position(
+    db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    await _held_long_with_entry_signal(db)
+    entry = (await db.execute(select(Signal).where(Signal.side == "buy"))).scalar_one()
+    stale = await ExecutionEngine(db, _DemoBroker("10")).create_order_intent(
+        ticker="AAPL",
+        side="sell",
+        order_type="market",
+        quantity=Decimal("10"),  # the position has since shrunk to 5
+        is_dry_run=False,
+        stable_operation_identity=f"exit:{entry.id}:stop:0",
+    )
+    await db.commit()
+    broker = _DemoBroker("5")
+
+    result = await _run_exit(db, monkeypatch, broker, "stop", "5")
+
+    assert result["exits_submitted"] == 1
+    assert result["errors"] == []
+    assert broker.sent == [Decimal("5")]
+    sells = await _sells(db)
+    assert [o.id for o in sells] == [stale.id]  # same identity, no second order
+    assert sells[0].quantity == Decimal("5")
+    assert sells[0].status != "pending_intent"
+    assert await _audit_rows(db, "protective_exit_refused") == []
+
+
+async def test_only_a_pending_sell_intent_can_be_resized(db) -> None:
+    await _settings(db, kill=True)
+    engine = ExecutionEngine(db, _Broker([_position("5")]))
+    sent = await engine.create_order_intent(
+        ticker="AAPL", side="sell", order_type="market", quantity=Decimal("5"), is_dry_run=True
+    )
+    await engine.submit_protective_exit(sent)
+    with pytest.raises(ValueError):
+        await engine.resize_pending_exit(sent, Decimal("2"))

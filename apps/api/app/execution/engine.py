@@ -431,6 +431,33 @@ class ExecutionEngine:
             await self.db.flush()
         return order
 
+    async def resize_pending_exit(self, order: Order, quantity: Decimal) -> Order:
+        """Re-size an exit intent that was never sent to the quantity now verified.
+
+        ``create_order_intent`` returns a standing intent for the same exit identity with the
+        quantity it was created with. If the position changed since (a partial fill, a manual
+        sale), that stale quantity would be refused every cycle. The identity (and so the
+        client order key and its dedup) is untouched; only a never-sent sell intent is
+        resized, and the change is recorded as an order event.
+        """
+        if order.status != "pending_intent" or order.side != "sell":
+            raise ValueError("only a pending sell intent can be re-sized")
+        if quantity <= 0:
+            raise ValueError("a re-sized exit must be positive")
+        if order.quantity == quantity:
+            return order
+        previous = order.quantity
+        order.quantity = quantity
+        await self._log_order_event(
+            order.id,
+            "intent_resized",
+            from_status=order.status,
+            to_status=order.status,
+            payload={"from_quantity": str(previous), "to_quantity": str(quantity)},
+        )
+        await self.db.flush()
+        return order
+
     async def _close_blocked_buy(self, order: Order, exc: SafetyPolicyViolation) -> None:
         """End a real buy that was not allowed to be sent.
 
