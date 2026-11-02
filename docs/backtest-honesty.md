@@ -109,14 +109,18 @@ research pass. Code: `apps/api/app/backtest/portfolio_*.py`, route `POST /v1/bac
   reasons are reported (`out_of_sample.windows_dropped`, `dropped_window_ids`,
   `dropped_windows` in the walk-forward result, and a warning in the interpretation). Many
   dropped windows mean the evidence is thinner than the headline numbers suggest.
-- **Holdout reuse is not enforced.** The holdout is spent by every call. Nothing durable tracks
-  reuse across calls: results live in the process's memory only. Each walk-forward job returns
-  `holdout_reuse_warning` and a `holdout_reuse` record: your optional `run_id`, a
-  `data_fingerprint` (universe, dates, benchmark, dataset manifests) and a `run_fingerprint`
-  (that plus strategy, parameters, costs, grid and walk-forward settings), and the earlier jobs
-  in the same process that used the same data. Keep your own log of fingerprints; a second run on
-  the same data with a changed grid has already spent the holdout and must be counted in
-  `extra_trials`.
+- **Holdout reuse is advisory, not enforced.** The holdout is spent by every call. Nothing
+  durable tracks reuse across calls: results live in the process's memory only, so restarts and
+  other processes are invisible. Each walk-forward job returns `holdout_reuse_warning` and a
+  `holdout_reuse` record: your optional `run_id`; a `family_fingerprint` (strategy type plus
+  the holdout END date, the last aligned session; it ignores universe and start date, so
+  changing either does not hide a second look at the same holdout); a `grid_fingerprint`
+  (family plus the initial parameter grid); a `data_fingerprint` (universe, dates, benchmark,
+  dataset manifests); a `run_fingerprint` (everything: strategy, parameters, costs, grid,
+  walk-forward settings); and the earlier in-memory jobs matching each. `reused` is true if the
+  family or the data matches an earlier job. A different end date or a different strategy type
+  looks new to this check even when it is the same idea, so keep your own log and count every
+  re-run in `extra_trials`.
 
 - **Survivorship.** The default scanner universe is 14 hand-picked winners. There are no
   point-in-time index constituents, so delisted and failed names are absent. Results on that

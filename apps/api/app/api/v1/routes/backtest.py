@@ -656,7 +656,12 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
             "datasets": dataset_manifests,
             "holdout_reuse_warning": HOLDOUT_REUSE_WARNING,
             "holdout_reuse": (
-                _holdout_reuse_record(job_id, body, dataset_manifests)
+                _holdout_reuse_record(
+                    job_id,
+                    body,
+                    dataset_manifests,
+                    walk_forward.holdout.test_end if walk_forward.holdout else None,
+                )
                 if body.walk_forward is not None
                 else None
             ),
@@ -697,15 +702,28 @@ def _fingerprint(payload: Any) -> str:
 
 
 def _holdout_reuse_record(
-    job_id: str, body: PortfolioBacktestRequest, dataset_manifests: list[dict[str, Any]]
+    job_id: str,
+    body: PortfolioBacktestRequest,
+    dataset_manifests: list[dict[str, Any]],
+    holdout_end: Any = None,
 ) -> dict[str, Any]:
-    """Identify this run so repeated use of one holdout can be spotted.
+    """Identify this run so repeated use of one holdout can be spotted (advisory only).
 
-    ``data_fingerprint`` covers the universe, dates, benchmark and dataset manifests (the data
-    the holdout comes from); ``run_fingerprint`` adds the strategy, grid, costs and walk-forward
-    settings.  There is no durable store: runs are compared only against jobs still held in this
-    process's memory, so this is a prompt to keep your own log, not an enforcement.
+    ``family_fingerprint`` covers the strategy type and the holdout END date (the last aligned
+    session when known, else ``to_date``).  It deliberately ignores the universe and start date,
+    so changing either cannot hide a second look at the same holdout; ``grid_fingerprint``
+    covers the initial parameter grid.  ``data_fingerprint`` covers the universe, dates,
+    benchmark and dataset manifests; ``run_fingerprint`` adds the strategy, grid, costs and
+    walk-forward settings.  There is no durable store: runs are compared only against jobs still
+    held in this process's memory, so this is a prompt to keep your own log, not enforcement.
     """
+    end = holdout_end.isoformat() if holdout_end is not None else body.to_date.isoformat()
+    family_fingerprint = _fingerprint({"strategy_type": body.strategy_type, "holdout_end": end})
+    grid_fingerprint = _fingerprint(
+        {"family": family_fingerprint, "param_grid": body.walk_forward.param_grid}
+        if body.walk_forward
+        else {"family": family_fingerprint}
+    )
     data_fingerprint = _fingerprint(
         {
             "tickers": sorted(body.tickers),
@@ -727,6 +745,12 @@ def _holdout_reuse_record(
             else None,
         }
     )
+    seen_family = [
+        other
+        for other, job in _portfolio_jobs.items()
+        if other != job_id
+        and (job.get("holdout_reuse") or {}).get("family_fingerprint") == family_fingerprint
+    ]
     seen_data = [
         other
         for other, job in _portfolio_jobs.items()
@@ -742,10 +766,14 @@ def _holdout_reuse_record(
         "run_id": body.run_id,
         "data_fingerprint": data_fingerprint,
         "run_fingerprint": run_fingerprint,
+        "family_fingerprint": family_fingerprint,
+        "grid_fingerprint": grid_fingerprint,
         "tracking": "in_process_memory_only",
+        "enforcement": "advisory_only",
+        "earlier_jobs_same_strategy_and_holdout_end": seen_family,
         "earlier_jobs_on_same_data": seen_data,
         "earlier_jobs_identical_run": seen_run,
-        "reused": bool(seen_data),
+        "reused": bool(seen_family or seen_data),
     }
 
 

@@ -172,7 +172,7 @@ def test_interpretation_warns_about_dropped_windows() -> None:
 def test_walk_forward_payload_carries_the_holdout_reuse_warning() -> None:
     payload = serialize_walk_forward(_walk_forward(min_rebalances_per_window=1))
     assert "spent by every call" in payload["holdout_reuse_warning"]
-    assert "nothing here tracks reuse" in payload["holdout_reuse_warning"]
+    assert "advisory" in payload["holdout_reuse_warning"]
 
 
 @pytest.mark.asyncio
@@ -219,3 +219,70 @@ async def test_repeated_runs_on_the_same_data_are_flagged_and_run_id_is_echoed(
     assert third["run_fingerprint"] == second["run_fingerprint"]
     assert third["earlier_jobs_identical_run"] == [ids[1]]
     assert third["tracking"] == "in_process_memory_only"
+
+
+class DatedFetcher(LongFetcher):
+    """Honours the requested date range, as a real provider does."""
+
+    async def fetch_bars(self, *, ticker: str, from_date: Any, to_date: Any, **kwargs: Any):
+        bars, times = await super().fetch_bars(ticker=ticker, **kwargs)
+        keep = [i for i, t in enumerate(times) if from_date <= t.date() <= to_date]
+        return [bars[i] for i in keep], [times[i] for i in keep]
+
+
+@pytest.mark.asyncio
+async def test_reuse_is_flagged_when_universe_or_start_date_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fingerprint is on strategy family + holdout end date, so a new universe or start
+    date cannot hide a second look at the same holdout; a different end date is a new holdout."""
+    monkeypatch.setattr("app.backtest.data_fetcher.BacktestDataFetcher", DatedFetcher)
+    _, times = synth_history(LONG, seed=1)
+
+    def request(tickers: list[str], start: int, end: int, grid: list[dict[str, Any]]):
+        return PortfolioBacktestRequest(
+            tickers=tickers,
+            strategy_type="trend_following_tactical",
+            benchmark_ticker="SPY",
+            from_date=times[start].date(),
+            to_date=times[end].date(),
+            walk_forward={
+                "param_grid": grid,
+                "initial_train_bars": 300,
+                "test_bars": 100,
+                "holdout_bars": 120,
+            },
+        )
+
+    ids = ["pf-fam-1", "pf-fam-2", "pf-fam-3"]
+    try:
+        await route._run_portfolio_backtest_job(
+            ids[0], request(["AAA", "BBB"], 0, LONG - 1, [{"sma_period": 20}])
+        )
+        await route._run_portfolio_backtest_job(
+            ids[1], request(["AAA"], 15, LONG - 1, [{"sma_period": 50}, {"sma_period": 100}])
+        )
+        await route._run_portfolio_backtest_job(
+            ids[2], request(["AAA", "BBB"], 0, LONG - 40, [{"sma_period": 20}])
+        )
+        jobs = [route._portfolio_jobs[i] for i in ids]
+        first, second, third = (job["holdout_reuse"] for job in jobs)
+        statuses = [job["status"] for job in jobs]
+    finally:
+        for job_id in ids:
+            route._portfolio_jobs.pop(job_id, None)
+
+    assert statuses == ["complete"] * 3
+    assert second["data_fingerprint"] != first["data_fingerprint"]
+    assert second["family_fingerprint"] == first["family_fingerprint"]
+    assert second["reused"] is True
+    assert second["earlier_jobs_same_strategy_and_holdout_end"] == [ids[0]]
+    assert third["family_fingerprint"] != first["family_fingerprint"]
+    assert third["reused"] is False
+    assert second["enforcement"] == "advisory_only"
+
+
+def test_reuse_warning_is_worded_as_advisory() -> None:
+    from app.backtest.portfolio_walk_forward import HOLDOUT_REUSE_WARNING
+
+    assert "advisory" in HOLDOUT_REUSE_WARNING

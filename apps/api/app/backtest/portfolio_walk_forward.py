@@ -73,9 +73,12 @@ GATED_BENCHMARKS = (BENCHMARK_UNIVERSE_EW, BENCHMARK_BROAD_INDEX)
 
 HOLDOUT_REUSE_WARNING = (
     "The holdout is spent by every call: parameters are re-selected and the holdout is scored "
-    "once per run, and nothing here tracks reuse across calls. Re-running after looking at a "
-    "result (new grid, new parameters, new universe, new dates) turns the holdout into training "
-    "data. Record run_id and the fingerprints below and count every re-run in extra_trials."
+    "once per run. Reuse detection is advisory only: it compares fingerprints (strategy family, "
+    "holdout end date, parameter grid, universe and dates) with jobs still in this process's "
+    "memory, and cannot see other processes, restarts or other tools. Re-running after looking "
+    "at a result (new grid, new parameters, new universe, new dates) turns the holdout into "
+    "training data. Keep your own log of run_id and the fingerprints below and count every "
+    "re-run in extra_trials."
 )
 
 
