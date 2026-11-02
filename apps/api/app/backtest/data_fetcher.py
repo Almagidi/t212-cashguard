@@ -10,17 +10,18 @@ import os
 import subprocess
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 import structlog
 
+from app.backtest.cache_location import resolve_cache_dir
 from app.backtest.data_contract import validate_bar_series
 from app.backtest.dataset_cache import (
     DatasetHandle,
     DatasetRequest,
     ImmutableDatasetCache,
 )
+from app.core.config import settings
 from app.strategies.indicators import Bar
 
 log = structlog.get_logger()
@@ -35,8 +36,10 @@ def _code_sha() -> str:
     )
 
 
-CACHE_DIR = Path("/tmp/cashguard_backtest_cache")
-CACHE_DIR.mkdir(exist_ok=True)
+# Configurable via BACKTEST_CACHE_DIR; otherwise a per-user cache directory for the
+# platform.  Directories are created on first publish by the cache itself.  The location
+# never enters a dataset/manifest id.
+CACHE_DIR = resolve_cache_dir(settings.BACKTEST_CACHE_DIR)
 
 
 class BacktestDataFetcher:

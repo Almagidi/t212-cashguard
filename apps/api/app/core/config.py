@@ -143,6 +143,9 @@ class Settings(BaseSettings):
 
     # Market data
     POLYGON_API_KEY: str = ""  # Get free key at polygon.io
+    # Backtest dataset cache directory; empty = platform user-cache default
+    # (%LOCALAPPDATA%\CashGuard, ~/Library/Caches/CashGuard or ~/.cache/cashguard).
+    BACKTEST_CACHE_DIR: str = ""
     MARKET_DATA_PROVIDER: str = "mock"  # mock | auto | alpaca | polygon | validated
     MOCK_MARKET_PROFILE: Literal["default", "orb_breakout"] = "default"
     MOCK_MARKET_SEED: int = 212
