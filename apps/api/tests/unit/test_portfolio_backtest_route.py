@@ -87,3 +87,133 @@ async def test_job_reports_costs_benchmarks_and_risk_free(monkeypatch: pytest.Mo
     fx_by_ticker = {t["ticker"]: t["fx_fee_cost"] for t in result["trades"]}
     assert fx_by_ticker["AAA"] == 0.0  # GBP-listed
     assert fx_by_ticker["BBB"] > 0.0  # unknown currency => foreign
+
+
+# ── verdict gating ───────────────────────────────────────────────────────────
+
+
+def _fake_result(*, sharpe: float, total_return: float = 20.0, zero_cost: bool = False):
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        coverage_report=SimpleNamespace(complete=True, retained_coverage_pct=Decimal("100")),
+        sharpe_ratio=Decimal(str(sharpe)),
+        total_return_pct=Decimal(str(total_return)),
+        max_drawdown_pct=Decimal("10"),
+        rebalance_count=12,
+        turnover_pct=Decimal("50"),
+        avg_exposure_pct=Decimal("90"),
+        cost_model={"zero_cost": zero_cost},
+    )
+
+
+def _fake_wf(*, passes: bool, reasons: list[str] | None = None):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        passes_gate=passes,
+        gate_reasons=reasons
+        or ([] if passes else ["out-of-sample return does not beat costed benchmark broad_index"]),
+        gate_warnings=[],
+        n_trials=12,
+    )
+
+
+@pytest.mark.parametrize(("sharpe", "label"), [(0.8, "promising"), (1.3, "strong")])
+def test_positive_verdicts_are_refused_without_walk_forward(sharpe: float, label: str) -> None:
+    interpretation = route._interpret_portfolio_results(_fake_result(sharpe=sharpe))
+
+    assert interpretation["verdict"] == "unvalidated"
+    assert interpretation["verdict"] not in {"promising", "strong"}
+    assert interpretation["validation"]["refused_verdict"] == label
+    assert interpretation["validation"]["walk_forward_run"] is False
+    assert "no out-of-sample" in interpretation["validation"]["refusal_reason"]
+    assert any("withheld" in warning for warning in interpretation["warnings"])
+
+
+@pytest.mark.parametrize("sharpe", [0.8, 1.3])
+def test_positive_verdicts_are_refused_when_walk_forward_does_not_beat_benchmark(
+    sharpe: float,
+) -> None:
+    interpretation = route._interpret_portfolio_results(
+        _fake_result(sharpe=sharpe), _fake_wf(passes=False)
+    )
+    assert interpretation["verdict"] == "unvalidated"
+    assert "does not beat costed benchmark" in interpretation["validation"]["refusal_reason"]
+    assert interpretation["validation"]["n_trials"] == 12
+
+
+@pytest.mark.parametrize(("sharpe", "label"), [(0.8, "promising"), (1.3, "strong")])
+def test_positive_verdicts_allowed_only_when_walk_forward_gate_passes(
+    sharpe: float, label: str
+) -> None:
+    interpretation = route._interpret_portfolio_results(
+        _fake_result(sharpe=sharpe), _fake_wf(passes=True)
+    )
+    assert interpretation["verdict"] == label
+    assert interpretation["validation"]["passes_gate"] is True
+    assert "refused_verdict" not in interpretation["validation"]
+
+
+def test_zero_cost_run_cannot_be_promising_even_with_a_passing_walk_forward() -> None:
+    interpretation = route._interpret_portfolio_results(
+        _fake_result(sharpe=1.3, zero_cost=True), _fake_wf(passes=True)
+    )
+    assert interpretation["verdict"] == "unvalidated"
+    assert "zero-cost" in interpretation["validation"]["refusal_reason"]
+
+
+def test_non_positive_verdicts_are_unchanged_by_gating() -> None:
+    losing = route._interpret_portfolio_results(_fake_result(sharpe=0.8, total_return=-3.0))
+    marginal = route._interpret_portfolio_results(_fake_result(sharpe=0.1))
+    assert losing["verdict"] == "losing"
+    assert marginal["verdict"] == "marginal"
+    assert "refused_verdict" not in marginal["validation"]
+
+
+class LongFakeFetcher(FakeFetcher):
+    async def fetch_bars(self, *, ticker: str, **kwargs: Any):
+        del kwargs
+        seeds = {"AAA": 31, "BBB": 32, "SPY": 33}
+        return synth_history(720, seed=seeds[ticker])
+
+
+@pytest.mark.asyncio
+async def test_job_runs_optional_walk_forward_and_never_labels_it_promising_unvalidated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.backtest.data_fetcher.BacktestDataFetcher", LongFakeFetcher)
+    _, times = synth_history(720, seed=1)
+    grid = [{"sma_period": 20}, {"sma_period": 50}]
+    body = PortfolioBacktestRequest(
+        tickers=["AAA", "BBB"],
+        strategy_type="trend_following_tactical",
+        benchmark_ticker="SPY",
+        from_date=times[0].date(),
+        to_date=times[-1].date(),
+        walk_forward={
+            "param_grid": grid,
+            "initial_train_bars": 300,
+            "test_bars": 100,
+            "holdout_bars": 120,
+            "min_rebalances_per_window": 1,
+            "min_valid_windows": 1,
+            "extra_trials": 3,
+        },
+    )
+    await route._run_portfolio_backtest_job("pf-test-wf", body)
+    job = route._portfolio_jobs.pop("pf-test-wf")
+
+    assert job["status"] == "complete", job
+    wf = job["walk_forward"]
+    assert wf["n_trials"] == 5
+    assert len(wf["windows"]) == 3
+    assert wf["holdout"]["kind"] == "holdout"
+    assert "deflated_sharpe" in wf
+    validation = job["interpretation"]["validation"]
+    assert validation["walk_forward_run"] is True
+    assert validation["n_trials"] == 5
+    assert validation["passes_gate"] == wf["passes_gate"]
+    if not wf["passes_gate"]:
+        assert job["interpretation"]["verdict"] not in {"promising", "strong"}

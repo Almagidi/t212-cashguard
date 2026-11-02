@@ -561,6 +561,7 @@ class PortfolioBacktester:
         benchmark_history: tuple[list[Bar], list[datetime]] | None = None,
         benchmark_ticker: str = "BROAD_INDEX",
         primary_benchmark: str = BENCHMARK_UNIVERSE_EW,
+        trade_start_date: date | None = None,
     ) -> None:
         self.strategy = strategy
         self.universe = sorted(dict.fromkeys(universe))
@@ -586,6 +587,9 @@ class PortfolioBacktester:
         self.benchmark_history = benchmark_history
         self.benchmark_ticker = benchmark_ticker.strip().upper()
         self.primary_benchmark = primary_benchmark
+        # Strategy history before this date is visible (warm-up) but no trading, and no metrics,
+        # happen before it.  Used by the walk-forward harness to evaluate a test window.
+        self.trade_start_date = trade_start_date
 
     def _execute(
         self,
@@ -747,6 +751,13 @@ class PortfolioBacktester:
             )
 
         first_trade_index = max(0, min_history)
+        if self.trade_start_date is not None:
+            start_index = next(
+                (i for i, current in enumerate(dates) if current >= self.trade_start_date), None
+            )
+            if start_index is None:
+                raise ValueError("trade_start_date is after the last aligned session")
+            first_trade_index = max(first_trade_index, start_index)
         cash = self.initial_capital
         holdings = {ticker: Decimal("0") for ticker in history}
         equity_curve: list[PortfolioAllocationPoint] = []

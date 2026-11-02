@@ -25,6 +25,11 @@ from app.backtest.portfolio_strategies import (
     get_portfolio_backtest_strategy,
     list_portfolio_backtest_strategies,
 )
+from app.backtest.portfolio_walk_forward import (
+    WalkForwardConfig,
+    run_portfolio_walk_forward,
+    serialize_walk_forward,
+)
 from app.backtest.strategy_registry import get_backtest_strategy, list_backtest_strategies
 from app.core.config import settings
 from app.db.session import get_db
@@ -171,6 +176,37 @@ class PortfolioCostRequest(BaseModel):
         return self
 
 
+class PortfolioWalkForwardRequest(BaseModel):
+    """Optional expanding-window walk-forward validation (off unless supplied).
+
+    ``param_grid`` entries are merged over ``strategy_params``; the grid size (plus
+    ``extra_trials`` for ideas already tried elsewhere) is recorded as the number of trials for
+    the deflated Sharpe ratio.  The last ``holdout_bars`` sessions are never used for selection.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    param_grid: list[dict[str, Any]] = Field(min_length=1, max_length=50)
+    initial_train_bars: int = Field(ge=2)
+    test_bars: int = Field(ge=2)
+    holdout_bars: int = Field(ge=2)
+    min_rebalances_per_window: int = Field(default=3, ge=1)
+    min_valid_windows: int = Field(default=2, ge=1)
+    extra_trials: int = Field(default=0, ge=0)
+    min_deflated_sharpe_probability: float | None = Field(default=None, ge=0, le=1)
+
+    def to_config(self) -> WalkForwardConfig:
+        return WalkForwardConfig(
+            initial_train_bars=self.initial_train_bars,
+            test_bars=self.test_bars,
+            holdout_bars=self.holdout_bars,
+            min_rebalances_per_window=self.min_rebalances_per_window,
+            min_valid_windows=self.min_valid_windows,
+            extra_trials=self.extra_trials,
+            min_deflated_sharpe_probability=self.min_deflated_sharpe_probability,
+        )
+
+
 class PortfolioBacktestRequest(BaseModel):
     tickers: list[str] = Field(min_length=1, max_length=20)
     strategy_type: PortfolioBacktestStrategyType = "buy_hold_core"
@@ -185,6 +221,7 @@ class PortfolioBacktestRequest(BaseModel):
     # 'broad_index' and 'risk_matched_blend' benchmarks, net of the same costs.
     benchmark_ticker: str | None = Field(default=None, min_length=1, max_length=12)
     primary_benchmark: PortfolioBenchmarkKey = BENCHMARK_UNIVERSE_EW
+    walk_forward: PortfolioWalkForwardRequest | None = None
 
     @field_validator("tickers")
     @classmethod
@@ -532,6 +569,27 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
         )
         result = backtester.run(histories)
 
+        walk_forward = None
+        if body.walk_forward is not None:
+            import asyncio
+
+            walk_forward = await asyncio.to_thread(
+                run_portfolio_walk_forward,
+                strategy_class=strategy_class,
+                base_params=body.strategy_params or None,
+                param_grid=body.walk_forward.param_grid,
+                histories=histories,
+                universe=body.tickers,
+                start_date=body.from_date,
+                end_date=body.to_date,
+                config=body.walk_forward.to_config(),
+                initial_capital=Decimal(str(body.initial_capital)),
+                cost_model=body.cost_model.to_model(),
+                risk_free_rate=Decimal(str(body.risk_free_rate_annual)),
+                benchmark_history=benchmark_history,
+                benchmark_ticker=body.benchmark_ticker or "BROAD_INDEX",
+            )
+
         _portfolio_jobs[job_id] = {
             "status": "complete",
             "tickers": body.tickers,
@@ -544,7 +602,8 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
                 strategy_label=str(strategy_config["label"]),
                 rationale=str(strategy_config["rationale"]),
             ),
-            "interpretation": _interpret_portfolio_results(result),
+            "walk_forward": serialize_walk_forward(walk_forward) if walk_forward else None,
+            "interpretation": _interpret_portfolio_results(result, walk_forward),
         }
     except InsufficientPortfolioEvidence as exc:
         _portfolio_jobs[job_id] = {
@@ -820,7 +879,13 @@ def _interpret_results(result: Any) -> dict[str, Any]:
     }
 
 
-def _interpret_portfolio_results(result: Any) -> dict[str, Any]:
+def _interpret_portfolio_results(result: Any, walk_forward: Any = None) -> dict[str, Any]:
+    """Plain-English verdict for a portfolio run.
+
+    'promising' and 'strong' are in-sample labels that are refused ('unvalidated' instead)
+    unless a walk-forward with out-of-sample windows and an untouched holdout exists, passed
+    its gate, and beat the costed benchmark(s).  ``walk_forward`` is a WalkForwardResult.
+    """
     if not result.coverage_report.complete:
         return {
             "verdict": "insufficient_evidence",
@@ -846,6 +911,29 @@ def _interpret_portfolio_results(result: Any) -> dict[str, Any]:
         verdict = "marginal"
 
     warnings: list[str] = []
+    validation: dict[str, Any] = {
+        "walk_forward_run": walk_forward is not None,
+        "passes_gate": bool(walk_forward.passes_gate) if walk_forward is not None else False,
+        "n_trials": walk_forward.n_trials if walk_forward is not None else None,
+    }
+    if verdict in {"promising", "strong"}:
+        refusal = None
+        if walk_forward is None:
+            refusal = "no out-of-sample or holdout walk-forward was run"
+        elif not walk_forward.passes_gate:
+            refusal = "; ".join(walk_forward.gate_reasons) or "walk-forward gate not passed"
+        elif result.cost_model.get("zero_cost"):
+            refusal = "the run used an explicit zero-cost model"
+        if refusal is not None:
+            validation["refused_verdict"] = verdict
+            validation["refusal_reason"] = refusal
+            warnings.append(
+                f"In-sample verdict '{verdict}' withheld: {refusal}. "
+                "Promising/strong needs out-of-sample and holdout results that beat the costed benchmark."
+            )
+            verdict = "unvalidated"
+    if walk_forward is not None:
+        warnings.extend(walk_forward.gate_warnings)
     if result.rebalance_count < 3:
         warnings.append("Very few rebalance decisions were observed — extend the test period.")
     if float(result.max_drawdown_pct) > 25:
@@ -863,7 +951,12 @@ def _interpret_portfolio_results(result: Any) -> dict[str, Any]:
 
     return {
         "verdict": verdict,
+        "validation": validation,
         "summary": {
+            "unvalidated": (
+                "In-sample numbers look favourable but are not evidence of an edge: there are no "
+                "out-of-sample and holdout results that beat the costed benchmark. Keep it in research only."
+            ),
             "losing": "This portfolio rule set failed to add value over the tested window. Keep it in research only.",
             "marginal": "The edge is weak. Tighten selection rules or broaden the history before treating it as deployable.",
             "promising": "The portfolio logic is promising. Validate it on additional universes before paper trading.",
