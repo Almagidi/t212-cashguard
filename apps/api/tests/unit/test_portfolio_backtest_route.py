@@ -108,8 +108,18 @@ def _fake_result(*, sharpe: float, total_return: float = 20.0, zero_cost: bool =
     )
 
 
-def _fake_wf(*, passes: bool, reasons: list[str] | None = None, **config_overrides: Any):
+def _fake_wf(
+    *,
+    passes: bool,
+    reasons: list[str] | None = None,
+    sharpe: float = 0.8,
+    total_return: float = 10.0,
+    benchmarks: tuple[str, ...] = ("universe_equal_weight_costed", "broad_index"),
+    **config_overrides: Any,
+):
     from types import SimpleNamespace
+
+    evidence = {"sharpe_ratio": sharpe, "total_return_pct": total_return, "max_drawdown_pct": 10.0}
 
     config = {
         "holdout_bars": 126,
@@ -126,6 +136,9 @@ def _fake_wf(*, passes: bool, reasons: list[str] | None = None, **config_overrid
         or ([] if passes else ["out-of-sample return does not beat costed benchmark broad_index"]),
         gate_warnings=[],
         n_trials=12,
+        oos=dict(evidence),
+        holdout_summary=dict(evidence),
+        benchmarks_evaluated=list(benchmarks),
     )
 
 
@@ -146,7 +159,7 @@ def test_positive_verdicts_are_refused_when_walk_forward_does_not_beat_benchmark
     sharpe: float,
 ) -> None:
     interpretation = route._interpret_portfolio_results(
-        _fake_result(sharpe=sharpe), _fake_wf(passes=False)
+        _fake_result(sharpe=sharpe), _fake_wf(passes=False, sharpe=sharpe)
     )
     assert interpretation["verdict"] == "unvalidated"
     assert "does not beat costed benchmark" in interpretation["validation"]["refusal_reason"]
@@ -158,7 +171,7 @@ def test_positive_verdicts_allowed_only_when_walk_forward_gate_passes(
     sharpe: float, label: str
 ) -> None:
     interpretation = route._interpret_portfolio_results(
-        _fake_result(sharpe=sharpe), _fake_wf(passes=True)
+        _fake_result(sharpe=sharpe), _fake_wf(passes=True, sharpe=sharpe)
     )
     assert interpretation["verdict"] == label
     assert interpretation["validation"]["passes_gate"] is True
@@ -167,7 +180,7 @@ def test_positive_verdicts_allowed_only_when_walk_forward_gate_passes(
 
 def test_zero_cost_run_cannot_be_promising_even_with_a_passing_walk_forward() -> None:
     interpretation = route._interpret_portfolio_results(
-        _fake_result(sharpe=1.3, zero_cost=True), _fake_wf(passes=True)
+        _fake_result(sharpe=1.3, zero_cost=True), _fake_wf(passes=True, sharpe=1.3)
     )
     assert interpretation["verdict"] == "unvalidated"
     assert "zero-cost" in interpretation["validation"]["refusal_reason"]

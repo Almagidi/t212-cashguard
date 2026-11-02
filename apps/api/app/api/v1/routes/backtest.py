@@ -24,6 +24,7 @@ from app.backtest.gate_floors import (
 )
 from app.backtest.portfolio_costs import TransactionCostModel
 from app.backtest.portfolio_engine import (
+    BENCHMARK_BROAD_INDEX,
     BENCHMARK_UNIVERSE_EW,
     InsufficientPortfolioEvidence,
 )
@@ -890,6 +891,46 @@ def _interpret_results(result: Any) -> dict[str, Any]:
     }
 
 
+POSITIVE_VERDICTS = frozenset({"promising", "strong"})
+
+
+def _classify_portfolio(*, sharpe: float, max_drawdown_pct: float, total_return_pct: float) -> str:
+    if total_return_pct <= 0:
+        return "losing"
+    if sharpe >= 1.0 and max_drawdown_pct <= 20:
+        return "strong"
+    if sharpe >= 0.6 and max_drawdown_pct <= 25:
+        return "promising"
+    if sharpe < 0.25:
+        return "marginal"
+    return "mixed"
+
+
+def _validated_verdict(walk_forward: Any) -> tuple[str | None, dict[str, Any] | None]:
+    """Classify the walk-forward's out-of-sample and holdout evidence with the same thresholds.
+
+    Takes the weaker of the two on every axis (lowest Sharpe and total return, deepest drawdown),
+    so neither the stitched out-of-sample series nor the holdout alone can carry a verdict.
+    Returns (None, None) when there is no usable evidence.
+    """
+    if walk_forward is None:
+        return None, None
+    oos, holdout = walk_forward.oos, walk_forward.holdout_summary
+    fields = ("sharpe_ratio", "total_return_pct", "max_drawdown_pct")
+    if any(source.get(name) is None for source in (oos, holdout) for name in fields):
+        return None, None
+    evidence = {
+        "out_of_sample": {name: oos[name] for name in fields},
+        "holdout": {name: holdout[name] for name in fields},
+    }
+    verdict = _classify_portfolio(
+        sharpe=min(oos["sharpe_ratio"], holdout["sharpe_ratio"]),
+        max_drawdown_pct=max(oos["max_drawdown_pct"], holdout["max_drawdown_pct"]),
+        total_return_pct=min(oos["total_return_pct"], holdout["total_return_pct"]),
+    )
+    return verdict, evidence
+
+
 def _interpret_portfolio_results(result: Any, walk_forward: Any = None) -> dict[str, Any]:
     """Plain-English verdict for a portfolio run.
 
@@ -910,24 +951,34 @@ def _interpret_portfolio_results(result: Any, walk_forward: Any = None) -> dict[
             ],
         }
 
-    verdict = "mixed"
-    sharpe = float(result.sharpe_ratio or 0)
-    if float(result.total_return_pct) <= 0:
-        verdict = "losing"
-    elif sharpe >= 1.0 and float(result.max_drawdown_pct) <= 20:
-        verdict = "strong"
-    elif sharpe >= 0.6 and float(result.max_drawdown_pct) <= 25:
-        verdict = "promising"
-    elif sharpe < 0.25:
-        verdict = "marginal"
+    # Two verdicts, always shown together.  The in-sample one comes from the full-period run with
+    # ``strategy_params``; the validated one comes from the walk-forward's stitched out-of-sample
+    # and holdout evidence for the grid-selected procedure.  Those are different procedures and
+    # can disagree: a positive verdict is emitted only when both agree on the same label.
+    in_sample_verdict = _classify_portfolio(
+        sharpe=float(result.sharpe_ratio or 0),
+        max_drawdown_pct=float(result.max_drawdown_pct),
+        total_return_pct=float(result.total_return_pct),
+    )
+    validated_verdict, validated_evidence = _validated_verdict(walk_forward)
+    verdict = in_sample_verdict
 
     warnings: list[str] = []
     validation: dict[str, Any] = {
         "walk_forward_run": walk_forward is not None,
         "passes_gate": bool(walk_forward.passes_gate) if walk_forward is not None else False,
         "n_trials": walk_forward.n_trials if walk_forward is not None else None,
+        "in_sample_verdict": in_sample_verdict,
+        "validated_verdict": validated_verdict,
+        "verdicts_agree": validated_verdict == in_sample_verdict
+        if validated_verdict is not None
+        else None,
+        "validated_evidence": validated_evidence,
     }
-    if verdict in {"promising", "strong"}:
+    claimed = next(
+        (v for v in (in_sample_verdict, validated_verdict) if v in POSITIVE_VERDICTS), None
+    )
+    if claimed is not None:
         refusal = None
         if walk_forward is None:
             refusal = "no out-of-sample or holdout walk-forward was run"
@@ -945,11 +996,19 @@ def _interpret_portfolio_results(result: Any, walk_forward: Any = None) -> dict[
             refusal = "; ".join(floor_reasons)
         elif result.cost_model.get("zero_cost"):
             refusal = "the run used an explicit zero-cost model"
+        elif BENCHMARK_BROAD_INDEX not in walk_forward.benchmarks_evaluated:
+            refusal = "no broad-index benchmark series was supplied; best verdict is 'unvalidated'"
+        elif validated_verdict != in_sample_verdict:
+            refusal = (
+                f"the in-sample verdict '{in_sample_verdict}' (strategy_params, full period) and "
+                f"the validated out-of-sample/holdout verdict '{validated_verdict}' "
+                "(grid-selected procedure) disagree"
+            )
         if refusal is not None:
-            validation["refused_verdict"] = verdict
+            validation["refused_verdict"] = claimed
             validation["refusal_reason"] = refusal
             warnings.append(
-                f"In-sample verdict '{verdict}' withheld: {refusal}. "
+                f"Verdict '{claimed}' withheld: {refusal}. "
                 "Promising/strong needs out-of-sample and holdout results that beat the costed benchmark."
             )
             verdict = "unvalidated"
@@ -972,6 +1031,8 @@ def _interpret_portfolio_results(result: Any, walk_forward: Any = None) -> dict[
 
     return {
         "verdict": verdict,
+        "in_sample_verdict": in_sample_verdict,
+        "validated_verdict": validated_verdict,
         "validation": validation,
         "summary": {
             "unvalidated": (
