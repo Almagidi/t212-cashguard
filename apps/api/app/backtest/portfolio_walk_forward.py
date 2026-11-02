@@ -70,6 +70,13 @@ MAX_GRID_SIZE = 50
 # Benchmarks the gate compares against; the risk-matched blend is reported but not gated.
 GATED_BENCHMARKS = (BENCHMARK_UNIVERSE_EW, BENCHMARK_BROAD_INDEX)
 
+HOLDOUT_REUSE_WARNING = (
+    "The holdout is spent by every call: parameters are re-selected and the holdout is scored "
+    "once per run, and nothing here tracks reuse across calls. Re-running after looking at a "
+    "result (new grid, new parameters, new universe, new dates) turns the holdout into training "
+    "data. Record run_id and the fingerprints below and count every re-run in extra_trials."
+)
+
 
 # ── Deflated Sharpe ratio ────────────────────────────────────────────────────
 
@@ -256,10 +263,15 @@ def _stitched_summary(
     windows: list[WalkForwardWindow], risk_free: float, benchmark_keys: list[str]
 ) -> dict[str, Any]:
     valid = [w for w in windows if w.valid]
+    dropped = [w for w in windows if not w.valid]
     returns = [r for w in valid for r in w.daily_returns]
     summary: dict[str, Any] = {
         "windows_total": len(windows),
         "windows_valid": len(valid),
+        # Windows below the minimum rebalance count are excluded from every statistic here.
+        "windows_dropped": len(dropped),
+        "dropped_window_ids": [w.index for w in dropped],
+        "dropped_window_reasons": {str(w.index): w.invalid_reason for w in dropped},
         "n_obs": len(returns),
         "total_return_pct": total_return_pct_from_returns(returns) if returns else None,
         "sharpe_ratio": sharpe_ratio(returns, risk_free) if returns else None,
@@ -633,6 +645,13 @@ def serialize_walk_forward(result: WalkForwardResult) -> dict[str, Any]:
             "min_deflated_sharpe_probability": config.min_deflated_sharpe_probability,
         },
         "gate_floors": floors_as_dict(),
+        "holdout_reuse_warning": HOLDOUT_REUSE_WARNING,
+        "dropped_windows": {
+            "count": result.oos["windows_dropped"],
+            "ids": result.oos["dropped_window_ids"],
+            "reasons": result.oos["dropped_window_reasons"],
+            "min_rebalances_per_window": config.min_rebalances_per_window,
+        },
         "effective_min_deflated_sharpe_probability": effective_deflated_sharpe_threshold(
             config.min_deflated_sharpe_probability
         ),

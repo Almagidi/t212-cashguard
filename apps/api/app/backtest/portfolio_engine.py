@@ -34,8 +34,16 @@ MIN_PORTFOLIO_COVERAGE_PCT = Decimal("95")
 
 BENCHMARK_UNIVERSE_EW = "universe_equal_weight_costed"
 BENCHMARK_BROAD_INDEX = "broad_index"
-BENCHMARK_RISK_MATCHED = "risk_matched_blend"
-BENCHMARK_KEYS = (BENCHMARK_UNIVERSE_EW, BENCHMARK_BROAD_INDEX, BENCHMARK_RISK_MATCHED)
+# Holds the broad index at the strategy's average *exposure* (and the rest in cash); it matches
+# exposure, not risk, hence the name.  The old key is accepted on requests and mapped.
+BENCHMARK_EXPOSURE_MATCHED = "exposure_matched_blend"
+BENCHMARK_KEYS = (BENCHMARK_UNIVERSE_EW, BENCHMARK_BROAD_INDEX, BENCHMARK_EXPOSURE_MATCHED)
+BENCHMARK_ALIASES = {"risk_matched_blend": BENCHMARK_EXPOSURE_MATCHED}
+
+# Share of equity a rebalance may allocate; the remainder is a small cash buffer for rounding and
+# fees.  The strategy and every buy-and-hold benchmark use the same fraction so the buffer cannot
+# tilt the comparison.
+ALLOCATABLE_EQUITY_FRACTION = Decimal("0.998")
 
 
 @dataclass
@@ -575,6 +583,7 @@ class PortfolioBacktester:
         if risk_free_rate <= Decimal("-1"):
             raise ValueError("risk_free_rate must be greater than -1")
         self.risk_free_rate = risk_free_rate
+        primary_benchmark = BENCHMARK_ALIASES.get(primary_benchmark, primary_benchmark)
         if primary_benchmark not in BENCHMARK_KEYS:
             raise ValueError(f"primary_benchmark must be one of {', '.join(BENCHMARK_KEYS)}")
         if primary_benchmark != BENCHMARK_UNIVERSE_EW and benchmark_history is None:
@@ -642,8 +651,11 @@ class PortfolioBacktester:
             open_price = bars_by_ticker[ticker][first_index].open
             if open_price <= 0 or weight <= 0:
                 continue
+            # Same sizing as a strategy rebalance: aim for the allocatable fraction, let fees come
+            # out of the cash that remains, and never spend more than this ticker's share.
             budget = self.initial_capital * weight
-            quantity = (budget / open_price).quantize(SHARE_QUANT, rounding=ROUND_DOWN)
+            target = budget * ALLOCATABLE_EQUITY_FRACTION
+            quantity = (target / open_price).quantize(SHARE_QUANT, rounding=ROUND_DOWN)
             while quantity > 0:
                 fill = self._execute(
                     side="buy", shares=quantity, quote_price=open_price, ticker=ticker
@@ -918,9 +930,12 @@ class PortfolioBacktester:
                 length=length,
             )
             blend_pct = (blend_weight * 100).quantize(Decimal("0.1"))
-            benchmarks[BENCHMARK_RISK_MATCHED] = self._comparison(
-                key=BENCHMARK_RISK_MATCHED,
-                name=f"Risk-matched blend: {blend_pct}% {self.benchmark_ticker} / rest cash (costed)",
+            benchmarks[BENCHMARK_EXPOSURE_MATCHED] = self._comparison(
+                key=BENCHMARK_EXPOSURE_MATCHED,
+                name=(
+                    f"Exposure-matched blend: {blend_pct}% {self.benchmark_ticker} / "
+                    "rest cash (costed)"
+                ),
                 equities=blend_equities,
                 entry_cost=blend_cost,
                 avg_exposure_pct=blend_weight * Decimal("100"),
@@ -985,7 +1000,7 @@ class PortfolioBacktester:
         for ticker, bars in history.items():
             equity_at_open += updated_holdings[ticker] * bars[index].open
 
-        allocatable_equity = equity_at_open * Decimal("0.998")
+        allocatable_equity = equity_at_open * ALLOCATABLE_EQUITY_FRACTION
         target_values = {
             ticker: allocatable_equity * target_weights.get(ticker, Decimal("0"))
             for ticker in history

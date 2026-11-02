@@ -78,7 +78,7 @@ async def test_job_reports_costs_benchmarks_and_risk_free(monkeypatch: pytest.Mo
     assert set(result["benchmarks"]) == {
         "universe_equal_weight_costed",
         "broad_index",
-        "risk_matched_blend",
+        "exposure_matched_blend",
     }
     assert "excess_sharpe_ratio" in result["benchmarks"]["broad_index"]
     assert result["benchmark_name"] == result["benchmarks"]["broad_index"]["name"]

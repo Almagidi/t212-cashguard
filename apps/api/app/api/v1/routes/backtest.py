@@ -4,6 +4,8 @@ Backtest and performance attribution routes.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from copy import deepcopy
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -29,11 +31,13 @@ from app.backtest.portfolio_engine import (
     BENCHMARK_UNIVERSE_EW,
     InsufficientPortfolioEvidence,
 )
+from app.backtest.portfolio_metrics import TRADING_DAYS_PER_YEAR
 from app.backtest.portfolio_strategies import (
     get_portfolio_backtest_strategy,
     list_portfolio_backtest_strategies,
 )
 from app.backtest.portfolio_walk_forward import (
+    HOLDOUT_REUSE_WARNING,
     WalkForwardConfig,
     run_portfolio_walk_forward,
     serialize_walk_forward,
@@ -137,7 +141,32 @@ class BacktestStrategyInfo(BaseModel):
     strategy_params: dict[str, Any]
 
 
-PortfolioBenchmarkKey = Literal["universe_equal_weight_costed", "broad_index", "risk_matched_blend"]
+PortfolioBenchmarkKey = Literal[
+    "universe_equal_weight_costed", "broad_index", "exposure_matched_blend"
+]
+# Accepted on requests for compatibility; the benchmark matches exposure, not risk.
+_BENCHMARK_ALIASES = {"risk_matched_blend": "exposure_matched_blend"}
+
+# Always attached to a portfolio result so no reader has to find these in the docs.
+PORTFOLIO_DISCLOSURES: dict[str, str] = {
+    "currency": (
+        "FX moves between the account currency and instrument currencies are NOT modelled. "
+        "Returns are computed in each instrument's quote currency (typically USD) and presented "
+        "as if they were account-currency returns; only the FX conversion fee is charged."
+    ),
+    "annualisation": (
+        "252 trading sessions per year for annualised return, Sharpe, Sortino and turnover."
+    ),
+    "turnover": (
+        "turnover_pct is annualised one-way turnover: half of (buys + sells) over average equity, "
+        "scaled to a 252-session year."
+    ),
+    "cash_buffer": (
+        "Rebalances allocate 99.8% of equity (the rest is a cash buffer); every buy-and-hold "
+        "benchmark uses the same 99.8%, so the buffer does not tilt the comparison."
+    ),
+    "benchmark_exits": "Benchmarks are bought on day one and marked to market with no exit cost.",
+}
 
 
 class PortfolioCostRequest(BaseModel):
@@ -231,10 +260,17 @@ class PortfolioBacktestRequest(BaseModel):
     # Annual risk-free rate for Sharpe/Sortino.  Default 0.0 (documented, reported in the result).
     risk_free_rate_annual: float = Field(default=0.0, ge=-0.5, le=1.0)
     # A price series already in/fetchable as daily bars (e.g. SPY or a global ETF), used for the
-    # 'broad_index' and 'risk_matched_blend' benchmarks, net of the same costs.
+    # 'broad_index' and 'exposure_matched_blend' benchmarks, net of the same costs.
     benchmark_ticker: str | None = Field(default=None, min_length=1, max_length=12)
     primary_benchmark: PortfolioBenchmarkKey = BENCHMARK_UNIVERSE_EW
     walk_forward: PortfolioWalkForwardRequest | None = None
+    # Caller-supplied label echoed in the result so repeated runs against one holdout can be found.
+    run_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("primary_benchmark", mode="before")
+    @classmethod
+    def map_benchmark_alias(cls, value: Any) -> Any:
+        return _BENCHMARK_ALIASES.get(value, value) if isinstance(value, str) else value
 
     @field_validator("tickers")
     @classmethod
@@ -609,6 +645,12 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
             "strategy_type": body.strategy_type,
             "bars_used": len(result.coverage_report.retained_session_ids),
             "datasets": dataset_manifests,
+            "holdout_reuse_warning": HOLDOUT_REUSE_WARNING,
+            "holdout_reuse": (
+                _holdout_reuse_record(job_id, body, dataset_manifests)
+                if body.walk_forward is not None
+                else None
+            ),
             "result": _serialize_portfolio_backtest_result(
                 result=result,
                 strategy_type=body.strategy_type,
@@ -638,6 +680,64 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
             "error": str(exc),
             "traceback": traceback.format_exc(),
         }
+
+
+def _fingerprint(payload: Any) -> str:
+    canonical = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def _holdout_reuse_record(
+    job_id: str, body: PortfolioBacktestRequest, dataset_manifests: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Identify this run so repeated use of one holdout can be spotted.
+
+    ``data_fingerprint`` covers the universe, dates, benchmark and dataset manifests (the data
+    the holdout comes from); ``run_fingerprint`` adds the strategy, grid, costs and walk-forward
+    settings.  There is no durable store: runs are compared only against jobs still held in this
+    process's memory, so this is a prompt to keep your own log, not an enforcement.
+    """
+    data_fingerprint = _fingerprint(
+        {
+            "tickers": sorted(body.tickers),
+            "benchmark": body.benchmark_ticker,
+            "from": body.from_date,
+            "to": body.to_date,
+            "datasets": dataset_manifests,
+        }
+    )
+    run_fingerprint = _fingerprint(
+        {
+            "data": data_fingerprint,
+            "strategy_type": body.strategy_type,
+            "strategy_params": body.strategy_params,
+            "cost_model": body.cost_model.model_dump(mode="json"),
+            "risk_free_rate_annual": body.risk_free_rate_annual,
+            "walk_forward": body.walk_forward.model_dump(mode="json")
+            if body.walk_forward
+            else None,
+        }
+    )
+    seen_data = [
+        other
+        for other, job in _portfolio_jobs.items()
+        if other != job_id
+        and (job.get("holdout_reuse") or {}).get("data_fingerprint") == data_fingerprint
+    ]
+    seen_run = [
+        other
+        for other in seen_data
+        if _portfolio_jobs[other]["holdout_reuse"]["run_fingerprint"] == run_fingerprint
+    ]
+    return {
+        "run_id": body.run_id,
+        "data_fingerprint": data_fingerprint,
+        "run_fingerprint": run_fingerprint,
+        "tracking": "in_process_memory_only",
+        "earlier_jobs_on_same_data": seen_data,
+        "earlier_jobs_identical_run": seen_run,
+        "reused": bool(seen_data),
+    }
 
 
 def _serialize_backtest_trade(trade: Any) -> dict[str, Any]:
@@ -786,6 +886,8 @@ def _serialize_portfolio_backtest_result(
             for trade in result.trades[-250:]
         ],
         "rationale": rationale,
+        "trading_days_per_year": TRADING_DAYS_PER_YEAR,
+        "disclosures": dict(PORTFOLIO_DISCLOSURES),
     }
 
 
@@ -1015,6 +1117,13 @@ def _interpret_portfolio_results(result: Any, walk_forward: Any = None) -> dict[
             verdict = "unvalidated"
     if walk_forward is not None:
         warnings.extend(walk_forward.gate_warnings)
+        dropped_ids = walk_forward.oos.get("dropped_window_ids") or []
+        validation["dropped_window_ids"] = list(dropped_ids)
+        if dropped_ids:
+            warnings.append(
+                f"{len(dropped_ids)} walk-forward window(s) {list(dropped_ids)} had too few "
+                "rebalances and were dropped; the out-of-sample statistics exclude them."
+            )
     if result.rebalance_count < 3:
         warnings.append("Very few rebalance decisions were observed — extend the test period.")
     if float(result.max_drawdown_pct) > 25:

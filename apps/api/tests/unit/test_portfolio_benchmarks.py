@@ -7,7 +7,7 @@ import pytest
 from app.backtest.portfolio_costs import TransactionCostModel
 from app.backtest.portfolio_engine import (
     BENCHMARK_BROAD_INDEX,
-    BENCHMARK_RISK_MATCHED,
+    BENCHMARK_EXPOSURE_MATCHED,
     BENCHMARK_UNIVERSE_EW,
     PortfolioBacktester,
 )
@@ -51,7 +51,7 @@ def test_all_three_benchmarks_reported_with_excess_metrics() -> None:
     assert set(result.benchmarks) == {
         BENCHMARK_UNIVERSE_EW,
         BENCHMARK_BROAD_INDEX,
-        BENCHMARK_RISK_MATCHED,
+        BENCHMARK_EXPOSURE_MATCHED,
     }
     for bench in result.benchmarks.values():
         assert bench.excess_return_pct == (
@@ -78,7 +78,7 @@ def test_benchmarks_are_net_of_the_same_costs_as_the_strategy() -> None:
     costed = _run()
     free = _run(cost_model=TransactionCostModel.explicit_zero())
 
-    for key in (BENCHMARK_UNIVERSE_EW, BENCHMARK_BROAD_INDEX, BENCHMARK_RISK_MATCHED):
+    for key in (BENCHMARK_UNIVERSE_EW, BENCHMARK_BROAD_INDEX, BENCHMARK_EXPOSURE_MATCHED):
         assert costed.benchmarks[key].total_return_pct < free.benchmarks[key].total_return_pct
         assert free.benchmarks[key].total_execution_cost == 0
     assert costed.total_return_pct < free.total_return_pct
@@ -96,9 +96,9 @@ def test_index_cost_uses_its_own_currency_mapping() -> None:
     )
 
 
-def test_risk_matched_blend_uses_strategy_average_exposure() -> None:
+def test_exposure_matched_blend_uses_strategy_average_exposure() -> None:
     result = _run(strategy=HalfInvestedStrategy())
-    blend = result.benchmarks[BENCHMARK_RISK_MATCHED]
+    blend = result.benchmarks[BENCHMARK_EXPOSURE_MATCHED]
     index = result.benchmarks[BENCHMARK_BROAD_INDEX]
 
     assert abs(blend.avg_exposure_pct - result.avg_exposure_pct) <= Decimal("0.1")
