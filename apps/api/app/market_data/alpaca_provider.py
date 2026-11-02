@@ -74,6 +74,39 @@ class AlpacaQuote:
     is_delayed: bool = False  # Always False for Alpaca
 
 
+class OpeningRangeBars(list):  # type: ignore[type-arg]
+    """Opening-range bars plus whether the window is known to be complete.
+
+    A plain ``list`` subclass so existing callers keep working. ``complete`` is
+    True only when the window has closed (now >= window end + 1 minute, so the
+    last minute bar has been published) AND at least ``min_bars`` bars arrived.
+    A partial window (fetched mid-window, or with gaps) has ``complete=False``
+    and callers must not derive a final opening range from it. A market holiday
+    or a symbol with no data yields an EMPTY result with ``complete=False``;
+    use the exchange calendar to tell a holiday from an outage.
+    """
+
+    complete: bool
+    expected_bars: int
+    min_bars: int
+    window_end: datetime | None
+
+    def __init__(
+        self,
+        bars: Any = (),
+        *,
+        complete: bool = False,
+        expected_bars: int = 0,
+        min_bars: int = 0,
+        window_end: datetime | None = None,
+    ) -> None:
+        super().__init__(bars)
+        self.complete = complete
+        self.expected_bars = expected_bars
+        self.min_bars = min_bars
+        self.window_end = window_end
+
+
 class AlpacaMarketDataProvider:
     """
     Real-time US equity market data via Alpaca's free data API.
@@ -89,6 +122,12 @@ class AlpacaMarketDataProvider:
 
     # Cache TTL — short because data is real-time
     CACHE_TTL_SECONDS = 30  # 30 seconds for live data
+
+    # An opening window is "complete" with at least this share of its 1-minute
+    # bars (IEX can omit illiquid minutes) once the window has closed.
+    OPENING_RANGE_MIN_BAR_FRACTION = 0.8
+    # Grace after the window end before the last bar is considered published.
+    OPENING_RANGE_SETTLE = timedelta(minutes=1)
 
     def __init__(
         self,
@@ -247,6 +286,7 @@ class AlpacaMarketDataProvider:
         sort: str = "desc",
         start: datetime | None = None,
         end: datetime | None = None,
+        use_cache: bool = True,
     ) -> list[AlpacaBar]:
         """
         Fetch aggregated bars (OHLCV), always returned oldest -> newest.
@@ -278,7 +318,7 @@ class AlpacaMarketDataProvider:
             f"{from_date.isoformat() if from_date else '-'}:"
             f"{to_date.isoformat() if to_date else '-'}:{start_s}:{end_s}:{limit}:{sort}"
         )
-        cached = self._cached(cache_key)
+        cached = self._cached(cache_key) if use_cache else None
         if cached is not None:
             return cached
 
@@ -348,7 +388,8 @@ class AlpacaMarketDataProvider:
                 vwap=Decimal(str(b["vw"])) if b.get("vw") else None,
             ))
 
-        self._cache_set(cache_key, bars)
+        if use_cache:
+            self._cache_set(cache_key, bars)
         return bars
 
     async def get_opening_range_bars(
@@ -356,11 +397,17 @@ class AlpacaMarketDataProvider:
         ticker: str,
         session_date: date | None = None,
         orb_minutes: int = 15,
-    ) -> list[AlpacaBar]:
+    ) -> OpeningRangeBars:
         """
         Fetch 1-minute bars covering the opening range window.
         Used by ORB strategy to compute opening range high/low.
         Real-time — no delay.
+
+        Returns ``OpeningRangeBars`` (a list); check ``.complete`` before using
+        it as a FINAL range. While the window is still open (before window end
+        + 1 minute) the result is partial by definition and is NOT cached, so
+        the next call sees the newly published bars instead of a 30 s-old
+        partial window. Holiday / no data = empty, ``complete=False``.
         """
         # The exchange session date is the America/New_York calendar date, NOT the
         # server-local date (which differs from ET after 20:00 ET when the server
@@ -374,6 +421,7 @@ class AlpacaMarketDataProvider:
         cutoff = session_open_utc + timedelta(minutes=orb_minutes)
         # Start-anchored ascending fetch of exactly the opening window, so the
         # result never depends on how late in the day it is requested.
+        window_settled = self._now() >= cutoff + self.OPENING_RANGE_SETTLE
         bars = await self.get_bars(
             ticker,
             multiplier=1,
@@ -382,8 +430,26 @@ class AlpacaMarketDataProvider:
             sort="asc",
             start=session_open_utc,
             end=cutoff,
+            use_cache=window_settled,  # never cache a still-forming window
         )
-        return [b for b in bars if session_open_utc <= b.timestamp < cutoff]
+        in_window = [b for b in bars if session_open_utc <= b.timestamp < cutoff]
+        min_bars = max(1, math.ceil(orb_minutes * self.OPENING_RANGE_MIN_BAR_FRACTION))
+        complete = window_settled and len(in_window) >= min_bars
+        if window_settled and not complete:
+            log.warning(
+                "alpaca.opening_range_incomplete",
+                ticker=ticker,
+                bars=len(in_window),
+                min_bars=min_bars,
+                session_date=target_date.isoformat(),
+            )
+        return OpeningRangeBars(
+            in_window,
+            complete=complete,
+            expected_bars=orb_minutes,
+            min_bars=min_bars,
+            window_end=cutoff,
+        )
 
     # ── Latest quote ──────────────────────────────────────────────────────────
 

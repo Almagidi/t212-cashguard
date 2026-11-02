@@ -314,3 +314,74 @@ async def test_opening_range_default_date_is_new_york_date(now_utc, expected_et_
         tzinfo=ZoneInfo("America/New_York"),
     ).astimezone(UTC)
     assert fake.requests[0].url.params["start"] == open_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ── opening range: partial windows are flagged and not cached ───────────────
+
+def _et(day: date, hh: int, mm: int, ss: int = 0) -> datetime:
+    from zoneinfo import ZoneInfo
+
+    return datetime(day.year, day.month, day.day, hh, mm, ss, tzinfo=ZoneInfo("America/New_York")).astimezone(UTC)
+
+
+@pytest.mark.asyncio
+async def test_partial_opening_window_is_flagged_and_not_cached() -> None:
+    day = date(2026, 7, 14)
+    full = _session_series(day, one_minute=True)
+    visible = {"n": 6}  # only the first 6 minute-bars have been published
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return FakeAlpaca(full[: visible["n"]])(request)
+
+    provider = _provider(handler)
+    provider._now = lambda: _et(day, 9, 36)
+
+    first = await provider.get_opening_range_bars("AAPL", session_date=day, orb_minutes=15)
+    assert len(first) == 6 and first.complete is False
+
+    visible["n"] = 8  # a later call within 30 s must see the new bars
+    provider._now = lambda: _et(day, 9, 38)
+    second = await provider.get_opening_range_bars("AAPL", session_date=day, orb_minutes=15)
+    assert len(second) == 8 and second.complete is False
+
+
+@pytest.mark.asyncio
+async def test_window_not_complete_until_one_minute_after_end_even_if_full() -> None:
+    day = date(2026, 7, 14)
+    provider = _provider(FakeAlpaca(_session_series(day, one_minute=True)))
+
+    provider._now = lambda: _et(day, 9, 45, 30)  # window closed, settle grace not elapsed
+    early = await provider.get_opening_range_bars("AAPL", session_date=day, orb_minutes=15)
+    assert len(early) == 15 and early.complete is False
+
+    provider._now = lambda: _et(day, 9, 46, 0)
+    done = await provider.get_opening_range_bars("AAPL", session_date=day, orb_minutes=15)
+    assert len(done) == 15 and done.complete is True
+
+
+@pytest.mark.asyncio
+async def test_complete_window_is_cached_and_sparse_window_is_incomplete() -> None:
+    day = date(2026, 7, 14)
+    fake = FakeAlpaca(_session_series(day, one_minute=True))
+    provider = _provider(fake)
+    provider._now = lambda: _et(day, 10, 0)
+
+    a = await provider.get_opening_range_bars("AAPL", session_date=day, orb_minutes=15)
+    await provider.get_opening_range_bars("AAPL", session_date=day, orb_minutes=15)
+    assert a.complete is True and len(fake.requests) == 1  # settled windows still cache
+
+    sparse = _provider(FakeAlpaca(_session_series(day, one_minute=True)[:5]))
+    sparse._now = lambda: _et(day, 10, 0)
+    s = await sparse.get_opening_range_bars("AAPL", session_date=day, orb_minutes=15)
+    assert len(s) == 5 and s.complete is False and s.min_bars == 12
+
+
+@pytest.mark.asyncio
+async def test_holiday_is_empty_and_incomplete() -> None:
+    day = date(2026, 7, 3)  # market holiday: no bars at all
+    provider = _provider(FakeAlpaca([]))
+    provider._now = lambda: _et(day, 11, 0)
+
+    bars = await provider.get_opening_range_bars("AAPL", session_date=day, orb_minutes=15)
+
+    assert list(bars) == [] and bars.complete is False
