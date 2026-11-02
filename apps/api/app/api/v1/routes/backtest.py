@@ -259,6 +259,10 @@ class PortfolioWalkForwardRequest(BaseModel):
 
 
 class PortfolioBacktestRequest(BaseModel):
+    # A misspelt or removed field (e.g. a stale ``risk_matched_blend`` option) must be a 422, not
+    # silently ignored: an ignored guardrail looks like a run that honoured it.
+    model_config = ConfigDict(extra="forbid")
+
     tickers: list[str] = Field(min_length=1, max_length=20)
     strategy_type: PortfolioBacktestStrategyType = "buy_hold_core"
     strategy_params: dict[str, Any] = Field(default_factory=dict)

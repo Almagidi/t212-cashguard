@@ -30,8 +30,9 @@ research pass. Code: `apps/api/app/backtest/portfolio_*.py`, route `POST /v1/bac
   never eligible for promising or strong.
 - **Benchmarks, all costed:** `universe_equal_weight_costed` (same basket, buy and hold),
   `broad_index` (a ticker you supply, e.g. SPY or a global ETF) and `exposure_matched_blend`
-  (that index plus cash at the strategy's average exposure; it matches exposure, not risk).
-  Requests that still say `risk_matched_blend` are accepted and mapped to the new key; results
+  (that index plus cash at the strategy's average exposure; it matches ex-post average
+  exposure only, not risk, timing or drawdown, and the result name says so).
+  Unknown top-level request fields are rejected with a 422 (`extra="forbid"`). Requests that still say `risk_matched_blend` are accepted and mapped to the new key; results
   only use the new key. Each reports excess return, excess Sharpe (from unrounded Sharpe
   ratios) and excess max drawdown (strategy minus benchmark; positive drawdown excess is
   worse). Benchmarks are bought on day one and marked to market; there is no exit cost for

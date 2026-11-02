@@ -286,3 +286,36 @@ def test_reuse_warning_is_worded_as_advisory() -> None:
     from app.backtest.portfolio_walk_forward import HOLDOUT_REUSE_WARNING
 
     assert "advisory" in HOLDOUT_REUSE_WARNING
+
+
+# ── request strictness and blend label ───────────────────────────────────────
+
+
+def test_unknown_top_level_key_is_rejected() -> None:
+    from pydantic import ValidationError
+
+    base = {"tickers": ["AAA"], "from_date": "2021-01-04", "to_date": "2022-01-04"}
+    PortfolioBacktestRequest(**base)  # the frontend's payload shape still validates
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        PortfolioBacktestRequest(**base, benchmark_tiker="SPY")
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        PortfolioBacktestRequest(**base, min_holdout_bars=1)
+
+
+def test_blend_label_says_it_only_matches_ex_post_average_exposure() -> None:
+    name = _engine_run().benchmarks["exposure_matched_blend"].name
+    assert "matches ex-post average exposure only" in name
+
+
+def test_trial_variance_grid_component_matches_the_recorded_candidate_sharpes() -> None:
+    from statistics import variance
+
+    result = _walk_forward(min_rebalances_per_window=1)
+    sharpes = [s for s in result.holdout.candidate_train_sharpes if s is not None]
+    per_period = [s / 252**0.5 for s in sharpes]
+    expected = variance(per_period) if len(per_period) >= 2 else 0.0
+    oos = result.deflated_sharpe["oos"]
+    assert oos["trials_sr_variance_grid"] == pytest.approx(expected)
+    assert oos["trials_sr_variance_grid"] == result.deflated_sharpe["holdout"][
+        "trials_sr_variance_grid"
+    ]

@@ -934,7 +934,7 @@ class PortfolioBacktester:
                 key=BENCHMARK_EXPOSURE_MATCHED,
                 name=(
                     f"Exposure-matched blend: {blend_pct}% {self.benchmark_ticker} / "
-                    "rest cash (costed)"
+                    "rest cash (costed) - matches ex-post average exposure only"
                 ),
                 equities=blend_equities,
                 entry_cost=blend_cost,
