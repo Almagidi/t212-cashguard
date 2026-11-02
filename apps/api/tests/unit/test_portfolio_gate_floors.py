@@ -99,6 +99,7 @@ def _gate(
         deflated={"oos": {"deflated_sharpe_probability": probability}},
         benchmark_keys=benchmark_keys,
         cost_model=cost_model or STANDARD_COST,
+        sanity={"passes": True, "reasons": []},
     )
     return reasons
 
