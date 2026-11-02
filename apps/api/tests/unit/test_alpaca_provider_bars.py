@@ -245,3 +245,39 @@ async def test_asc_sort_is_start_anchored_and_cache_key_distinct() -> None:
     assert len(fake.requests) == 2
     with pytest.raises(ValueError):
         await provider.get_bars("AAPL", sort="sideways")
+
+
+@pytest.mark.asyncio
+async def test_pagination_stops_at_max_pages_and_logs_warning() -> None:
+    from structlog.testing import capture_logs
+
+    fake = FakeAlpaca(_recent_series(250))
+    fake.page_cap = 10
+    provider = _provider(fake)
+    provider.MAX_PAGES = 3
+    today = datetime.now(UTC).date()
+
+    with capture_logs() as logs:
+        bars = await provider.get_bars(
+            "AAPL", from_date=today - timedelta(days=3), to_date=today, limit=100,
+        )
+
+    assert len(fake.requests) == 3 and len(bars) == 30
+    warnings = [e for e in logs if e["event"] == "alpaca.bars_pagination_truncated"]
+    assert len(warnings) == 1 and warnings[0]["log_level"] == "warning"
+
+
+@pytest.mark.asyncio
+async def test_no_truncation_warning_when_limit_reached_on_last_page() -> None:
+    from structlog.testing import capture_logs
+
+    fake = FakeAlpaca(_recent_series(250))
+    fake.page_cap = 10
+    provider = _provider(fake)
+    provider.MAX_PAGES = 3
+    today = datetime.now(UTC).date()
+
+    with capture_logs() as logs:
+        await provider.get_bars("AAPL", from_date=today - timedelta(days=3), to_date=today, limit=30)
+
+    assert not [e for e in logs if e["event"] == "alpaca.bars_pagination_truncated"]

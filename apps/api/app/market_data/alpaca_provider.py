@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import random
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -40,8 +41,11 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
+import structlog
 
 from app.core.config import settings
+
+log = structlog.get_logger()
 
 
 class AlpacaError(Exception):
@@ -147,9 +151,17 @@ class AlpacaMarketDataProvider:
     MAX_PAGES = 10
     BACKOFF_BASE_SECONDS = 1.0
     MAX_BACKOFF_SECONDS = 30.0
+    # Hard cap on the TOTAL time one ``_get`` call may spend sleeping on 429s.
+    # NOTE: data fetches that feed protective exits (stop/take-profit checks)
+    # go through ``_get`` too, so a rate-limited exit-path fetch can stall for
+    # up to this long (plus request time) before it raises. That is accepted:
+    # a bounded stall beats hammering a rate-limited API.
+    MAX_TOTAL_SLEEP_SECONDS = 45.0
 
-    # Injectable so tests never really sleep.
+    # Injectable so tests never really sleep / are deterministic.
     _sleep = staticmethod(asyncio.sleep)
+    # Returns a float in [0, 1); used for equal-jitter on computed backoff.
+    _random = staticmethod(random.random)
 
     @staticmethod
     def _retry_after_seconds(resp: httpx.Response) -> float | None:
@@ -166,14 +178,22 @@ class AlpacaMarketDataProvider:
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         resp: httpx.Response | None = None
+        slept = 0.0
         for attempt in range(self.MAX_ATTEMPTS):
             resp = await self._http.get(path, params=params)
             if resp.status_code != 429 or attempt + 1 >= self.MAX_ATTEMPTS:
                 break
             delay = self._retry_after_seconds(resp)
             if delay is None:
-                delay = self.BACKOFF_BASE_SECONDS * (2 ** attempt)
-            await self._sleep(min(delay, self.MAX_BACKOFF_SECONDS))
+                # Equal jitter: half fixed, half random, so concurrent callers
+                # do not retry in lockstep. Server-supplied Retry-After is
+                # honoured exactly (it is the server's instruction).
+                base = self.BACKOFF_BASE_SECONDS * (2 ** attempt)
+                delay = base / 2 + (base / 2) * self._random()
+            delay = min(delay, self.MAX_BACKOFF_SECONDS, self.MAX_TOTAL_SLEEP_SECONDS - slept)
+            if delay > 0:
+                await self._sleep(delay)
+                slept += delay
         assert resp is not None
 
         if resp.status_code == 401:
@@ -286,7 +306,7 @@ class AlpacaMarketDataProvider:
         }
         raw_bars: list[dict[str, Any]] = []
         page_token: str | None = None
-        for _ in range(self.MAX_PAGES):
+        for page_no in range(self.MAX_PAGES):
             remaining = limit - len(raw_bars)
             if remaining <= 0:
                 break
@@ -298,6 +318,14 @@ class AlpacaMarketDataProvider:
             page_token = data.get("next_page_token")
             if not page_token:
                 break
+            if page_no + 1 >= self.MAX_PAGES and len(raw_bars) < limit:
+                log.warning(
+                    "alpaca.bars_pagination_truncated",
+                    ticker=ticker,
+                    pages=self.MAX_PAGES,
+                    bars_returned=len(raw_bars),
+                    limit=limit,
+                )
         raw_bars = raw_bars[:limit]
         if sort == "desc":
             raw_bars.reverse()  # newest-first -> callers always receive ascending order

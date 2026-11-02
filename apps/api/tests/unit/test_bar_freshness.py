@@ -162,3 +162,17 @@ async def test_runner_never_applies_stale_gate_to_protective_exit(monkeypatch):
 
     runner._check_exit.assert_awaited_once()
     assert result == (1, 5, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.real_bar_gate
+async def test_runner_lets_fresh_bar_entry_through_the_real_gate(monkeypatch):
+    # Last bar is 09:33 ET, "now" is 2 minutes later: the REAL gate must pass it.
+    monkeypatch.setattr("app.market_data.bar_freshness._utcnow", lambda: OPEN + timedelta(minutes=5))
+    runner = _runner()
+    runner._fetch_market_context = _fetch()
+    kwargs = _kwargs(pos_map={})
+
+    await runner._process_ticker(**kwargs)
+
+    kwargs["risk"].check_market_conditions.assert_awaited_once()

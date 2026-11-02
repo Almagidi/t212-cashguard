@@ -12,6 +12,7 @@ def _provider(handler):
     provider._client = httpx.AsyncClient(
         base_url=provider.DATA_BASE_URL, transport=httpx.MockTransport(handler)
     )
+    provider._random = lambda: 1.0  # full computed backoff (no jitter reduction)
     return provider
 
 
@@ -47,7 +48,7 @@ async def test_429_retries_with_exponential_backoff_then_succeeds() -> None:
 
     assert await provider._get("/v2/stocks/AAPL/bars") == {"bars": []}
     assert seen["n"] == 3
-    assert sleeps.calls == [1.0, 2.0]
+    assert sleeps.calls == [pytest.approx(1.0), pytest.approx(2.0)]
 
 
 @pytest.mark.asyncio
@@ -100,3 +101,33 @@ async def test_non_429_errors_are_not_retried() -> None:
         await provider._get("/v2/stocks/AAPL/bars")
 
     assert seen["n"] == 1 and sleeps.calls == []
+
+
+@pytest.mark.asyncio
+async def test_backoff_has_equal_jitter_with_injected_random() -> None:
+    handler, _ = _rate_limited_then_ok([429, 429, 200])
+    provider = _provider(handler)
+    sleeps = _Sleeps()
+    provider._sleep = sleeps
+    provider._random = lambda: 0.0  # lowest jitter: half of the base delay
+
+    await provider._get("/v2/stocks/AAPL/bars")
+
+    assert sleeps.calls == [0.5, 1.0]
+
+
+@pytest.mark.asyncio
+async def test_total_sleep_cap_truncates_large_retry_after() -> None:
+    handler, seen = _rate_limited_then_ok([429], retry_after="3600")
+    provider = _provider(handler)
+    sleeps = _Sleeps()
+    provider._sleep = sleeps
+    provider.MAX_TOTAL_SLEEP_SECONDS = 40.0
+
+    with pytest.raises(AlpacaError):
+        await provider._get("/v2/stocks/AAPL/bars")
+
+    assert seen["n"] == 3
+    # 30 s (per-sleep cap), then only the 10 s left of the 40 s budget
+    assert sleeps.calls == [30.0, 10.0]
+    assert sum(sleeps.calls) <= provider.MAX_TOTAL_SLEEP_SECONDS
