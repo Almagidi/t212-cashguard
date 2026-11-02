@@ -283,17 +283,47 @@ def test_live_startup_fails_when_telegram_control_enabled_without_webhook_secret
     assert check["status"] == "pass"
 
 
-def test_non_live_startup_does_not_fail_on_missing_telegram_webhook_secret(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(("mode", "expected"), [("paper", "warn"), ("demo", "warn"), ("mock", "pass")])
+def test_non_live_startup_warns_but_does_not_fail_on_missing_telegram_webhook_secret(
+    monkeypatch: pytest.MonkeyPatch, mode: str, expected: str
 ) -> None:
     from app.core.config import settings
     from app.services.startup_validation import build_startup_report
 
-    _set_safe_startup_settings(monkeypatch, "paper")
+    _set_safe_startup_settings(monkeypatch, mode)
     monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "bot-token")
     monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_CHAT_IDS", "12345")
     monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "")
 
     report = build_startup_report()
     check = next(c for c in report["checks"] if c["key"] == "telegram_webhook_secret")
+    assert check["status"] == expected
+    if expected == "warn":
+        assert "TELEGRAM_WEBHOOK_SECRET" in check["detail"]
+        assert report["warnings"] >= 1
+
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "webhook-secret")
+    report = build_startup_report()
+    check = next(c for c in report["checks"] if c["key"] == "telegram_webhook_secret")
     assert check["status"] == "pass"
+
+
+@pytest.mark.parametrize("mode", ["paper", "demo"])
+def test_startup_logs_a_warning_for_telegram_control_without_webhook_secret(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    from structlog.testing import capture_logs
+
+    from app.core.config import settings
+    from app.services.startup_validation import assert_startup_safe
+
+    _set_safe_startup_settings(monkeypatch, mode)
+    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "bot-token")
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_CHAT_IDS", "12345")
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "")
+
+    with capture_logs() as logs:
+        assert_startup_safe()  # starts: only live refuses
+
+    warned = [e for e in logs if e["event"] == "app.startup.telegram_webhook_secret_missing"]
+    assert [e["log_level"] for e in warned] == ["warning"]

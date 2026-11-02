@@ -6,8 +6,12 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+import structlog
+
 from app.core.config import settings
 from app.services.safety_policy import credentials_configured_status
+
+log = structlog.get_logger()
 
 StartupStatus = Literal["pass", "warn", "fail"]
 STRICT_SECRET_MODES = {"demo", "paper", "live"}
@@ -262,10 +266,18 @@ def build_startup_report() -> dict[str, Any]:
         _check(
             key="telegram_webhook_secret",
             label="Telegram webhook secret set when control is enabled",
-            status="fail" if live_mode and telegram_control_without_secret else "pass",
+            # Live refuses to start; paper and demo start but say so loudly (the webhook
+            # rejects every call there too, so the control channel is dead until it is set).
+            status=(
+                "pass"
+                if not telegram_control_without_secret or settings.APP_MODE == "mock"
+                else "fail"
+                if live_mode
+                else "warn"
+            ),
             detail=(
                 "Telegram control is enabled without TELEGRAM_WEBHOOK_SECRET; "
-                "the webhook would be unauthenticated."
+                "outside mock mode the webhook rejects every request until it is set."
                 if telegram_control_without_secret
                 else "Telegram webhook secret requirement is satisfied."
             ),
@@ -299,4 +311,7 @@ def assert_startup_safe() -> dict[str, Any]:
         if secret_failures:
             details = "; ".join(check["detail"] for check in secret_failures)
             raise RuntimeError(f"Unsafe {settings.APP_MODE} startup configuration: {details}")
+    for check in report["checks"]:
+        if check["key"] == "telegram_webhook_secret" and check["status"] == "warn":
+            log.warning("app.startup.telegram_webhook_secret_missing", detail=check["detail"])
     return report
