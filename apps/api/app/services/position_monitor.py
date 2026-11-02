@@ -40,8 +40,13 @@ from app.db.models import (
     Trade,
     User,
 )
+from app.execution.active_sells import (
+    blocking_sell_conditions,
+    broker_account_scope,
+    execution_environment_of,
+    stale_sell_conditions,
+)
 from app.execution.engine import ExecutionEngine
-from app.execution.state_machine import ACTIVE_ORDER_STATUSES
 from app.risk.engine import activate_kill_switch
 from app.services.alert_service import AlertService, alert_kill_switch_activated
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
@@ -529,7 +534,8 @@ class PositionMonitor:
         # One exit at a time per ticker: while a dispatched sell is still active (submitted,
         # working, partly filled, or of unknown outcome) a second exit is never issued; its
         # quantity would be judged against a position the first has not yet reduced.
-        active_sell = await self._active_dispatched_sell(ticker)
+        await self._escalate_stale_sells(ticker, broker)
+        active_sell = await self._active_dispatched_sell(ticker, broker)
         if active_sell is not None:
             log.warning(
                 "position_monitor.exit_skipped_active_sell",
@@ -704,24 +710,85 @@ class PositionMonitor:
 
         return result
 
-    async def _active_dispatched_sell(self, ticker: str) -> Order | None:
-        """A sell for this ticker that has been dispatched and has not yet ended.
+    def _sell_scope(self, broker: Any) -> dict[str, Any]:
+        is_dry_run = settings.APP_MODE == "mock"
+        return {
+            "is_dry_run": is_dry_run,
+            "environment": execution_environment_of(is_dry_run=is_dry_run),
+            "account_scope": broker_account_scope(broker),
+        }
 
-        ``pending_intent`` is excluded: it was never sent, so it is not in flight (and is the
-        intent a retry of the same exit re-submits).
+    async def _active_dispatched_sell(self, ticker: str, broker: Any = None) -> Order | None:
+        """A sell for this position that has been dispatched and has not yet ended.
+
+        Scoped to this execution environment and broker account (as EOD flatten is), so a
+        leftover from demo or another account does not block a live stop. A sell stuck in
+        ``submission_unknown``/``submitted``/``accepted`` beyond
+        ``PROTECTIVE_SELL_STALE_AFTER_SECONDS`` no longer blocks (see
+        ``_escalate_stale_sells``); the engine still counts every genuinely active sell
+        against the broker-verified held quantity. ``pending_intent`` is excluded: it was
+        never sent, so it is not in flight (and is the intent a retry re-submits).
         """
         result = await self.db.execute(
             select(Order)
-            .where(
-                Order.ticker == ticker,
-                Order.side == "sell",
-                Order.is_dry_run.is_(settings.APP_MODE == "mock"),
-                Order.status.in_(ACTIVE_ORDER_STATUSES - {"pending_intent"}),
-            )
+            .where(*blocking_sell_conditions(ticker, **self._sell_scope(broker)))
             .order_by(Order.created_at)
             .limit(1)
         )
         return result.scalar_one_or_none()
+
+    async def _escalate_stale_sells(self, ticker: str, broker: Any) -> None:
+        """Alert (critical, once per window) and reconcile a protective sell that is stuck."""
+        conditions = stale_sell_conditions(ticker, **self._sell_scope(broker))
+        if conditions is None:
+            return
+        stale = (
+            (await self.db.execute(select(Order).where(*conditions).order_by(Order.created_at)))
+            .scalars()
+            .all()
+        )
+        for order in stale:
+            log.error(
+                "position_monitor.protective_sell_stale",
+                ticker=ticker,
+                order_id=str(order.id),
+                order_status=order.status,
+            )
+            reported = await report_protective_exit_blocked_once(
+                self.db,
+                action="protective_sell_stale",
+                ticker=ticker,
+                reason=(
+                    f"A protective sell for {ticker} (order {order.id}) has been "
+                    f"{order.status} for over {settings.PROTECTIVE_SELL_STALE_AFTER_SECONDS}s "
+                    "without a broker outcome. It no longer blocks new exits (the held "
+                    "quantity is re-verified with the broker) and a reconciliation was "
+                    "requested. Check the broker."
+                ),
+                actor="position_monitor",
+                order=order,
+                metadata={"order_status": order.status},
+            )
+            if reported:
+                await self._request_reconciliation(order, broker)
+
+    async def _request_reconciliation(self, order: Order, broker: Any) -> None:
+        """Ask the engine to resolve a stuck sell from read-only broker data. Best effort."""
+        if order.is_dry_run:
+            return
+        try:
+            async with broker as b:
+                engine = ExecutionEngine(self.db, b)
+                if order.status == "submission_unknown":
+                    await engine.reconcile_unknown_submission(order)
+                else:
+                    await engine.reconcile_order(order)
+        except Exception as exc:
+            log.warning(
+                "position_monitor.stale_sell_reconcile_failed",
+                order_id=str(order.id),
+                error=str(exc),
+            )
 
     async def eod_flatten(
         self,

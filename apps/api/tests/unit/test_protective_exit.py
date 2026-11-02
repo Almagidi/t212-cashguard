@@ -450,9 +450,7 @@ async def test_two_concurrent_exits_for_one_ticker_cannot_both_sell_the_held_qua
     assert broker.max_inside == 1  # the position read and the dispatch commit never overlap
 
 
-async def test_monitor_does_not_issue_a_second_exit_while_a_sell_is_active(
-    db, monkeypatch
-) -> None:
+async def test_monitor_does_not_issue_a_second_exit_while_a_sell_is_active(db, monkeypatch) -> None:
     monkeypatch.setattr(settings, "APP_MODE", "demo")
     await _settings(db, kill=True)
     await _held_long_with_entry_signal(db)
@@ -716,9 +714,7 @@ async def test_refusal_is_reported_again_after_the_window(db) -> None:
     assert len(await _alerts(db, "protective_exit_refused")) == 2
 
 
-async def test_submission_unknown_sell_blocks_later_exits_with_one_alert(
-    db, monkeypatch
-) -> None:
+async def test_submission_unknown_sell_blocks_later_exits_with_one_alert(db, monkeypatch) -> None:
     monkeypatch.setattr(settings, "APP_MODE", "demo")
     await _settings(db, kill=True)
     await _held_long_with_entry_signal(db)
@@ -776,3 +772,138 @@ async def test_exit_that_failed_every_attempt_is_not_retried_and_is_alerted_once
     assert broker.sent == []
     assert len(await _sells(db)) == ExecutionEngine.MAX_EXIT_ATTEMPTS
     assert len(await _alerts(db, "protective_exit_blocked")) == 1
+
+
+# -- In-flight sells are scoped to this environment and account, and stale ones escalate ----
+
+
+class _ScopedBroker(_DemoBroker):
+    account_scope = "acct-A"
+
+
+def _leftover_sell(**fields: Any) -> Order:
+    values: dict[str, Any] = {
+        "id": uuid.uuid4(),
+        "client_order_key": f"leftover-{uuid.uuid4()}",
+        "ticker": "AAPL",
+        "side": "sell",
+        "order_type": "market",
+        "quantity": Decimal("5"),
+        "filled_quantity": Decimal("0"),
+        "status": "submission_unknown",
+        "is_dry_run": False,
+    }
+    values.update(fields)
+    return Order(**values)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"execution_environment": "live"},  # another environment (this run is demo)
+        {"execution_environment": "demo", "broker_account_scope": "acct-B"},  # another account
+    ],
+)
+async def test_sell_from_another_environment_or_account_does_not_block_a_stop(
+    db, monkeypatch, fields
+) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    await _held_long_with_entry_signal(db)
+    db.add(_leftover_sell(**fields))
+    await db.commit()
+    broker = _ScopedBroker("10")
+
+    result = await _monitor(db, broker).run()
+
+    assert result["exits_submitted"] == 1
+    assert broker.sent == [Decimal("5")]
+
+
+async def test_engine_does_not_count_other_scope_sells_against_the_held_quantity(
+    db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    db.add(_leftover_sell(status="submitted", quantity=Decimal("4"), execution_environment="live"))
+    db.add(
+        _leftover_sell(
+            status="submitted",
+            quantity=Decimal("4"),
+            execution_environment="demo",
+            broker_account_scope="acct-B",
+        )
+    )
+    await db.commit()
+    broker = _ScopedBroker("5")
+    sell = await _demo_sell(ExecutionEngine(db, broker), "5", "test:scope:a")
+
+    assert (
+        await ExecutionEngine(db, broker).submit_protective_exit(sell)
+    ).status != "pending_intent"
+    assert broker.sent == [Decimal("5")]
+
+
+async def test_same_scope_active_sell_still_blocks_and_counts(db, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    await _held_long_with_entry_signal(db)
+    db.add(
+        _leftover_sell(
+            status="submitted", execution_environment="demo", broker_account_scope="acct-A"
+        )
+    )
+    await db.commit()
+    broker = _ScopedBroker("10")
+
+    result = await _monitor(db, broker).run()
+
+    assert result["exits_submitted"] == 0
+    assert broker.sent == []
+
+
+@pytest.mark.parametrize("status", ["submission_unknown", "submitted", "accepted"])
+async def test_stuck_sell_escalates_once_and_stops_blocking_the_monitor(
+    db, monkeypatch, status
+) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    monkeypatch.setattr(settings, "PROTECTIVE_SELL_STALE_AFTER_SECONDS", 600)
+    reconcile = AsyncMock()
+    monkeypatch.setattr(ExecutionEngine, "reconcile_unknown_submission", reconcile)
+    monkeypatch.setattr(ExecutionEngine, "reconcile_order", reconcile)
+    await _settings(db, kill=True)
+    await _held_long_with_entry_signal(db)
+    db.add(_leftover_sell(status=status, created_at=datetime.now(UTC) - timedelta(minutes=11)))
+    await db.commit()
+    broker = _ScriptedBroker("10", ["WORKING", "WORKING", "WORKING"])
+
+    first = await _run_exit(db, monkeypatch, broker, "stop", "5")
+    await _run_exit(db, monkeypatch, broker, "stop", "5")
+
+    assert first["exits_submitted"] == 1
+    assert broker.sent[0] == Decimal("5")  # protected despite the stuck sell
+    stale_alerts = await _alerts(db, "protective_sell_stale")
+    assert len(stale_alerts) == 1
+    assert stale_alerts[0].severity == "critical"
+    assert reconcile.await_count == 1  # once per window, not per cycle
+
+
+async def test_stuck_sell_never_allows_selling_more_than_the_held_quantity(db, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    await _held_long_with_entry_signal(db)
+    old = datetime.now(UTC) - timedelta(minutes=30)
+    db.add(_leftover_sell(status="submitted", quantity=Decimal("3"), created_at=old))
+    # A fresh sell is truly active and still counts against the broker-verified 10 held.
+    db.add(_leftover_sell(status="accepted", quantity=Decimal("8"), execution_environment="demo"))
+    await db.commit()
+    broker = _DemoBroker("10")
+
+    result = await _monitor(db, broker).run()
+
+    assert result["exits_submitted"] == 0  # the fresh sell still blocks the monitor
+    assert broker.sent == []
+    engine = ExecutionEngine(db, broker)
+    sell = await _demo_sell(engine, "5", "test:stale:oversell")
+    with pytest.raises(SafetyPolicyViolation):
+        await engine.submit_protective_exit(sell)  # 8 active + 5 > 10; the stale 3 is ignored

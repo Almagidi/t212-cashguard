@@ -36,6 +36,7 @@ from app.execution.acknowledgement import (
     UntrustedAcknowledgement,
     interpret_acknowledgement,
 )
+from app.execution.active_sells import blocking_sell_conditions, broker_account_scope
 from app.execution.broker_record import (
     NO_BROKER_RECORD,
     FinalRecord,
@@ -641,10 +642,13 @@ class ExecutionEngine:
             await self.db.execute(
                 select(Order.quantity, Order.filled_quantity).where(
                     Order.id != order.id,
-                    Order.ticker == order.ticker,
-                    Order.side == "sell",
-                    Order.is_dry_run.is_(order.is_dry_run),
-                    Order.status.in_(ACTIVE_ORDER_STATUSES - {"pending_intent"}),
+                    *blocking_sell_conditions(
+                        order.ticker,
+                        is_dry_run=order.is_dry_run,
+                        environment=order.execution_environment,
+                        account_scope=order.broker_account_scope
+                        or broker_account_scope(self.broker),
+                    ),
                 )
             )
         ).all()
