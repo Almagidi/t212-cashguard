@@ -10,7 +10,7 @@ WARMUP = 200
 
 
 def _run(histories, *, min_history: int, start_date=None, end_date=None):
-    bars, times = next(iter(histories.values()))
+    _, times = next(iter(histories.values()))
     return PortfolioBacktester(
         strategy=ConstantWeightStrategy(min_history_bars=min_history),
         universe=sorted(histories),
@@ -54,9 +54,7 @@ def test_metrics_exclude_warmup_cash_days_and_match_post_warmup_slice() -> None:
 def test_warmup_included_sharpe_would_have_been_diluted() -> None:
     histories = {"AAA": synth_history(420, seed=3)}
     full = _run(histories, min_history=WARMUP)
-    all_days = returns_from_equity(
-        [point.equity for point in full.equity_curve], Decimal("10000")
-    )
+    all_days = returns_from_equity([point.equity for point in full.equity_curve], Decimal("10000"))
     diluted = sharpe_ratio(all_days)
 
     assert diluted is not None

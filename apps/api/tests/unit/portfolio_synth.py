@@ -68,4 +68,4 @@ class ConstantWeightStrategy:
         del as_of_index
         tickers: Sequence[str] = sorted(history)
         weight = Decimal("1") / Decimal(len(tickers))
-        return {ticker: weight for ticker in tickers}
+        return dict.fromkeys(tickers, weight)
