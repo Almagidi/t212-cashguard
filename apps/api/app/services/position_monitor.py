@@ -46,7 +46,11 @@ from app.risk.engine import activate_kill_switch
 from app.services.alert_service import AlertService, alert_kill_switch_activated
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
 from app.services.eod_flatten import EodFlattenService, eod_due_window
-from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
+from app.services.safety_policy import (
+    SafetyPolicyViolation,
+    report_protective_exit_blocked_once,
+    require_broker_environment,
+)
 from app.strategies.indicators import Bar, atr
 from app.strategies.orb_production import OpeningRangeBreakoutStrategy, ORBState
 
@@ -535,6 +539,19 @@ class PositionMonitor:
             )
             if active_sell.status == "submission_unknown":
                 result["unconfirmed"] = 1
+                await report_protective_exit_blocked_once(
+                    self.db,
+                    action="protective_exit_blocked",
+                    ticker=ticker,
+                    reason=(
+                        f"A sell for {ticker} has an unknown submission outcome; no further "
+                        "exit is sent until it is reconciled, so the position has no working "
+                        "stop. Check the broker."
+                    ),
+                    actor="position_monitor",
+                    order=active_sell,
+                    metadata={"order_status": active_sell.status},
+                )
             return result
 
         # Submit the exit order
@@ -570,6 +587,20 @@ class PositionMonitor:
                 )
                 if order.status == "submission_unknown":
                     result["unconfirmed"] = 1
+                elif order.status in ExecutionEngine._FAILED_EXIT_STATUSES:
+                    await report_protective_exit_blocked_once(
+                        self.db,
+                        action="protective_exit_blocked",
+                        ticker=ticker,
+                        reason=(
+                            f"The exit for {ticker} failed "
+                            f"{ExecutionEngine.MAX_EXIT_ATTEMPTS} times ({order.status}); it is "
+                            "not retried automatically. The position has no working stop."
+                        ),
+                        actor="position_monitor",
+                        order=order,
+                        metadata={"order_status": order.status},
+                    )
                 return result
 
         if order.status == "submission_unknown":

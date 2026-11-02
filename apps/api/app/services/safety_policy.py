@@ -219,6 +219,61 @@ async def _get_app_settings(db: Any) -> AppSettings | None:
     return cast("AppSettings | None", result.scalar_one_or_none())
 
 
+# A blocked protective exit is retried every monitor cycle. It is reported (audit + alert) once
+# per ticker and reason in this window rather than every cycle.
+PROTECTIVE_EXIT_NOTICE_WINDOW = timedelta(minutes=15)
+
+
+async def report_protective_exit_blocked_once(
+    db: Any,
+    *,
+    action: str,
+    ticker: str,
+    reason: str,
+    actor: str,
+    order: Order | None = None,
+    metadata: dict[str, Any] | None = None,
+    alert_type: str | None = None,
+) -> bool:
+    """Audit and alert a blocked or refused protective exit, once per (ticker, reason) per window.
+
+    Returns True if it reported (the first time in the window), False if it was already
+    reported. The audit rows themselves are the memory, so this survives restarts and is
+    shared by every worker.
+    """
+    ticker = str(ticker).strip().upper()
+    cutoff = datetime.now(UTC) - PROTECTIVE_EXIT_NOTICE_WINDOW
+    recent = await db.execute(
+        select(AuditLog.payload).where(AuditLog.action == action, AuditLog.occurred_at >= cutoff)
+    )
+    for (payload,) in recent.all():
+        if (
+            isinstance(payload, dict)
+            and str(payload.get("ticker", "")).strip().upper() == ticker
+            and payload.get("reason") == reason
+        ):
+            return False
+    await audit_safety_decision(
+        db,
+        action=action,
+        actor=actor,
+        decision="blocked",
+        reason=reason,
+        order=order,
+        metadata={**(metadata or {}), "ticker": ticker},
+    )
+    from app.services.alert_service import AlertService
+
+    await AlertService(db).send(
+        alert_type=alert_type or action,
+        title=f"Protective exit blocked: {ticker}",
+        message=reason,
+        severity="critical",
+        payload={"ticker": ticker, "action": action},
+    )
+    return True
+
+
 async def audit_safety_decision(
     db: Any,
     *,

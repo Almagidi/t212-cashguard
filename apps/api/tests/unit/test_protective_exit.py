@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.db.models import AppSettings, Order, RiskProfile, Signal, Strategy
+from app.db.models import Alert, AppSettings, AuditLog, Order, RiskProfile, Signal, Strategy
 from app.execution.engine import ExecutionEngine
 from app.services import position_monitor
 from app.services.position_monitor import PositionMonitor
@@ -632,3 +632,147 @@ async def test_identical_exit_still_in_flight_is_deduplicated(db, monkeypatch) -
     )
     assert identity == f"exit:{entry.id}:stop:0"
 
+
+# -- A refused or blocked exit raises one alert per (ticker, reason) per window ------------
+
+
+async def _audit_rows(db, action: str) -> list[AuditLog]:
+    rows = await db.execute(select(AuditLog).where(AuditLog.action == action))
+    return list(rows.scalars().all())
+
+
+async def _alerts(db, alert_type: str) -> list[Alert]:
+    rows = await db.execute(select(Alert).where(Alert.alert_type == alert_type))
+    return list(rows.scalars().all())
+
+
+async def test_repeated_refusal_for_one_ticker_and_reason_is_audited_and_alerted_once(
+    db,
+) -> None:
+    await _settings(db, kill=True)
+    engine = ExecutionEngine(db, _Broker([_position("5"), _position("5")]))  # duplicate rows
+
+    for index in range(3):
+        sell = await engine.create_order_intent(
+            ticker="AAPL",
+            side="sell",
+            order_type="market",
+            quantity=Decimal("1"),
+            is_dry_run=True,
+            stable_operation_identity=f"test:spam:{index}",
+        )
+        with pytest.raises(SafetyPolicyViolation):
+            await engine.submit_protective_exit(sell)
+
+    assert len(await _audit_rows(db, "protective_exit_refused")) == 1
+    assert len(await _alerts(db, "protective_exit_refused")) == 1
+
+
+async def test_a_different_reason_or_ticker_is_reported_separately(db) -> None:
+    await _settings(db, kill=True)
+    duplicate = ExecutionEngine(db, _Broker([_position("5"), _position("5")]))
+    nothing_held = ExecutionEngine(db, _Broker([]))
+    for engine, ticker, identity in (
+        (duplicate, "AAPL", "test:sep:1"),
+        (nothing_held, "AAPL", "test:sep:2"),
+        (nothing_held, "MSFT", "test:sep:3"),
+    ):
+        sell = await engine.create_order_intent(
+            ticker=ticker,
+            side="sell",
+            order_type="market",
+            quantity=Decimal("1"),
+            is_dry_run=True,
+            stable_operation_identity=identity,
+        )
+        with pytest.raises(SafetyPolicyViolation):
+            await engine.submit_protective_exit(sell)
+
+    assert len(await _alerts(db, "protective_exit_refused")) == 3
+
+
+async def test_refusal_is_reported_again_after_the_window(db) -> None:
+    await _settings(db, kill=True)
+    engine = ExecutionEngine(db, _Broker([]))
+
+    async def refuse(identity: str) -> None:
+        sell = await engine.create_order_intent(
+            ticker="AAPL",
+            side="sell",
+            order_type="market",
+            quantity=Decimal("1"),
+            is_dry_run=True,
+            stable_operation_identity=identity,
+        )
+        with pytest.raises(SafetyPolicyViolation):
+            await engine.submit_protective_exit(sell)
+
+    await refuse("test:window:1")
+    for row in await _audit_rows(db, "protective_exit_refused"):
+        row.occurred_at = datetime.now(UTC) - timedelta(minutes=16)
+    await db.flush()
+    await refuse("test:window:2")
+
+    assert len(await _alerts(db, "protective_exit_refused")) == 2
+
+
+async def test_submission_unknown_sell_blocks_later_exits_with_one_alert(
+    db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    await _held_long_with_entry_signal(db)
+    db.add(
+        Order(
+            id=uuid.uuid4(),
+            client_order_key="unknown-outcome",
+            ticker="AAPL",
+            side="sell",
+            order_type="market",
+            quantity=Decimal("5"),
+            filled_quantity=Decimal("0"),
+            status="submission_unknown",
+            is_dry_run=False,
+        )
+    )
+    await db.commit()
+    broker = _DemoBroker("10")
+
+    summaries = [await _monitor(db, broker).run() for _ in range(3)]
+
+    assert broker.sent == []
+    assert all(s["exits_unconfirmed"] == 1 for s in summaries)
+    assert len(await _sells(db)) == 1
+    alerts = await _alerts(db, "protective_exit_blocked")
+    assert len(alerts) == 1
+    assert "unknown" in alerts[0].message.lower()
+
+
+async def test_exit_that_failed_every_attempt_is_not_retried_and_is_alerted_once(
+    db, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "APP_MODE", "demo")
+    await _settings(db, kill=True)
+    await _held_long_with_entry_signal(db)
+    entry = (await db.execute(select(Signal).where(Signal.side == "buy"))).scalar_one()
+    engine = ExecutionEngine(db, _DemoBroker("10"))
+    for attempt in range(ExecutionEngine.MAX_EXIT_ATTEMPTS):
+        await engine.create_order_intent(
+            ticker="AAPL",
+            side="sell",
+            order_type="market",
+            quantity=Decimal("5"),
+            is_dry_run=False,
+            stable_operation_identity=f"exit:{entry.id}:stop:{attempt}",
+        )
+    for order in await _sells(db):
+        order.status = "rejected"
+    await db.commit()
+    broker = _DemoBroker("10")
+
+    for _ in range(3):
+        await _run_exit(db, monkeypatch, broker, "stop", "5")
+
+    assert broker.sent == []
+    assert len(await _sells(db)) == ExecutionEngine.MAX_EXIT_ATTEMPTS
+    assert len(await _alerts(db, "protective_exit_blocked")) == 1

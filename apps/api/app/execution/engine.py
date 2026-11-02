@@ -89,6 +89,7 @@ from app.services.safety_policy import (
     audit_broker_request_attempt,
     audit_safety_decision,
     current_runtime_mode,
+    report_protective_exit_blocked_once,
     require_order_submission_allowed,
     verify_protective_exit,
 )
@@ -680,12 +681,14 @@ class ExecutionEngine:
             try:
                 authorization = await self._verified_protective_exit(order)
             except SafetyPolicyViolation as exc:
-                await audit_safety_decision(
+                # The caller retries every cycle: one audit row and alert per ticker and
+                # reason per window, not one per cycle.
+                await report_protective_exit_blocked_once(
                     self.db,
                     action="protective_exit_refused",
-                    actor="execution_engine",
-                    decision="blocked",
+                    ticker=ticker,
                     reason=exc.reason,
+                    actor="execution_engine",
                     order=order,
                     metadata={"decision_code": exc.decision_code},
                 )
