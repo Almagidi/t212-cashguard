@@ -138,8 +138,38 @@ class AlpacaMarketDataProvider:
     def _cache_set(self, key: str, val: Any) -> None:
         self._cache[key] = (time.monotonic(), val)
 
+    # 429 handling: at most MAX_ATTEMPTS requests in total.
+    MAX_ATTEMPTS = 3
+    BACKOFF_BASE_SECONDS = 1.0
+    MAX_BACKOFF_SECONDS = 30.0
+
+    # Injectable so tests never really sleep.
+    _sleep = staticmethod(asyncio.sleep)
+
+    @staticmethod
+    def _retry_after_seconds(resp: httpx.Response) -> float | None:
+        raw = resp.headers.get("Retry-After")
+        if raw is None:
+            return None
+        try:
+            value = float(raw.strip())
+        except ValueError:
+            return None  # HTTP-date form is not honoured; fall back to backoff
+        if not math.isfinite(value) or value < 0:
+            return None
+        return value
+
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        resp = await self._http.get(path, params=params)
+        resp: httpx.Response | None = None
+        for attempt in range(self.MAX_ATTEMPTS):
+            resp = await self._http.get(path, params=params)
+            if resp.status_code != 429 or attempt + 1 >= self.MAX_ATTEMPTS:
+                break
+            delay = self._retry_after_seconds(resp)
+            if delay is None:
+                delay = self.BACKOFF_BASE_SECONDS * (2 ** attempt)
+            await self._sleep(min(delay, self.MAX_BACKOFF_SECONDS))
+        assert resp is not None
 
         if resp.status_code == 401:
             raise AlpacaError(
@@ -154,7 +184,10 @@ class AlpacaMarketDataProvider:
         if resp.status_code == 422:
             raise AlpacaError(f"Alpaca rejected request: {resp.text[:200]}")
         if resp.status_code == 429:
-            raise AlpacaError("Alpaca rate limit hit — reduce request frequency")
+            raise AlpacaError(
+                f"Alpaca rate limit hit (HTTP 429) after {self.MAX_ATTEMPTS} attempts "
+                "— reduce request frequency"
+            )
 
         resp.raise_for_status()
         return resp.json()
