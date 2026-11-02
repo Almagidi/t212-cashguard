@@ -420,6 +420,7 @@ class RiskEngine:
         market_regime: dict[str, Any] | None,
         watchlist_context: dict[str, Any] | None = None,
         signal_id: UUID | None = None,
+        data_provider_type: str = "equity",
     ) -> None:
         regime_payload = market_regime or {}
         regime_name = str(regime_payload.get("regime") or "unknown")
@@ -447,8 +448,14 @@ class RiskEngine:
         #     information there; their entries are gated by bar/quote freshness.
         #     Live mode is never exempt: unresolved live config counts as
         #     health-recording, and live startup requires the validated provider.
+        #   * Kraken tickers are exempt: they are fetched straight from
+        #     KrakenMarketDataProvider (never via the validated equity provider), so
+        #     no feed-health record is ever written for them. NOTE: the runner
+        #     applies no bar-freshness gate to Kraken entries either (that check is
+        #     equity-only); Kraken has no stale-data protection beyond this.
         if (
             symbol_status is None
+            and data_provider_type != "kraken"
             and self._provider_records_health()
             and not self._mock_market_data()
         ):

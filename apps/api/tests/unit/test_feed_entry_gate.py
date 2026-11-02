@@ -338,3 +338,25 @@ async def test_runner_blocks_entries_in_live_when_provider_cannot_record_health(
 
     _cfg(monkeypatch, mode="live", provider="alpaca", alpaca=True)
     assert await _fetch_with(monkeypatch, _Raw()) == "feed_health_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_risk_engine_unknown_symbol_rule_skips_kraken_but_not_equity(db, monkeypatch):
+    from app.core.config import settings
+
+    db.add(AppSettings(id=1))
+    await db.commit()
+    reset_feed_health()
+    monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", "validated")
+
+    # Kraken tickers never get feed-health records: must not be blocked.
+    await RiskEngine(db).check_market_conditions(
+        ticker="XBTUSD", strategy_type="kraken_trend_follow", market_regime=_REGIME,
+        data_provider_type="kraken",
+    )
+    # Equity (e.g. Trading 212) ticker behaviour is unchanged.
+    with pytest.raises(RiskViolation) as exc:
+        await RiskEngine(db).check_market_conditions(
+            ticker="AAPL", strategy_type="orb", market_regime=_REGIME,
+        )
+    assert exc.value.event_type == "feed_symbol_block"

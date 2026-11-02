@@ -1061,6 +1061,7 @@ class StrategyRunner:
                 strategy_type=strategy.type,
                 market_regime=dict(intelligence.get("regime") or {}),
                 watchlist_context=watchlist_context,
+                data_provider_type=data_provider_type,
             )
         except RiskViolation as exc:
             log.info(
