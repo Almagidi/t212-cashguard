@@ -7,15 +7,20 @@ All functions work on plain floats / Decimals and are pure.  Risk-free handling:
 compounding rate and subtracted from each daily return before the Sharpe/Sortino
 numerator is formed.  Cash inside the simulated portfolio earns nothing, so a
 positive risk-free rate can only make the reported ratios *less* flattering.
+
+Day-count convention: one year is ``TRADING_DAYS_PER_YEAR`` (252) trading sessions
+everywhere.  Sharpe and Sortino scale a per-session ratio by sqrt(252); annualised
+return and annualised turnover scale by 252 / (number of sessions measured).  Calendar
+days (365) are not used.
 """
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from decimal import Decimal
 
 TRADING_DAYS_PER_YEAR = 252
 
@@ -58,15 +63,47 @@ def sharpe_ratio(returns: Sequence[float], risk_free_annual: float = 0.0) -> flo
 
 
 def sortino_ratio(returns: Sequence[float], risk_free_annual: float = 0.0) -> float | None:
-    """Historical engine definition: mean excess return over the stdev of losing days."""
+    """Mean excess return over the standard downside deviation, annualised by sqrt(252).
+
+    The target (minimum acceptable return) is the daily risk-free rate.  The downside deviation
+    is the root mean square of ``min(r - target, 0)`` over ALL periods, so periods at or above
+    target count as zero shortfall rather than being dropped.  ``None`` when there is no
+    shortfall at all.
+    """
     if not returns:
         return None
     rf = daily_risk_free(risk_free_annual)
     excess_mean = sum(value - rf for value in returns) / len(returns)
-    downside_std = stddev([value for value in returns if value < 0])
-    if downside_std <= 0:
+    shortfall_squares = sum(min(value - rf, 0.0) ** 2 for value in returns)
+    downside_deviation = (shortfall_squares / len(returns)) ** 0.5
+    if downside_deviation <= 0:
         return None
-    return float(excess_mean / downside_std * (TRADING_DAYS_PER_YEAR**0.5))
+    return float(excess_mean / downside_deviation * (TRADING_DAYS_PER_YEAR**0.5))
+
+
+def annualised_return_pct_from_periods(final: Decimal, initial: Decimal, periods: int) -> Decimal:
+    """Compound growth scaled to a 252-session year; ``periods`` is the number of session returns."""
+    if initial <= 0 or final <= 0:
+        return Decimal("0")
+    exponent = TRADING_DAYS_PER_YEAR / max(1, periods)
+    value = ((float(final) / float(initial)) ** exponent - 1.0) * 100.0
+    return Decimal(str(value))
+
+
+def annualised_one_way_turnover_pct(
+    traded_notional: Decimal, average_equity: Decimal, periods: int
+) -> Decimal:
+    """One-way turnover per year, as a percent of average equity.
+
+    ``traded_notional`` is the sum of every buy and every sell.  One-way turnover is half of
+    that sum (a full liquidation plus a full re-purchase is 100%, not 200%), divided by average
+    equity and scaled to a 252-session year.
+    """
+    if average_equity <= 0:
+        return Decimal("0")
+    one_way = traded_notional / Decimal("2")
+    scale = Decimal(TRADING_DAYS_PER_YEAR) / Decimal(max(1, periods))
+    return one_way / average_equity * scale * Decimal("100")
 
 
 def max_drawdown_pct_from_equity(equities: Sequence[Decimal], base: Decimal) -> float:

@@ -16,6 +16,8 @@ from zoneinfo import ZoneInfo
 from app.backtest.data_contract import validate_bar_series
 from app.backtest.portfolio_costs import TransactionCostModel
 from app.backtest.portfolio_metrics import (
+    annualised_one_way_turnover_pct,
+    annualised_return_pct_from_periods,
     max_drawdown_pct_from_equity,
     returns_from_equity,
     sharpe_ratio,
@@ -495,13 +497,6 @@ def _align_research_histories(
     return ordered_dates, aligned, report
 
 
-def _annualised_return_pct(final: Decimal, initial: Decimal, day_count: int) -> Decimal:
-    if initial <= 0 or final <= 0:
-        return Decimal("0")
-    value = ((float(final) / float(initial)) ** (365.0 / float(max(1, day_count))) - 1.0) * 100.0
-    return Decimal(str(value))
-
-
 def _round_ratio(value: float | None) -> Decimal | None:
     return Decimal(str(round(value, 3))) if value is not None else None
 
@@ -675,10 +670,9 @@ class PortfolioBacktester:
         name: str,
         equities: list[Decimal],
         entry_cost: Decimal,
-        day_count: int,
         avg_exposure_pct: Decimal,
         strategy_total_return_pct: Decimal,
-        strategy_sharpe: Decimal | None,
+        strategy_sharpe_raw: float | None,
         strategy_max_drawdown_pct: Decimal,
     ) -> BenchmarkComparison:
         rf = float(self.risk_free_rate)
@@ -689,7 +683,8 @@ class PortfolioBacktester:
             if self.initial_capital > 0
             else Decimal("0")
         )
-        sharpe = _round_ratio(sharpe_ratio(returns, rf))
+        sharpe_raw = sharpe_ratio(returns, rf)
+        sharpe = _round_ratio(sharpe_raw)
         max_dd = Decimal(
             str(round(max_drawdown_pct_from_equity(equities, self.initial_capital), 6))
         )
@@ -697,8 +692,8 @@ class PortfolioBacktester:
             key=key,
             name=name,
             total_return_pct=total_return_pct.quantize(Decimal("0.01")),
-            annualised_return_pct=_annualised_return_pct(
-                final, self.initial_capital, day_count
+            annualised_return_pct=annualised_return_pct_from_periods(
+                final, self.initial_capital, len(equities)
             ).quantize(Decimal("0.01")),
             sharpe_ratio=sharpe,
             sortino_ratio=_round_ratio(sortino_ratio(returns, rf)),
@@ -707,9 +702,10 @@ class PortfolioBacktester:
             total_execution_cost=entry_cost.quantize(Decimal("0.01")),
             excess_return_pct=strategy_total_return_pct.quantize(Decimal("0.01"))
             - total_return_pct.quantize(Decimal("0.01")),
+            # From the unrounded Sharpe ratios, rounded once.
             excess_sharpe_ratio=(
-                strategy_sharpe - sharpe
-                if strategy_sharpe is not None and sharpe is not None
+                _round_ratio(strategy_sharpe_raw - sharpe_raw)
+                if strategy_sharpe_raw is not None and sharpe_raw is not None
                 else None
             ),
             excess_max_drawdown_pct=strategy_max_drawdown_pct - max_dd.quantize(Decimal("0.01")),
@@ -840,9 +836,9 @@ class PortfolioBacktester:
             total_return_pct = ((final_equity / self.initial_capital) - Decimal("1")) * Decimal(
                 "100"
             )
-        day_count = max(1, (dates[-1] - dates[first_trade_index]).days)
-        annualised_return_pct = _annualised_return_pct(
-            final_equity, self.initial_capital, day_count
+        periods = len(equity_curve) - first_trade_index
+        annualised_return_pct = annualised_return_pct_from_periods(
+            final_equity, self.initial_capital, periods
         )
 
         # Everything below is measured from the first allocation index so warm-up days
@@ -852,7 +848,8 @@ class PortfolioBacktester:
         metrics_equities = [point.equity for point in metrics_curve]
         daily_returns = returns_from_equity(metrics_equities, self.initial_capital)
         rf = float(self.risk_free_rate)
-        sharpe = _round_ratio(sharpe_ratio(daily_returns, rf))
+        sharpe_raw = sharpe_ratio(daily_returns, rf)
+        sharpe = _round_ratio(sharpe_raw)
         sortino = _round_ratio(sortino_ratio(daily_returns, rf))
 
         max_drawdown_pct = Decimal(
@@ -865,20 +862,17 @@ class PortfolioBacktester:
         avg_exposure_pct = _decimal_mean([point.exposure_pct for point in metrics_curve]).quantize(
             Decimal("0.01")
         )
-        turnover_pct = Decimal("0")
         avg_equity = _decimal_mean(metrics_equities)
-        if avg_equity > 0:
-            turnover_pct = ((total_turnover / avg_equity) * Decimal("100")).quantize(
-                Decimal("0.01")
-            )
+        turnover_pct = annualised_one_way_turnover_pct(
+            total_turnover, avg_equity, len(metrics_equities)
+        ).quantize(Decimal("0.01"))
         total_slippage_cost = sum((trade.slippage_cost for trade in trades), Decimal("0"))
         total_fee_cost = sum((trade.fee_cost for trade in trades), Decimal("0"))
 
         strategy_max_dd = max_drawdown_pct.quantize(Decimal("0.01"))
         comparison_args = {
-            "day_count": day_count,
             "strategy_total_return_pct": total_return_pct,
-            "strategy_sharpe": sharpe,
+            "strategy_sharpe_raw": sharpe_raw,
             "strategy_max_drawdown_pct": strategy_max_dd,
         }
         length = len(dates)
