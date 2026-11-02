@@ -10,8 +10,7 @@ import os
 import subprocess
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -24,6 +23,9 @@ from app.backtest.dataset_cache import (
 )
 from app.core.config import settings
 from app.strategies.indicators import Bar
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = structlog.get_logger()
 

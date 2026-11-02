@@ -316,6 +316,7 @@ def test_trial_variance_grid_component_matches_the_recorded_candidate_sharpes() 
     expected = variance(per_period) if len(per_period) >= 2 else 0.0
     oos = result.deflated_sharpe["oos"]
     assert oos["trials_sr_variance_grid"] == pytest.approx(expected)
-    assert oos["trials_sr_variance_grid"] == result.deflated_sharpe["holdout"][
-        "trials_sr_variance_grid"
-    ]
+    assert (
+        oos["trials_sr_variance_grid"]
+        == result.deflated_sharpe["holdout"]["trials_sr_variance_grid"]
+    )

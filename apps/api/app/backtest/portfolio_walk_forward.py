@@ -604,10 +604,14 @@ def run_portfolio_walk_forward(
             benchmark_ticker=benchmark_ticker,
             universe=universe,
             universe_returns=[
-                r for w in evaluated for r in w.benchmark_daily_returns.get(BENCHMARK_UNIVERSE_EW, [])
+                r
+                for w in evaluated
+                for r in w.benchmark_daily_returns.get(BENCHMARK_UNIVERSE_EW, [])
             ],
             benchmark_returns=[
-                r for w in evaluated for r in w.benchmark_daily_returns.get(BENCHMARK_BROAD_INDEX, [])
+                r
+                for w in evaluated
+                for r in w.benchmark_daily_returns.get(BENCHMARK_BROAD_INDEX, [])
             ],
         )
     for part in deflated.values():

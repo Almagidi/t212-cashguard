@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
 from app.backtest.data_contract import validate_bar_series
@@ -32,8 +32,8 @@ if TYPE_CHECKING:
 SHARE_QUANT = Decimal("0.0001")
 MIN_PORTFOLIO_COVERAGE_PCT = Decimal("95")
 
-BENCHMARK_UNIVERSE_EW = "universe_equal_weight_costed"
-BENCHMARK_BROAD_INDEX = "broad_index"
+BENCHMARK_UNIVERSE_EW: Final = "universe_equal_weight_costed"
+BENCHMARK_BROAD_INDEX: Final = "broad_index"
 # Holds the broad index at the strategy's average *exposure* (and the rest in cash); it matches
 # exposure, not risk, hence the name.  The old key is accepted on requests and mapped.
 BENCHMARK_EXPOSURE_MATCHED = "exposure_matched_blend"
@@ -882,7 +882,7 @@ class PortfolioBacktester:
         total_fee_cost = sum((trade.fee_cost for trade in trades), Decimal("0"))
 
         strategy_max_dd = max_drawdown_pct.quantize(Decimal("0.01"))
-        comparison_args = {
+        comparison_args: dict[str, Any] = {
             "strategy_total_return_pct": total_return_pct,
             "strategy_sharpe_raw": sharpe_raw,
             "strategy_max_drawdown_pct": strategy_max_dd,

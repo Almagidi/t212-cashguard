@@ -22,8 +22,8 @@ from app.backtest.gate_floors import (
     MIN_DEFLATED_SHARPE_PROBABILITY,
     MIN_REBALANCES_PER_WINDOW,
     MIN_VALID_WINDOWS,
-    config_floor_violations,
     benchmark_sanity_text,
+    config_floor_violations,
     cost_gate_refusal,
 )
 from app.backtest.portfolio_costs import TransactionCostModel
@@ -664,7 +664,9 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
                     job_id,
                     body,
                     dataset_manifests,
-                    walk_forward.holdout.test_end if walk_forward.holdout else None,
+                    walk_forward.holdout.test_end
+                    if walk_forward is not None and walk_forward.holdout
+                    else None,
                 )
                 if body.walk_forward is not None
                 else None
