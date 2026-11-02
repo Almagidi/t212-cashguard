@@ -113,7 +113,9 @@ research pass. Code: `apps/api/app/backtest/portfolio_*.py`, route `POST /v1/bac
 
 - **Survivorship.** The default scanner universe is 14 hand-picked winners. There are no
   point-in-time index constituents, so delisted and failed names are absent. Results on that
-  universe are upper bounds, not estimates.
+  universe are upper bounds, not estimates. This text is `disclosures.survivorship` on every
+  portfolio result and is added to the interpretation warnings whenever a promising or strong
+  label is emitted or withheld, or the walk-forward gate passes.
 - **Adjusted prices.** Bars are provider-adjusted and the corporate-action treatment is
   unqualified; dividends and splits are only as right as the provider's adjustment.
 - **Costs are a model.** Spread and slippage are flat assumptions, not measured per instrument;

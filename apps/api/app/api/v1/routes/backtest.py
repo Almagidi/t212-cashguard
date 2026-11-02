@@ -148,6 +148,13 @@ PortfolioBenchmarkKey = Literal[
 # Accepted on requests for compatibility; the benchmark matches exposure, not risk.
 _BENCHMARK_ALIASES = {"risk_matched_blend": "exposure_matched_blend"}
 
+SURVIVORSHIP_DISCLOSURE = (
+    "Survivorship bias: the default scanner universe is hand-picked winners, there are no "
+    "point-in-time index constituents (delisted and failed names are absent), and prices are "
+    "provider-adjusted with unqualified corporate-action treatment. Results on such a universe "
+    "are upper bounds, not estimates; a positive label here does not survive that."
+)
+
 # Always attached to a portfolio result so no reader has to find these in the docs.
 PORTFOLIO_DISCLOSURES: dict[str, str] = {
     "currency": (
@@ -166,6 +173,7 @@ PORTFOLIO_DISCLOSURES: dict[str, str] = {
         "Rebalances allocate 99.8% of equity (the rest is a cash buffer); every buy-and-hold "
         "benchmark uses the same 99.8%, so the buffer does not tilt the comparison."
     ),
+    "survivorship": SURVIVORSHIP_DISCLOSURE,
     "benchmark_exits": "Benchmarks are bought on day one and marked to market with no exit cost.",
 }
 
@@ -1130,6 +1138,13 @@ def _interpret_portfolio_results(result: Any, walk_forward: Any = None) -> dict[
                 "Promising/strong needs out-of-sample and holdout results that beat the costed benchmark."
             )
             verdict = "unvalidated"
+    # Shown beside any positive claim or passed gate: the labels are only as good as the universe.
+    if (
+        verdict in POSITIVE_VERDICTS
+        or claimed is not None
+        or (walk_forward is not None and walk_forward.passes_gate)
+    ):
+        warnings.append(SURVIVORSHIP_DISCLOSURE)
     if walk_forward is not None:
         warnings.extend(walk_forward.gate_warnings)
         dropped_ids = walk_forward.oos.get("dropped_window_ids") or []
