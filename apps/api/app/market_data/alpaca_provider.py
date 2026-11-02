@@ -140,6 +140,10 @@ class AlpacaMarketDataProvider:
 
     # 429 handling: at most MAX_ATTEMPTS requests in total.
     MAX_ATTEMPTS = 3
+
+    # Bars pagination: Alpaca caps a page at 10000 rows.
+    MAX_PAGE_SIZE = 10_000
+    MAX_PAGES = 10
     BACKOFF_BASE_SECONDS = 1.0
     MAX_BACKOFF_SECONDS = 30.0
 
@@ -220,16 +224,19 @@ class AlpacaMarketDataProvider:
         """
         Fetch aggregated bars (OHLCV), always returned oldest -> newest.
 
-        With no explicit ``from_date``/``to_date`` this returns the LATEST
-        ``limit`` bars: the request is sorted descending (so the limit
-        truncates the OLD end) over a lookback window sized to the timeframe,
-        then reversed. With explicit dates the window is honoured as given and
-        sorted ascending (backtest / opening-range behaviour).
+        Returns the LATEST ``limit`` bars within the window: the request is
+        sorted descending (so the limit truncates the OLD end), pages are
+        followed via ``next_page_token`` (page size capped at
+        ``MAX_PAGE_SIZE``, at most ``MAX_PAGES`` pages), then the result is
+        trimmed to ``limit`` and reversed. Without explicit dates the window
+        is a lookback sized to the timeframe; with explicit ``from_date`` /
+        ``to_date`` it is [from_date, to_date].
 
         timespan options: "1Min", "5Min", "15Min", "1Hour", "1Day"
         """
-        explicit_window = from_date is not None or to_date is not None
-        sort = "asc" if explicit_window else "desc"
+        # Always newest-first on the wire so ``limit`` truncates the OLD end,
+        # for default lookbacks and explicit [from, to] windows alike.
+        sort = "desc"
         cache_key = (
             f"bars:{ticker}:{multiplier}:{timespan}:"
             f"{from_date.isoformat() if from_date else '-'}:"
@@ -256,22 +263,30 @@ class AlpacaMarketDataProvider:
         start_dt = start_day.isoformat() + "T00:00:00Z"
         end_dt   = (to_date or today).isoformat() + "T23:59:59Z"
 
-        data = await self._get(
-            f"/v2/stocks/{ticker}/bars",
-            params={
-                "timeframe": timeframe,
-                "start":     start_dt,
-                "end":       end_dt,
-                "limit":     limit,
-                "adjustment": "raw",
-                "feed":      "iex",   # IEX = free real-time feed
-                "sort":      sort,
-            },
-        )
-
-        raw_bars = list(data.get("bars") or [])
-        if sort == "desc":
-            raw_bars.reverse()  # callers always receive ascending order
+        base_params: dict[str, Any] = {
+            "timeframe": timeframe,
+            "start":     start_dt,
+            "end":       end_dt,
+            "adjustment": "raw",
+            "feed":      "iex",   # IEX = free real-time feed
+            "sort":      sort,
+        }
+        raw_bars: list[dict[str, Any]] = []
+        page_token: str | None = None
+        for _ in range(self.MAX_PAGES):
+            remaining = limit - len(raw_bars)
+            if remaining <= 0:
+                break
+            params = {**base_params, "limit": min(remaining, self.MAX_PAGE_SIZE)}
+            if page_token:
+                params["page_token"] = page_token
+            data = await self._get(f"/v2/stocks/{ticker}/bars", params=params)
+            raw_bars.extend(data.get("bars") or [])
+            page_token = data.get("next_page_token")
+            if not page_token:
+                break
+        raw_bars = raw_bars[:limit]
+        raw_bars.reverse()  # newest-first -> callers always receive ascending order
 
         bars: list[AlpacaBar] = []
         for b in raw_bars:

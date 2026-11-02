@@ -24,13 +24,20 @@ class FakeAlpaca:
     def __init__(self, series: list[dict[str, Any]]) -> None:
         self.series = series  # ascending
         self.requests: list[httpx.Request] = []
+        self.page_cap = 10_000  # server-side max rows per page
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         q = request.url.params
         rows = [r for r in self.series if q["start"] <= r["t"] <= q["end"]]
         rows = rows if q["sort"] == "asc" else list(reversed(rows))
-        return httpx.Response(200, json={"bars": rows[: int(q["limit"])]})
+        offset = int(q["page_token"]) if "page_token" in q else 0
+        size = min(int(q["limit"]), self.page_cap)
+        page = rows[offset: offset + size]
+        body: dict[str, Any] = {"bars": page}
+        if offset + size < len(rows):
+            body["next_page_token"] = str(offset + size)
+        return httpx.Response(200, json=body)
 
 
 def _provider(handler: Any) -> AlpacaMarketDataProvider:
@@ -64,21 +71,81 @@ async def test_default_request_returns_latest_n_bars_in_ascending_order() -> Non
 
 
 @pytest.mark.asyncio
-async def test_explicit_dates_keep_ascending_oldest_first_window() -> None:
-    series = _recent_series(200)
-    fake = FakeAlpaca(series)
+async def test_explicit_window_returns_newest_limit_bars_ascending() -> None:
+    fake = FakeAlpaca(_recent_series(250))
     provider = _provider(fake)
     today = datetime.now(UTC).date()
 
     bars = await provider.get_bars(
         "AAPL", multiplier=5, timespan="minute",
-        from_date=today - timedelta(days=3), to_date=today, limit=10,
+        from_date=today - timedelta(days=3), to_date=today, limit=50,
     )
 
-    assert fake.requests[0].url.params["sort"] == "asc"
+    assert fake.requests[0].url.params["sort"] == "desc"
     assert fake.requests[0].url.params["start"] == (today - timedelta(days=3)).isoformat() + "T00:00:00Z"
-    assert len(bars) == 10
+    assert [b.close for b in bars] == [Decimal(100 + i) for i in range(200, 250)]
     assert all(a.timestamp < b.timestamp for a, b in zip(bars, bars[1:], strict=False))
+
+
+@pytest.mark.asyncio
+async def test_explicit_window_follows_pagination_across_three_pages() -> None:
+    fake = FakeAlpaca(_recent_series(250))
+    fake.page_cap = 100
+    provider = _provider(fake)
+    today = datetime.now(UTC).date()
+
+    bars = await provider.get_bars(
+        "AAPL", multiplier=5, timespan="minute",
+        from_date=today - timedelta(days=3), to_date=today, limit=250,
+    )
+
+    assert len(fake.requests) == 3
+    assert fake.requests[1].url.params["page_token"] == "100"
+    assert [b.close for b in bars] == [Decimal(100 + i) for i in range(250)]
+    assert all(a.timestamp < b.timestamp for a, b in zip(bars, bars[1:], strict=False))
+
+
+@pytest.mark.asyncio
+async def test_pagination_stops_once_limit_reached() -> None:
+    fake = FakeAlpaca(_recent_series(250))
+    fake.page_cap = 30
+    provider = _provider(fake)
+    today = datetime.now(UTC).date()
+
+    bars = await provider.get_bars(
+        "AAPL", multiplier=5, timespan="minute",
+        from_date=today - timedelta(days=3), to_date=today, limit=50,
+    )
+
+    assert len(fake.requests) == 2
+    assert [b.close for b in bars] == [Decimal(100 + i) for i in range(200, 250)]
+
+
+@pytest.mark.asyncio
+async def test_limit_larger_than_available_returns_all_ascending() -> None:
+    fake = FakeAlpaca(_recent_series(40))
+    provider = _provider(fake)
+    today = datetime.now(UTC).date()
+
+    bars = await provider.get_bars(
+        "AAPL", multiplier=5, timespan="minute",
+        from_date=today - timedelta(days=3), to_date=today, limit=500,
+    )
+
+    assert [b.close for b in bars] == [Decimal(100 + i) for i in range(40)]
+    assert len(fake.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_window_returns_empty_list() -> None:
+    fake = FakeAlpaca([])
+    provider = _provider(fake)
+    today = datetime.now(UTC).date()
+
+    bars = await provider.get_bars("AAPL", from_date=today, to_date=today, limit=20)
+
+    assert bars == []
+    assert len(fake.requests) == 1
 
 
 @pytest.mark.asyncio
