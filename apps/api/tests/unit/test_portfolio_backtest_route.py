@@ -108,10 +108,19 @@ def _fake_result(*, sharpe: float, total_return: float = 20.0, zero_cost: bool =
     )
 
 
-def _fake_wf(*, passes: bool, reasons: list[str] | None = None):
+def _fake_wf(*, passes: bool, reasons: list[str] | None = None, **config_overrides: Any):
     from types import SimpleNamespace
 
+    config = {
+        "holdout_bars": 126,
+        "test_bars": 63,
+        "min_valid_windows": 3,
+        "min_rebalances_per_window": 3,
+        "min_deflated_sharpe_probability": 0.95,
+        **config_overrides,
+    }
     return SimpleNamespace(
+        config=SimpleNamespace(**config),
         passes_gate=passes,
         gate_reasons=reasons
         or ([] if passes else ["out-of-sample return does not beat costed benchmark broad_index"]),

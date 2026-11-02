@@ -32,6 +32,14 @@ from statistics import NormalDist
 from statistics import variance as sample_variance
 from typing import TYPE_CHECKING, Any
 
+from app.backtest.gate_floors import (
+    MIN_DEFLATED_SHARPE_PROBABILITY,
+    MIN_VALID_WINDOWS,
+    MIN_WINDOW_WIN_FRACTION,
+    config_floor_violations,
+    effective_deflated_sharpe_threshold,
+    floors_as_dict,
+)
 from app.backtest.portfolio_costs import TransactionCostModel
 from app.backtest.portfolio_engine import (
     BENCHMARK_BROAD_INDEX,
@@ -168,11 +176,11 @@ class WalkForwardConfig:
     test_bars: int
     holdout_bars: int
     min_rebalances_per_window: int = 3
-    min_valid_windows: int = 2
+    min_valid_windows: int = MIN_VALID_WINDOWS
     extra_trials: int = 0
-    # Optional extra gate; None keeps the gate on benchmark-beating only.  A pre-registered
-    # success rule (see docs/backtest-honesty.md) would typically set this to 0.95.
-    min_deflated_sharpe_probability: float | None = None
+    # The deflated-Sharpe gate is mandatory.  None means "the server default"; a value below
+    # the server floor (0.95) is enforced at the floor and also fails the gate (see gate_floors).
+    min_deflated_sharpe_probability: float | None = MIN_DEFLATED_SHARPE_PROBABILITY
 
     def __post_init__(self) -> None:
         if self.initial_train_bars < 2 or self.test_bars < 2 or self.holdout_bars < 2:
@@ -279,6 +287,89 @@ def _stitched_summary(
             ),
         }
     return summary
+
+
+def window_excess_return_pct(window: WalkForwardWindow, key: str) -> float | None:
+    """Strategy minus benchmark total return for one window, from unrounded daily returns."""
+    bench = window.benchmark_daily_returns.get(key)
+    if not window.daily_returns or not bench:
+        return None
+    return total_return_pct_from_returns(window.daily_returns) - total_return_pct_from_returns(
+        bench
+    )
+
+
+def evaluate_gate(
+    *,
+    config: WalkForwardConfig,
+    windows: list[WalkForwardWindow],
+    holdout: WalkForwardWindow,
+    oos: dict[str, Any],
+    holdout_summary: dict[str, Any],
+    deflated: dict[str, Any],
+    benchmark_keys: list[str],
+    zero_cost: bool,
+) -> tuple[list[str], list[str]]:
+    """Gate reasons (any reason fails the gate) and warnings.
+
+    Server floors in ``gate_floors`` apply whatever the request asked for: settings below a
+    floor are themselves a failure reason, and the enforced thresholds never drop below them.
+    """
+    reasons: list[str] = []
+    warnings: list[str] = []
+    if zero_cost:
+        reasons.append("zero-cost run: friction-free results cannot qualify")
+    reasons.extend(
+        config_floor_violations(
+            holdout_bars=config.holdout_bars,
+            test_bars=config.test_bars,
+            min_valid_windows=config.min_valid_windows,
+            min_rebalances_per_window=config.min_rebalances_per_window,
+            min_deflated_sharpe_probability=config.min_deflated_sharpe_probability,
+        )
+    )
+    required_windows = max(config.min_valid_windows, MIN_VALID_WINDOWS)
+    if oos["windows_valid"] < required_windows:
+        reasons.append(
+            f"only {oos['windows_valid']} valid out-of-sample window(s); need {required_windows}"
+        )
+    if not holdout.valid:
+        reasons.append(f"holdout invalid: {holdout.invalid_reason}")
+    if BENCHMARK_BROAD_INDEX not in benchmark_keys:
+        warnings.append(
+            "no broad-index benchmark supplied; only the same-universe benchmark was tested"
+        )
+        reasons.append(
+            "no broad-index benchmark series supplied: a positive verdict needs a broad-index comparison"
+        )
+    valid_windows = [w for w in windows if w.valid]
+    for key in benchmark_keys:
+        oos_bench = oos["benchmarks"][key]
+        if oos_bench["excess_return_pct"] is None or oos_bench["excess_return_pct"] <= 0:
+            reasons.append(f"out-of-sample return does not beat costed benchmark {key}")
+        if oos_bench["excess_sharpe_ratio"] is None or oos_bench["excess_sharpe_ratio"] <= 0:
+            reasons.append(f"out-of-sample Sharpe does not beat costed benchmark {key}")
+        # Stitched totals can be carried by one lucky window: most windows must win on their own.
+        wins = sum(1 for w in valid_windows if (window_excess_return_pct(w, key) or 0.0) > 0)
+        if not valid_windows or wins <= MIN_WINDOW_WIN_FRACTION * len(valid_windows):
+            reasons.append(
+                f"only {wins} of {len(valid_windows)} valid windows beat costed benchmark {key}; "
+                "need a majority"
+            )
+        if holdout.excess_return_pct.get(key, -1.0) <= 0:
+            reasons.append(f"holdout return does not beat costed benchmark {key}")
+        holdout_excess_sharpe = (
+            holdout_summary["benchmarks"].get(key, {}).get("excess_sharpe_ratio")
+        )
+        if holdout_excess_sharpe is None or holdout_excess_sharpe <= 0:
+            reasons.append(f"holdout Sharpe does not beat costed benchmark {key}")
+    threshold = effective_deflated_sharpe_threshold(config.min_deflated_sharpe_probability)
+    probability = deflated["oos"]["deflated_sharpe_probability"]
+    if probability is None or probability < threshold:
+        reasons.append(
+            f"deflated Sharpe probability {probability} is below the required {threshold}"
+        )
+    return reasons, warnings
 
 
 def run_portfolio_walk_forward(
@@ -452,6 +543,11 @@ def run_portfolio_walk_forward(
     oos = _stitched_summary(windows, risk_free, benchmark_keys)
     holdout_summary = _stitched_summary([holdout], risk_free, benchmark_keys)
     oos_returns = [r for w in windows if w.valid for r in w.daily_returns]
+    if n_trials > 1 and trials_variance <= 0 and len(oos_returns) >= 2:
+        # A single-entry grid has no cross-trial Sharpe variance, which would zero SR0 and make
+        # ``extra_trials`` meaningless.  Fall back to the null sampling variance of a per-period
+        # Sharpe estimate, 1 / (T - 1), so declared extra trials still raise the bar.
+        trials_variance = 1.0 / (len(oos_returns) - 1)
     deflated = {
         "oos": deflated_sharpe_for_returns(
             oos_returns,
@@ -467,36 +563,16 @@ def run_portfolio_walk_forward(
         ),
     }
 
-    reasons: list[str] = []
-    warnings: list[str] = []
-    if cost_model.zero_cost:
-        reasons.append("zero-cost run: friction-free results cannot qualify")
-    if oos["windows_valid"] < config.min_valid_windows:
-        reasons.append(
-            f"only {oos['windows_valid']} valid out-of-sample window(s); "
-            f"need {config.min_valid_windows}"
-        )
-    if not holdout.valid:
-        reasons.append(f"holdout invalid: {holdout.invalid_reason}")
-    if BENCHMARK_BROAD_INDEX not in benchmark_keys:
-        warnings.append(
-            "no broad-index benchmark supplied; only the same-universe benchmark was tested"
-        )
-    for key in benchmark_keys:
-        oos_bench = oos["benchmarks"][key]
-        if oos_bench["excess_return_pct"] is None or oos_bench["excess_return_pct"] <= 0:
-            reasons.append(f"out-of-sample return does not beat costed benchmark {key}")
-        if oos_bench["excess_sharpe_ratio"] is None or oos_bench["excess_sharpe_ratio"] <= 0:
-            reasons.append(f"out-of-sample Sharpe does not beat costed benchmark {key}")
-        if holdout.excess_return_pct.get(key, -1.0) <= 0:
-            reasons.append(f"holdout return does not beat costed benchmark {key}")
-    threshold = config.min_deflated_sharpe_probability
-    if threshold is not None:
-        probability = deflated["oos"]["deflated_sharpe_probability"]
-        if probability is None or probability < threshold:
-            reasons.append(
-                f"deflated Sharpe probability {probability} is below the required {threshold}"
-            )
+    reasons, warnings = evaluate_gate(
+        config=config,
+        windows=windows,
+        holdout=holdout,
+        oos=oos,
+        holdout_summary=holdout_summary,
+        deflated=deflated,
+        benchmark_keys=benchmark_keys,
+        zero_cost=cost_model.zero_cost,
+    )
     passes = not reasons
 
     return WalkForwardResult(
@@ -554,6 +630,10 @@ def serialize_walk_forward(result: WalkForwardResult) -> dict[str, Any]:
             "extra_trials": config.extra_trials,
             "min_deflated_sharpe_probability": config.min_deflated_sharpe_probability,
         },
+        "gate_floors": floors_as_dict(),
+        "effective_min_deflated_sharpe_probability": effective_deflated_sharpe_threshold(
+            config.min_deflated_sharpe_probability
+        ),
         "n_grid": result.n_grid,
         "n_trials": result.n_trials,
         "total_sessions": result.total_sessions,

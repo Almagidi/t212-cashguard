@@ -16,6 +16,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.api.deps import get_current_user
 from app.backtest.configuration import resolve_backtest_configuration
+from app.backtest.gate_floors import (
+    MIN_DEFLATED_SHARPE_PROBABILITY,
+    MIN_REBALANCES_PER_WINDOW,
+    MIN_VALID_WINDOWS,
+    config_floor_violations,
+)
 from app.backtest.portfolio_costs import TransactionCostModel
 from app.backtest.portfolio_engine import (
     BENCHMARK_UNIVERSE_EW,
@@ -190,10 +196,15 @@ class PortfolioWalkForwardRequest(BaseModel):
     initial_train_bars: int = Field(ge=2)
     test_bars: int = Field(ge=2)
     holdout_bars: int = Field(ge=2)
-    min_rebalances_per_window: int = Field(default=3, ge=1)
-    min_valid_windows: int = Field(default=2, ge=1)
+    # Settings below the server floors in ``app.backtest.gate_floors`` are accepted (research
+    # runs) but can never pass the gate; the floors cannot be lowered by the request.
+    min_rebalances_per_window: int = Field(default=MIN_REBALANCES_PER_WINDOW, ge=1)
+    min_valid_windows: int = Field(default=MIN_VALID_WINDOWS, ge=1)
     extra_trials: int = Field(default=0, ge=0)
-    min_deflated_sharpe_probability: float | None = Field(default=None, ge=0, le=1)
+    # Mandatory: None means the server default 0.95; lower values are enforced at 0.95 anyway.
+    min_deflated_sharpe_probability: float | None = Field(
+        default=MIN_DEFLATED_SHARPE_PROBABILITY, ge=0, le=1
+    )
 
     def to_config(self) -> WalkForwardConfig:
         return WalkForwardConfig(
@@ -922,6 +933,16 @@ def _interpret_portfolio_results(result: Any, walk_forward: Any = None) -> dict[
             refusal = "no out-of-sample or holdout walk-forward was run"
         elif not walk_forward.passes_gate:
             refusal = "; ".join(walk_forward.gate_reasons) or "walk-forward gate not passed"
+        elif floor_reasons := config_floor_violations(
+            holdout_bars=walk_forward.config.holdout_bars,
+            test_bars=walk_forward.config.test_bars,
+            min_valid_windows=walk_forward.config.min_valid_windows,
+            min_rebalances_per_window=walk_forward.config.min_rebalances_per_window,
+            min_deflated_sharpe_probability=walk_forward.config.min_deflated_sharpe_probability,
+        ):
+            # Defence in depth: the harness already enforces the floors; do not trust a
+            # walk-forward object that claims a pass on settings below them.
+            refusal = "; ".join(floor_reasons)
         elif result.cost_model.get("zero_cost"):
             refusal = "the run used an explicit zero-cost model"
         if refusal is not None:
