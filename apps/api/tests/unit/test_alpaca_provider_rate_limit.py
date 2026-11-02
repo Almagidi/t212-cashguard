@@ -131,3 +131,48 @@ async def test_total_sleep_cap_truncates_large_retry_after() -> None:
     # 30 s (per-sleep cap), then only the 10 s left of the 40 s budget
     assert sleeps.calls == [30.0, 10.0]
     assert sum(sleeps.calls) <= provider.MAX_TOTAL_SLEEP_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_exit_path_sleep_cap_limits_total_stall_but_default_keeps_45s() -> None:
+    handler, seen = _rate_limited_then_ok([429, 429, 429], retry_after="30")
+    provider = _provider(handler)
+    sleeps = _Sleeps()
+    provider._sleep = sleeps
+
+    with pytest.raises(AlpacaError):
+        await provider._get("/v2/stocks/AAPL/bars", max_total_sleep=10.0)
+    assert sleeps.calls == [10.0]  # 30 s Retry-After clamped to the 10 s budget
+
+    handler2, _ = _rate_limited_then_ok([429, 429, 429], retry_after="30")
+    default = _provider(handler2)
+    sleeps2 = _Sleeps()
+    default._sleep = sleeps2
+    with pytest.raises(AlpacaError):
+        await default._get("/v2/stocks/AAPL/bars")
+    assert sleeps2.calls == [30.0, 15.0]  # non-exit callers keep the 45 s budget
+
+
+@pytest.mark.asyncio
+async def test_exit_cap_cannot_raise_the_provider_budget() -> None:
+    handler, _ = _rate_limited_then_ok([429, 429, 429], retry_after="30")
+    provider = _provider(handler)
+    sleeps = _Sleeps()
+    provider._sleep = sleeps
+    provider.MAX_TOTAL_SLEEP_SECONDS = 5.0
+
+    with pytest.raises(AlpacaError):
+        await provider._get("/v2/stocks/AAPL/bars", max_total_sleep=100.0)
+    assert sum(sleeps.calls) <= 5.0
+
+
+@pytest.mark.asyncio
+async def test_get_bars_forwards_max_total_sleep() -> None:
+    handler, _ = _rate_limited_then_ok([429, 429, 429], retry_after="30")
+    provider = _provider(handler)
+    sleeps = _Sleeps()
+    provider._sleep = sleeps
+
+    with pytest.raises(AlpacaError):
+        await provider.get_bars("AAPL", limit=5, max_total_sleep=10.0)
+    assert sum(sleeps.calls) <= 10.0

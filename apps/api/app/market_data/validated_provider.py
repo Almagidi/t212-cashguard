@@ -58,6 +58,7 @@ class ValidatedMarketDataProvider:
         from_date: Any | None = None,
         to_date: Any | None = None,
         limit: int = 50,
+        max_total_sleep: float | None = None,
     ) -> list[Any]:
         primary_bars: list[Any] = []
         validator_bars: list[Any] = []
@@ -71,6 +72,7 @@ class ValidatedMarketDataProvider:
                 from_date=from_date,
                 to_date=to_date,
                 limit=limit,
+                max_total_sleep=max_total_sleep,
             )
         except Exception as exc:
             primary_error = exc
@@ -84,6 +86,7 @@ class ValidatedMarketDataProvider:
                     from_date=from_date,
                     to_date=to_date,
                     limit=limit,
+                    max_total_sleep=max_total_sleep,
                 )
             except Exception:
                 validator_bars = []

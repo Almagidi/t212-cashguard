@@ -382,6 +382,26 @@ class TestBrokerAndMarketDataHelpers:
         assert len(bars) == 1
         assert current_price == Decimal("100")
 
+    async def test_get_market_data_caps_exit_path_rate_limit_sleep(self, db, monkeypatch):
+        seen: dict = {}
+
+        class AsyncProvider:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def get_bars(self, *_args, **kwargs):
+                seen.update(kwargs)
+                return []
+
+        monkeypatch.setattr("app.market_data.get_live_provider", lambda: AsyncProvider())
+
+        await PositionMonitor(db)._get_market_data("AAPL")
+
+        assert seen["max_total_sleep"] == 10.0
+
     async def test_get_market_data_reads_sync_provider(self, db, monkeypatch):
         class SyncProvider:
             def get_ohlcv(self, *_args, **_kwargs):

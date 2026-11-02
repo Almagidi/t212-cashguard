@@ -64,6 +64,10 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger()
 
+# Total rate-limit sleep allowed for a protective-exit data fetch (non-exit
+# callers keep the provider default of 45 s).
+EXIT_FETCH_MAX_SLEEP_SECONDS = 10.0
+
 
 class _DailyLossOutcome(Enum):
     NO_BREACH = "no_breach"
@@ -156,7 +160,15 @@ class PositionMonitor:
 
             if hasattr(provider, "__aenter__"):
                 async with provider as md:
-                    raw_bars = await md.get_bars(ticker, multiplier=5, timespan="minute", limit=50)
+                    # Protective-exit data fetch: cap rate-limit sleeping (~10 s)
+                    # so a throttled feed cannot stall stop/take-profit checks.
+                    raw_bars = await md.get_bars(
+                        ticker,
+                        multiplier=5,
+                        timespan="minute",
+                        limit=50,
+                        max_total_sleep=EXIT_FETCH_MAX_SLEEP_SECONDS,
+                    )
                 bars = [
                     Bar(open=b.open, high=b.high, low=b.low, close=b.close, volume=b.volume)
                     for b in raw_bars

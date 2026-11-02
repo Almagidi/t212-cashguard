@@ -191,11 +191,12 @@ class AlpacaMarketDataProvider:
     BACKOFF_BASE_SECONDS = 1.0
     MAX_BACKOFF_SECONDS = 30.0
     # Hard cap on the TOTAL time one ``_get`` call may spend sleeping on 429s.
-    # NOTE: data fetches that feed protective exits (stop/take-profit checks)
-    # go through ``_get`` too, so a rate-limited exit-path fetch can stall for
-    # up to this long (plus request time) before it raises. That is accepted:
-    # a bounded stall beats hammering a rate-limited API.
+    # Non-exit callers use this budget. Protective-exit fetches (position
+    # monitor) pass ``max_total_sleep=EXIT_MAX_TOTAL_SLEEP_SECONDS`` instead so a
+    # rate-limited exit-path fetch stalls at most ~10 s (plus request time)
+    # before it raises; a bounded stall beats hammering a rate-limited API.
     MAX_TOTAL_SLEEP_SECONDS = 45.0
+    EXIT_MAX_TOTAL_SLEEP_SECONDS = 10.0
 
     # Injectable wall clock (tz-aware UTC) so tests are deterministic.
     _now = staticmethod(lambda: datetime.now(timezone.utc))
@@ -218,7 +219,18 @@ class AlpacaMarketDataProvider:
             return None
         return value
 
-    async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    async def _get(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        *,
+        max_total_sleep: float | None = None,
+    ) -> Any:
+        budget = (
+            self.MAX_TOTAL_SLEEP_SECONDS
+            if max_total_sleep is None
+            else min(max_total_sleep, self.MAX_TOTAL_SLEEP_SECONDS)
+        )
         resp: httpx.Response | None = None
         slept = 0.0
         for attempt in range(self.MAX_ATTEMPTS):
@@ -232,7 +244,7 @@ class AlpacaMarketDataProvider:
                 # honoured exactly (it is the server's instruction).
                 base = self.BACKOFF_BASE_SECONDS * (2 ** attempt)
                 delay = base / 2 + (base / 2) * self._random()
-            delay = min(delay, self.MAX_BACKOFF_SECONDS, self.MAX_TOTAL_SLEEP_SECONDS - slept)
+            delay = min(delay, self.MAX_BACKOFF_SECONDS, budget - slept)
             if delay > 0:
                 await self._sleep(delay)
                 slept += delay
@@ -287,6 +299,7 @@ class AlpacaMarketDataProvider:
         start: datetime | None = None,
         end: datetime | None = None,
         use_cache: bool = True,
+        max_total_sleep: float | None = None,
     ) -> list[AlpacaBar]:
         """
         Fetch aggregated bars (OHLCV), always returned oldest -> newest.
@@ -356,7 +369,9 @@ class AlpacaMarketDataProvider:
             params = {**base_params, "limit": min(remaining, self.MAX_PAGE_SIZE)}
             if page_token:
                 params["page_token"] = page_token
-            data = await self._get(f"/v2/stocks/{ticker}/bars", params=params)
+            data = await self._get(
+                f"/v2/stocks/{ticker}/bars", params=params, max_total_sleep=max_total_sleep
+            )
             raw_bars.extend(data.get("bars") or [])
             page_token = data.get("next_page_token")
             if not page_token:
