@@ -10,18 +10,22 @@ import os
 import subprocess
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from app.backtest.cache_location import resolve_cache_dir
 from app.backtest.data_contract import validate_bar_series
 from app.backtest.dataset_cache import (
     DatasetHandle,
     DatasetRequest,
     ImmutableDatasetCache,
 )
+from app.core.config import settings
 from app.strategies.indicators import Bar
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = structlog.get_logger()
 
@@ -35,8 +39,15 @@ def _code_sha() -> str:
     )
 
 
-CACHE_DIR = Path("/tmp/cashguard_backtest_cache")
-CACHE_DIR.mkdir(exist_ok=True)
+# Configurable via BACKTEST_CACHE_DIR; otherwise a per-user cache directory for the
+# platform.  Directories are created on first publish by the cache itself.  The location
+# never enters a dataset/manifest id.
+# Resolved lazily (never at import): CACHE_DIR is only an explicit override (tests).
+CACHE_DIR: Path | None = None
+
+
+def cache_dir() -> Path:
+    return CACHE_DIR if CACHE_DIR is not None else resolve_cache_dir(settings.BACKTEST_CACHE_DIR)
 
 
 class BacktestDataFetcher:
@@ -105,7 +116,7 @@ class BacktestDataFetcher:
             membership_source,
             universe,
         )
-        cache = ImmutableDatasetCache(CACHE_DIR)
+        cache = ImmutableDatasetCache(cache_dir())
         cached = cache.load(request) if cache.reference_path(request).exists() else None
         if cached is not None:
             log.info("backtest_data.cache_hit", ticker=ticker)
@@ -206,7 +217,7 @@ class BacktestDataFetcher:
         if ticker is not None:
             raise ValueError("content-addressed cache clearing cannot filter by ticker")
         count = 0
-        for f in CACHE_DIR.rglob("*.json"):
+        for f in cache_dir().rglob("*.json"):
             if f.is_file():
                 f.unlink()
                 count += 1

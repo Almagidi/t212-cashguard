@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+from app.backtest.portfolio_costs import TransactionCostModel
 from app.backtest.portfolio_engine import PortfolioBacktester
 from app.backtest.portfolio_strategies import (
     CrossSectionalMomentumStrategy,
@@ -189,6 +190,8 @@ class TestPortfolioBacktester:
             initial_capital=Decimal("10000"),
             start_date=history[1][0].date(),
             end_date=history[1][-1].date(),
+            # Account-currency listing: no FX fee, so the paper policy is the whole cost.
+            cost_model=TransactionCostModel(instrument_currencies={"AAA": "GBP"}),
         ).run({"AAA": history})
         trade = result.trades[0]
         expected = evaluate_paper_fill(
@@ -237,6 +240,8 @@ class TestPortfolioBacktester:
             initial_capital=Decimal("10000"),
             start_date=expensive_history[1][0].date(),
             end_date=expensive_history[1][-1].date(),
+            # Frictionless on purpose: this test is about residual cash, not costs.
+            cost_model=TransactionCostModel.explicit_zero(),
         ).run({"EXPENSIVE": expensive_history})
 
         assert result.benchmark_return_pct == Decimal("0.00")

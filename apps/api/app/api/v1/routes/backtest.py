@@ -4,6 +4,8 @@ Backtest and performance attribution routes.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from copy import deepcopy
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -16,10 +18,30 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.api.deps import get_current_user
 from app.backtest.configuration import resolve_backtest_configuration
-from app.backtest.portfolio_engine import InsufficientPortfolioEvidence
+from app.backtest.gate_floors import (
+    MIN_DEFLATED_SHARPE_PROBABILITY,
+    MIN_REBALANCES_PER_WINDOW,
+    MIN_VALID_WINDOWS,
+    benchmark_sanity_text,
+    config_floor_violations,
+    cost_gate_refusal,
+)
+from app.backtest.portfolio_costs import TransactionCostModel
+from app.backtest.portfolio_engine import (
+    BENCHMARK_BROAD_INDEX,
+    BENCHMARK_UNIVERSE_EW,
+    InsufficientPortfolioEvidence,
+)
+from app.backtest.portfolio_metrics import TRADING_DAYS_PER_YEAR
 from app.backtest.portfolio_strategies import (
     get_portfolio_backtest_strategy,
     list_portfolio_backtest_strategies,
+)
+from app.backtest.portfolio_walk_forward import (
+    HOLDOUT_REUSE_WARNING,
+    WalkForwardConfig,
+    run_portfolio_walk_forward,
+    serialize_walk_forward,
 )
 from app.backtest.strategy_registry import get_backtest_strategy, list_backtest_strategies
 from app.core.config import settings
@@ -120,13 +142,148 @@ class BacktestStrategyInfo(BaseModel):
     strategy_params: dict[str, Any]
 
 
+PortfolioBenchmarkKey = Literal[
+    "universe_equal_weight_costed", "broad_index", "exposure_matched_blend"
+]
+# Accepted on requests for compatibility; the benchmark matches exposure, not risk.
+_BENCHMARK_ALIASES = {"risk_matched_blend": "exposure_matched_blend"}
+
+SURVIVORSHIP_DISCLOSURE = (
+    "Survivorship bias: the default scanner universe is hand-picked winners, there are no "
+    "point-in-time index constituents (delisted and failed names are absent), and prices are "
+    "provider-adjusted with unqualified corporate-action treatment. Results on such a universe "
+    "are upper bounds, not estimates; a positive label here does not survive that."
+)
+
+# Always attached to a portfolio result so no reader has to find these in the docs.
+PORTFOLIO_DISCLOSURES: dict[str, str] = {
+    "currency": (
+        "FX moves between the account currency and instrument currencies are NOT modelled. "
+        "Returns are computed in each instrument's quote currency (typically USD) and presented "
+        "as if they were account-currency returns; only the FX conversion fee is charged."
+    ),
+    "annualisation": (
+        "252 trading sessions per year for annualised return, Sharpe, Sortino and turnover."
+    ),
+    "turnover": (
+        "turnover_pct is annualised one-way turnover: half of (buys + sells) over average equity, "
+        "scaled to a 252-session year."
+    ),
+    "cash_buffer": (
+        "Rebalances allocate 99.8% of equity (the rest is a cash buffer); every buy-and-hold "
+        "benchmark uses the same 99.8%, so the buffer does not tilt the comparison."
+    ),
+    "survivorship": SURVIVORSHIP_DISCLOSURE,
+    "benchmark_exits": "Benchmarks are bought on day one and marked to market with no exit cost.",
+}
+
+
+class PortfolioCostRequest(BaseModel):
+    """Transaction costs for a portfolio backtest (per side, in bps unless stated).
+
+    ``spread_bps`` is the full quoted spread (half is paid per side).  ``fx_fee_rate`` is a
+    fraction of notional charged per side on instruments whose currency differs from
+    ``account_currency``; an instrument with no known currency is treated as foreign and pays it.
+    ``stress_multiplier`` scales every cost.  ``zero_cost`` must be set explicitly to run
+    frictionless; the result is then labelled ``zero_cost_explicit``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    spread_bps: float = Field(default=10.0, ge=0, le=500)
+    slippage_bps: float = Field(default=5.0, ge=0, le=500)
+    commission_bps: float = Field(default=2.0, ge=0, le=500)
+    fx_fee_rate: float = Field(default=0.0015, ge=0, le=0.05)
+    account_currency: str = Field(default="GBP", min_length=3, max_length=3)
+    instrument_currencies: dict[str, str] = Field(default_factory=dict)
+    default_instrument_currency: str | None = Field(default=None, min_length=3, max_length=3)
+    spread_bps_by_ticker: dict[str, float] = Field(default_factory=dict)
+    stress_multiplier: Literal[1, 2, 3] = 1
+    zero_cost: bool = False
+
+    def to_model(self) -> TransactionCostModel:
+        if self.zero_cost:
+            return TransactionCostModel.explicit_zero(account_currency=self.account_currency)
+        return TransactionCostModel(
+            spread_bps=Decimal(str(self.spread_bps)),
+            slippage_bps=Decimal(str(self.slippage_bps)),
+            commission_bps=Decimal(str(self.commission_bps)),
+            fx_fee_rate=Decimal(str(self.fx_fee_rate)),
+            account_currency=self.account_currency,
+            instrument_currencies=dict(self.instrument_currencies),
+            default_instrument_currency=self.default_instrument_currency,
+            spread_bps_by_ticker={k: Decimal(str(v)) for k, v in self.spread_bps_by_ticker.items()},
+            stress_multiplier=Decimal(self.stress_multiplier),
+        )
+
+    @model_validator(mode="after")
+    def validate_model(self) -> Self:
+        self.to_model()  # surfaces e.g. "all costs are zero" as a 422 instead of a failed job
+        return self
+
+
+class PortfolioWalkForwardRequest(BaseModel):
+    """Optional expanding-window walk-forward validation (off unless supplied).
+
+    ``param_grid`` entries are merged over ``strategy_params``; the grid size (plus
+    ``extra_trials`` for ideas already tried elsewhere) is recorded as the number of trials for
+    the deflated Sharpe ratio.  The last ``holdout_bars`` sessions are never used for selection.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    param_grid: list[dict[str, Any]] = Field(min_length=1, max_length=50)
+    initial_train_bars: int = Field(ge=2)
+    test_bars: int = Field(ge=2)
+    holdout_bars: int = Field(ge=2)
+    # Settings below the server floors in ``app.backtest.gate_floors`` are accepted (research
+    # runs) but can never pass the gate; the floors cannot be lowered by the request.
+    min_rebalances_per_window: int = Field(default=MIN_REBALANCES_PER_WINDOW, ge=1)
+    min_valid_windows: int = Field(default=MIN_VALID_WINDOWS, ge=1)
+    extra_trials: int = Field(default=0, ge=0)
+    # Mandatory: None means the server default 0.95; lower values are enforced at 0.95 anyway.
+    min_deflated_sharpe_probability: float | None = Field(
+        default=MIN_DEFLATED_SHARPE_PROBABILITY, ge=0, le=1
+    )
+
+    def to_config(self) -> WalkForwardConfig:
+        return WalkForwardConfig(
+            initial_train_bars=self.initial_train_bars,
+            test_bars=self.test_bars,
+            holdout_bars=self.holdout_bars,
+            min_rebalances_per_window=self.min_rebalances_per_window,
+            min_valid_windows=self.min_valid_windows,
+            extra_trials=self.extra_trials,
+            min_deflated_sharpe_probability=self.min_deflated_sharpe_probability,
+        )
+
+
 class PortfolioBacktestRequest(BaseModel):
+    # A misspelt or removed field (e.g. a stale ``risk_matched_blend`` option) must be a 422, not
+    # silently ignored: an ignored guardrail looks like a run that honoured it.
+    model_config = ConfigDict(extra="forbid")
+
     tickers: list[str] = Field(min_length=1, max_length=20)
     strategy_type: PortfolioBacktestStrategyType = "buy_hold_core"
     strategy_params: dict[str, Any] = Field(default_factory=dict)
     from_date: date
     to_date: date
     initial_capital: float = 10000.0
+    cost_model: PortfolioCostRequest = Field(default_factory=PortfolioCostRequest)
+    # Annual risk-free rate for Sharpe/Sortino.  Default 0.0 (documented, reported in the result).
+    risk_free_rate_annual: float = Field(default=0.0, ge=-0.5, le=1.0)
+    # A price series already in/fetchable as daily bars (e.g. SPY or a global ETF), used for the
+    # 'broad_index' and 'exposure_matched_blend' benchmarks, net of the same costs.
+    benchmark_ticker: str | None = Field(default=None, min_length=1, max_length=12)
+    primary_benchmark: PortfolioBenchmarkKey = BENCHMARK_UNIVERSE_EW
+    walk_forward: PortfolioWalkForwardRequest | None = None
+    # Caller-supplied label echoed in the result so repeated runs against one holdout can be found.
+    run_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("primary_benchmark", mode="before")
+    @classmethod
+    def map_benchmark_alias(cls, value: Any) -> Any:
+        return _BENCHMARK_ALIASES.get(value, value) if isinstance(value, str) else value
 
     @field_validator("tickers")
     @classmethod
@@ -136,6 +293,17 @@ class PortfolioBacktestRequest(BaseModel):
         if not unique:
             raise ValueError("Provide at least one ticker.")
         return unique
+
+    @field_validator("benchmark_ticker")
+    @classmethod
+    def normalize_benchmark(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value and value.strip() else None
+
+    @model_validator(mode="after")
+    def validate_benchmark(self) -> Self:
+        if self.primary_benchmark != BENCHMARK_UNIVERSE_EW and self.benchmark_ticker is None:
+            raise ValueError(f"primary_benchmark {self.primary_benchmark!r} needs benchmark_ticker")
+        return self
 
 
 class PortfolioBacktestStrategyInfo(BaseModel):
@@ -430,6 +598,21 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
             )
             dataset_manifests.append(fetcher.manifest_for(ticker))
 
+        benchmark_history = None
+        if body.benchmark_ticker is not None:
+            benchmark_history = histories.get(body.benchmark_ticker)
+            if benchmark_history is None:
+                benchmark_history = await fetcher.fetch_bars(
+                    ticker=body.benchmark_ticker,
+                    from_date=body.from_date,
+                    to_date=body.to_date,
+                    multiplier=1,
+                    timespan="day",
+                    membership_source="benchmark_series",
+                    universe=(body.benchmark_ticker,),
+                )
+                dataset_manifests.append(fetcher.manifest_for(body.benchmark_ticker))
+
         strategy_config = get_portfolio_backtest_strategy(body.strategy_type)
         strategy_class = strategy_config["strategy_class"]
         strategy = strategy_class(body.strategy_params or None)
@@ -440,8 +623,34 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
             initial_capital=Decimal(str(body.initial_capital)),
             start_date=body.from_date,
             end_date=body.to_date,
+            cost_model=body.cost_model.to_model(),
+            risk_free_rate=Decimal(str(body.risk_free_rate_annual)),
+            benchmark_history=benchmark_history,
+            benchmark_ticker=body.benchmark_ticker or "BROAD_INDEX",
+            primary_benchmark=body.primary_benchmark,
         )
         result = backtester.run(histories)
+
+        walk_forward = None
+        if body.walk_forward is not None:
+            import asyncio
+
+            walk_forward = await asyncio.to_thread(
+                run_portfolio_walk_forward,
+                strategy_class=strategy_class,
+                base_params=body.strategy_params or None,
+                param_grid=body.walk_forward.param_grid,
+                histories=histories,
+                universe=body.tickers,
+                start_date=body.from_date,
+                end_date=body.to_date,
+                config=body.walk_forward.to_config(),
+                initial_capital=Decimal(str(body.initial_capital)),
+                cost_model=body.cost_model.to_model(),
+                risk_free_rate=Decimal(str(body.risk_free_rate_annual)),
+                benchmark_history=benchmark_history,
+                benchmark_ticker=body.benchmark_ticker or "BROAD_INDEX",
+            )
 
         _portfolio_jobs[job_id] = {
             "status": "complete",
@@ -449,13 +658,27 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
             "strategy_type": body.strategy_type,
             "bars_used": len(result.coverage_report.retained_session_ids),
             "datasets": dataset_manifests,
+            "holdout_reuse_warning": HOLDOUT_REUSE_WARNING,
+            "holdout_reuse": (
+                _holdout_reuse_record(
+                    job_id,
+                    body,
+                    dataset_manifests,
+                    walk_forward.holdout.test_end
+                    if walk_forward is not None and walk_forward.holdout
+                    else None,
+                )
+                if body.walk_forward is not None
+                else None
+            ),
             "result": _serialize_portfolio_backtest_result(
                 result=result,
                 strategy_type=body.strategy_type,
                 strategy_label=str(strategy_config["label"]),
                 rationale=str(strategy_config["rationale"]),
             ),
-            "interpretation": _interpret_portfolio_results(result),
+            "walk_forward": serialize_walk_forward(walk_forward) if walk_forward else None,
+            "interpretation": _interpret_portfolio_results(result, walk_forward),
         }
     except InsufficientPortfolioEvidence as exc:
         _portfolio_jobs[job_id] = {
@@ -477,6 +700,87 @@ async def _run_portfolio_backtest_job(job_id: str, body: PortfolioBacktestReques
             "error": str(exc),
             "traceback": traceback.format_exc(),
         }
+
+
+def _fingerprint(payload: Any) -> str:
+    canonical = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def _holdout_reuse_record(
+    job_id: str,
+    body: PortfolioBacktestRequest,
+    dataset_manifests: list[dict[str, Any]],
+    holdout_end: Any = None,
+) -> dict[str, Any]:
+    """Identify this run so repeated use of one holdout can be spotted (advisory only).
+
+    ``family_fingerprint`` covers the strategy type and the holdout END date (the last aligned
+    session when known, else ``to_date``).  It deliberately ignores the universe and start date,
+    so changing either cannot hide a second look at the same holdout; ``grid_fingerprint``
+    covers the initial parameter grid.  ``data_fingerprint`` covers the universe, dates,
+    benchmark and dataset manifests; ``run_fingerprint`` adds the strategy, grid, costs and
+    walk-forward settings.  There is no durable store: runs are compared only against jobs still
+    held in this process's memory, so this is a prompt to keep your own log, not enforcement.
+    """
+    end = holdout_end.isoformat() if holdout_end is not None else body.to_date.isoformat()
+    family_fingerprint = _fingerprint({"strategy_type": body.strategy_type, "holdout_end": end})
+    grid_fingerprint = _fingerprint(
+        {"family": family_fingerprint, "param_grid": body.walk_forward.param_grid}
+        if body.walk_forward
+        else {"family": family_fingerprint}
+    )
+    data_fingerprint = _fingerprint(
+        {
+            "tickers": sorted(body.tickers),
+            "benchmark": body.benchmark_ticker,
+            "from": body.from_date,
+            "to": body.to_date,
+            "datasets": dataset_manifests,
+        }
+    )
+    run_fingerprint = _fingerprint(
+        {
+            "data": data_fingerprint,
+            "strategy_type": body.strategy_type,
+            "strategy_params": body.strategy_params,
+            "cost_model": body.cost_model.model_dump(mode="json"),
+            "risk_free_rate_annual": body.risk_free_rate_annual,
+            "walk_forward": body.walk_forward.model_dump(mode="json")
+            if body.walk_forward
+            else None,
+        }
+    )
+    seen_family = [
+        other
+        for other, job in _portfolio_jobs.items()
+        if other != job_id
+        and (job.get("holdout_reuse") or {}).get("family_fingerprint") == family_fingerprint
+    ]
+    seen_data = [
+        other
+        for other, job in _portfolio_jobs.items()
+        if other != job_id
+        and (job.get("holdout_reuse") or {}).get("data_fingerprint") == data_fingerprint
+    ]
+    seen_run = [
+        other
+        for other in seen_data
+        if _portfolio_jobs[other]["holdout_reuse"]["run_fingerprint"] == run_fingerprint
+    ]
+    return {
+        "run_id": body.run_id,
+        "data_fingerprint": data_fingerprint,
+        "run_fingerprint": run_fingerprint,
+        "family_fingerprint": family_fingerprint,
+        "grid_fingerprint": grid_fingerprint,
+        "tracking": "in_process_memory_only",
+        "enforcement": "advisory_only",
+        "earlier_jobs_same_strategy_and_holdout_end": seen_family,
+        "earlier_jobs_on_same_data": seen_data,
+        "earlier_jobs_identical_run": seen_run,
+        "reused": bool(seen_family or seen_data),
+    }
 
 
 def _serialize_backtest_trade(trade: Any) -> dict[str, Any]:
@@ -571,6 +875,15 @@ def _serialize_portfolio_backtest_result(
         "benchmark_name": result.benchmark_name,
         "benchmark_return_pct": float(result.benchmark_return_pct),
         "alpha_vs_benchmark_pct": float(result.alpha_vs_benchmark_pct),
+        "primary_benchmark": result.primary_benchmark,
+        "benchmarks": {key: _serialize_benchmark(item) for key, item in result.benchmarks.items()},
+        "risk_free_rate_annual": float(result.risk_free_rate_annual),
+        "cost_model": result.cost_model,
+        "metrics_start_date": (
+            result.metrics_start_date.isoformat() if result.metrics_start_date else None
+        ),
+        "warmup_bars_excluded": result.warmup_bars_excluded,
+        "total_fx_fee_cost": float(result.total_fx_fee_cost),
         "sharpe_ratio": float(result.sharpe_ratio) if result.sharpe_ratio is not None else None,
         "sortino_ratio": float(result.sortino_ratio) if result.sortino_ratio is not None else None,
         "calmar_ratio": float(result.calmar_ratio) if result.calmar_ratio is not None else None,
@@ -608,6 +921,7 @@ def _serialize_portfolio_backtest_result(
                 "notional": float(trade.notional),
                 "slippage_cost": float(trade.slippage_cost),
                 "fee_cost": float(trade.fee_cost),
+                "fx_fee_cost": float(trade.fx_fee_cost),
                 "cost": float(trade.cost),
                 "reason": trade.reason,
                 "target_weight": float(trade.target_weight),
@@ -615,6 +929,28 @@ def _serialize_portfolio_backtest_result(
             for trade in result.trades[-250:]
         ],
         "rationale": rationale,
+        "trading_days_per_year": TRADING_DAYS_PER_YEAR,
+        "disclosures": dict(PORTFOLIO_DISCLOSURES),
+    }
+
+
+def _serialize_benchmark(item: Any) -> dict[str, Any]:
+    def number(value: Any) -> float | None:
+        return float(value) if value is not None else None
+
+    return {
+        "key": item.key,
+        "name": item.name,
+        "total_return_pct": number(item.total_return_pct),
+        "annualised_return_pct": number(item.annualised_return_pct),
+        "sharpe_ratio": number(item.sharpe_ratio),
+        "sortino_ratio": number(item.sortino_ratio),
+        "max_drawdown_pct": number(item.max_drawdown_pct),
+        "avg_exposure_pct": number(item.avg_exposure_pct),
+        "total_execution_cost": number(item.total_execution_cost),
+        "excess_return_pct": number(item.excess_return_pct),
+        "excess_sharpe_ratio": number(item.excess_sharpe_ratio),
+        "excess_max_drawdown_pct": number(item.excess_max_drawdown_pct),
     }
 
 
@@ -701,7 +1037,53 @@ def _interpret_results(result: Any) -> dict[str, Any]:
     }
 
 
-def _interpret_portfolio_results(result: Any) -> dict[str, Any]:
+POSITIVE_VERDICTS = frozenset({"promising", "strong"})
+
+
+def _classify_portfolio(*, sharpe: float, max_drawdown_pct: float, total_return_pct: float) -> str:
+    if total_return_pct <= 0:
+        return "losing"
+    if sharpe >= 1.0 and max_drawdown_pct <= 20:
+        return "strong"
+    if sharpe >= 0.6 and max_drawdown_pct <= 25:
+        return "promising"
+    if sharpe < 0.25:
+        return "marginal"
+    return "mixed"
+
+
+def _validated_verdict(walk_forward: Any) -> tuple[str | None, dict[str, Any] | None]:
+    """Classify the walk-forward's out-of-sample and holdout evidence with the same thresholds.
+
+    Takes the weaker of the two on every axis (lowest Sharpe and total return, deepest drawdown),
+    so neither the stitched out-of-sample series nor the holdout alone can carry a verdict.
+    Returns (None, None) when there is no usable evidence.
+    """
+    if walk_forward is None:
+        return None, None
+    oos, holdout = walk_forward.oos, walk_forward.holdout_summary
+    fields = ("sharpe_ratio", "total_return_pct", "max_drawdown_pct")
+    if any(source.get(name) is None for source in (oos, holdout) for name in fields):
+        return None, None
+    evidence = {
+        "out_of_sample": {name: oos[name] for name in fields},
+        "holdout": {name: holdout[name] for name in fields},
+    }
+    verdict = _classify_portfolio(
+        sharpe=min(oos["sharpe_ratio"], holdout["sharpe_ratio"]),
+        max_drawdown_pct=max(oos["max_drawdown_pct"], holdout["max_drawdown_pct"]),
+        total_return_pct=min(oos["total_return_pct"], holdout["total_return_pct"]),
+    )
+    return verdict, evidence
+
+
+def _interpret_portfolio_results(result: Any, walk_forward: Any = None) -> dict[str, Any]:
+    """Plain-English verdict for a portfolio run.
+
+    'promising' and 'strong' are in-sample labels that are refused ('unvalidated' instead)
+    unless a walk-forward with out-of-sample windows and an untouched holdout exists, passed
+    its gate, and beat the costed benchmark(s).  ``walk_forward`` is a WalkForwardResult.
+    """
     if not result.coverage_report.complete:
         return {
             "verdict": "insufficient_evidence",
@@ -715,18 +1097,97 @@ def _interpret_portfolio_results(result: Any) -> dict[str, Any]:
             ],
         }
 
-    verdict = "mixed"
-    sharpe = float(result.sharpe_ratio or 0)
-    if float(result.total_return_pct) <= 0:
-        verdict = "losing"
-    elif sharpe >= 1.0 and float(result.max_drawdown_pct) <= 20:
-        verdict = "strong"
-    elif sharpe >= 0.6 and float(result.max_drawdown_pct) <= 25:
-        verdict = "promising"
-    elif sharpe < 0.25:
-        verdict = "marginal"
+    # Two verdicts, always shown together.  The in-sample one comes from the full-period run with
+    # ``strategy_params``; the validated one comes from the walk-forward's stitched out-of-sample
+    # and holdout evidence for the grid-selected procedure.  Those are different procedures and
+    # can disagree: a positive verdict is emitted only when both agree on the same label.
+    in_sample_verdict = _classify_portfolio(
+        sharpe=float(result.sharpe_ratio or 0),
+        max_drawdown_pct=float(result.max_drawdown_pct),
+        total_return_pct=float(result.total_return_pct),
+    )
+    validated_verdict, validated_evidence = _validated_verdict(walk_forward)
+    verdict = in_sample_verdict
 
     warnings: list[str] = []
+    validation: dict[str, Any] = {
+        "walk_forward_run": walk_forward is not None,
+        "passes_gate": bool(walk_forward.passes_gate) if walk_forward is not None else False,
+        "n_trials": walk_forward.n_trials if walk_forward is not None else None,
+        "in_sample_verdict": in_sample_verdict,
+        "validated_verdict": validated_verdict,
+        "verdicts_agree": validated_verdict == in_sample_verdict
+        if validated_verdict is not None
+        else None,
+        "validated_evidence": validated_evidence,
+    }
+    sanity = getattr(walk_forward, "benchmark_sanity", None) if walk_forward is not None else None
+    validation["benchmark_sanity"] = sanity
+    if sanity is not None:
+        warnings.append(
+            "Benchmark sanity: " + benchmark_sanity_text(sanity) + f"; passes: {sanity['passes']}."
+        )
+    claimed = next(
+        (v for v in (in_sample_verdict, validated_verdict) if v in POSITIVE_VERDICTS), None
+    )
+    if claimed is not None:
+        refusal = None
+        if walk_forward is None:
+            refusal = "no out-of-sample or holdout walk-forward was run"
+        elif not walk_forward.passes_gate:
+            refusal = "; ".join(walk_forward.gate_reasons) or "walk-forward gate not passed"
+        elif floor_reasons := config_floor_violations(
+            holdout_bars=walk_forward.config.holdout_bars,
+            test_bars=walk_forward.config.test_bars,
+            min_valid_windows=walk_forward.config.min_valid_windows,
+            min_rebalances_per_window=walk_forward.config.min_rebalances_per_window,
+            min_deflated_sharpe_probability=walk_forward.config.min_deflated_sharpe_probability,
+        ):
+            # Defence in depth: the harness already enforces the floors; do not trust a
+            # walk-forward object that claims a pass on settings below them.
+            refusal = "; ".join(floor_reasons)
+        elif cost_reason := cost_gate_refusal(result.cost_model):
+            refusal = cost_reason
+        elif BENCHMARK_BROAD_INDEX not in walk_forward.benchmarks_evaluated:
+            refusal = "no broad-index benchmark series was supplied; best verdict is 'unvalidated'"
+        elif sanity is None or not sanity.get("passes"):
+            # Defence in depth: the harness folds these into gate_reasons, but a missing or
+            # failing sanity record must never let a caller-chosen benchmark anchor a verdict.
+            refusal = (
+                "; ".join(sanity["reasons"])
+                if sanity and sanity.get("reasons")
+                else "the broad-index benchmark was not sanity-checked"
+            )
+        elif validated_verdict != in_sample_verdict:
+            refusal = (
+                f"the in-sample verdict '{in_sample_verdict}' (strategy_params, full period) and "
+                f"the validated out-of-sample/holdout verdict '{validated_verdict}' "
+                "(grid-selected procedure) disagree"
+            )
+        if refusal is not None:
+            validation["refused_verdict"] = claimed
+            validation["refusal_reason"] = refusal
+            warnings.append(
+                f"Verdict '{claimed}' withheld: {refusal}. "
+                "Promising/strong needs out-of-sample and holdout results that beat the costed benchmark."
+            )
+            verdict = "unvalidated"
+    # Shown beside any positive claim or passed gate: the labels are only as good as the universe.
+    if (
+        verdict in POSITIVE_VERDICTS
+        or claimed is not None
+        or (walk_forward is not None and walk_forward.passes_gate)
+    ):
+        warnings.append(SURVIVORSHIP_DISCLOSURE)
+    if walk_forward is not None:
+        warnings.extend(walk_forward.gate_warnings)
+        dropped_ids = walk_forward.oos.get("dropped_window_ids") or []
+        validation["dropped_window_ids"] = list(dropped_ids)
+        if dropped_ids:
+            warnings.append(
+                f"{len(dropped_ids)} walk-forward window(s) {list(dropped_ids)} had too few "
+                "rebalances and were dropped; the out-of-sample statistics exclude them."
+            )
     if result.rebalance_count < 3:
         warnings.append("Very few rebalance decisions were observed — extend the test period.")
     if float(result.max_drawdown_pct) > 25:
@@ -744,7 +1205,14 @@ def _interpret_portfolio_results(result: Any) -> dict[str, Any]:
 
     return {
         "verdict": verdict,
+        "in_sample_verdict": in_sample_verdict,
+        "validated_verdict": validated_verdict,
+        "validation": validation,
         "summary": {
+            "unvalidated": (
+                "In-sample numbers look favourable but are not evidence of an edge: there are no "
+                "out-of-sample and holdout results that beat the costed benchmark. Keep it in research only."
+            ),
             "losing": "This portfolio rule set failed to add value over the tested window. Keep it in research only.",
             "marginal": "The edge is weak. Tighten selection rules or broaden the history before treating it as deployable.",
             "promising": "The portfolio logic is promising. Validate it on additional universes before paper trading.",
