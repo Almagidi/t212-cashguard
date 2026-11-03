@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.market_data.alpaca_provider import OpeningRangeBars
 from app.market_data.validated_provider import ValidatedMarketDataProvider
 from app.services.feed_health import get_feed_health_snapshot, reset_feed_health
 
@@ -31,7 +32,13 @@ class FakeBar:
 
 
 class FakePrimaryProvider:
-    def __init__(self, *, quote: FakeQuote | None = None, bars: list[FakeBar] | None = None, quote_error: Exception | None = None):
+    def __init__(
+        self,
+        *,
+        quote: FakeQuote | None = None,
+        bars: list[FakeBar] | None = None,
+        quote_error: Exception | None = None,
+    ):
         self.quote = quote
         self.bars = bars or []
         self.quote_error = quote_error
@@ -74,11 +81,24 @@ async def test_validated_provider_prefers_primary_when_validator_agrees():
     now = datetime.now(UTC)
     primary = FakePrimaryProvider(
         quote=FakeQuote("AAPL", Decimal("100.0"), Decimal("100.1"), Decimal("100.05"), 1000, now),
-        bars=[FakeBar(now, Decimal("99"), Decimal("101"), Decimal("98"), Decimal("100"), Decimal("100000"))],
+        bars=[
+            FakeBar(
+                now, Decimal("99"), Decimal("101"), Decimal("98"), Decimal("100"), Decimal("100000")
+            )
+        ],
     )
     validator = FakeValidatorProvider(
         quote=FakeQuote("AAPL", Decimal("100.0"), Decimal("100.1"), Decimal("100.08"), 1200, now),
-        bars=[FakeBar(now, Decimal("99"), Decimal("101"), Decimal("98"), Decimal("100.2"), Decimal("120000"))],
+        bars=[
+            FakeBar(
+                now,
+                Decimal("99"),
+                Decimal("101"),
+                Decimal("98"),
+                Decimal("100.2"),
+                Decimal("120000"),
+            )
+        ],
     )
 
     async with ValidatedMarketDataProvider(primary=primary, validator=validator) as provider:
@@ -110,7 +130,9 @@ async def test_validated_provider_falls_back_when_primary_quote_is_stale():
 
     snapshot = get_feed_health_snapshot()
     assert quote.last == Decimal("100.25")
-    assert provider.is_trade_safe("MSFT") is True
+    # Polygon fallback is 15-min delayed: not safe for entries, still fine for exits.
+    assert provider.is_trade_safe("MSFT") is False
+    assert provider.is_trade_safe("MSFT", purpose="exit") is True
     assert snapshot["status"] == "fallback"
     assert snapshot["symbols"][0]["fallback_used"] is True
 
@@ -134,3 +156,22 @@ async def test_validated_provider_marks_symbol_degraded_on_large_divergence():
     assert provider.is_trade_safe("NVDA") is False
     assert snapshot["status"] == "degraded"
     assert snapshot["symbols"][0]["divergence_pct"] is not None
+
+
+@pytest.mark.asyncio
+async def test_opening_range_polygon_fallback_is_flagged_incomplete():
+    reset_feed_health()
+    now = datetime.now(UTC)
+    primary = FakePrimaryProvider()  # no opening-range bars from the primary
+    validator = FakeValidatorProvider(
+        bars=[
+            FakeBar(now, Decimal("99"), Decimal("101"), Decimal("98"), Decimal("100"), Decimal("1"))
+        ],
+    )
+
+    async with ValidatedMarketDataProvider(primary=primary, validator=validator) as provider:
+        bars = await provider.get_opening_range_bars("AAPL")
+
+    assert len(bars) == 1
+    assert isinstance(bars, OpeningRangeBars)
+    assert bars.complete is False

@@ -2801,7 +2801,10 @@ class TestBrokerExecutionFlow:
         monkeypatch.setattr(settings, "LIVE_TRADING_ENABLED", True)
         monkeypatch.setattr(settings, "T212_ENVIRONMENT", "live")
         monkeypatch.setattr(settings, "T212_LIVE_API_KEY", "configured-live-key")
-        monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", "polygon")
+        # Live requires the validated provider (Alpaca primary + Polygon validator).
+        monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", "validated")
+        monkeypatch.setattr(settings, "ALPACA_API_KEY", secrets.token_urlsafe(24))
+        monkeypatch.setattr(settings, "ALPACA_API_SECRET", secrets.token_urlsafe(24))
         monkeypatch.setattr(settings, "POLYGON_API_KEY", secrets.token_urlsafe(24))
         monkeypatch.setattr(settings, "TELEGRAM_CHAT_ID", "12345")
 

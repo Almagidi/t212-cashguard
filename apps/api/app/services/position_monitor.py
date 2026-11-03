@@ -34,17 +34,28 @@ from app.db.models import (
     AppSettings,
     AuditLog,
     BrokerConnection,
+    Order,
     Signal,
     Strategy,
     Trade,
     User,
+)
+from app.execution.active_sells import (
+    blocking_sell_conditions,
+    broker_account_scope,
+    execution_environment_of,
+    stale_sell_conditions,
 )
 from app.execution.engine import ExecutionEngine
 from app.risk.engine import activate_kill_switch
 from app.services.alert_service import AlertService, alert_kill_switch_activated
 from app.services.broker_connection_recovery import mark_broker_connection_reconnect_required
 from app.services.eod_flatten import EodFlattenService, eod_due_window
-from app.services.safety_policy import SafetyPolicyViolation, require_broker_environment
+from app.services.safety_policy import (
+    SafetyPolicyViolation,
+    report_protective_exit_blocked_once,
+    require_broker_environment,
+)
 from app.strategies.indicators import Bar, atr
 from app.strategies.orb_production import OpeningRangeBreakoutStrategy, ORBState
 
@@ -52,6 +63,10 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 log = structlog.get_logger()
+
+# Total rate-limit sleep allowed for a protective-exit data fetch (non-exit
+# callers keep the provider default of 45 s).
+EXIT_FETCH_MAX_SLEEP_SECONDS = 10.0
 
 
 class _DailyLossOutcome(Enum):
@@ -145,7 +160,15 @@ class PositionMonitor:
 
             if hasattr(provider, "__aenter__"):
                 async with provider as md:
-                    raw_bars = await md.get_bars(ticker, multiplier=5, timespan="minute", limit=50)
+                    # Protective-exit data fetch: cap rate-limit sleeping (~10 s)
+                    # so a throttled feed cannot stall stop/take-profit checks.
+                    raw_bars = await md.get_bars(
+                        ticker,
+                        multiplier=5,
+                        timespan="minute",
+                        limit=50,
+                        max_total_sleep=EXIT_FETCH_MAX_SLEEP_SECONDS,
+                    )
                 bars = [
                     Bar(open=b.open, high=b.high, low=b.low, close=b.close, volume=b.volume)
                     for b in raw_bars
@@ -305,11 +328,18 @@ class PositionMonitor:
         if not app_settings:
             return summary
 
-        # Hard gates
+        # A kill switch or paused auto-trading blocks NEW ENTRIES only. This monitor never
+        # opens positions, and the stop-loss / take-profit exits of positions that are
+        # already held must keep running, or those positions are left with no stop.
+        # Exits go through ExecutionEngine.submit_protective_exit (sell-only, quantity
+        # capped at the held long position), which is exempt from the kill switch only.
+        entries_blocked: str | None = None
         if app_settings.kill_switch_active:
-            return {**summary, "skipped": "kill_switch_active"}
-        if not app_settings.auto_trading_enabled:
-            return {**summary, "skipped": "auto_trading_disabled"}
+            entries_blocked = "kill_switch_active"
+        elif not app_settings.auto_trading_enabled:
+            entries_blocked = "auto_trading_disabled"
+        if entries_blocked is not None:
+            summary["entries_blocked"] = entries_blocked
 
         broker = await self._get_broker()
         if broker is None:
@@ -329,39 +359,49 @@ class PositionMonitor:
 
         account_value = Decimal(str(account_data.get("total", 0)))
 
-        # Check daily loss breach (including unrealized) — halt if exceeded
-        daily_loss_outcome = await self._check_daily_loss_with_unrealized(
-            app_settings, broker, account_value
-        )
+        # Check daily loss breach (including unrealized). A breach (or a failure to measure
+        # it) blocks new entries by activating or enforcing the halt, but it must not stop
+        # monitoring: existing positions keep their stop-loss / take-profit exits. When
+        # entries are already blocked there is nothing further to halt, so the check is
+        # skipped (and the kill switch and its alert are not re-fired every cycle).
+        daily_loss_outcome = _DailyLossOutcome.NO_BREACH
+        if entries_blocked is None:
+            daily_loss_outcome = await self._check_daily_loss_with_unrealized(
+                app_settings, broker, account_value
+            )
         if daily_loss_outcome is _DailyLossOutcome.POLICY_BLOCK_TRADING:
             log.critical(
                 "position_monitor.daily_loss_halt",
                 failure_policy="block_trading",
                 fail_closed=True,
+                exits_continue=True,
             )
-            return {
-                **summary,
-                "halted": "unrealized_pnl_failure_block_trading",
-                "failure_policy": "block_trading",
-                "fail_closed": True,
-            }
-        if daily_loss_outcome is _DailyLossOutcome.POLICY_KILL_SWITCH:
+            summary.update(
+                {
+                    "halted": "unrealized_pnl_failure_block_trading",
+                    "failure_policy": "block_trading",
+                    "fail_closed": True,
+                }
+            )
+        elif daily_loss_outcome is _DailyLossOutcome.POLICY_KILL_SWITCH:
             log.critical(
                 "position_monitor.daily_loss_halt",
                 failure_policy="activate_kill_switch",
                 fail_closed=True,
+                exits_continue=True,
             )
-            return {
-                **summary,
-                "halted": "unrealized_pnl_failure_kill_switch",
-                "failure_policy": "activate_kill_switch",
-                "fail_closed": True,
-            }
-        if daily_loss_outcome is _DailyLossOutcome.BREACH_KILL_SWITCH:
-            log.critical("position_monitor.daily_loss_halt")
+            summary.update(
+                {
+                    "halted": "unrealized_pnl_failure_kill_switch",
+                    "failure_policy": "activate_kill_switch",
+                    "fail_closed": True,
+                }
+            )
+        elif daily_loss_outcome is _DailyLossOutcome.BREACH_KILL_SWITCH:
+            log.critical("position_monitor.daily_loss_halt", exits_continue=True)
             await activate_kill_switch(self.db, actor="position_monitor:daily_loss")
             await alert_kill_switch_activated(self.db, actor="position_monitor:daily_loss")
-            return {**summary, "halted": "daily_loss_breach"}
+            summary["halted"] = "daily_loss_breach"
 
         # Get all live strategies for context
         strat_result = await self.db.execute(
@@ -394,6 +434,8 @@ class PositionMonitor:
                 summary["partial_exits"] += result.get("partial", 0)
                 summary["stops_hit"] += result.get("stops", 0)
                 summary["take_profits"] += result.get("tps", 0)
+                if result.get("failed"):
+                    summary["exits_failed"] = summary.get("exits_failed", 0) + result["failed"]
                 if result.get("unconfirmed"):
                     summary["exits_unconfirmed"] = (
                         summary.get("exits_unconfirmed", 0) + result["unconfirmed"]
@@ -495,16 +537,52 @@ class PositionMonitor:
             return result
 
         # Determine sell qty
-        sell_qty = abs(exit_signal.suggested_quantity)
-        if sell_qty > max_sell_qty:
-            sell_qty = max_sell_qty
+        # The quantity comes from the position read this cycle, never from the entry: after a
+        # partial exit the remaining position is what a stop may sell. (The engine verifies it
+        # again against a fresh read before anything is sent.)
+        sell_qty = min(abs(exit_signal.suggested_quantity), max_sell_qty, pos_qty)
 
         if sell_qty <= 0:
+            return result
+
+        # One exit at a time per ticker: while a dispatched sell is still active (submitted,
+        # working, partly filled, or of unknown outcome) a second exit is never issued; its
+        # quantity would be judged against a position the first has not yet reduced.
+        await self._escalate_stale_sells(ticker, broker)
+        active_sell = await self._active_dispatched_sell(ticker, broker)
+        if active_sell is not None:
+            log.warning(
+                "position_monitor.exit_skipped_active_sell",
+                ticker=ticker,
+                order_id=str(active_sell.id),
+                order_status=active_sell.status,
+            )
+            if active_sell.status == "submission_unknown":
+                result["unconfirmed"] = 1
+                await report_protective_exit_blocked_once(
+                    self.db,
+                    action="protective_exit_blocked",
+                    ticker=ticker,
+                    reason=(
+                        f"A sell for {ticker} has an unknown submission outcome; no further "
+                        "exit is sent until it is reconciled, so the position has no working "
+                        "stop. Check the broker."
+                    ),
+                    actor="position_monitor",
+                    order=active_sell,
+                    metadata={"order_status": active_sell.status},
+                )
             return result
 
         # Submit the exit order
         async with broker as b:
             engine = ExecutionEngine(self.db, b)
+            # One identity per (entry, kind of exit, attempt): a partial exit and a later stop
+            # are different exits, a repeat of one in flight is deduplicated, and one the
+            # broker refused is retried as the next attempt.
+            identity = await engine.next_exit_identity(
+                ticker=ticker, entry_signal_id=last_signal.id, exit_type=exit_signal.signal_type
+            )
             order = await engine.create_order_intent(
                 ticker=ticker,
                 side="sell",
@@ -513,9 +591,15 @@ class PositionMonitor:
                 signal_id=last_signal.id,
                 is_dry_run=(settings.APP_MODE == "mock"),
                 estimated_price=current_price,
+                stable_operation_identity=identity,
             )
             if order.status == "pending_intent":
-                order = await engine.submit_order(order)
+                # A standing intent for this exit keeps the quantity it was created with; the
+                # position may have shrunk since, so re-size it to this cycle's verified one.
+                order = await engine.resize_pending_exit(order, sell_qty)
+                # Protective exit: sell-only, capped at the held long quantity, exempt from
+                # the kill-switch check only (see ExecutionEngine.submit_protective_exit).
+                order = await engine.submit_protective_exit(order)
             else:
                 # An exit order for this entry already exists; it is never sent again.
                 log.warning(
@@ -526,6 +610,20 @@ class PositionMonitor:
                 )
                 if order.status == "submission_unknown":
                     result["unconfirmed"] = 1
+                elif order.status in ExecutionEngine._FAILED_EXIT_STATUSES:
+                    await report_protective_exit_blocked_once(
+                        self.db,
+                        action="protective_exit_blocked",
+                        ticker=ticker,
+                        reason=(
+                            f"The exit for {ticker} failed "
+                            f"{ExecutionEngine.MAX_EXIT_ATTEMPTS} times ({order.status}); it is "
+                            "not retried automatically. The position has no working stop."
+                        ),
+                        actor="position_monitor",
+                        order=order,
+                        metadata={"order_status": order.status},
+                    )
                 return result
 
         if order.status == "submission_unknown":
@@ -552,6 +650,48 @@ class PositionMonitor:
                 order_id=str(order.id),
             )
             result["unconfirmed"] = 1
+            return result
+
+        if order.status in ExecutionEngine._FAILED_EXIT_STATUSES:
+            # The broker refused (or errored) the exit and nothing was sold: it is not an
+            # executed signal (a failed partial exit must not count as taken, or it is never
+            # retried) and there is no "stop hit" to announce. The next cycle retries it as
+            # the next attempt, up to MAX_EXIT_ATTEMPTS.
+            self.db.add(
+                AuditLog(
+                    action="position_exit_failed",
+                    entity_type="order",
+                    entity_id=str(order.id),
+                    actor="position_monitor",
+                    payload={
+                        "ticker": ticker,
+                        "exit_type": exit_signal.signal_type,
+                        "qty": float(sell_qty),
+                        "order_status": order.status,
+                    },
+                    occurred_at=datetime.now(UTC),
+                )
+            )
+            log.error(
+                "position_monitor.exit_failed",
+                ticker=ticker,
+                exit_type=exit_signal.signal_type,
+                order_id=str(order.id),
+                order_status=order.status,
+            )
+            await report_protective_exit_blocked_once(
+                self.db,
+                action="protective_exit_failed",
+                ticker=ticker,
+                reason=(
+                    f"The {exit_signal.signal_type} exit for {ticker} was {order.status} and "
+                    "nothing was sold; it is retried next cycle."
+                ),
+                actor="position_monitor",
+                order=order,
+                metadata={"order_status": order.status},
+            )
+            result["failed"] = 1
             return result
 
         # Record the exit signal
@@ -628,6 +768,86 @@ class PositionMonitor:
             )
 
         return result
+
+    def _sell_scope(self, broker: Any) -> dict[str, Any]:
+        is_dry_run = settings.APP_MODE == "mock"
+        return {
+            "is_dry_run": is_dry_run,
+            "environment": execution_environment_of(is_dry_run=is_dry_run),
+            "account_scope": broker_account_scope(broker),
+        }
+
+    async def _active_dispatched_sell(self, ticker: str, broker: Any = None) -> Order | None:
+        """A sell for this position that has been dispatched and has not yet ended.
+
+        Scoped to this execution environment and broker account (as EOD flatten is), so a
+        leftover from demo or another account does not block a live stop. A sell stuck in
+        ``submission_unknown``/``submitted``/``accepted`` beyond
+        ``PROTECTIVE_SELL_STALE_AFTER_SECONDS`` no longer blocks (see
+        ``_escalate_stale_sells``); the engine still counts every genuinely active sell
+        against the broker-verified held quantity. ``pending_intent`` is excluded: it was
+        never sent, so it is not in flight (and is the intent a retry re-submits).
+        """
+        result = await self.db.execute(
+            select(Order)
+            .where(*blocking_sell_conditions(ticker, **self._sell_scope(broker)))
+            .order_by(Order.created_at)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def _escalate_stale_sells(self, ticker: str, broker: Any) -> None:
+        """Alert (critical, once per window) and reconcile a protective sell that is stuck."""
+        conditions = stale_sell_conditions(ticker, **self._sell_scope(broker))
+        if conditions is None:
+            return
+        stale = (
+            (await self.db.execute(select(Order).where(*conditions).order_by(Order.created_at)))
+            .scalars()
+            .all()
+        )
+        for order in stale:
+            log.error(
+                "position_monitor.protective_sell_stale",
+                ticker=ticker,
+                order_id=str(order.id),
+                order_status=order.status,
+            )
+            reported = await report_protective_exit_blocked_once(
+                self.db,
+                action="protective_sell_stale",
+                ticker=ticker,
+                reason=(
+                    f"A protective sell for {ticker} (order {order.id}) has been "
+                    f"{order.status} for over {settings.PROTECTIVE_SELL_STALE_AFTER_SECONDS}s "
+                    "without a broker outcome. It no longer blocks new exits (the held "
+                    "quantity is re-verified with the broker) and a reconciliation was "
+                    "requested. Check the broker."
+                ),
+                actor="position_monitor",
+                order=order,
+                metadata={"order_status": order.status},
+            )
+            if reported:
+                await self._request_reconciliation(order, broker)
+
+    async def _request_reconciliation(self, order: Order, broker: Any) -> None:
+        """Ask the engine to resolve a stuck sell from read-only broker data. Best effort."""
+        if order.is_dry_run:
+            return
+        try:
+            async with broker as b:
+                engine = ExecutionEngine(self.db, b)
+                if order.status == "submission_unknown":
+                    await engine.reconcile_unknown_submission(order)
+                else:
+                    await engine.reconcile_order(order)
+        except Exception as exc:
+            log.warning(
+                "position_monitor.stale_sell_reconcile_failed",
+                order_id=str(order.id),
+                error=str(exc),
+            )
 
     async def eod_flatten(
         self,

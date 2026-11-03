@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import Any, Literal, cast
+import secrets
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from sqlalchemy import select
 
 from app.core.config import settings
 from app.db.models import AppSettings, AuditLog, Order
+
+if TYPE_CHECKING:
+    import uuid
 
 RuntimeMode = Literal["mock", "paper", "demo", "live"]
 BrokerEnvironment = Literal["demo", "live"]
@@ -26,6 +32,94 @@ class SafetyPolicyViolation(Exception):
         self.reason = reason
         self.decision_code = decision_code
         super().__init__(reason)
+
+
+# An authorization is a short-lived permit: it is valid from the fresh position read that
+# produced it until the order is sent, which is seconds. A permit older than this was not
+# produced by the read that justified it.
+PROTECTIVE_EXIT_AUTHORIZATION_TTL = timedelta(seconds=120)
+
+_EPOCH = datetime.min.replace(tzinfo=UTC)
+
+
+@dataclass(frozen=True)
+class ProtectiveExitAuthorization:
+    """Evidence that a sell only reduces a long position that is really held.
+
+    Only ``ExecutionEngine`` creates one that counts, through
+    ``_issue_protective_exit_authorization``, from a fresh broker position read. Every
+    issued authorization is recorded in a process-private registry under a random
+    ``nonce``; ``verify_protective_exit`` accepts an object only if it is identical to the
+    recorded one, so an instance built by any other code (a made-up ``held_quantity``, a
+    copied or altered real one) is refused. It is bound to one order (id, ticker,
+    quantity) and expires after ``PROTECTIVE_EXIT_AUTHORIZATION_TTL``. It never relaxes
+    any gate but the kill switch.
+    """
+
+    ticker: str
+    held_quantity: Decimal
+    in_flight_sell_quantity: Decimal = Decimal("0")
+    order_id: uuid.UUID | None = None
+    quantity: Decimal = Decimal("0")
+    issued_at: datetime = _EPOCH
+    nonce: str = ""
+
+
+_ISSUED_PROTECTIVE_EXITS: dict[str, ProtectiveExitAuthorization] = {}
+
+
+def _issue_protective_exit_authorization(
+    order: Order,
+    *,
+    held_quantity: Decimal,
+    in_flight_sell_quantity: Decimal,
+    now: datetime | None = None,
+) -> ProtectiveExitAuthorization:
+    """Mint and record an authorization. For ``ExecutionEngine`` only."""
+    issued_at = now or datetime.now(UTC)
+    for nonce, issued in list(_ISSUED_PROTECTIVE_EXITS.items()):
+        if issued_at - issued.issued_at > PROTECTIVE_EXIT_AUTHORIZATION_TTL:
+            del _ISSUED_PROTECTIVE_EXITS[nonce]
+    authorization = ProtectiveExitAuthorization(
+        ticker=str(order.ticker).strip().upper(),
+        held_quantity=held_quantity,
+        in_flight_sell_quantity=in_flight_sell_quantity,
+        order_id=order.id,
+        quantity=Decimal(str(order.quantity)),
+        issued_at=issued_at,
+        nonce=secrets.token_urlsafe(24),
+    )
+    _ISSUED_PROTECTIVE_EXITS[authorization.nonce] = authorization
+    return authorization
+
+
+def verify_protective_exit(
+    order: Order, auth: ProtectiveExitAuthorization, *, now: datetime | None = None
+) -> None:
+    """Refuse anything that is not a sell reducing a held long position, proven by the engine."""
+
+    def refuse(why: str) -> SafetyPolicyViolation:
+        return SafetyPolicyViolation(
+            f"Protective exit refused: {why}.", decision_code="protective_exit_refused"
+        )
+
+    if _ISSUED_PROTECTIVE_EXITS.get(auth.nonce) != auth or not auth.nonce:
+        raise refuse("the authorization was not issued by the execution engine")
+    if (now or datetime.now(UTC)) - auth.issued_at > PROTECTIVE_EXIT_AUTHORIZATION_TTL:
+        raise refuse("the authorization has expired; the position must be read again")
+    if auth.order_id != order.id:
+        raise refuse("the authorization belongs to a different order")
+    if order.side != "sell":
+        raise refuse("only a sell can be a protective exit")
+    if str(order.ticker).strip().upper() != auth.ticker:
+        raise refuse("order ticker does not match the verified position")
+    quantity = Decimal(str(order.quantity))
+    if quantity != auth.quantity:
+        raise refuse("order quantity changed after the position was verified")
+    if quantity <= 0 or auth.held_quantity <= 0:
+        raise refuse("there is no held long quantity to reduce")
+    if quantity + auth.in_flight_sell_quantity > auth.held_quantity:
+        raise refuse("quantity exceeds the held long position (would open or grow a short)")
 
 
 def current_runtime_mode() -> RuntimeMode:
@@ -129,6 +223,105 @@ async def _get_app_settings(db: Any) -> AppSettings | None:
     return cast("AppSettings | None", result.scalar_one_or_none())
 
 
+# A blocked protective exit is retried every monitor cycle. It is reported (audit + alert) once
+# per ticker and reason in this window rather than every cycle.
+PROTECTIVE_EXIT_NOTICE_WINDOW = timedelta(minutes=15)
+
+
+async def record_protective_exit_blocked_once(
+    db: Any,
+    *,
+    action: str,
+    ticker: str,
+    reason: str,
+    actor: str,
+    order: Order | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> bool:
+    """Audit (no alert) a blocked or refused protective exit, once per (ticker, reason) per window.
+
+    Returns True if it recorded (the first time in the window), False if it was already
+    recorded. The audit rows themselves are the memory, so this survives restarts and is
+    shared by every worker. Pair with ``send_protective_exit_blocked_alert``: they are split
+    so a caller holding a database lock can record under it and alert after releasing it.
+    """
+    ticker = str(ticker).strip().upper()
+    cutoff = datetime.now(UTC) - PROTECTIVE_EXIT_NOTICE_WINDOW
+    recent = await db.execute(
+        select(AuditLog.payload).where(AuditLog.action == action, AuditLog.occurred_at >= cutoff)
+    )
+    for (payload,) in recent.all():
+        if (
+            isinstance(payload, dict)
+            and str(payload.get("ticker", "")).strip().upper() == ticker
+            and payload.get("reason") == reason
+        ):
+            return False
+    await audit_safety_decision(
+        db,
+        action=action,
+        actor=actor,
+        decision="blocked",
+        reason=reason,
+        order=order,
+        metadata={**(metadata or {}), "ticker": ticker},
+    )
+    return True
+
+
+async def send_protective_exit_blocked_alert(
+    db: Any,
+    *,
+    action: str,
+    ticker: str,
+    reason: str,
+    alert_type: str | None = None,
+) -> None:
+    """Raise the critical alert (in-app plus any external channels) for a blocked exit."""
+    ticker = str(ticker).strip().upper()
+    from app.services.alert_service import AlertService
+
+    await AlertService(db).send(
+        alert_type=alert_type or action,
+        title=f"Protective exit blocked: {ticker}",
+        message=reason,
+        severity="critical",
+        payload={"ticker": ticker, "action": action},
+    )
+
+
+async def report_protective_exit_blocked_once(
+    db: Any,
+    *,
+    action: str,
+    ticker: str,
+    reason: str,
+    actor: str,
+    order: Order | None = None,
+    metadata: dict[str, Any] | None = None,
+    alert_type: str | None = None,
+) -> bool:
+    """Audit and alert a blocked or refused protective exit, once per (ticker, reason) per window.
+
+    Returns True if it reported (the first time in the window), False if it was already
+    reported.
+    """
+    if not await record_protective_exit_blocked_once(
+        db,
+        action=action,
+        ticker=ticker,
+        reason=reason,
+        actor=actor,
+        order=order,
+        metadata=metadata,
+    ):
+        return False
+    await send_protective_exit_blocked_alert(
+        db, action=action, ticker=ticker, reason=reason, alert_type=alert_type
+    )
+    return True
+
+
 async def audit_safety_decision(
     db: Any,
     *,
@@ -180,8 +373,13 @@ async def require_order_submission_allowed(
     broker_environment: str | None,
     actor: str = "execution_engine",
     broker: Any = None,
+    protective_exit: ProtectiveExitAuthorization | None = None,
 ) -> dict[str, Any] | None:
-    """Final gate immediately before any simulated or broker-backed submit."""
+    """Final gate immediately before any simulated or broker-backed submit.
+
+    ``protective_exit`` exempts a verified long-reducing sell from the kill-switch check
+    only. Mode, broker environment, live binding and live readiness still apply.
+    """
     app_settings = await _get_app_settings(db)
     if app_settings is None:
         raise SafetyPolicyViolation(
@@ -189,7 +387,35 @@ async def require_order_submission_allowed(
             decision_code="settings_missing",
         )
 
-    if app_settings.kill_switch_active:
+    if protective_exit is not None:
+        try:
+            verify_protective_exit(order, protective_exit)
+        except SafetyPolicyViolation as exc:
+            await audit_safety_decision(
+                db,
+                action="protective_exit_refused",
+                actor=actor,
+                decision="blocked",
+                reason=exc.reason,
+                order=order,
+                metadata={"decision_code": exc.decision_code},
+            )
+            raise
+
+    if app_settings.kill_switch_active and protective_exit is not None:
+        await audit_safety_decision(
+            db,
+            action="protective_exit_allowed_under_kill_switch",
+            actor=actor,
+            decision="protective_exit_allowed",
+            reason="Kill switch is active; a sell reducing a held long position is allowed.",
+            order=order,
+            metadata={
+                "no_broker_order_sent": False,
+                "held_quantity": str(protective_exit.held_quantity),
+            },
+        )
+    elif app_settings.kill_switch_active:
         reason = "Kill switch is active. Order submission is blocked."
         await audit_safety_decision(
             db,
@@ -226,7 +452,9 @@ async def require_order_submission_allowed(
         from app.services.live_dispatch import LiveDispatchError, authorize_dispatch
 
         try:
-            return await authorize_dispatch(db, broker, order)
+            return await authorize_dispatch(
+                db, broker, order, protective_exit=protective_exit is not None
+            )
         except LiveDispatchError as exc:
             reason = str(exc)
             await audit_safety_decision(

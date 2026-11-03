@@ -584,8 +584,10 @@ def check_eod_flatten(self: Any) -> dict[str, Any]:
             async with AsyncSessionLocal() as db:
                 result = await db.execute(select(AppSettings).where(AppSettings.id == 1))
                 s = result.scalar_one_or_none()
-                if not s or s.kill_switch_active:
-                    summary = {"flattened": 0, "reason": "kill_switch"}
+                # A kill switch blocks new entries only; the flatten of held positions
+                # continues (protective exits). Missing settings still fail closed.
+                if not s:
+                    summary = {"flattened": 0, "reason": "settings_missing"}
                     return await _complete_task(db, "check_eod_flatten", summary)
 
                 result2 = await db.execute(

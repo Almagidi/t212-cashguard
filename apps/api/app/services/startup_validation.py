@@ -6,8 +6,12 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+import structlog
+
 from app.core.config import settings
 from app.services.safety_policy import credentials_configured_status
+
+log = structlog.get_logger()
 
 StartupStatus = Literal["pass", "warn", "fail"]
 STRICT_SECRET_MODES = {"demo", "paper", "live"}
@@ -70,6 +74,12 @@ def _failing_security_secret_checks(report: dict[str, Any]) -> list[dict[str, st
     return [
         check for check in _failing_checks(report) if check["key"] in SECURITY_SECRET_CHECK_KEYS
     ]
+
+
+def _single_vendor_provider() -> bool:
+    from app.market_data import resolve_provider_kind
+
+    return resolve_provider_kind() in {"alpaca", "polygon"}
 
 
 def build_startup_report() -> dict[str, Any]:
@@ -200,13 +210,19 @@ def build_startup_report() -> dict[str, Any]:
     mock_provider = settings.MARKET_DATA_PROVIDER.strip().lower() == "mock"
     mock_market_in_live = live_mode and mock_provider
     unresolved_live_source = False
+    unvalidated_live_source = False
+    live_source = ""
     if live_mode:
         from app.market_data.live_source import LiveMarketSourceError, resolve_live_source
 
         try:
-            resolve_live_source()
+            live_source = resolve_live_source()
         except LiveMarketSourceError:
             unresolved_live_source = True
+        else:
+            # Only the validated provider records per-symbol feed health, which the
+            # risk engine's unknown-symbol rule and the runner's entry gate need.
+            unvalidated_live_source = live_source != "validated"
     market_data_status: StartupStatus
     market_data_detail: str
     if mock_market_in_live:
@@ -217,9 +233,22 @@ def build_startup_report() -> dict[str, Any]:
     elif unresolved_live_source:
         market_data_status = "fail"
         market_data_detail = "Live market-data configuration does not resolve a real provider."
+    elif unvalidated_live_source:
+        market_data_status = "fail"
+        market_data_detail = (
+            "Live mode requires the validated market-data provider (Alpaca primary + Polygon "
+            "validator); a single-vendor provider cannot record feed health, so entries would "
+            "be blocked."
+        )
     elif settings.APP_MODE == "demo" and mock_provider:
         market_data_status = "warn"
         market_data_detail = "Market data provider is mock-backed; acceptable for demo mode but not ideal for realism."
+    elif not live_mode and _single_vendor_provider():
+        market_data_status = "warn"
+        market_data_detail = (
+            "A single-vendor market-data provider records no feed health; entries rely on "
+            "bar freshness only. Configure Alpaca + Polygon for the validated provider."
+        )
     else:
         market_data_status = "pass"
         market_data_detail = "Market data provider is appropriate for the current mode."
@@ -253,6 +282,33 @@ def build_startup_report() -> dict[str, Any]:
         )
     )
 
+    telegram_control_without_secret = bool(
+        settings.TELEGRAM_BOT_TOKEN
+        and (settings.telegram_allowed_chat_ids or settings.telegram_allowed_user_ids)
+        and not settings.TELEGRAM_WEBHOOK_SECRET
+    )
+    checks.append(
+        _check(
+            key="telegram_webhook_secret",
+            label="Telegram webhook secret set when control is enabled",
+            # Live refuses to start; paper and demo start but say so loudly (the webhook
+            # rejects every call there too, so the control channel is dead until it is set).
+            status=(
+                "pass"
+                if not telegram_control_without_secret or settings.APP_MODE == "mock"
+                else "fail"
+                if live_mode
+                else "warn"
+            ),
+            detail=(
+                "Telegram control is enabled without TELEGRAM_WEBHOOK_SECRET; "
+                "outside mock mode the webhook rejects every request until it is set."
+                if telegram_control_without_secret
+                else "Telegram webhook secret requirement is satisfied."
+            ),
+        )
+    )
+
     failures = [check for check in checks if check["status"] == "fail"]
     warnings = [check for check in checks if check["status"] == "warn"]
 
@@ -280,4 +336,7 @@ def assert_startup_safe() -> dict[str, Any]:
         if secret_failures:
             details = "; ".join(check["detail"] for check in secret_failures)
             raise RuntimeError(f"Unsafe {settings.APP_MODE} startup configuration: {details}")
+    for check in report["checks"]:
+        if check["key"] == "telegram_webhook_secret" and check["status"] == "warn":
+            log.warning("app.startup.telegram_webhook_secret_missing", detail=check["detail"])
     return report

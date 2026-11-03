@@ -159,7 +159,8 @@ async def test_flattens_only_strategy_attributable_quantity_and_leaves_manual_ho
     assert summary["flattened"] == 1
     assert eod_order.ticker == "AAPL"
     assert eod_order.quantity == Decimal("2")
-    assert broker.read_calls == 1
+    # One snapshot for attribution, one fresh read to verify the protective exit.
+    assert broker.read_calls == 2
     assert broker.write_calls == 1
 
 
@@ -932,7 +933,7 @@ async def test_invalid_persisted_fill_quantities_fail_closed(
 
 
 @pytest.mark.asyncio
-async def test_kill_switch_activation_after_claim_blocks_broker_send(
+async def test_kill_switch_activation_after_claim_does_not_stop_the_protective_flatten(
     db, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _ready_settings(db)
@@ -941,7 +942,7 @@ async def test_kill_switch_activation_after_claim_blocks_broker_send(
     broker = SnapshotOnlyBroker(
         [{"ticker": "AAPL", "quantity": "2", "maxSell": "2", "currentPrice": "190"}]
     )
-    original_submit = ExecutionEngine.submit_order
+    original_submit = ExecutionEngine.submit_protective_exit
 
     async def activate_then_submit(engine: ExecutionEngine, order: Order) -> Order:
         await db.execute(
@@ -953,14 +954,15 @@ async def test_kill_switch_activation_after_claim_blocks_broker_send(
         await db.commit()
         return await original_submit(engine, order)
 
-    monkeypatch.setattr(ExecutionEngine, "submit_order", activate_then_submit)
+    monkeypatch.setattr(ExecutionEngine, "submit_protective_exit", activate_then_submit)
 
     summary = await EodFlattenService(db, broker).run([strategy], now_utc=DUE_AT)
 
     operation = (await db.execute(select(EodFlattenOperation))).scalar_one()
-    assert summary["manual_reconciliation_required"] == 1
-    assert operation.status == "manual_reconciliation_required"
-    assert broker.write_calls == 0
+    # The kill switch blocks entries only: the sell of the held long still goes out.
+    assert summary["flattened"] == 1
+    assert operation.status == "completed"
+    assert broker.write_calls == 1
 
 
 @pytest.mark.asyncio

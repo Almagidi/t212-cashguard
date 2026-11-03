@@ -106,14 +106,19 @@ class TestRunEarlyExits:
     async def test_kill_switch_active(self, db):
         await _make_app_settings(db, kill_switch_active=True)
         monitor = PositionMonitor(db)
-        result = await monitor.run()
-        assert result.get("skipped") == "kill_switch_active"
+        with patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=None):
+            result = await monitor.run()
+        # Entries are blocked, but monitoring (exits) is not skipped: the broker is consulted.
+        assert result.get("entries_blocked") == "kill_switch_active"
+        assert result.get("skipped") == "no_broker"
 
     async def test_auto_trading_disabled(self, db):
         await _make_app_settings(db, auto_trading_enabled=False)
         monitor = PositionMonitor(db)
-        result = await monitor.run()
-        assert result.get("skipped") == "auto_trading_disabled"
+        with patch.object(monitor, "_get_broker", new_callable=AsyncMock, return_value=None):
+            result = await monitor.run()
+        assert result.get("entries_blocked") == "auto_trading_disabled"
+        assert result.get("skipped") == "no_broker"
 
     async def test_no_broker_returns_skipped(self, db):
         await _make_app_settings(db)
@@ -376,6 +381,26 @@ class TestBrokerAndMarketDataHelpers:
 
         assert len(bars) == 1
         assert current_price == Decimal("100")
+
+    async def test_get_market_data_caps_exit_path_rate_limit_sleep(self, db, monkeypatch):
+        seen: dict = {}
+
+        class AsyncProvider:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def get_bars(self, *_args, **kwargs):
+                seen.update(kwargs)
+                return []
+
+        monkeypatch.setattr("app.market_data.get_live_provider", lambda: AsyncProvider())
+
+        await PositionMonitor(db)._get_market_data("AAPL")
+
+        assert seen["max_total_sleep"] == 10.0
 
     async def test_get_market_data_reads_sync_provider(self, db, monkeypatch):
         class SyncProvider:

@@ -11,13 +11,14 @@ import hashlib
 import inspect
 import json
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.broker.protocols import (
@@ -34,6 +35,7 @@ from app.execution.acknowledgement import (
     UntrustedAcknowledgement,
     interpret_acknowledgement,
 )
+from app.execution.active_sells import blocking_sell_conditions, broker_account_scope
 from app.execution.broker_record import (
     NO_BROKER_RECORD,
     FinalRecord,
@@ -81,21 +83,30 @@ from app.services.execution_quality import (
     should_alert_abnormal_slippage,
 )
 from app.services.safety_policy import (
+    ProtectiveExitAuthorization,
     SafetyPolicyViolation,
+    _issue_protective_exit_authorization,
     audit_broker_request_attempt,
     audit_safety_decision,
     current_runtime_mode,
+    record_protective_exit_blocked_once,
     require_order_submission_allowed,
+    send_protective_exit_blocked_alert,
+    verify_protective_exit,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.broker.snapshots import BrokerOrderSnapshot
 
 log = structlog.get_logger()
+
+# Per-ticker in-process serialization of protective exits: [lock, users]. Removed when unused so
+# a worker that runs each task on a new event loop never reuses a lock across loops.
+_EXIT_LOCKS: dict[str, list[Any]] = {}
 
 
 def _safe_broker_error_reason(exc: Exception) -> str:
@@ -215,6 +226,35 @@ class ExecutionEngine:
             else f"{signal_id or 'manual'}:{ticker}:{side}:{salt}"
         )
         return hashlib.sha256(raw.encode()).hexdigest()[:40]
+
+    # An exit that the broker refuses can be asked again, but not without bound.
+    MAX_EXIT_ATTEMPTS = 5
+    _FAILED_EXIT_STATUSES = frozenset({"rejected", "cancelled", "error"})
+
+    async def next_exit_identity(
+        self, *, ticker: str, entry_signal_id: uuid.UUID, exit_type: str
+    ) -> str:
+        """The stable identity of the next exit of this kind for this entry.
+
+        ``exit:{entry}:{exit_type}:{attempt}``. The attempt starts at 0 and moves on only when
+        the previous attempt ended without selling (rejected, cancelled or errored), so a
+        repeat of an exit that is in flight or done is the same identity (and deduplicated),
+        a retry after a failure is a new order, and a partial exit followed by a stop are two
+        different exits. After ``MAX_EXIT_ATTEMPTS`` failures the last identity is returned
+        and its failed order stands: no further automatic retry.
+        """
+        identity = f"exit:{entry_signal_id}:{exit_type}:0"
+        for attempt in range(self.MAX_EXIT_ATTEMPTS):
+            identity = f"exit:{entry_signal_id}:{exit_type}:{attempt}"
+            key = self._make_client_order_key(
+                ticker, "sell", None, stable_operation_identity=identity
+            )
+            status = (
+                await self.db.execute(select(Order.status).where(Order.client_order_key == key))
+            ).scalar_one_or_none()
+            if status not in self._FAILED_EXIT_STATUSES:
+                return identity
+        return identity
 
     async def _log_order_event(
         self,
@@ -391,6 +431,33 @@ class ExecutionEngine:
             await self.db.flush()
         return order
 
+    async def resize_pending_exit(self, order: Order, quantity: Decimal) -> Order:
+        """Re-size an exit intent that was never sent to the quantity now verified.
+
+        ``create_order_intent`` returns a standing intent for the same exit identity with the
+        quantity it was created with. If the position changed since (a partial fill, a manual
+        sale), that stale quantity would be refused every cycle. The identity (and so the
+        client order key and its dedup) is untouched; only a never-sent sell intent is
+        resized, and the change is recorded as an order event.
+        """
+        if order.status != "pending_intent" or order.side != "sell":
+            raise ValueError("only a pending sell intent can be re-sized")
+        if quantity <= 0:
+            raise ValueError("a re-sized exit must be positive")
+        if order.quantity == quantity:
+            return order
+        previous = order.quantity
+        order.quantity = quantity
+        await self._log_order_event(
+            order.id,
+            "intent_resized",
+            from_status=order.status,
+            to_status=order.status,
+            payload={"from_quantity": str(previous), "to_quantity": str(quantity)},
+        )
+        await self.db.flush()
+        return order
+
     async def _close_blocked_buy(self, order: Order, exc: SafetyPolicyViolation) -> None:
         """End a real buy that was not allowed to be sent.
 
@@ -558,10 +625,228 @@ class ExecutionEngine:
                 error=str(exc),
             )
 
-    async def submit_order(self, order: Order) -> Order:
+    async def _verified_protective_exit(self, order: Order) -> ProtectiveExitAuthorization:
+        """Prove from a fresh broker position read that this sell only reduces a held long.
+
+        Refuses (``SafetyPolicyViolation``) a buy, a sell with no held long position, and a
+        sell that together with sells already in flight exceeds the held quantity, so a
+        protective exit can never open or grow a short.
+        """
+
+        def refuse(why: str) -> SafetyPolicyViolation:
+            return SafetyPolicyViolation(
+                f"Protective exit refused: {why}.", decision_code="protective_exit_refused"
+            )
+
+        if order.side != "sell":
+            raise refuse("only a sell can be a protective exit")
+        ticker = str(order.ticker).strip().upper()
+        try:
+            positions = await self.broker.get_positions()
+        except Exception as exc:
+            raise refuse(f"held position could not be read ({type(exc).__name__})") from exc
+        rows = [r for r in positions if str(r.get("ticker", "")).strip().upper() == ticker]
+        if len(rows) > 1:
+            # Never sum rows: if the broker lists the same instrument twice we cannot tell
+            # whether they are one holding reported twice (summing would double the
+            # quantity and allow a short) or two real lots. Fail closed, as EOD flatten does.
+            raise refuse("the broker returned duplicate position rows for this ticker")
+        held = Decimal("0")
+        for row in rows:
+            try:
+                quantity = Decimal(str(row.get("quantity", 0)))
+                max_sell_raw = row.get("maxSell")
+                sellable = quantity if max_sell_raw is None else Decimal(str(max_sell_raw))
+            except (ArithmeticError, ValueError):
+                continue
+            # ``maxSell`` may already be net of sells the broker holds as pending. The sells
+            # in flight are subtracted again below, which can refuse an exit that would in
+            # fact have been safe. That is deliberate: a refused stop is retried and alerted,
+            # a short is not recoverable, so the check errs towards refusing.
+            if quantity > 0 and sellable > 0:
+                held = min(quantity, sellable)
+        in_flight_rows = (
+            await self.db.execute(
+                select(Order.quantity, Order.filled_quantity).where(
+                    Order.id != order.id,
+                    *blocking_sell_conditions(
+                        order.ticker,
+                        is_dry_run=order.is_dry_run,
+                        environment=order.execution_environment,
+                        account_scope=order.broker_account_scope
+                        or broker_account_scope(self.broker),
+                    ),
+                )
+            )
+        ).all()
+        in_flight = sum(
+            (
+                max(Decimal(str(qty)) - Decimal(str(filled or 0)), Decimal("0"))
+                for qty, filled in in_flight_rows
+            ),
+            Decimal("0"),
+        )
+        authorization = _issue_protective_exit_authorization(
+            order, held_quantity=held, in_flight_sell_quantity=in_flight
+        )
+        verify_protective_exit(order, authorization)
+        return authorization
+
+    async def submit_protective_exit(self, order: Order) -> Order:
+        """Submit a sell that reduces an existing long position, even if trading is halted.
+
+        The kill switch (and a paused auto-trading flag, which the caller no longer
+        consults for exits) must not leave a held position without its stop. This path is
+        exempt from the kill-switch check ONLY: the order is verified against a fresh broker
+        position read to be a sell no larger than the held long quantity (net of sells in
+        flight), and mode, broker-environment, live-binding and live-readiness gates apply
+        unchanged. Buys, shorts and oversized sells are refused.
+        """
+        if order.status != "pending_intent":
+            raise ValueError(f"Cannot submit order in status {order.status!r}")
+        ticker = str(order.ticker).strip().upper()
+        # The position read, the in-flight read and the dispatch commit (after which this
+        # order counts as in flight) form one critical section per ticker. Without it two
+        # exits can both see the full held quantity and both sell it, leaving a short.
+        blocked: SafetyPolicyViolation | None = None
+        recorded = False
+        entered = False
+        try:
+            async with self._serialized_exit(ticker, is_dry_run=order.is_dry_run):
+                entered = True
+                try:
+                    authorization = await self._verified_protective_exit(order)
+                except SafetyPolicyViolation as exc:
+                    blocked = exc
+                    recorded = await self._record_protective_refusal(order, ticker, exc)
+                    # The refusal ends this critical section: end the transaction so the
+                    # database lock is not held while the caller goes on to other tickers.
+                    await self._release_exit_lock(order)
+                    raise
+                try:
+                    return await self.submit_order(order, protective_exit=authorization)
+                except BaseException:
+                    await self._release_exit_lock(order)
+                    raise
+        except SafetyPolicyViolation as exc:
+            if not entered:
+                # Refused before the check could run (the lock could not be taken safely).
+                blocked = exc
+                recorded = await self._record_protective_refusal(order, ticker, exc)
+            if blocked is exc and recorded:
+                # Alerting (Telegram, email, ...) is network I/O: only after the lock is gone,
+                # and a delivery failure never replaces the refusal being raised.
+                await self._alert_protective_refusal(ticker, exc)
+            raise
+
+    async def _record_protective_refusal(
+        self, order: Order, ticker: str, exc: SafetyPolicyViolation
+    ) -> bool:
+        """Audit a refusal (once per ticker and reason per window); never raises.
+
+        The caller retries every cycle: one audit row and alert per ticker and reason per
+        window, not one per cycle.
+        """
+        try:
+            return await record_protective_exit_blocked_once(
+                self.db,
+                action="protective_exit_refused",
+                ticker=ticker,
+                reason=exc.reason,
+                actor="execution_engine",
+                order=order,
+                metadata={"decision_code": exc.decision_code},
+            )
+        except Exception as audit_error:
+            log.error(
+                "execution.protective_refusal_audit_failed",
+                ticker=ticker,
+                error=str(audit_error),
+            )
+            return False
+
+    async def _alert_protective_refusal(self, ticker: str, exc: SafetyPolicyViolation) -> None:
+        try:
+            await send_protective_exit_blocked_alert(
+                self.db, action="protective_exit_refused", ticker=ticker, reason=exc.reason
+            )
+        except Exception as alert_error:
+            log.error(
+                "execution.protective_refusal_alert_failed",
+                ticker=ticker,
+                error=str(alert_error),
+            )
+
+    async def _release_exit_lock(self, order: Order) -> None:
+        """End the transaction so a transaction-scoped advisory lock is released.
+
+        Commits what the critical section already flushed (the audit row, order state) and
+        rolls back if the commit itself fails. Dry-run exits hold no database lock.
+        """
+        if order.is_dry_run:
+            return
+        try:
+            await self.db.commit()
+        except Exception as commit_error:
+            log.error("execution.exit_lock_release_commit_failed", error=str(commit_error))
+            try:
+                await self.db.rollback()
+            except Exception as rollback_error:
+                log.error("execution.exit_lock_release_failed", error=str(rollback_error))
+
+    @asynccontextmanager
+    async def _serialized_exit(self, ticker: str, *, is_dry_run: bool) -> AsyncIterator[None]:
+        """Serialize protective exits for one ticker, in this process and across processes.
+
+        In-process: an asyncio lock per ticker. Across processes (PostgreSQL): a transaction
+        advisory lock, which is released by the commit that records the dispatch
+        (``submission_unknown``), so the next exit's in-flight read sees this one. Dry-run
+        orders never reach a broker and cannot open a real short, so they take only the
+        in-process lock (they do not commit, and holding database locks until the caller's
+        later commit could deadlock two workers).
+        """
+        entry = _EXIT_LOCKS.get(ticker)
+        if entry is None:
+            entry = _EXIT_LOCKS[ticker] = [asyncio.Lock(), 0]
+        entry[1] += 1
+        try:
+            async with entry[0]:
+                if not is_dry_run:
+                    await self._advisory_lock(f"protective_exit:{ticker}")
+                yield
+        finally:
+            entry[1] -= 1
+            if entry[1] == 0 and _EXIT_LOCKS.get(ticker) is entry:
+                del _EXIT_LOCKS[ticker]
+
+    async def _advisory_lock(self, key: str) -> None:
+        try:
+            dialect = self.db.get_bind().dialect.name
+        except Exception as exc:
+            # Not knowing the dialect means not knowing whether a lock is needed: a real
+            # (non-dry-run) exit is refused rather than sent unserialized.
+            raise SafetyPolicyViolation(
+                "Protective exit refused: the database dialect could not be determined, so "
+                "the per-ticker exit lock cannot be taken.",
+                decision_code="protective_exit_refused",
+            ) from exc
+        if dialect == "postgresql":
+            await self.db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key}
+            )
+
+    async def submit_order(
+        self,
+        order: Order,
+        *,
+        protective_exit: ProtectiveExitAuthorization | None = None,
+    ) -> Order:
         """
         Submit order to broker. Updates order status throughout.
         For dry-run orders, simulates success without contacting broker.
+
+        ``protective_exit`` is accepted only if ``submit_protective_exit`` issued it for this
+        very order (see ``verify_protective_exit``); a hand-built one is refused.
         """
         if order.status != "pending_intent":
             raise ValueError(f"Cannot submit order in status {order.status!r}")
@@ -573,6 +858,7 @@ class ExecutionEngine:
                 order=order,
                 broker_environment=broker_environment,
                 broker=self.broker,
+                protective_exit=protective_exit,
             )
         except SafetyPolicyViolation as exc:
             if order.side == "buy" and not order.is_dry_run:
@@ -679,9 +965,17 @@ class ExecutionEngine:
             from app.services.live_dispatch import authorize_dispatch
 
             try:
+                if protective_exit is not None:
+                    # Still the engine's own, unexpired authorization for this very order.
+                    verify_protective_exit(order, protective_exit)
                 async with async_sessionmaker(self.db.bind, expire_on_commit=False)() as check:
                     await authorize_dispatch(
-                        check, self.broker, order, lock=False, expected=authorization
+                        check,
+                        self.broker,
+                        order,
+                        lock=False,
+                        expected=authorization,
+                        protective_exit=protective_exit is not None,
                     )
             except Exception as exc:
                 raise BrokerSubmissionNotTransmitted(error_type="LiveAuthorizationRevoked") from exc

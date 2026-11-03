@@ -102,7 +102,7 @@ def test_worker_has_no_utc_string_latch_or_direct_broker_path() -> None:
     assert "create_trading212_provider_adapter" not in source
 
 
-def test_worker_preserves_kill_switch_before_service_or_broker_work(
+def test_worker_still_runs_the_flatten_under_an_active_kill_switch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_db = FakeSession(SimpleNamespace(kill_switch_active=True), [])
@@ -118,8 +118,9 @@ def test_worker_preserves_kill_switch_before_service_or_broker_work(
 
     result = tasks.check_eod_flatten.run()
 
-    assert result == {"flattened": 0, "reason": "kill_switch"}
-    assert FakePositionMonitor.calls == []
+    # A kill switch blocks entries only; held positions are still flattened.
+    assert result == {"flattened": 1, "operations_created": 1}
+    assert len(FakePositionMonitor.calls) == 1
     assert fake_db.commits == 1
 
 

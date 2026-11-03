@@ -69,7 +69,7 @@ class FakeExecutionEngine:
             is_dry_run=bool(kwargs.get("is_dry_run", False)),
         )
 
-    async def submit_order(self, order: FakeOrder) -> FakeOrder:
+    async def submit_protective_exit(self, order: FakeOrder) -> FakeOrder:
         self.submitted_orders.append(order)
         return order
 

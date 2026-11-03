@@ -39,6 +39,7 @@ async def authorize_dispatch(
     *,
     lock: bool = True,
     expected: dict[str, Any] | None = None,
+    protective_exit: bool = False,
 ) -> dict[str, Any]:
     try:
         binding, connection = await binding_for_adapter(db, broker, lock=lock)
@@ -63,7 +64,11 @@ async def authorize_dispatch(
                 "Live intent context changed or is unbound; it cannot be rebound."
             )
         service = LiveReadinessService(db, binding=binding, lock=lock)
-        readiness = await service.evaluate(require_market_data=order.side == "buy")
+        readiness = await service.evaluate(
+            require_market_data=order.side == "buy",
+            # Only a verified long-reducing sell may proceed past an active kill switch.
+            allow_active_kill_switch=protective_exit and order.side == "sell",
+        )
         if not readiness["ready_for_live"] or service.current_head_id is None:
             raise LiveDispatchError("Bound live readiness is incomplete or unavailable.")
         authorization = {

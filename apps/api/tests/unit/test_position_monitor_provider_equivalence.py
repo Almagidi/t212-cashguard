@@ -180,10 +180,17 @@ class RecordingExecutionEngine:
     brokers: ClassVar[list[RecordingBroker]] = []
     order_intents: ClassVar[list[dict[str, Any]]] = []
     submitted_orders: ClassVar[list[FakeSubmittedOrder]] = []
+    MAX_EXIT_ATTEMPTS: ClassVar[int] = 5
+    _FAILED_EXIT_STATUSES: ClassVar[frozenset[str]] = frozenset({"rejected", "cancelled", "error"})
 
     def __init__(self, _db: FakeSession, broker: RecordingBroker) -> None:
         self.broker = broker
         self.brokers.append(broker)
+
+    async def next_exit_identity(
+        self, *, ticker: str, entry_signal_id: uuid.UUID, exit_type: str
+    ) -> str:
+        return f"exit:{entry_signal_id}:{exit_type}:0"
 
     async def create_order_intent(self, **kwargs: Any) -> FakeSubmittedOrder:
         self.order_intents.append(kwargs)
@@ -199,7 +206,12 @@ class RecordingExecutionEngine:
     submission_status: ClassVar[str] = "accepted"
     existing_status: ClassVar[str] = "pending_intent"
 
-    async def submit_order(self, order: FakeSubmittedOrder) -> FakeSubmittedOrder:
+    async def resize_pending_exit(
+        self, order: FakeSubmittedOrder, quantity: Decimal
+    ) -> FakeSubmittedOrder:
+        return order
+
+    async def submit_protective_exit(self, order: FakeSubmittedOrder) -> FakeSubmittedOrder:
         self.submitted_orders.append(order)
         order.status = self.submission_status
         return order
@@ -383,7 +395,7 @@ def test_position_monitor_source_uses_provider_final_construction_and_remains_wr
 
     assert {"get_positions", "get_account_summary"} <= _call_names(run)
     assert "get_positions" in _call_names(check_daily_loss)
-    assert {"create_order_intent", "submit_order"} <= _call_names(monitor_position)
+    assert {"create_order_intent", "submit_protective_exit"} <= _call_names(monitor_position)
     assert {"EodFlattenService", "eod_due_window", "run"} <= _call_names(eod_flatten)
     assert "position_exit_automated" in ast.unparse(monitor_position)
     assert "get_positions" not in _call_names(eod_flatten)
@@ -661,21 +673,24 @@ async def test_get_broker_provider_validation_error_returns_none_and_logs_safe_f
         (FakeAppSettings(auto_trading_enabled=False), "auto_trading_disabled"),
     ],
 )
-async def test_run_safety_gates_skip_before_broker_lookup(
+async def test_run_halt_flags_block_entries_but_still_look_up_the_broker_for_exits(
     monkeypatch: pytest.MonkeyPatch,
     app_settings: FakeAppSettings,
     expected_reason: str,
 ) -> None:
     db = FakeSession(results=[app_settings])
     service = PositionMonitor(db)
+    lookups: list[str] = []
 
-    async def get_broker() -> RecordingBroker:
-        raise AssertionError("run safety gate must skip before broker lookup")
+    async def get_broker() -> None:
+        lookups.append("broker")
+        return None
 
     monkeypatch.setattr(service, "_get_broker", get_broker)
 
     summary = await service.run()
 
+    assert lookups == ["broker"]
     assert summary == {
         "positions_checked": 0,
         "exits_submitted": 0,
@@ -683,7 +698,8 @@ async def test_run_safety_gates_skip_before_broker_lookup(
         "stops_hit": 0,
         "take_profits": 0,
         "errors": [],
-        "skipped": expected_reason,
+        "entries_blocked": expected_reason,
+        "skipped": "no_broker",
     }
     assert RecordingExecutionEngine.order_intents == []
     assert RecordingTrading212Adapter.constructed == []
@@ -713,6 +729,8 @@ async def test_run_reads_positions_and_account_then_routes_exit_through_executio
             [_strategy(strategy_id)],  # 3. live strategies for AAPL
             last_signal,  # 4. last executed entry signal
             None,  # 5. partial-exit signal
+            [],  # 6. no stuck (stale) sell to escalate
+            None,  # 7. no dispatched sell is active for the ticker
         ]
     )
     service = PositionMonitor(db)
@@ -741,6 +759,7 @@ async def test_run_reads_positions_and_account_then_routes_exit_through_executio
             "signal_id": last_signal.id,
             "is_dry_run": False,
             "estimated_price": Decimal("105"),
+            "stable_operation_identity": f"exit:{last_signal.id}:take_profit:0",
         }
     ]
     assert RecordingExecutionEngine.submitted_orders[0].side == "sell"
@@ -765,7 +784,7 @@ async def test_monitor_position_dry_run_flag_is_currently_app_mode_mock_only(
 ) -> None:
     strategy_id = uuid.uuid4()
     last_signal = _last_entry_signal(strategy_id)
-    db = FakeSession(results=[last_signal, None])
+    db = FakeSession(results=[last_signal, None, [], None])
     service = PositionMonitor(db)
     broker = RecordingBroker()
     monkeypatch.setattr(settings, "APP_MODE", "mock")
@@ -830,7 +849,7 @@ async def test_eod_flatten_enters_provider_then_delegates_to_scoped_service(
 
 async def _run_exit_check(monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, int], FakeSession]:
     strategy_id = uuid.uuid4()
-    db = FakeSession(results=[_last_entry_signal(strategy_id), None])
+    db = FakeSession(results=[_last_entry_signal(strategy_id), None, [], None])
     service = PositionMonitor(db)
     monkeypatch.setattr(settings, "APP_MODE", "demo")
 

@@ -23,6 +23,9 @@ def _set_safe_startup_settings(monkeypatch: pytest.MonkeyPatch, app_mode: str) -
     monkeypatch.setattr(settings, "T212_LIVE_API_KEY", "configured" if app_mode == "live" else "")
     monkeypatch.setattr(settings, "MARKET_DATA_PROVIDER", "auto")
     monkeypatch.setattr(
+        settings, "POLYGON_API_KEY", secrets.token_urlsafe(24) if app_mode == "live" else ""
+    )
+    monkeypatch.setattr(
         settings, "ALPACA_API_KEY", secrets.token_urlsafe(24) if app_mode == "live" else ""
     )
     monkeypatch.setattr(
@@ -260,3 +263,97 @@ def test_assert_startup_safe_only_warns_about_short_security_secrets_in_mock_mod
     assert statuses["secret_key"] == "warn"
     assert statuses["master_key"] == "warn"
     assert statuses["admin_password"] == "warn"
+
+
+def test_live_startup_fails_when_telegram_control_enabled_without_webhook_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import settings
+    from app.services.startup_validation import build_startup_report
+
+    _set_safe_startup_settings(monkeypatch, "live")
+    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "bot-token")
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_CHAT_IDS", "12345")
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "")
+
+    report = build_startup_report()
+    check = next(c for c in report["checks"] if c["key"] == "telegram_webhook_secret")
+    assert check["status"] == "fail"
+
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "webhook-secret")
+    report = build_startup_report()
+    check = next(c for c in report["checks"] if c["key"] == "telegram_webhook_secret")
+    assert check["status"] == "pass"
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"), [("paper", "warn"), ("demo", "warn"), ("mock", "pass")]
+)
+def test_non_live_startup_warns_but_does_not_fail_on_missing_telegram_webhook_secret(
+    monkeypatch: pytest.MonkeyPatch, mode: str, expected: str
+) -> None:
+    from app.core.config import settings
+    from app.services.startup_validation import build_startup_report
+
+    _set_safe_startup_settings(monkeypatch, mode)
+    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "bot-token")
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_CHAT_IDS", "12345")
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "")
+
+    report = build_startup_report()
+    check = next(c for c in report["checks"] if c["key"] == "telegram_webhook_secret")
+    assert check["status"] == expected
+    if expected == "warn":
+        assert "TELEGRAM_WEBHOOK_SECRET" in check["detail"]
+        assert report["warnings"] >= 1
+
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "webhook-secret")
+    report = build_startup_report()
+    check = next(c for c in report["checks"] if c["key"] == "telegram_webhook_secret")
+    assert check["status"] == "pass"
+
+
+@pytest.mark.parametrize("mode", ["paper", "demo"])
+def test_startup_logs_a_warning_for_telegram_control_without_webhook_secret(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    from structlog.testing import capture_logs
+
+    from app.core.config import settings
+    from app.services.startup_validation import assert_startup_safe
+
+    _set_safe_startup_settings(monkeypatch, mode)
+    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "bot-token")
+    monkeypatch.setattr(settings, "TELEGRAM_ALLOWED_CHAT_IDS", "12345")
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "")
+
+    with capture_logs() as logs:
+        assert_startup_safe()  # starts: only live refuses
+
+    warned = [e for e in logs if e["event"] == "app.startup.telegram_webhook_secret_missing"]
+    assert [e["log_level"] for e in warned] == ["warning"]
+
+
+def test_live_startup_requires_validated_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import settings
+    from app.services.startup_validation import build_startup_report
+
+    _set_safe_startup_settings(monkeypatch, "live")
+    monkeypatch.setattr(settings, "POLYGON_API_KEY", "")  # single vendor (alpaca)
+
+    check = next(c for c in build_startup_report()["checks"] if c["key"] == "market_data_provider")
+    assert check["status"] == "fail"
+    assert "validated" in check["detail"]
+
+
+def test_paper_single_vendor_provider_warns(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import settings
+    from app.services.startup_validation import build_startup_report
+
+    _set_safe_startup_settings(monkeypatch, "paper")
+    monkeypatch.setattr(settings, "ALPACA_API_KEY", "k")
+    monkeypatch.setattr(settings, "ALPACA_API_SECRET", "s")
+    monkeypatch.setattr(settings, "POLYGON_API_KEY", "")
+
+    check = next(c for c in build_startup_report()["checks"] if c["key"] == "market_data_provider")
+    assert check["status"] == "warn"

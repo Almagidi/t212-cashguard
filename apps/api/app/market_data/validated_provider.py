@@ -1,17 +1,22 @@
 """Alpaca-primary market data with Polygon validation and fallback."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from app.market_data.alpaca_provider import AlpacaMarketDataProvider
+from app.market_data.alpaca_provider import AlpacaMarketDataProvider, OpeningRangeBars
 from app.market_data.polygon_provider import PolygonMarketDataProvider
-from app.services.feed_health import is_symbol_trade_safe, record_feed_health
+from app.services.feed_health import FeedStatus, is_symbol_trade_safe, record_feed_health
 
 
 class ValidatedMarketDataProvider:
     """Use Alpaca as the live source and Polygon as validator/fallback."""
+
+    # Only this provider records per-symbol feed health (see
+    # app.market_data.provider_records_feed_health).
+    records_feed_health = True
 
     QUOTE_DIVERGENCE_WARN_PCT = Decimal("0.75")
     QUOTE_DIVERGENCE_FAIL_PCT = Decimal("2.00")
@@ -54,6 +59,7 @@ class ValidatedMarketDataProvider:
         from_date: Any | None = None,
         to_date: Any | None = None,
         limit: int = 50,
+        max_total_sleep: float | None = None,
     ) -> list[Any]:
         primary_bars: list[Any] = []
         validator_bars: list[Any] = []
@@ -67,6 +73,7 @@ class ValidatedMarketDataProvider:
                 from_date=from_date,
                 to_date=to_date,
                 limit=limit,
+                max_total_sleep=max_total_sleep,
             )
         except Exception as exc:
             primary_error = exc
@@ -80,6 +87,7 @@ class ValidatedMarketDataProvider:
                     from_date=from_date,
                     to_date=to_date,
                     limit=limit,
+                    max_total_sleep=max_total_sleep,
                 )
             except Exception:
                 validator_bars = []
@@ -98,6 +106,7 @@ class ValidatedMarketDataProvider:
                 used_source="polygon",
                 validator_source="polygon",
                 fallback_used=True,
+                is_delayed=True,  # Polygon free tier is 15-minute delayed
                 primary_timestamp=None,
                 validator_timestamp=getattr(latest, "timestamp", None),
             )
@@ -148,10 +157,19 @@ class ValidatedMarketDataProvider:
                 used_source="polygon",
                 validator_source="polygon",
                 fallback_used=True,
+                is_delayed=True,  # Polygon free tier is 15-minute delayed
                 primary_timestamp=None,
                 validator_timestamp=getattr(latest, "timestamp", None),
             )
-            return validator_bars
+            # Delayed Polygon data can never prove the window is complete: flag it
+            # so callers do not derive a final opening range from it.
+            return OpeningRangeBars(
+                validator_bars,
+                complete=False,
+                expected_bars=getattr(validator_bars, "expected_bars", 0),
+                min_bars=getattr(validator_bars, "min_bars", 0),
+                window_end=getattr(validator_bars, "window_end", None),
+            )
 
         raise primary_error or RuntimeError("No opening-range bars available")
 
@@ -173,7 +191,11 @@ class ValidatedMarketDataProvider:
 
         if primary_quote is not None:
             status = self._record_quote_health(ticker, primary_quote, validator_quote)
-            if status == "fallback" and validator_quote is not None and self._quote_is_trade_safe(validator_quote):
+            if (
+                status == "fallback"
+                and validator_quote is not None
+                and self._quote_is_trade_safe(validator_quote)
+            ):
                 return validator_quote
             return primary_quote
 
@@ -186,6 +208,7 @@ class ValidatedMarketDataProvider:
                 used_source="polygon",
                 validator_source="polygon",
                 fallback_used=True,
+                is_delayed=True,  # Polygon free tier is 15-minute delayed
                 primary_timestamp=None,
                 validator_timestamp=getattr(validator_quote, "timestamp", None),
             )
@@ -210,7 +233,7 @@ class ValidatedMarketDataProvider:
                 validator_open = None
 
         if primary_open is not None:
-            status = "ok"
+            status: FeedStatus = "ok"
             detail = "Alpaca market status healthy."
             if validator_open is not None and validator_open != primary_open:
                 status = "degraded"
@@ -236,6 +259,7 @@ class ValidatedMarketDataProvider:
                 used_source="polygon",
                 validator_source="polygon",
                 fallback_used=True,
+                is_delayed=True,  # Polygon free tier is 15-minute delayed
                 validator_timestamp=datetime.now(UTC),
             )
             return validator_open
@@ -247,16 +271,20 @@ class ValidatedMarketDataProvider:
             return bool(self.primary.validate_staleness(quote, max_age_seconds=max_age_seconds))
         return True
 
-    def is_trade_safe(self, ticker: str) -> bool:
-        return is_symbol_trade_safe(ticker)
+    def is_trade_safe(self, ticker: str, *, purpose: str = "entry") -> bool:
+        return is_symbol_trade_safe(ticker, purpose="exit" if purpose == "exit" else "entry")
 
-    def _record_quote_health(self, ticker: str, primary_quote: Any, validator_quote: Any | None) -> str:
+    def _record_quote_health(
+        self, ticker: str, primary_quote: Any, validator_quote: Any | None
+    ) -> FeedStatus:
         primary_fresh = self._quote_is_trade_safe(primary_quote)
         primary_ts = getattr(primary_quote, "timestamp", None)
-        validator_ts = getattr(validator_quote, "timestamp", None) if validator_quote is not None else None
+        validator_ts = (
+            getattr(validator_quote, "timestamp", None) if validator_quote is not None else None
+        )
 
         if not primary_fresh:
-            status = "stale"
+            status: FeedStatus = "stale"
             detail = "Alpaca quote is stale beyond the trading threshold."
             if validator_quote is not None and self._quote_is_trade_safe(validator_quote):
                 status = "fallback"
@@ -269,6 +297,7 @@ class ValidatedMarketDataProvider:
                 used_source="polygon" if status == "fallback" else "alpaca",
                 validator_source="polygon" if validator_quote is not None else None,
                 fallback_used=status == "fallback",
+                is_delayed=True if status == "fallback" else None,
                 primary_timestamp=primary_ts,
                 validator_timestamp=validator_ts,
             )
@@ -276,7 +305,9 @@ class ValidatedMarketDataProvider:
 
         divergence_pct = self._percent_diff(
             Decimal(str(getattr(primary_quote, "last", 0))),
-            Decimal(str(getattr(validator_quote, "last", 0))) if validator_quote is not None else None,
+            Decimal(str(getattr(validator_quote, "last", 0)))
+            if validator_quote is not None
+            else None,
         )
         status = "ok"
         detail = "Alpaca quote validated."
@@ -301,16 +332,22 @@ class ValidatedMarketDataProvider:
         )
         return status
 
-    def _record_bar_health(self, ticker: str, primary_bars: list[Any], validator_bars: list[Any]) -> None:
+    def _record_bar_health(
+        self, ticker: str, primary_bars: list[Any], validator_bars: list[Any]
+    ) -> None:
         latest_primary = primary_bars[-1]
         latest_validator = validator_bars[-1] if validator_bars else None
         primary_ts = getattr(latest_primary, "timestamp", None)
-        validator_ts = getattr(latest_validator, "timestamp", None) if latest_validator is not None else None
-        status = "ok"
+        validator_ts = (
+            getattr(latest_validator, "timestamp", None) if latest_validator is not None else None
+        )
+        status: FeedStatus = "ok"
         detail = "Alpaca bars validated."
         divergence_pct = self._percent_diff(
             Decimal(str(getattr(latest_primary, "close", 0))),
-            Decimal(str(getattr(latest_validator, "close", 0))) if latest_validator is not None else None,
+            Decimal(str(getattr(latest_validator, "close", 0)))
+            if latest_validator is not None
+            else None,
         )
         if divergence_pct is not None and divergence_pct >= float(self.BAR_DIVERGENCE_FAIL_PCT):
             status = "degraded"

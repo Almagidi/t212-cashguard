@@ -134,6 +134,9 @@ class Settings(BaseSettings):
     DEMO_RECONCILIATION_SCHEDULER_MAX_RUNTIME_SECONDS: int = 60
     DEMO_RECONCILIATION_SCHEDULER_RUN_ON_STARTUP: bool = False
     DEMO_RECONCILIATION_SCHEDULER_LOCK_TTL_SECONDS: int = 90
+    # A protective sell still unresolved (submission_unknown/submitted/accepted) this long stops
+    # blocking later exits and is escalated (critical alert + reconciliation). 0 disables.
+    PROTECTIVE_SELL_STALE_AFTER_SECONDS: int = 600
 
     @property
     def t212_base_url(self) -> str:

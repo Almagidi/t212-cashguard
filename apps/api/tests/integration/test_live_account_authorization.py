@@ -465,3 +465,88 @@ async def test_evaluation_clock_is_taken_after_current_rows_are_acquired(db, mon
     monkeypatch.setattr(world.service, "_get_settings", acquire)
     monkeypatch.setattr(readiness, "datetime", AfterLocks)
     assert (await world.service.evaluate())["ready_for_live"] is True
+
+
+async def _bound_order(db, world, side: str):
+    from decimal import Decimal
+
+    from app.db.models import Order, OrderEvent
+    from app.services.live_dispatch import capture_intent_context
+
+    order = Order(
+        id=uuid.uuid4(),
+        ticker="SYNTHETIC",
+        client_order_key=uuid.uuid4().hex,
+        side=side,
+        order_type="market",
+        quantity=Decimal("1"),
+        is_dry_run=False,
+        status="pending_intent",
+        venue="t212",
+        execution_environment="live",
+        broker_account_scope=world.transport.account_scope,
+    )
+    db.add(order)
+    await db.flush()
+    context = await capture_intent_context(db, world.transport, side=side)
+    db.add(OrderEvent(order_id=order.id, event_type="live_account_bound", payload=context))
+    await db.commit()
+    return order
+
+
+async def _set_kill_switch(db, active: bool) -> None:
+    app_settings = (await db.execute(select(AppSettings).where(AppSettings.id == 1))).scalar_one()
+    app_settings.kill_switch_active = active
+    await db.commit()
+
+
+async def test_protective_exit_flag_only_flips_the_kill_switch_readiness_item(db, monkeypatch):
+    world = await authorization_world(db, monkeypatch)
+    await review_and_unlock(db, world)
+
+    def statuses(status):
+        return {check["key"]: check["status"] for check in status["checks"]}
+
+    baseline = statuses(await world.service.evaluate())
+    await db.commit()
+    await _set_kill_switch(db, True)
+
+    halted = await world.service.evaluate()
+    await db.commit()
+    assert halted["ready_for_live"] is False
+    assert statuses(halted)["kill_switch_clear"] == "fail"
+
+    exempt = await world.service.evaluate(allow_active_kill_switch=True)
+    await db.commit()
+    assert statuses(exempt) == baseline  # nothing else moved, only kill_switch_clear
+    assert exempt["ready_for_live"] is True
+
+    # Every other gate still applies to an exempt evaluation.
+    await world.service.apply_action(action="lock_live", actor=world.owner.email)
+    await db.commit()
+    locked = await world.service.evaluate(allow_active_kill_switch=True)
+    await db.commit()
+    assert locked["ready_for_live"] is False
+
+
+async def test_live_dispatch_under_kill_switch_admits_only_a_protective_sell(db, monkeypatch):
+    from app.services.live_dispatch import LiveDispatchError, authorize_dispatch
+
+    world = await authorization_world(db, monkeypatch)
+    await review_and_unlock(db, world)
+    sell = await _bound_order(db, world, "sell")
+    buy = await _bound_order(db, world, "buy")
+    await _set_kill_switch(db, True)
+
+    with pytest.raises(LiveDispatchError):  # a plain sell is still stopped
+        await authorize_dispatch(db, world.transport, sell)
+    with pytest.raises(LiveDispatchError):  # the flag never admits a buy
+        await authorize_dispatch(db, world.transport, buy, protective_exit=True)
+    authorization = await authorize_dispatch(db, world.transport, sell, protective_exit=True)
+    assert authorization["binding"]["owner_id"] == str(world.owner.id)
+    await db.commit()
+
+    await world.service.apply_action(action="lock_live", actor=world.owner.email)
+    await db.commit()
+    with pytest.raises(LiveDispatchError):  # live lock still wins over the exemption
+        await authorize_dispatch(db, world.transport, sell, protective_exit=True)

@@ -400,6 +400,18 @@ class RiskEngine:
                 "correlation_block",
             )
 
+    @staticmethod
+    def _mock_market_data() -> bool:
+        from app.market_data import is_mock_market_data
+
+        return is_mock_market_data()
+
+    @staticmethod
+    def _provider_records_health() -> bool:
+        from app.market_data import provider_records_feed_health
+
+        return provider_records_feed_health()
+
     async def check_market_conditions(
         self,
         *,
@@ -408,6 +420,7 @@ class RiskEngine:
         market_regime: dict[str, Any] | None,
         watchlist_context: dict[str, Any] | None = None,
         signal_id: UUID | None = None,
+        data_provider_type: str = "equity",
     ) -> None:
         regime_payload = market_regime or {}
         regime_name = str(regime_payload.get("regime") or "unknown")
@@ -416,11 +429,48 @@ class RiskEngine:
         feed_status = str(feed_snapshot.get("status") or "unknown")
         symbol_status: str | None = None
         symbol_detail: str | None = None
+        symbol_delayed: bool | None = None
         for symbol in feed_snapshot.get("symbols", []):
             if str(symbol.get("ticker") or "").upper() == ticker.upper():
                 symbol_status = str(symbol.get("status") or "unknown")
                 symbol_detail = str(symbol.get("detail") or "")
+                symbol_delayed = symbol.get("is_delayed")
                 break
+
+        # Unknown-symbol rule (entries only; this method is never on the exit path):
+        #   * a real data provider validates every symbol it serves, so a symbol
+        #     with NO feed-health record was never validated -> fail closed,
+        #     consistent with is_symbol_trade_safe(purpose="entry");
+        #   * the rule applies ONLY when the active provider actually records
+        #     health (the validated provider; see provider_records_feed_health).
+        #     Plain single-vendor providers and the mock provider (including a
+        #     paper-mode fallback to mock) record none, so "no record" carries no
+        #     information there; their entries are gated by bar/quote freshness.
+        #     Live mode is never exempt: unresolved live config counts as
+        #     health-recording, and live startup requires the validated provider.
+        #   * Kraken tickers are exempt: they are fetched straight from
+        #     KrakenMarketDataProvider (never via the validated equity provider), so
+        #     no feed-health record is ever written for them. NOTE: the runner
+        #     applies no bar-freshness gate to Kraken entries either (that check is
+        #     equity-only); Kraken has no stale-data protection beyond this.
+        if (
+            symbol_status is None
+            and data_provider_type != "kraken"
+            and self._provider_records_health()
+            and not self._mock_market_data()
+        ):
+            msg = (
+                f"No feed-health record for {ticker}; market data was never validated, "
+                "so new entries are blocked."
+            )
+            await self._log(
+                "feed_symbol_block",
+                msg,
+                ticker=ticker,
+                signal_id=signal_id,
+                payload={"feed_status": feed_status, "symbol_status": "unknown"},
+            )
+            raise RiskViolation(msg, "feed_symbol_block")
 
         if feed_status in {"stale", "error"}:
             msg = f"Primary market data is {feed_status}; new entries are blocked until feed health recovers."
@@ -433,7 +483,10 @@ class RiskEngine:
             )
             raise RiskViolation(msg, "feed_health_block")
 
-        if symbol_status and symbol_status not in {"ok", "fallback"}:
+        # A fallback source is only acceptable for entries when it is known to be
+        # real-time; the Polygon free tier is 15 minutes delayed.
+        delayed_fallback = symbol_status == "fallback" and symbol_delayed is not False
+        if delayed_fallback or (symbol_status and symbol_status not in {"ok", "fallback"}):
             msg = (
                 f"Feed validation blocked {ticker}: {symbol_status}. "
                 f"{symbol_detail or 'Cross-source data mismatch persists.'}"
